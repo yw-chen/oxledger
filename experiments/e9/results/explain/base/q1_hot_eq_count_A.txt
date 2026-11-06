@@ -1,0 +1,28 @@
+Finalize Aggregate  (cost=9717.99..9718.00 rows=1 width=8) (actual time=128.549..132.629 rows=1.00 loops=1)
+  Buffers: shared hit=32211 read=15221
+  ->  Gather  (cost=9717.77..9717.98 rows=2 width=8) (actual time=128.376..132.623 rows=2.00 loops=1)
+        Workers Planned: 1
+        Workers Launched: 1
+        Buffers: shared hit=32211 read=15221
+        ->  Partial Aggregate  (cost=8717.77..8717.78 rows=1 width=8) (actual time=126.399..126.400 rows=1.00 loops=2)
+              Buffers: shared hit=32211 read=15221
+              ->  Nested Loop  (cost=23.94..8715.61 rows=866 width=0) (actual time=1.855..125.232 rows=5975.50 loops=2)
+                    Buffers: shared hit=32211 read=15221
+                    ->  Parallel Bitmap Heap Scan on issue_cf c  (cost=23.52..5423.77 rows=866 width=16) (actual time=1.824..87.534 rows=5975.50 loops=2)
+                          Recheck Cond: ((field_id = 4) AND (v_ref = '00000000-0001-7000-8000-000000000003'::uuid))
+                          Heap Blocks: exact=5945
+                          Buffers: shared hit=25 read=11551
+                          Worker 0:  Heap Blocks: exact=5598
+                          ->  Bitmap Index Scan on issue_cf_ref  (cost=0.00..23.15 rows=1472 width=0) (actual time=1.944..1.945 rows=11951.00 loops=1)
+                                Index Cond: ((field_id = 4) AND (v_ref = '00000000-0001-7000-8000-000000000003'::uuid))
+                                Index Searches: 1
+                                Buffers: shared read=13
+                    ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..3.80 rows=1 width=16) (actual time=0.005..0.005 rows=1.00 loops=11951)
+                          Index Cond: (id = c.issue_id)
+                          Heap Fetches: 0
+                          Index Searches: 11951
+                          Buffers: shared hit=32186 read=3670
+Planning:
+  Buffers: shared hit=338 read=59
+Planning Time: 1.754 ms
+Execution Time: 132.693 ms

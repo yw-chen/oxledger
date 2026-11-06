@@ -1,0 +1,47 @@
+Limit  (cost=13078.62..13083.86 rows=45 width=16) (actual time=211.271..215.660 rows=50.00 loops=1)
+  Buffers: shared hit=398020 read=39561
+  ->  Gather Merge  (cost=13078.62..13083.86 rows=45 width=16) (actual time=211.270..215.655 rows=50.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=398020 read=39561
+        ->  Sort  (cost=12078.59..12078.64 rows=19 width=16) (actual time=208.282..208.374 rows=40.67 loops=3)
+              Sort Key: i.id DESC
+              Sort Method: still in progress  Memory: 0kB
+              Buffers: shared hit=398020 read=39561
+              ->  Nested Loop  (cost=1375.70..12078.19 rows=19 width=16) (actual time=29.521..207.908 rows=2159.33 loops=3)
+                    Join Filter: (c.issue_id = c_1.issue_id)
+                    Buffers: shared hit=398004 read=39561
+                    ->  Nested Loop  (cost=1375.14..11416.85 rows=96 width=48) (actual time=29.484..170.914 rows=3400.33 loops=3)
+                          Buffers: shared hit=366556 read=20550
+                          ->  Parallel Hash Join  (cost=1374.64..4108.16 rows=3822 width=32) (actual time=29.355..88.891 rows=31644.33 loops=3)
+                                Hash Cond: (c.issue_id = c_2.issue_id)
+                                Buffers: shared hit=3726 read=3646
+                                ->  Parallel Index Only Scan Backward using issue_cf_text_cov on issue_cf c  (cost=0.56..2658.86 rows=28656 width=16) (actual time=0.078..19.854 rows=141527.33 loops=3)
+                                      Index Cond: ((field_id = 3) AND (v_text = 'opt0'::text))
+                                      Heap Fetches: 0
+                                      Index Searches: 1
+                                      Buffers: shared hit=12 read=2561
+                                ->  Parallel Hash  (cost=1139.38..1139.38 rows=18776 width=16) (actual time=29.087..29.088 rows=73096.33 loops=3)
+                                      Buckets: 262144 (originally 32768)  Batches: 1 (originally 1)  Memory Usage: 14176kB
+                                      Buffers: shared hit=3714 read=1085
+                                      ->  Parallel Index Only Scan using issue_cf_date_cov on issue_cf c_2  (cost=0.43..1139.38 rows=18776 width=16) (actual time=0.069..12.294 rows=73096.33 loops=3)
+                                            Index Cond: ((field_id = 2) AND (v_date >= '2025-01-01'::date))
+                                            Heap Fetches: 0
+                                            Index Searches: 1
+                                            Buffers: shared hit=3714 read=1085
+                          ->  Index Scan using issues_a_pkey on issues_a i  (cost=0.50..1.91 rows=1 width=16) (actual time=0.002..0.002 rows=0.11 loops=94933)
+                                Index Cond: (id = c.issue_id)
+                                Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])))
+                                Rows Removed by Filter: 1
+                                Index Searches: 94933
+                                Buffers: shared hit=362830 read=16904
+                    ->  Index Scan using issue_cf_pkey on issue_cf c_1  (cost=0.56..6.88 rows=1 width=16) (actual time=0.011..0.011 rows=0.64 loops=10201)
+                          Index Cond: ((issue_id = i.id) AND (field_id = 1))
+                          Filter: (v_num >= '10'::numeric)
+                          Rows Removed by Filter: 0
+                          Index Searches: 10201
+                          Buffers: shared hit=31448 read=19011
+Planning:
+  Buffers: shared hit=450 read=47
+Planning Time: 2.858 ms
+Execution Time: 215.747 ms

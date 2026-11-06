@@ -1,0 +1,22 @@
+Limit  (cost=129.01..1347.14 rows=50 width=16) (actual time=3.038..3.740 rows=50.00 loops=1)
+  Buffers: shared hit=195
+  ->  Merge Join  (cost=129.01..32896.63 rows=1345 width=16) (actual time=3.037..3.734 rows=50.00 loops=1)
+        Merge Cond: (i.id = c.issue_id)
+        Buffers: shared hit=195
+        ->  Index Only Scan Backward using issues_a_pkey on issues_a i  (cost=0.42..30412.42 rows=1000000 width=16) (actual time=0.013..0.450 rows=4175.00 loops=1)
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=20
+        ->  Sort  (cost=128.59..131.95 rows=1345 width=16) (actual time=3.012..3.016 rows=50.00 loops=1)
+              Sort Key: c.issue_id DESC
+              Sort Method: quicksort  Memory: 385kB
+              Buffers: shared hit=175
+              ->  Index Only Scan using issue_cf_date_cov on issue_cf c  (cost=0.43..58.69 rows=1345 width=16) (actual time=0.015..1.390 rows=9758.00 loops=1)
+                    Index Cond: ((field_id = 2) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-01-31'::date))
+                    Heap Fetches: 0
+                    Index Searches: 1
+                    Buffers: shared hit=175
+Planning:
+  Buffers: shared hit=313
+Planning Time: 1.156 ms
+Execution Time: 3.847 ms

@@ -1,0 +1,14 @@
+Aggregate  (cost=30536.87..30536.88 rows=1 width=8) (actual time=13.446..13.447 rows=1.00 loops=1)
+  Buffers: shared hit=11076 read=13
+  ->  Bitmap Heap Scan on issues_b  (cost=136.15..30507.28 rows=11836 width=0) (actual time=2.572..12.913 rows=11951.00 loops=1)
+        Recheck Cond: ((fields ->> '4'::text) = '00000000-0001-7000-8000-000000000003'::text)
+        Heap Blocks: exact=11076
+        Buffers: shared hit=11076 read=13
+        ->  Bitmap Index Scan on issues_b_f4  (cost=0.00..133.19 rows=11836 width=0) (actual time=1.419..1.420 rows=11951.00 loops=1)
+              Index Cond: ((fields ->> '4'::text) = '00000000-0001-7000-8000-000000000003'::text)
+              Index Searches: 1
+              Buffers: shared read=13
+Planning:
+  Buffers: shared hit=176 read=10
+Planning Time: 0.527 ms
+Execution Time: 13.552 ms

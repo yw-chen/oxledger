@@ -1,0 +1,13 @@
+pgbench (18.6 (Debian 18.6-1.pgdg13+2))
+transaction type: /tmp/e9_write_b.sql
+scaling factor: 1
+query mode: prepared
+number of clients: 8
+number of threads: 8
+maximum number of tries: 1
+duration: 20 s
+number of transactions actually processed: 53609
+number of failed transactions: 0 (0.000%)
+latency average = 3.544 ms
+initial connection time = 5.709 ms
+tps = 2257.462482 (without initial connection time)

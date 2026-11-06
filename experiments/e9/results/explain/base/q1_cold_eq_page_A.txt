@@ -1,0 +1,25 @@
+Limit  (cost=3166.86..3166.98 rows=50 width=16) (actual time=1.948..1.953 rows=50.00 loops=1)
+  Buffers: shared hit=1806
+  ->  Sort  (cost=3166.86..3167.83 rows=388 width=16) (actual time=1.947..1.949 rows=50.00 loops=1)
+        Sort Key: i.id DESC
+        Sort Method: top-N heapsort  Memory: 16kB
+        Buffers: shared hit=1806
+        ->  Nested Loop  (cost=8.83..3153.97 rows=388 width=16) (actual time=0.102..1.847 rows=450.00 loops=1)
+              Buffers: shared hit=1803
+              ->  Bitmap Heap Scan on issue_cf c  (cost=8.41..1502.28 rows=388 width=16) (actual time=0.085..0.452 rows=450.00 loops=1)
+                    Recheck Cond: ((field_id = 807) AND (v_text = 'opt0'::text))
+                    Heap Blocks: exact=448
+                    Buffers: shared hit=452
+                    ->  Bitmap Index Scan on issue_cf_text  (cost=0.00..8.31 rows=388 width=0) (actual time=0.047..0.047 rows=450.00 loops=1)
+                          Index Cond: ((field_id = 807) AND (v_text = 'opt0'::text))
+                          Index Searches: 1
+                          Buffers: shared hit=4
+              ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..4.26 rows=1 width=16) (actual time=0.003..0.003 rows=1.00 loops=450)
+                    Index Cond: (id = c.issue_id)
+                    Heap Fetches: 0
+                    Index Searches: 450
+                    Buffers: shared hit=1351
+Planning:
+  Buffers: shared hit=286
+Planning Time: 0.706 ms
+Execution Time: 2.037 ms

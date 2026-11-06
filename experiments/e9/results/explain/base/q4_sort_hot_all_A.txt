@@ -1,0 +1,22 @@
+Limit  (cost=0.86..144.69 rows=50 width=22) (actual time=1.328..2.015 rows=50.00 loops=1)
+  Buffers: shared hit=86 read=118
+  ->  Nested Loop  (cost=0.86..509494.97 rows=177125 width=22) (actual time=1.327..2.010 rows=50.00 loops=1)
+        Buffers: shared hit=86 read=118
+        ->  Index Scan Backward using issue_cf_num on issue_cf c  (cost=0.43..425190.67 rows=177125 width=22) (actual time=0.034..0.301 rows=50.00 loops=1)
+              Index Cond: (field_id = 8)
+              Index Searches: 1
+              Buffers: shared read=53
+        ->  Memoize  (cost=0.43..0.54 rows=1 width=16) (actual time=0.034..0.034 rows=1.00 loops=50)
+              Cache Key: c.issue_id
+              Cache Mode: logical
+              Hits: 0  Misses: 50  Evictions: 0  Overflows: 0  Memory Usage: 7kB
+              Buffers: shared hit=86 read=65
+              ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..0.53 rows=1 width=16) (actual time=0.008..0.008 rows=1.00 loops=50)
+                    Index Cond: (id = c.issue_id)
+                    Heap Fetches: 0
+                    Index Searches: 50
+                    Buffers: shared hit=86 read=65
+Planning:
+  Buffers: shared hit=344 read=23
+Planning Time: 0.889 ms
+Execution Time: 2.219 ms

@@ -27,6 +27,8 @@
 | D11 | outbox 用 xid8 快照排序：寫入時存 `pg_current_xact_id()`，消費端只讀 `xid8 < pg_snapshot_xmin(pg_current_snapshot())` 的列；at-least-once + 冪等（原 Q11） | 2026-11-06 | 只用一般 SQL 輪詢，好理解好測；延遲受輪詢間隔與長交易影響（要監控長交易） |
 | D12 | 事件紀錄「遮蔽後留痕」：誤貼機密或個資刪除時，payload 換成 `[已遮蔽]`，另記誰、何時、為什麼遮蔽；同步清除 tantivy 索引與快取（原 Q12） | 2026-11-06 | 稽核鏈不斷；已送出的 webhook 收不回來，文件要說明。保留期限預設永久、管理員可設定——此項為建議，使用者尚未明確確認 |
 | D13 | 專案名稱 **oxledger**（原 Q5）；README 寫「derived from Redmine (GPL-2.0-or-later)」，不用 Redmine logo；MCP resource scheme 用 `oxledger://` | 2026-11-06 | 查證：crates.io、npm、GitHub 帳號 `oxledger` 都沒人用；網路搜尋無同名產品；oxledger.com 已被他人註冊（2024-09-14），oxledger.dev、oxledger.org 查無註冊（rdap.org 404，未確認可購）；商標資料庫未查 |
+| D14 | 自訂欄位用**型別化 EAV**：`issue_cf(issue_id, field_id, v_num/v_date/v_text/v_ref/v_bool)`，每個欄位一個 covering partial index `(field_id, v_x, issue_id) WHERE field_id = …`；**不加** `issues.cf_cache JSONB`；Filter AST 每個條件必帶型別條件、一律用 `EXISTS`（原 Q9） | 2026-11-06 | E9（[02 報告](02-e9-custom-fields.md)）：冷門欄位篩選 1–5 ms vs JSONB 100–300 ms；寫入 8,313 vs 2,257 tps；刪熱門欄位 18 秒 vs 3.5 分鐘。代價是空間 2.7 GB vs 0.9 GB，planner 會低估列數 |
+| D15 | 中文檢索：索引維持 unigram + bigram（不換 ICU、lindera）；查詢端在 bigram 之外加權重 0.1–0.2 的 CJK 單字；別名展開做成資料（`concept_labels`），效果要用獨立查詢集的 E2 再量；E8（向量）排在別名之後 | 2026-11-06 | E1（[03 報告](03-e1-zh-retrieval.md)）：nDCG@10 基線 0.781 > ICU 0.732、lindera 0.746；加單字 0.810（CI [+0.007, +0.055]）；別名展開 0.857 只算上限（查詢集與別名同一人寫）。CC-CEDICT（CC BY-SA 4.0）與 GPL-2.0 不相容，只留在實驗 |
 
 > D3 的背景：rmcp（官方 MCP Rust SDK）是 **Apache-2.0 單一授權**，sqlx 是 MIT OR Apache-2.0。FSF 的立場是 Apache-2.0 與 **GPL-2.0-only 不相容**，與 GPLv3 相容。Redmine 原始檔檔頭本來就是「version 2 or any later version」，所以建議 SPDX 用 `GPL-2.0-or-later`（和上游一致），散布的二進位檔實際以 GPLv3 條款成立。若堅持 `GPL-2.0-only`，就不能連結 rmcp。（非法律意見）
 
@@ -143,7 +145,7 @@ axum ─┬─ REST (OpenAPI, schemars)
   - `concept_labels(concept_id, label, kind=pref|alt|hidden, lang, status=active|staging)`：bug＝缺陷＝defect＝臭蟲；LLM 提的別名先進 staging。
 - **BM25**：tantivy（MIT，純 Rust）。欄位權重起點：title 3.0、concepts 2.0、description 1.0、journals 0.5、commit 0.7。
   - **可見性在搜尋當下過濾**（project、tracker、is_private、author、assignee 存成 fast field，依「每角色 (mode, tracker 集合)、多角色 OR、含使用者群組 id」組 Boolean filter），不能事後裁切，否則分頁與 facets 會洩漏；top-k 再回 DB 複驗。private notes 是獨立子文件、自己過濾（§5.5）。
-  - **中文**：不用 jieba（lindera 的 jieba 詞典也不用）。基線用 unigram + bigram 雙欄位；ICU、lindera + CC-CEDICT 進 E1 比較；CKIP（GPL-3.0）只適合離線補概念標籤。
+  - **中文**：不用 jieba（lindera 的 jieba 詞典也不用）。基線用 unigram + bigram 雙欄位；E1 已比較 ICU、lindera + CC-CEDICT，基線勝出（D15）；CKIP（GPL-3.0）只適合離線補概念標籤。
   - 不選 ParadeDB pg_search：它是獨立 Postgres 擴充、不連結，授權本身不衝突；但 AGPL 的網路義務會落到每個部署方身上，且中文 tokenizer 未確認；SQLite FTS5 中文不行；Postgres 原生 FTS 不是 BM25。
   - 向量第一版不做；E1 顯示召回不足再用 RRF 併入（候選：multilingual-e5、Arctic-embed、Granite、EmbeddingGemma；避開 BGE、Qwen/GTE）。
 - **查詢流程**：解析 → 別名展開（ontology）→ 參數過濾＋可見性 → BM25F → 沿 duplicates/parent/blocks 擴 1 跳重排（L′ + γ·G′）→ brief 回傳。
@@ -158,7 +160,7 @@ axum ─┬─ REST (OpenAPI, schemars)
 
 | Redmine 現況 | 問題 | 新設計 |
 |---|---|---|
-| 自訂欄位 EAV：`custom_values(customized_type, customized_id, custom_field_id, value TEXT)` | 值一律字串，排序、比較、加總都要轉型 | **型別化 EAV**：`issue_cf(issue_id, field_id INT, v_num, v_date, v_text, v_ref, v_bool)`，依型別建 partial index `(field_id, v_x)`，篩選用 `EXISTS` semijoin；改型別、刪欄位只動該欄位的列。`issues.cf_cache JSONB` 只當讀取用的反正規化副本；facet、group by 交給 tantivy。最終存法待 M0 基準測試（Q9） |
+| 自訂欄位 EAV：`custom_values(customized_type, customized_id, custom_field_id, value TEXT)` | 值一律字串，排序、比較、加總都要轉型 | **型別化 EAV**：`issue_cf(issue_id, field_id INT, v_num, v_date, v_text, v_ref, v_bool)`，依型別建 partial index `(field_id, v_x)`，篩選用 `EXISTS` semijoin；改型別、刪欄位只動該欄位的列。`issues.cf_cache JSONB` 只當讀取用的反正規化副本；facet、group by 交給 tantivy。不加 JSONB 快取，facet、group by 交給 tantivy。已由 E9 定案（D14） |
 | 父子任務 nested set | 搬移時要改寫同一棵樹（同 `root_id`）的 lft/rgt | `parent_id`；**彙總值（完成度、估時加總、起訖日）寫入時算好存在父節點**，同一交易沿祖先鏈往上更新、依 id 順序上鎖；搬移時用 recursive CTE 檢查是否成環。這和 Redmine `recalculate_attributes_for` 的做法一致，列表頁才能依彙總值排序 |
 | `journals` + `journal_details`（字串） | 歷史值查詢要掃字串 | `issue_events(issue_id, seq, at, actor, actor_kind=user\|ai\|automation, kind, schema_ver, payload JSONB)`，追加為主；另建型別化投影 `issue_field_changes(issue_id, field_id, old, new, at)` 給「曾經是某值」查詢。要有 **redaction** 機制（個資刪除、誤貼機密），不是絕對不可改（Q12） |
 | private notes（`view_private_notes`） | — | 私人留言是獨立的可見性單位：在 tantivy 是獨立子文件／欄位、自己的過濾；webhook 與通知依接收者過濾 |
@@ -206,7 +208,7 @@ axum ─┬─ REST (OpenAPI, schemars)
 
 1. **權限語意不一致 = 資料外洩**：最高風險，靠 E4 對照測試。
 2. ~~相容範圍~~：D4 已定不相容，風險解除；剩下的是權限語意要自己定清楚（不必再對齊 Ruby 版，但 E4 仍可用 Ruby 版當參考答案）。
-3. **繁中檢索品質沒有數據**：E1。
+3. ~~繁中檢索品質沒有數據~~：E1 已量（D15）；剩下別名展開的真實增益要靠 E2。
 4. **授權相容**：所有依賴都要過 GPL-2.0-or-later 相容檢查（CI 跑 `cargo deny`）。
 5. tantivy 在 Datadog 收購 Quickwit 後的維護狀況未確認。
 
@@ -214,21 +216,22 @@ axum ─┬─ REST (OpenAPI, schemars)
 
 | # | 驗證什麼 |
 |---|---|
-| E1 | 200 個繁中 issue 查詢：bigram vs ICU vs lindera(CC-CEDICT) 的 nDCG@10／recall@20 |
-| E2 | 欄位權重與概念欄位消融 |
+| E1 | ✅ 2026-11-06：繁中 issue 查詢，bigram vs ICU vs lindera(CC-CEDICT) 的 nDCG@10／recall@20 → D15，[03 報告](03-e1-zh-retrieval.md) |
+| E2 | 欄位權重與概念欄位消融；別名展開要用**另一人寫的獨立查詢集**量（E1 的 0.857 是上限） |
 | E3 | 1 跳圖擴展對重複單、被擋單的召回增益 |
 | E4 | 可見性性質測試：隨機角色／private／群組指派，對照 Ruby 版 Redmine 結果 |
 | E5 | LLM 工具使用：20 個 PM 問題的正確率、往返數、token；「少工具多參數」vs「一動作一工具」 |
 | E6 | 10 萬筆 issue 時 tantivy 近即時延遲、寫入後立即讀到（`min_seq`） |
 | E7 | rmcp OAuth + Claude／Cursor 的 Streamable HTTP 實連 |
 | E8 | 向量 RRF 值不值得（E1 之後） |
-| E9 | 自訂欄位存法基準：100 萬 issue × 1000 欄位（稀疏），比較型別化 EAV 與 JSONB 在篩選、範圍、排序、group by、寫入的表現 |
+| E9 | ✅ 2026-11-06：自訂欄位存法基準，100 萬 issue × 1000 欄位（稀疏），型別化 EAV vs JSONB → D14，[02 報告](02-e9-custom-fields.md) |
 
 ## 8. 建議的階段
 
 - **M0 骨架**：axum + Postgres + 權限核心 + Issue/Project/User/Tracker/Status/Workflow + 最小 tantivy 索引 + MCP `search/get/resolve`（唯讀）。先跑 E4、E1、E9。
-  - **2026-11-06 進度**：骨架完成（未含 E1、E9）。ox-core（可見性 `Pred`、workflow）；PostgreSQL schema（migrations/0001_init.sql）；每請求可見範圍 → SQL 與 tantivy filter；tantivy 索引（索引存 unigram+bigram、查詢端兩字以上只用 bigram）跟 xid8 outbox；MCP `search`／`get`／`resolve`（HTTP bearer key 與 stdio）。E4 雛形：40 個隨機世界、240 次檢查，SQL／索引／記憶體／service 四者都與 Redmine 規則的獨立實作一致；故意放入 bug 時第一個世界就失敗。尚未做：OAuth、寫入工具、ontology 概念擴展、E1、E9、REST。
-- **M1 可日用**：自訂欄位（依 E9 結果）、Filter AST、ViewDef（list/board）、issue_events、time tracking、MCP 寫入工具、完整 BM25F 欄位。
+  - **2026-11-06 進度**：骨架完成（未含 E1、E9）。ox-core（可見性 `Pred`、workflow）；PostgreSQL schema（migrations/0001_init.sql）；每請求可見範圍 → SQL 與 tantivy filter；tantivy 索引（索引存 unigram+bigram、查詢端兩字以上只用 bigram）跟 xid8 outbox；MCP `search`／`get`／`resolve`（HTTP bearer key 與 stdio）。E4 雛形：40 個隨機世界、240 次檢查，SQL／索引／記憶體／service 四者都與 Redmine 規則的獨立實作一致；故意放入 bug 時第一個世界就失敗。尚未做：OAuth、寫入工具、ontology 概念擴展、REST。
+  - **2026-11-06 補**：E9、E1 完成並採用（D14、D15）；實驗程式與原始結果在 `experiments/e9`、`experiments/e1`。
+- **M1 可日用**：自訂欄位（型別化 EAV，D14；schema 草案見 02 報告）、Filter AST、查詢端 CJK 單字低權重（D15）、別名展開、ViewDef（list/board）、issue_events、time tracking、MCP 寫入工具、完整 BM25F 欄位。
 - **M2 整合**：CommonMark（comrak）、Git webhook、`fixed_by`、wiki、CSV 匯入匯出。（D4：不做 Redmine 匯入器與 Textile）
 - **M3**：Gantt、dashboard、automation、sprint、外掛 slot。
 
@@ -254,7 +257,7 @@ axum ─┬─ REST (OpenAPI, schemars)
     | 已被佔用 | hematite、ochre、ferrite、lodestone、taconite、cinnabar、siderite、ontrack、tracksmith（crates.io 已有） | | |
 - ~~Q7 issue 編號~~：已定專案前綴（D9）。
 - ~~Q8 多租戶~~：已定單一組織（D5）。
-- **Q9 自訂欄位存法**：型別化 EAV（審查建議）、JSONB、或兩者混合；由 E9 基準測試決定。
+- ~~Q9 自訂欄位存法~~：已定型別化 EAV（D14）。
 - ~~Q10 可見範圍~~：已定每請求計算（D10）。
 - ~~Q11 outbox 順序~~：已定 xid8 快照（D11）。
 - ~~Q12 事件紀錄~~：已定遮蔽後留痕（D12）；保留期限預設永久待確認。

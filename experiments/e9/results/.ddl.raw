@@ -1,0 +1,40 @@
+@@BEGIN drop_cold A
+Time: 397.549 ms
+Time: 77.766 ms
+Time: 4.064 ms
+@@END
+@@BEGIN drop_cold B
+Time: 1596.778 ms (00:01.597)
+Time: 529.794 ms
+Time: 552.838 ms
+@@END
+@@BEGIN drop_hot A
+Time: 18208.619 ms (00:18.209)
+Time: 4474.495 ms (00:04.474)
+Time: 27818.549 ms (00:27.819)
+@@END
+@@BEGIN drop_hot B
+Time: 206734.577 ms (03:26.735)
+Time: 173890.880 ms (02:53.891)
+Time: 258070.116 ms (04:18.070)
+@@END
+@@BEGIN retype_cold A
+Time: 220.726 ms
+Time: 28.344 ms
+Time: 29.070 ms
+@@END
+@@BEGIN retype_cold B
+Time: 721.268 ms
+Time: 562.747 ms
+Time: 558.779 ms
+@@END
+@@BEGIN retype_hot A
+Time: 47080.336 ms (00:47.080)
+Time: 18457.528 ms (00:18.458)
+Time: 16898.077 ms (00:16.898)
+@@END
+@@BEGIN retype_hot B
+Time: 211588.130 ms (03:31.588)
+Time: 180354.346 ms (03:00.354)
+Time: 195753.439 ms (03:15.753)
+@@END

@@ -1,0 +1,16 @@
+Finalize Aggregate  (cost=79225.64..79225.65 rows=1 width=8) (actual time=123.463..126.760 rows=1.00 loops=1)
+  Buffers: shared hit=9169 read=56548
+  ->  Gather  (cost=79225.42..79225.63 rows=2 width=8) (actual time=123.353..126.755 rows=3.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=9169 read=56548
+        ->  Partial Aggregate  (cost=78225.42..78225.43 rows=1 width=8) (actual time=120.774..120.775 rows=1.00 loops=3)
+              Buffers: shared hit=9169 read=56548
+              ->  Parallel Seq Scan on issues_b  (cost=0.00..78220.21 rows=2084 width=0) (actual time=1.908..120.705 rows=101.67 loops=3)
+                    Filter: ((((fields ->> '800'::text))::numeric >= '1000'::numeric) AND (((fields ->> '800'::text))::numeric <= '2000'::numeric))
+                    Rows Removed by Filter: 333232
+                    Buffers: shared hit=9169 read=56548
+Planning:
+  Buffers: shared hit=168 read=1
+Planning Time: 0.436 ms
+Execution Time: 126.806 ms

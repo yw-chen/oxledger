@@ -1,0 +1,200 @@
+{"id": 1, "subject": "無法登入：輸入正確密碼仍顯示帳號或密碼錯誤", "description": "從 v3.2.0 升級後，部分使用者輸入正確的帳號密碼仍跳出「帳號或密碼錯誤」，清除 cookie 也沒用。\n\n重現步驟：\n1. 開啟 https://tracker.example.tw/login\n2. 輸入帳號 amy.lin 與正確密碼\n3. 按下「登入」\n預期：進入首頁。實際：顯示「帳號或密碼錯誤」。\n\n環境：Chrome 130、Windows 11。伺服器 log：`WARN auth: bcrypt verify failed user_id=4821`。懷疑升級時密碼雜湊的 cost 參數被改掉，舊雜湊無法驗證。影響人數約 120 人，客服電話已經被打爆。", "tags": ["login_fail"]}
+{"id": 2, "subject": "登不進去", "description": "早上開始整個業務部都登不進去，畫面一直轉圈。", "tags": ["login_fail"]}
+{"id": 3, "subject": "SSO 登入失敗，回傳 invalid_grant", "description": "用公司 Azure AD 做 SSO，登入導回時出現 `invalid_grant: AADSTS70008`，大約每天早上九點發生。\n\n完整錯誤：\n```\nAADSTS70008: The provided authorization code or refresh token has expired due to inactivity.\n```\n發生時間集中在早上九點上班尖峰，推測 authorization code 在反向代理排隊太久才送到 token endpoint。nginx upstream 在尖峰時回應時間超過 30 秒。暫時請使用者重新整理再登入一次可以通過。", "tags": ["sso", "login_fail"]}
+{"id": 4, "subject": "SAML 單一登入後被導回登入頁", "description": "透過 Okta SAML 登入成功後又被導回 /login，形成無限迴圈。Safari 17 才會發生，Chrome 正常。", "tags": ["sso", "login_fail", "redirect_loop"]}
+{"id": 5, "subject": "忘記密碼信收不到", "description": "使用者點「忘記密碼」後一直沒收到重設密碼的信，垃圾郵件匣也沒有。", "tags": ["password_reset", "email_fail"]}
+{"id": 6, "subject": "重設密碼連結過期太快", "description": "重設密碼的連結 10 分鐘就失效，客戶反映來不及點。建議改成 1 小時。", "tags": ["password_reset"]}
+{"id": 7, "subject": "密碼錯誤五次後帳號被鎖定，但沒有提示", "description": "連續輸錯密碼五次，帳號被鎖住，畫面卻只顯示一般錯誤訊息，使用者不知道要找管理員解鎖。", "tags": ["account_lock", "login_fail"]}
+{"id": 8, "subject": "帳號被鎖住無法自行解鎖", "description": "希望提供自助解鎖流程，例如寄送驗證碼到信箱。", "tags": ["account_lock", "feature"]}
+{"id": 9, "subject": "兩步驟驗證簡訊延遲", "description": "2FA 的簡訊驗證碼有時候五分鐘後才收到，驗證碼已經過期。", "tags": ["2fa", "sms"]}
+{"id": 10, "subject": "TOTP 驗證碼一直顯示無效", "description": "用 Google Authenticator 產生的 TOTP 碼輸入後顯示「驗證碼無效」，懷疑伺服器時間不同步（NTP）。", "tags": ["2fa", "login_fail"]}
+{"id": 11, "subject": "Session 逾時太短", "description": "閒置 15 分鐘就被登出，填到一半的表單全部消失。\n\n客服這週收到 14 張相關單。使用者在寫長篇的需求描述時去查資料，回來按送出就被導到登入頁，內容全部不見。建議：1) 閒置時間改成可由管理員設定；2) 快到期時跳出提示並可延長；3) 表單內容先存在 localStorage 草稿。資安那邊的要求是最長不超過 8 小時。", "tags": ["session", "logout"]}
+{"id": 12, "subject": "登入狀態沒保持，每次開瀏覽器都要重新登入", "description": "勾了「記住我」還是每次都要重新登入，cookie 的 Max-Age 好像沒設。", "tags": ["session", "remember_me"]}
+{"id": 13, "subject": "OAuth 綁定 GitHub 帳號時出現 500", "description": "在個人設定頁綁定 GitHub 時伺服器回傳 HTTP 500，log：`OAuthError: state mismatch`。", "tags": ["oauth", "error500"]}
+{"id": 14, "subject": "LDAP 同步後部分使用者無法登入", "description": "每晚的 LDAP 同步跑完後，名字有全形空白的使用者會無法登入。", "tags": ["ldap", "login_fail"]}
+{"id": 15, "subject": "新使用者註冊信驗證連結失效", "description": "註冊完收到的驗證信，點連結顯示 token expired。", "tags": ["signup", "email"]}
+{"id": 16, "subject": "登入頁在手機上按鈕被鍵盤擋住", "description": "iPhone 上輸入密碼時，虛擬鍵盤把「登入」按鈕擋住，要先收鍵盤才能按。", "tags": ["login_ui", "mobile", "ui"]}
+{"id": 17, "subject": "登入時偶爾跳出 CSRF token mismatch", "description": "同時開兩個分頁時，在其中一個分頁登入會出現 419 CSRF token mismatch。", "tags": ["login_fail", "csrf"]}
+{"id": 18, "subject": "SSO 登出沒有一併登出 IdP", "description": "從系統登出後，再按 SSO 登入會直接進去，沒有重新驗證，資安稽核認為有風險。", "tags": ["sso", "logout", "security"]}
+{"id": 19, "subject": "管理員無法以其他使用者身分登入（impersonate）", "description": "「以此使用者登入」功能點了沒反應，console 顯示 403。", "tags": ["admin", "impersonate", "permission"]}
+{"id": 20, "subject": "登入速度很慢，要等十幾秒", "description": "按下登入後要等 12～15 秒才進首頁，查 APM 發現 /api/me 查詢花了 11 秒。\n\nAPM trace（New Relic）：\n- POST /login 120ms\n- GET /api/me 11.2s\n  - SELECT * FROM members WHERE user_id = $1  (10.9s, seq scan)\n- GET /api/projects 300ms\n\nmembers 表有 80 萬筆，user_id 沒有索引。上週的 migration 好像把索引刪掉了。加回索引後在 staging 測試只要 15ms。", "tags": ["login_slow", "perf"]}
+{"id": 21, "subject": "Apple ID 登入在 Android 上失敗", "description": "Sign in with Apple 在 Android app 會停在白畫面，iOS 正常。", "tags": ["sso", "oauth", "login_fail", "mobile"]}
+{"id": 22, "subject": "帳號停用後 API token 仍可使用", "description": "離職員工帳號停用了，但他的 personal access token 還能呼叫 API。", "tags": ["security", "api_token", "permission"]}
+{"id": 23, "subject": "密碼規則提示與實際檢查不一致", "description": "畫面說至少 8 碼，實際上 8 碼會被擋，要 10 碼才過。", "tags": ["password_policy"]}
+{"id": 24, "subject": "第一次登入強制改密碼的頁面跑版", "description": "首次登入要求變更密碼的頁面，在 1366x768 解析度下表單跑版。", "tags": ["login_ui", "ui_layout"]}
+{"id": 25, "subject": "驗證碼圖片看不清楚", "description": "登入頁的圖形驗證碼太模糊，長輩常常輸入錯誤。建議換成 reCAPTCHA 或拿掉。", "tags": ["captcha", "login_ui"]}
+{"id": 26, "subject": "Keycloak 升級到 25 後 SSO 無法使用", "description": "升級 Keycloak 25.0.1 後，所有 SSO 登入都回傳 `unauthorized_client`。", "tags": ["sso", "login_fail", "upgrade"]}
+{"id": 27, "subject": "登入紀錄沒有記錄 IP", "description": "稽核需要登入紀錄的來源 IP，目前 audit log 只記時間。", "tags": ["audit", "feature"]}
+{"id": 28, "subject": "多個分頁中一個登出，其他分頁沒有同步登出", "description": "在 A 分頁登出後，B 分頁還能繼續操作直到重新整理。", "tags": ["session", "logout"]}
+{"id": 29, "subject": "使用 email 大寫登入會失敗", "description": "帳號 email 有大寫字母時（例如 Amy.Lin@corp.tw），用小寫輸入無法登入。", "tags": ["login_fail", "case"]}
+{"id": 30, "subject": "企業版要求支援 SCIM 自動佈建帳號", "description": "客戶希望 Azure AD 能透過 SCIM 2.0 自動建立與停用帳號。", "tags": ["sso", "provisioning", "feature"]}
+{"id": 31, "subject": "一般成員可以看到私有專案的議題", "description": "權限設定為「僅成員」的私有專案，非成員用搜尋功能還是查得到議題標題。\n\n重現：用不屬於「人資系統」專案的帳號，在全站搜尋框打「薪資」，結果列表會出現該專案的議題標題與前兩行描述；點進去才顯示 403。也就是說搜尋索引沒有套用可見性過濾，屬於資料外洩，嚴重度：高。請優先處理，並確認 API 與 RSS 是否有同樣問題。", "tags": ["permission", "private_leak", "search"]}
+{"id": 32, "subject": "專案管理員無法新增成員", "description": "角色為「專案管理員」的人在成員頁按「新增」會顯示「權限不足」。", "tags": ["permission", "member"]}
+{"id": 33, "subject": "權限不足的錯誤訊息太籠統", "description": "只顯示「403 Forbidden」，使用者不知道缺哪一個權限。", "tags": ["permission", "error_msg"]}
+{"id": 34, "subject": "角色權限修改後要重新登入才生效", "description": "把某人加到「審核者」角色後，他要登出再登入才看得到審核按鈕。", "tags": ["permission", "session"]}
+{"id": 35, "subject": "訪客可以下載附件", "description": "匿名訪客可以直接用 URL 下載私有專案的附件檔案。", "tags": ["permission", "security", "attachment"]}
+{"id": 36, "subject": "唯讀角色仍能編輯 Wiki", "description": "給客戶的唯讀帳號可以編輯 Wiki 頁面，存檔也成功。", "tags": ["permission", "wiki"]}
+{"id": 37, "subject": "群組權限繼承沒有作用", "description": "把使用者加入「研發部」群組後，沒有繼承群組在子專案的權限。", "tags": ["permission", "group"]}
+{"id": 38, "subject": "想要依欄位設定可見性", "description": "希望「預估工時」欄位只讓 PM 看得到，一般成員隱藏。", "tags": ["permission", "field", "feature"]}
+{"id": 39, "subject": "API 回傳別人的私人議題", "description": "GET /issues.json?assigned_to_id=me 的結果混入其他人的私人議題（is_private=true）。", "tags": ["permission", "private_leak", "api"]}
+{"id": 40, "subject": "權限矩陣頁面載入很慢", "description": "角色 × 權限的設定頁有 40 個角色時要載入 20 秒。", "tags": ["permission", "perf", "loading"]}
+{"id": 41, "subject": "被移出專案的成員仍收到通知", "description": "人已經從專案移除，議題更新時還是會寄信給他。", "tags": ["permission", "notify", "email"]}
+{"id": 42, "subject": "無法指派議題給外包廠商帳號", "description": "外包帳號屬於「外部」角色，指派下拉選單裡找不到。", "tags": ["permission", "assign"]}
+{"id": 43, "subject": "管理者想批次調整多人角色", "description": "每次只能一個一個改角色，100 人的部門要改很久。", "tags": ["permission", "bulk", "feature"]}
+{"id": 44, "subject": "權限檢查在 GraphQL 端點被略過", "description": "/graphql 的 issue 查詢沒有套用專案可見性，可以列出所有議題。\n\n範例查詢：\n```graphql\n{ issues(first: 100) { nodes { id subject project { name } } } }\n```\n用一般成員的 token 呼叫會回傳所有專案的議題，包含私有專案。REST API 正確套用了權限，只有 GraphQL resolver 漏掉 visibility scope。這是滲透測試廠商回報的，報告編號 PT-2026-031。", "tags": ["permission", "private_leak", "security", "api"]}
+{"id": 45, "subject": "子專案繼承父專案成員設定錯誤", "description": "勾選「繼承成員」後，父專案的觀察者角色被當成開發者。", "tags": ["permission", "inherit"]}
+{"id": 46, "subject": "停用的使用者仍出現在指派清單", "description": "已鎖定的帳號還出現在「指派給」選單。", "tags": ["assign", "account_lock", "ui"]}
+{"id": 47, "subject": "共享查詢可被所有人修改", "description": "設為公開的自訂查詢，任何人都能修改條件並覆蓋。", "tags": ["permission", "query"]}
+{"id": 48, "subject": "刪除議題的權限太寬", "description": "開發者角色預設就能刪除議題，希望改成只有管理員。", "tags": ["permission", "delete"]}
+{"id": 49, "subject": "跨專案移動議題時權限沒檢查目標專案", "description": "可以把議題移到自己沒有權限的專案。", "tags": ["permission", "security"]}
+{"id": 50, "subject": "稽核要求列出每位使用者的有效權限", "description": "需要匯出「使用者 × 專案 × 權限」報表給 ISO 27001 稽核。", "tags": ["permission", "report", "export", "feature"]}
+{"id": 51, "subject": "信用卡付款失敗，錯誤碼 05", "description": "部分 Visa 卡在結帳時回傳 `05 Do not honor`，銀行說交易沒進來。\n\n收單銀行回覆：交易在授權階段就被發卡行拒絕。統計 11/1～11/5 共 37 筆，集中在同一家發卡行的 Visa 金融卡，Mastercard 與 JCB 正常。客戶反映重新刷一次有時候會過。是否要在錯誤頁提示改用其他付款方式？另外這些失敗交易有沒有寫進付款紀錄也要確認，對帳時有 3 筆對不上。", "tags": ["payment_fail", "credit_card"]}
+{"id": 52, "subject": "付款成功但訂單狀態仍為未付款", "description": "金流 callback 有收到 200，但訂單一直停在「待付款」。", "tags": ["payment_status", "webhook"]}
+{"id": 53, "subject": "重複扣款", "description": "客戶按了兩次「確認付款」，信用卡被扣了兩次款，需要退款。", "tags": ["payment_duplicate", "refund", "credit_card"]}
+{"id": 54, "subject": "退款流程無法部分退款", "description": "目前只能全額退款，希望支援部分退款。", "tags": ["refund", "feature"]}
+{"id": 55, "subject": "電子發票沒有開立", "description": "3 月 12 日之後的訂單都沒有開出電子發票，財政部平台查不到。\n\n加值中心回傳 `E0501 賣方統編不存在於加值中心`。3 月 12 日剛好是我們更換加值中心帳號的日子，新帳號的 API key 已經換了，但 AppID 好像還是舊的。目前累積約 2,300 張發票沒有開，依規定要在 48 小時內上傳，請盡快處理。補開完成後也要通知會計。", "tags": ["invoice"]}
+{"id": 56, "subject": "發票載具號碼驗證錯誤", "description": "手機條碼載具 `/ABC+123` 輸入後顯示格式錯誤，但這是合法的載具號碼。", "tags": ["invoice", "carrier", "validation"]}
+{"id": 57, "subject": "結帳頁面金額顯示錯誤", "description": "套用折扣碼後，小計正確但總金額沒有扣掉折扣。", "tags": ["checkout", "discount", "ui"]}
+{"id": 58, "subject": "Apple Pay 按鈕在 Safari 不顯示", "description": "結帳頁在 macOS Safari 18 看不到 Apple Pay 按鈕，網域驗證檔已上傳。", "tags": ["payment", "apple_pay", "ui"]}
+{"id": 59, "subject": "金流 webhook 簽章驗證失敗", "description": "綠界 callback 的 CheckMacValue 驗證失敗，懷疑是 URL encode 大小寫問題。", "tags": ["webhook", "payment_status"]}
+{"id": 60, "subject": "訂閱方案續約沒有自動扣款", "description": "年繳方案到期當天沒有自動續約扣款，帳號被降級。", "tags": ["subscription", "payment_fail"]}
+{"id": 61, "subject": "付款頁面逾時", "description": "第三方付款頁停留超過 10 分鐘回來後顯示「交易逾時」，但錢已經扣了。", "tags": ["payment_status", "timeout"]}
+{"id": 62, "subject": "外幣付款匯率四捨五入差一元", "description": "美金訂單換算台幣時，總額與明細加總差 1 元。", "tags": ["currency", "rounding"]}
+{"id": 63, "subject": "ATM 虛擬帳號付款後沒有自動對帳", "description": "客戶用 ATM 轉帳到虛擬帳號，系統沒有自動標記已付款，要人工對帳。", "tags": ["payment_status", "atm", "reconcile"]}
+{"id": 64, "subject": "發票作廢後沒有通知客戶", "description": "管理員作廢發票後，客戶沒有收到通知信。", "tags": ["invoice", "notify", "email"]}
+{"id": 65, "subject": "統一編號欄位沒有檢查碼驗證", "description": "公司統編輸入錯誤也能送出，導致開出錯誤的三聯式發票。", "tags": ["invoice", "validation"]}
+{"id": 66, "subject": "優惠券可以重複使用", "description": "限用一次的優惠券，在兩個分頁同時結帳就能用兩次（race condition）。", "tags": ["discount", "race", "security"]}
+{"id": 67, "subject": "付款失敗時錯誤訊息是英文", "description": "刷卡失敗顯示 `Transaction declined by issuer`，沒有中文說明。", "tags": ["payment_fail", "i18n", "error_msg"]}
+{"id": 68, "subject": "帳單 PDF 中文字變成方塊", "description": "下載的帳單 PDF 中文顯示為豆腐字，字型沒有嵌入。", "tags": ["invoice", "pdf", "font"]}
+{"id": 69, "subject": "信用卡分期選項消失", "description": "結帳頁原本有 3/6/12 期分期，更新後只剩一次付清。", "tags": ["credit_card", "installment", "checkout"]}
+{"id": 70, "subject": "LINE Pay 付款完成後沒有導回網站", "description": "在 LINE Pay 付款完成後停在 LINE 的頁面，沒有回到訂單完成頁。", "tags": ["payment", "redirect"]}
+{"id": 71, "subject": "退款金額沒有退回原信用卡", "description": "退款後款項變成站內購物金，而不是退回原卡。", "tags": ["refund", "credit_card"]}
+{"id": 72, "subject": "結帳按鈕點了沒反應", "description": "在結帳頁按「前往付款」沒有任何反應，console 顯示 `TypeError: cannot read properties of undefined (reading 'total')`。", "tags": ["checkout", "js_error"]}
+{"id": 73, "subject": "金流測試環境憑證過期", "description": "串接用的 sandbox TLS 憑證過期，CI 的付款整合測試全部失敗。", "tags": ["payment", "cert", "ci"]}
+{"id": 74, "subject": "付款方式選單載入很慢", "description": "進入結帳頁要等 5 秒付款方式才出現，因為逐一呼叫三家金流 API。", "tags": ["checkout", "perf", "loading"]}
+{"id": 75, "subject": "會計需要每月對帳報表", "description": "希望可以匯出每月的金流交易明細 CSV，含手續費。", "tags": ["report", "export", "reconcile", "feature"]}
+{"id": 76, "subject": "Email 通知沒有寄出", "description": "議題被指派後，被指派者沒有收到 email 通知。SMTP log 沒有紀錄。\n\nSMTP 設定：host=smtp.office365.com port=587 STARTTLS。手動用 `swaks` 測試可以寄出，但系統的 mailer job 完全沒有被觸發。查 job queue 發現 `deliver_notification` 這個 queue 沒有 worker 在消化，是上次調整 worker 數量時漏掉了。積壓了 3,400 封。", "tags": ["notify", "email_fail"]}
+{"id": 77, "subject": "收不到通知信", "description": "從上週五開始全公司都收不到系統寄的信，查到 SPF 設定被改。", "tags": ["notify", "email_fail"]}
+{"id": 78, "subject": "推播通知重複收到三次", "description": "iOS app 每則推播會收到三次，懷疑 device token 重複註冊。", "tags": ["push", "duplicate"]}
+{"id": 79, "subject": "Android 推播完全收不到", "description": "升級 Firebase SDK 後 Android 收不到 FCM 推播。", "tags": ["push", "push_fail", "mobile"]}
+{"id": 80, "subject": "通知信的連結指向 localhost", "description": "通知信裡的議題連結是 http://localhost:3000/issues/123，host 設定沒吃到環境變數。", "tags": ["notify", "email", "config"]}
+{"id": 81, "subject": "想要關閉某些類型的通知", "description": "只想收到被指派的通知，不想收到每一則留言的通知。", "tags": ["notify", "setting", "feature"]}
+{"id": 82, "subject": "Slack 整合訊息沒有送出", "description": "設定好 Slack webhook 後，議題建立時沒有送訊息到頻道，回傳 `invalid_payload`。", "tags": ["notify", "slack", "webhook"]}
+{"id": 83, "subject": "通知信主旨亂碼", "description": "主旨中文在 Outlook 顯示為亂碼 `=?utf-8?B?...`，內容正常。", "tags": ["email", "encoding"]}
+{"id": 84, "subject": "到期提醒沒有發送", "description": "議題到期日前一天應該寄提醒，cron job 似乎沒有跑。", "tags": ["notify", "reminder", "cron"]}
+{"id": 85, "subject": "寄信速度很慢，佇列堆積", "description": "大量更新時郵件佇列堆積上萬封，寄出延遲兩小時。\n\n監控截圖：mail_queue 長度從 09:00 的 200 一路漲到 11:00 的 15,000。原因是批次更新 2,000 筆議題時，每一筆更新都對每位觀察者各寄一封信，而 SMTP 只開了 1 個連線。建議合併成摘要，或提高並行寄送數量。", "tags": ["email", "queue", "perf"]}
+{"id": 86, "subject": "站內通知的小紅點不會消失", "description": "已讀所有通知後鈴鐺上的紅點還在。", "tags": ["notify", "ui"]}
+{"id": 87, "subject": "Teams 通知卡片格式跑掉", "description": "Microsoft Teams 收到的 Adaptive Card 欄位錯位。", "tags": ["notify", "teams", "ui"]}
+{"id": 88, "subject": "簡訊通知被當成廣告擋掉", "description": "部分使用者的手機把系統簡訊歸類為廣告。", "tags": ["sms", "notify"]}
+{"id": 89, "subject": "通知設定頁儲存失敗", "description": "在個人設定修改通知偏好，按儲存出現「發生錯誤」。", "tags": ["notify", "setting", "error"]}
+{"id": 90, "subject": "每日摘要信內容是空的", "description": "每日摘要 email 有寄出，但內文沒有任何議題。", "tags": ["email", "digest"]}
+{"id": 91, "subject": "Webhook 重試機制沒有退避", "description": "對方伺服器掛掉時，webhook 每秒重試一次，把對方打爆。", "tags": ["webhook", "retry"]}
+{"id": 92, "subject": "被 @提及 時沒有通知", "description": "在留言中 @某人，對方沒有收到任何通知。", "tags": ["notify", "mention"]}
+{"id": 93, "subject": "email 退信沒有處理", "description": "寄到離職員工的信一直退信，影響寄件網域信譽。", "tags": ["email", "bounce"]}
+{"id": 94, "subject": "寄給外部客戶的信被歸到垃圾郵件", "description": "Gmail 把系統信放進垃圾郵件，DKIM 簽章沒設定。", "tags": ["email", "spam"]}
+{"id": 95, "subject": "通知中心想要支援 LINE", "description": "台灣客戶多半用 LINE，希望可以透過 LINE 官方帳號推送通知。", "tags": ["notify", "line", "feature"]}
+{"id": 96, "subject": "議題列表載入很慢", "description": "專案有五萬筆議題時，列表頁要 8 秒才載入完成。\n\n`EXPLAIN ANALYZE` 顯示：\n```\nSort  (cost=98234.11..98359.11 rows=50000) (actual time=7421.334..7612.882)\n  Sort Key: issues.updated_on DESC\n  ->  Seq Scan on issues\n```\n列表預設依更新時間排序但沒有對應索引，而且每列還要 join 自訂欄位。前端又一次要 500 筆，沒有分頁。", "tags": ["perf", "loading", "list"]}
+{"id": 97, "subject": "首頁載入超過 10 秒", "description": "首頁 dashboard 的小工具同時打 12 支 API，載入超過 10 秒。", "tags": ["perf", "loading"]}
+{"id": 98, "subject": "圖片載入失敗", "description": "附件縮圖全部顯示破圖，CDN 回傳 403。", "tags": ["image", "loading_fail", "cdn"]}
+{"id": 99, "subject": "搜尋回應時間過長", "description": "全文搜尋關鍵字「付款」要 6 秒才有結果。", "tags": ["search", "perf"]}
+{"id": 100, "subject": "資料庫 CPU 飆到 100%", "description": "每天下午兩點資料庫 CPU 滿載，慢查詢 log 有大量 `SELECT ... ORDER BY updated_on`。\n\n慢查詢範例：\n```sql\nSELECT issues.* FROM issues\nWHERE project_id IN (...300 ids...)\nORDER BY updated_on DESC LIMIT 25;\n```\n每次 2～4 秒，下午兩點報表排程同時跑，連線數也飆到 400。RDS 的 Performance Insights 顯示等待事件主要是 CPU。", "tags": ["perf", "db"]}
+{"id": 101, "subject": "報表產生逾時", "description": "年度報表跑超過 60 秒被 nginx 504 Gateway Timeout 中斷。", "tags": ["report", "timeout", "perf"]}
+{"id": 102, "subject": "頁面卡頓，捲動不順", "description": "甘特圖有 500 個任務時捲動很卡，FPS 掉到 10 以下。", "tags": ["perf", "ui", "gantt"]}
+{"id": 103, "subject": "記憶體洩漏導致服務越來越慢", "description": "worker 跑兩天後 RSS 從 300MB 漲到 4GB，需要定期重啟。", "tags": ["perf", "memory_leak"]}
+{"id": 104, "subject": "API rate limit 太嚴", "description": "整合程式每分鐘只能呼叫 60 次，同步大量資料時一直被 429 擋下。", "tags": ["api", "rate_limit"]}
+{"id": 105, "subject": "附件上傳很慢", "description": "上傳 50MB 的檔案要 5 分鐘，公司網路是 1Gbps。", "tags": ["upload", "perf"]}
+{"id": 106, "subject": "N+1 查詢造成看板很慢", "description": "看板頁每張卡片各查一次指派者，共 300 次查詢。", "tags": ["perf", "db", "board"]}
+{"id": 107, "subject": "系統整體反應遲緩", "description": "今天早上開始所有頁面都很慢，按任何按鈕都要等好幾秒。", "tags": ["perf"]}
+{"id": 108, "subject": "lazy loading 導致列表跳動", "description": "列表下方內容延遲載入，載入完成時畫面往上跳。", "tags": ["loading", "ui"]}
+{"id": 109, "subject": "字型檔載入阻塞首屏", "description": "Noto Sans TC 的 woff2 檔 8MB，首屏要等字型下載完才顯示文字。", "tags": ["loading", "font", "perf"]}
+{"id": 110, "subject": "匯入 CSV 很慢", "description": "匯入一萬筆議題的 CSV 要 20 分鐘。", "tags": ["import", "perf"]}
+{"id": 111, "subject": "載入設定檔失敗", "description": "啟動時出現 `failed to load config: missing field database_url`。", "tags": ["config", "loading_fail", "deploy"]}
+{"id": 112, "subject": "延遲很高，伺服器在美國", "description": "台灣使用者連線延遲 200ms 以上，希望在亞洲部署節點。", "tags": ["latency", "deploy"]}
+{"id": 113, "subject": "快取沒有生效", "description": "Redis 快取命中率 0%，key 每次都不同，因為帶了時間戳。", "tags": ["cache", "perf"]}
+{"id": 114, "subject": "外掛載入順序造成錯誤", "description": "兩個外掛同時載入時互相覆蓋 hook，頁面報錯。", "tags": ["plugin", "loading"]}
+{"id": 115, "subject": "行動版首頁很慢", "description": "4G 網路下手機開首頁要 7 秒，Lighthouse 分數 23。", "tags": ["perf", "mobile", "loading"]}
+{"id": 116, "subject": "App 開啟後閃退", "description": "iOS 18.1 開啟 app 立刻閃退，crash log 指向 `EXC_BAD_ACCESS`。\n\nCrash log：\n```\nException Type:  EXC_BAD_ACCESS (SIGSEGV)\nThread 0 Crashed:\n0  libswiftCore.dylib  swift_unknownObjectRetain\n1  App  IssueListViewController.viewDidLoad()\n```\n只有升級到 iOS 18.1 的裝置會發生，18.0 正常。TestFlight 版本 3.4.2 (build 518)。影響約 30% iOS 使用者，App Store 評分已經開始掉。", "tags": ["crash", "mobile"]}
+{"id": 117, "subject": "Android 版上傳照片時當掉", "description": "選擇照片上傳後 app 直接關閉，只有 Android 14 會發生。", "tags": ["crash", "mobile", "upload"]}
+{"id": 118, "subject": "伺服器當機", "description": "凌晨三點 web 服務當機，systemd 顯示 `OOM killed`。\n\n`journalctl -u oxweb`：\n```\nOct 30 03:02:11 web-1 kernel: Out of memory: Killed process 2211 (oxweb)\nOct 30 03:02:11 web-1 systemd[1]: oxweb.service: Main process exited, code=killed, status=9/KILL\n```\n凌晨三點剛好是全文索引重建的排程，記憶體用量會短暫衝到 7GB，主機只有 8GB。服務沒有設定自動重啟，直到早上八點才被發現。", "tags": ["crash", "server", "memory"]}
+{"id": 119, "subject": "瀏覽器分頁崩潰", "description": "打開含有大型表格的 Wiki 頁，Chrome 顯示「糟糕！」分頁當掉。", "tags": ["crash", "browser", "wiki"]}
+{"id": 120, "subject": "背景工作 panic 後沒有重啟", "description": "worker 出現 `thread 'main' panicked at 'index out of bounds'` 之後就停了。", "tags": ["crash", "worker"]}
+{"id": 121, "subject": "開啟甘特圖時程式沒有回應", "description": "甘特圖頁面整個凍結，瀏覽器跳出「網頁沒有回應」。", "tags": ["crash", "freeze", "gantt"]}
+{"id": 122, "subject": "匯出 Excel 時服務掛掉", "description": "匯出超過 10 萬筆議題的 xlsx 時 server 直接掛掉重啟。", "tags": ["crash", "export"]}
+{"id": 123, "subject": "macOS 桌面版 crash on launch", "description": "Desktop app 2.3.0 在 Apple Silicon 上啟動即 crash，Intel Mac 正常。", "tags": ["crash", "desktop"]}
+{"id": 124, "subject": "iPad 橫向時 app 閃退", "description": "將 iPad 轉成橫向，app 就會閃退。", "tags": ["crash", "mobile"]}
+{"id": 125, "subject": "Segmentation fault 在搜尋索引重建時發生", "description": "執行 rebuild-index 時出現 `Segmentation fault (core dumped)`。", "tags": ["crash", "search", "index"]}
+{"id": 126, "subject": "編輯器打中文時卡死", "description": "在描述欄用注音輸入法打字，編輯器會卡住幾秒後無回應。\n\n錄影顯示：在 2,000 字以上的描述中，每打一個注音字，編輯器都會重新計算整份文件的 Markdown 預覽，主執行緒被佔用 800ms 以上。英文輸入沒有這個問題，因為不會觸發 compositionend 後的重算。macOS 與 Windows 都會發生。", "tags": ["freeze", "editor", "ime"]}
+{"id": 127, "subject": "資料庫連線池耗盡導致服務停擺", "description": "高峰時段出現 `too many connections`，整個服務掛了 20 分鐘。", "tags": ["outage", "db"]}
+{"id": 128, "subject": "App 在背景被系統殺掉後資料遺失", "description": "切到其他 app 再回來，未送出的留言不見了。", "tags": ["mobile", "data_loss"]}
+{"id": 129, "subject": "點擊附件預覽就閃退", "description": "Android app 點 PDF 附件預覽時直接跳出 app。", "tags": ["crash", "mobile", "attachment"]}
+{"id": 130, "subject": "服務每天隨機重啟", "description": "監控顯示容器每天重啟 3～5 次，exit code 137。", "tags": ["crash", "server", "memory"]}
+{"id": 131, "subject": "部署到正式環境失敗", "description": "GitLab CI 的 deploy job 在 `kubectl apply` 時回傳 `Unauthorized`。\n\nCI log：\n```\n$ kubectl apply -f k8s/prod/\nerror: You must be logged in to the server (Unauthorized)\n```\n昨天 EKS 的 aws-auth ConfigMap 有被修改，CI 用的 IAM role 被移除了。staging 叢集正常。今天預定的版本 v4.1.0 還沒上線，業務等著要給客戶 demo。", "tags": ["deploy", "ci", "k8s"]}
+{"id": 132, "subject": "Docker image 建置失敗", "description": "`docker build` 在安裝套件階段失敗：`npm ERR! code ETIMEDOUT`。", "tags": ["build", "docker", "ci"]}
+{"id": 133, "subject": "資料庫 migration 在正式機跑失敗", "description": "v4.0 的 migration 在 PostgreSQL 13 上失敗：`syntax error at or near NULLS`。\n\n錯誤：\n```\nERROR:  syntax error at or near NULLS\nLINE 1: CREATE UNIQUE INDEX ... NULLS NOT DISTINCT\n```\n`NULLS NOT DISTINCT` 是 PostgreSQL 15 才有的語法。官方文件寫支援 PostgreSQL 13 以上，所以要嘛改 migration，要嘛提高最低版本需求。客戶的正式機短期內無法升級資料庫。", "tags": ["deploy", "db", "migration"]}
+{"id": 134, "subject": "CI 測試偶發失敗（flaky）", "description": "整合測試約 1/5 機率失敗，都是時間相關的斷言。", "tags": ["ci", "test", "flaky"]}
+{"id": 135, "subject": "Helm chart 升級後設定被覆蓋", "description": "`helm upgrade` 後自訂的環境變數被重設為預設值。", "tags": ["deploy", "k8s", "config"]}
+{"id": 136, "subject": "部署後靜態檔案 404", "description": "新版本上線後 CSS、JS 全部 404，CDN 快取還是舊的 hash。", "tags": ["deploy", "cdn", "cache"]}
+{"id": 137, "subject": "Staging 與 Production 設定不一致", "description": "staging 用的是 Redis 7，正式機還是 Redis 5，行為不同。", "tags": ["deploy", "env", "config"]}
+{"id": 138, "subject": "回滾到上一版失敗", "description": "新版出問題要 rollback，但 migration 不可逆，只能手動修資料庫。", "tags": ["deploy", "rollback", "migration"]}
+{"id": 139, "subject": "SSL 憑證到期網站無法連線", "description": "Let's Encrypt 憑證自動續期失敗，今天早上網站顯示 NET::ERR_CERT_DATE_INVALID。\n\ncertbot log：\n```\nChallenge failed for domain tracker.example.tw\nhttp-01 challenge for tracker.example.tw\nDetail: Invalid response from http://tracker.example.tw/.well-known/acme-challenge/...: 404\n```\n上個月改了 nginx 設定，把所有 HTTP 都轉到 HTTPS，但 acme-challenge 的路徑沒有排除。網站從早上 07:12 起無法連線，所有使用者都看到憑證錯誤。", "tags": ["cert", "outage", "deploy"]}
+{"id": 140, "subject": "藍綠部署切換時有短暫 502", "description": "切換流量時約 30 秒內使用者看到 502 Bad Gateway。", "tags": ["deploy", "downtime"]}
+{"id": 141, "subject": "GitHub Actions runner 磁碟空間不足", "description": "`No space left on device`，cache 沒清。", "tags": ["ci", "disk"]}
+{"id": 142, "subject": "版本號沒有自動更新", "description": "發版時 footer 顯示的版本還是 v2.9.3。", "tags": ["release", "version"]}
+{"id": 143, "subject": "環境變數含特殊字元導致啟動失敗", "description": "DATABASE_URL 密碼含 `@` 時服務無法啟動。", "tags": ["config", "deploy", "startup"]}
+{"id": 144, "subject": "想要支援 ARM64 映像檔", "description": "客戶在 Graviton 主機上部署，需要 linux/arm64 image。", "tags": ["docker", "feature"]}
+{"id": 145, "subject": "部署腳本在 Windows 上無法執行", "description": "deploy.sh 用了 bash 語法，Windows 開發者無法執行。", "tags": ["deploy", "script", "windows"]}
+{"id": 146, "subject": "時區設定錯誤導致排程在錯的時間跑", "description": "容器預設 UTC，排程任務在台灣時間早上八點才跑，比預期晚八小時。", "tags": ["cron", "timezone", "deploy"]}
+{"id": 147, "subject": "備份排程沒有執行", "description": "每日資料庫備份從 10 月起就沒有產生檔案。", "tags": ["backup", "cron"]}
+{"id": 148, "subject": "升級 Rust 1.80 後編譯失敗", "description": "升級 toolchain 後出現 `error[E0658]: use of unstable library feature`。", "tags": ["build", "upgrade"]}
+{"id": 149, "subject": "部署完成但健康檢查一直失敗", "description": "/healthz 回傳 503，因為還在等 migration，k8s 不斷重啟 pod。", "tags": ["deploy", "k8s", "healthcheck"]}
+{"id": 150, "subject": "自架版安裝文件過時", "description": "安裝文件還寫 Ubuntu 18.04，指令已經不能用。", "tags": ["docs", "install"]}
+{"id": 151, "subject": "按鈕文字在英文介面被截斷", "description": "切換成英文後「Save and continue」按鈕文字被切掉。", "tags": ["ui", "i18n", "layout"]}
+{"id": 152, "subject": "深色模式下文字看不到", "description": "深色模式時表格內的文字是黑色，背景也是深色。", "tags": ["ui", "dark_mode"]}
+{"id": 153, "subject": "手機版選單無法展開", "description": "在手機上點漢堡選單沒有反應。", "tags": ["ui", "mobile", "menu"]}
+{"id": 154, "subject": "日期選擇器顯示西元年，希望支援民國年", "description": "公部門客戶要求日期顯示為民國 113 年格式。", "tags": ["ui", "date", "i18n", "feature"]}
+{"id": 155, "subject": "表格欄位無法調整寬度", "description": "議題列表的欄寬固定，標題太長就被截斷。", "tags": ["ui", "table", "list"]}
+{"id": 156, "subject": "RWD 版面在平板跑版", "description": "iPad 直向時側邊欄蓋住主內容。", "tags": ["ui", "layout", "rwd"]}
+{"id": 157, "subject": "拖曳排序沒有作用", "description": "看板上的卡片拖曳後放開，又跳回原位。", "tags": ["ui", "board", "drag"]}
+{"id": 158, "subject": "Tooltip 被遮住", "description": "表格最右邊欄位的提示框被視窗邊緣切掉。", "tags": ["ui", "tooltip"]}
+{"id": 159, "subject": "字太小，長輩看不清楚", "description": "希望提供字級調整，預設 12px 太小。", "tags": ["ui", "accessibility", "font"]}
+{"id": 160, "subject": "鍵盤無法操作下拉選單", "description": "無障礙檢測發現下拉選單不能用 Tab 和方向鍵操作。", "tags": ["ui", "accessibility"]}
+{"id": 161, "subject": "中文輸入法選字時按 Enter 直接送出表單", "description": "用注音或倉頡選字按 Enter 時，留言會被直接送出（沒處理 isComposing）。\n\n技術細節：keydown 事件處理時沒有檢查 `event.isComposing`（或 keyCode 229），所以輸入法還在選字時按 Enter 就被當成送出。Safari 的 composition 事件順序和 Chrome 不同，修的時候兩個都要測。英文、日文輸入法使用者也有類似回報。", "tags": ["ui", "ime", "editor"]}
+{"id": 162, "subject": "圖示在 Windows 上顯示為方塊", "description": "Windows 10 的 Chrome 顯示 emoji 圖示為空白方塊。", "tags": ["ui", "font", "icon"]}
+{"id": 163, "subject": "頁面捲動時表頭沒有固定", "description": "長表格往下捲時看不到欄位名稱，希望 sticky header。", "tags": ["ui", "table"]}
+{"id": 164, "subject": "Modal 對話框無法用 Esc 關閉", "description": "開啟編輯視窗後按 Esc 沒反應。", "tags": ["ui", "modal"]}
+{"id": 165, "subject": "新版介面找不到匯出按鈕", "description": "改版後匯出 CSV 的按鈕被移到「更多」選單，很多人找不到。", "tags": ["ui", "export"]}
+{"id": 166, "subject": "錯誤訊息顯示在畫面最上方，使用者看不到", "description": "表單驗證錯誤顯示在頁首，但使用者正在填頁尾的欄位。", "tags": ["ui", "error_msg", "form"]}
+{"id": 167, "subject": "Markdown 表格渲染錯誤", "description": "描述中的 Markdown 表格在預覽時欄位錯位。", "tags": ["ui", "markdown"]}
+{"id": 168, "subject": "列印議題時版面被切掉", "description": "列印議題詳細頁，右側內容被切掉，A4 直向。", "tags": ["print", "ui"]}
+{"id": 169, "subject": "想要自訂首頁小工具排列", "description": "希望可以拖曳調整 dashboard 小工具的位置。", "tags": ["ui", "dashboard", "feature"]}
+{"id": 170, "subject": "頭像上傳後變形", "description": "上傳非正方形的頭像會被拉伸。", "tags": ["ui", "avatar", "upload"]}
+{"id": 171, "subject": "Loading 動畫一直轉不停", "description": "網路斷線後重連，畫面上的 loading spinner 不會消失。", "tags": ["ui", "loading"]}
+{"id": 172, "subject": "時間顯示為 UTC，不是台灣時間", "description": "議題建立時間顯示 UTC，使用者以為資料錯了。", "tags": ["ui", "timezone"]}
+{"id": 173, "subject": "多選篩選器選太多項時跑版", "description": "篩選器選了 10 個標籤後，標籤溢出到表格上。", "tags": ["ui", "filter", "layout"]}
+{"id": 174, "subject": "繁體中文翻譯有不道地的用語", "description": "介面出現「信息」「視頻」「默認」等用語，應改為「訊息」「影片」「預設」。", "tags": ["i18n", "translation"]}
+{"id": 175, "subject": "按下返回鍵表單內容消失", "description": "在新增議題頁按瀏覽器返回再前進，填好的內容不見了。", "tags": ["ui", "form", "data_loss"]}
+{"id": 176, "subject": "搜尋中文關鍵字找不到結果", "description": "搜尋「發票」沒有結果，但明明有標題含發票的議題。", "tags": ["search", "cjk"]}
+{"id": 177, "subject": "搜尋結果沒有依相關度排序", "description": "搜尋結果依建立時間排序，最相關的反而在第三頁。", "tags": ["search", "ranking"]}
+{"id": 178, "subject": "匯出 CSV 中文亂碼", "description": "用 Excel 開啟匯出的 CSV，中文全部變亂碼（缺 BOM）。\n\nExcel 預設用 Big5（cp950）開啟沒有 BOM 的 CSV。建議匯出時加上 UTF-8 BOM，或提供「Excel 相容」選項輸出 UTF-16LE。Numbers 與 Google 試算表開啟都正常。同樣的問題在報表匯出也有。", "tags": ["export", "encoding", "csv"]}
+{"id": 179, "subject": "報表圖表數字與列表不一致", "description": "工時報表的長條圖總數比明細少 3 小時。", "tags": ["report", "data"]}
+{"id": 180, "subject": "想要依自訂欄位篩選", "description": "希望可以用「客戶名稱」自訂欄位篩選議題。", "tags": ["filter", "feature"]}
+{"id": 181, "subject": "搜尋不到附件內容", "description": "希望全文搜尋可以搜到 PDF 附件裡的文字。", "tags": ["search", "attachment", "feature"]}
+{"id": 182, "subject": "匯出 PDF 缺少留言", "description": "匯出議題 PDF 時只有描述，沒有歷史留言。", "tags": ["export", "pdf"]}
+{"id": 183, "subject": "搜尋關鍵字有空白時結果錯誤", "description": "搜尋「SSO 設定」時只用第一個詞搜尋。", "tags": ["search", "query_parse"]}
+{"id": 184, "subject": "工時報表無法依週彙總", "description": "只能依日或依月看，希望支援依週。", "tags": ["report", "timelog", "feature"]}
+{"id": 185, "subject": "篩選條件無法儲存", "description": "設定好篩選條件按「儲存查詢」後重新整理就不見了。", "tags": ["filter", "query"]}
+{"id": 186, "subject": "搜尋英文大小寫敏感", "description": "搜尋「docker」找不到標題為「Docker」的議題。", "tags": ["search", "case"]}
+{"id": 187, "subject": "匯入 Excel 時日期欄位錯誤", "description": "匯入 xlsx 時日期變成 45231 這種序號。", "tags": ["import", "date"]}
+{"id": 188, "subject": "報表匯出 Excel 欄寬太窄", "description": "匯出的 xlsx 所有欄寬都是預設值，數字顯示 ####。", "tags": ["export", "report"]}
+{"id": 189, "subject": "搜尋建議出現已封存的專案", "description": "搜尋框的 autocomplete 清單會出現已封存的專案。", "tags": ["search", "autocomplete"]}
+{"id": 190, "subject": "希望搜尋支援議題編號", "description": "輸入 #1234 直接跳到該議題。", "tags": ["search", "feature"]}
+{"id": 191, "subject": "資料同步到 ERP 失敗", "description": "每晚同步到 ERP 的排程失敗，錯誤 `RFC_ERROR_COMMUNICATION`。", "tags": ["integration", "sync"]}
+{"id": 192, "subject": "備份還原後附件遺失", "description": "從備份還原後，資料庫有附件紀錄但檔案不存在。", "tags": ["backup", "attachment", "data_loss"]}
+{"id": 193, "subject": "刪除專案後資料無法復原", "description": "誤刪專案，希望有資源回收桶功能。", "tags": ["delete", "data_loss", "feature"]}
+{"id": 194, "subject": "自訂欄位的下拉選項無法排序", "description": "選項只能依建立順序顯示。", "tags": ["custom_field", "ui"]}
+{"id": 195, "subject": "議題複製時附件沒有一起複製", "description": "複製議題時附件、子任務都沒有帶過去。", "tags": ["copy", "attachment"]}
+{"id": 196, "subject": "Git 版本庫同步卡住", "description": "Repository 頁顯示「同步中」已經兩天，`git fetch` 逾時。", "tags": ["repo", "sync", "timeout"]}
+{"id": 197, "subject": "時間追蹤計時器跨日錯誤", "description": "計時器跨過午夜後工時變成負數。", "tags": ["timelog", "bug"]}
+{"id": 198, "subject": "Wiki 頁面歷史版本比較功能失效", "description": "比較兩個版本時顯示「無差異」，實際內容不同。", "tags": ["wiki", "diff"]}
+{"id": 199, "subject": "議題關聯「被阻擋」沒有阻止關閉", "description": "被其他議題阻擋的議題仍可直接關閉。", "tags": ["relation", "workflow"]}
+{"id": 200, "subject": "工作流程設定複製到新 tracker 失敗", "description": "從「Bug」複製工作流程到「Feature」時出現 500 錯誤。", "tags": ["workflow", "error500"]}

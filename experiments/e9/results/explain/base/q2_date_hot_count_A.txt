@@ -1,0 +1,28 @@
+Finalize Aggregate  (cost=9541.84..9541.85 rows=1 width=8) (actual time=93.059..97.094 rows=1.00 loops=1)
+  Buffers: shared hit=29415 read=9381
+  ->  Gather  (cost=9541.62..9541.83 rows=2 width=8) (actual time=92.865..97.089 rows=2.00 loops=1)
+        Workers Planned: 1
+        Workers Launched: 1
+        Buffers: shared hit=29415 read=9381
+        ->  Partial Aggregate  (cost=8541.62..8541.63 rows=1 width=8) (actual time=91.101..91.102 rows=1.00 loops=2)
+              Buffers: shared hit=29415 read=9381
+              ->  Nested Loop  (cost=27.20..8539.51 rows=846 width=0) (actual time=1.782..90.268 rows=4879.00 loops=2)
+                    Buffers: shared hit=29415 read=9381
+                    ->  Parallel Bitmap Heap Scan on issue_cf c  (cost=26.78..5312.62 rows=846 width=16) (actual time=1.752..69.491 rows=4879.00 loops=2)
+                          Recheck Cond: ((field_id = 2) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-01-31'::date))
+                          Heap Blocks: exact=4660
+                          Buffers: shared hit=610 read=8909
+                          Worker 0:  Heap Blocks: exact=4828
+                          ->  Bitmap Index Scan on issue_cf_date  (cost=0.00..26.42 rows=1439 width=0) (actual time=1.834..1.834 rows=9758.00 loops=1)
+                                Index Cond: ((field_id = 2) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-01-31'::date))
+                                Index Searches: 1
+                                Buffers: shared read=11
+                    ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..3.81 rows=1 width=16) (actual time=0.003..0.003 rows=1.00 loops=9758)
+                          Index Cond: (id = c.issue_id)
+                          Heap Fetches: 0
+                          Index Searches: 9758
+                          Buffers: shared hit=28805 read=472
+Planning:
+  Buffers: shared hit=388 read=1
+Planning Time: 0.911 ms
+Execution Time: 97.190 ms

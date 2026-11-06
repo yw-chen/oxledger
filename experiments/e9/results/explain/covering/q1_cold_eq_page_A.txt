@@ -1,0 +1,18 @@
+Limit  (cost=0.98..216.22 rows=50 width=16) (actual time=0.047..0.278 rows=50.00 loops=1)
+  Buffers: shared hit=156
+  ->  Nested Loop  (cost=0.98..1649.70 rows=383 width=16) (actual time=0.046..0.272 rows=50.00 loops=1)
+        Buffers: shared hit=156
+        ->  Index Only Scan Backward using issue_cf_text_cov on issue_cf c  (cost=0.56..20.22 rows=383 width=16) (actual time=0.035..0.042 rows=50.00 loops=1)
+              Index Cond: ((field_id = 807) AND (v_text = 'opt0'::text))
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=5
+        ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..4.25 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=50)
+              Index Cond: (id = c.issue_id)
+              Heap Fetches: 0
+              Index Searches: 50
+              Buffers: shared hit=151
+Planning:
+  Buffers: shared hit=304
+Planning Time: 0.842 ms
+Execution Time: 0.302 ms

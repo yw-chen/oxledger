@@ -1,0 +1,14 @@
+Aggregate  (cost=43396.94..43396.95 rows=1 width=8) (actual time=185.250..185.251 rows=1.00 loops=1)
+  Buffers: shared hit=254 read=10831
+  ->  Bitmap Heap Scan on issues_b  (cost=160.58..43346.42 rows=20207 width=0) (actual time=3.294..182.701 rows=11951.00 loops=1)
+        Recheck Cond: (fields @> '{"4": "00000000-0001-7000-8000-000000000003"}'::jsonb)
+        Heap Blocks: exact=11076
+        Buffers: shared hit=254 read=10831
+        ->  Bitmap Index Scan on issues_b_gin  (cost=0.00..155.52 rows=20207 width=0) (actual time=1.963..1.963 rows=11951.00 loops=1)
+              Index Cond: (fields @> '{"4": "00000000-0001-7000-8000-000000000003"}'::jsonb)
+              Index Searches: 1
+              Buffers: shared hit=1 read=8
+Planning:
+  Buffers: shared hit=199 read=18
+Planning Time: 0.706 ms
+Execution Time: 185.354 ms

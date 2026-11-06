@@ -1,0 +1,25 @@
+Limit  (cost=5398.90..6537.50 rows=50 width=16) (actual time=173.829..174.596 rows=50.00 loops=1)
+  Buffers: shared hit=18 read=9501
+  ->  Merge Join  (cost=5398.90..38167.92 rows=1439 width=16) (actual time=173.828..174.590 rows=50.00 loops=1)
+        Merge Cond: (i.id = c.issue_id)
+        Buffers: shared hit=18 read=9501
+        ->  Index Only Scan Backward using issues_a_pkey on issues_a i  (cost=0.42..30412.42 rows=1000000 width=16) (actual time=0.006..0.464 rows=4175.00 loops=1)
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=18 read=2
+        ->  Sort  (cost=5398.47..5402.07 rows=1439 width=16) (actual time=173.806..173.812 rows=50.00 loops=1)
+              Sort Key: c.issue_id DESC
+              Sort Method: quicksort  Memory: 385kB
+              Buffers: shared read=9499
+              ->  Bitmap Heap Scan on issue_cf c  (cost=26.78..5322.99 rows=1439 width=16) (actual time=2.560..169.534 rows=9758.00 loops=1)
+                    Recheck Cond: ((field_id = 2) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-01-31'::date))
+                    Heap Blocks: exact=9488
+                    Buffers: shared read=9499
+                    ->  Bitmap Index Scan on issue_cf_date  (cost=0.00..26.42 rows=1439 width=0) (actual time=1.413..1.414 rows=9758.00 loops=1)
+                          Index Cond: ((field_id = 2) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-01-31'::date))
+                          Index Searches: 1
+                          Buffers: shared read=11
+Planning:
+  Buffers: shared hit=278 read=17
+Planning Time: 0.852 ms
+Execution Time: 174.765 ms

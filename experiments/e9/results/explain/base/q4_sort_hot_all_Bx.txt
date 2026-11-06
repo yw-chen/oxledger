@@ -1,0 +1,10 @@
+Limit  (cost=0.42..18.65 rows=50 width=48) (actual time=0.048..0.364 rows=50.00 loops=1)
+  Buffers: shared read=53
+  ->  Index Scan Backward using issues_b_f8 on issues_b  (cost=0.42..291668.54 rows=800239 width=48) (actual time=0.047..0.359 rows=50.00 loops=1)
+        Index Cond: (((fields ->> '8'::text))::numeric IS NOT NULL)
+        Index Searches: 1
+        Buffers: shared read=53
+Planning:
+  Buffers: shared hit=242 read=1
+Planning Time: 0.634 ms
+Execution Time: 0.389 ms

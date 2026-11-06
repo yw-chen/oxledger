@@ -1,0 +1,8 @@
+issues: 1000000
+issue_cf rows: 17750622
+fields per issue: avg 17.8, p5 12, p50 18, p95 24, max 28
+field types: bool=41, date=146, list=251, num=253, text=209, user=100
+fields by coverage: >=50%=11, 10-50%=7, 1-10%=171, 0.3-1%=709, <0.3%=102
+coverage of benchmark fields: 1(num)=949336, 2(date)=900129, 3(list)=950123, 4(user)=849785, 8(num)=798071, 11(text)=870201, 300(num)=6936, 301(list)=6932, 302(text)=6901, 303(text)=6860, 304(list)=6791, 305(list)=6916, 306(text)=6892, 307(bool)=6776, 308(date)=6782, 309(date)=6897, 310(list)=6753, 800(num)=3256, 801(num)=3279, 802(text)=3273, 803(num)=3331, 804(num)=3330, 805(text)=3193, 806(date)=3305, 807(list)=3181, 808(num)=3278, 809(num)=3351, 810(text)=3344, 811(date)=3309, 812(num)=3206, 813(list)=3217, 814(text)=3255, 815(list)=3260, 816(text)=3298, 817(num)=3268, 818(bool)=3209, 819(date)=3343, 820(list)=3255
+visible issues (projects 101..130, non-private or author=uid(7)): 108428
+avg fields jsonb bytes: 361, max 731

@@ -1,0 +1,9 @@
+op	scheme	runs	median_ms	max_ms	min_ms
+drop_cold	A	3	77.8	397.5	4.1
+drop_cold	B	3	552.8	1596.8	529.8
+drop_hot	A	3	18208.6	27818.5	4474.5
+drop_hot	B	3	206734.6	258070.1	173890.9
+retype_cold	A	3	29.1	220.7	28.3
+retype_cold	B	3	562.7	721.3	558.8
+retype_hot	A	3	18457.5	47080.3	16898.1
+retype_hot	B	3	195753.4	211588.1	180354.3

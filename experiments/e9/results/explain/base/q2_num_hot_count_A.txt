@@ -1,0 +1,21 @@
+Aggregate  (cost=3309.15..3309.16 rows=1 width=8) (actual time=182.009..182.011 rows=1.00 loops=1)
+  Buffers: shared hit=22518 read=9789
+  ->  Nested Loop  (cost=14.04..3308.13 rows=407 width=0) (actual time=2.520..180.333 rows=8123.00 loops=1)
+        Buffers: shared hit=22518 read=9789
+        ->  Bitmap Heap Scan on issue_cf c  (cost=13.62..1580.03 rows=407 width=16) (actual time=2.509..137.452 rows=8123.00 loops=1)
+              Recheck Cond: ((field_id = 8) AND (v_num >= '100'::numeric) AND (v_num <= '110'::numeric))
+              Heap Blocks: exact=7903
+              Buffers: shared hit=529 read=7408
+              ->  Bitmap Index Scan on issue_cf_num  (cost=0.00..13.52 rows=407 width=0) (actual time=1.481..1.482 rows=8123.00 loops=1)
+                    Index Cond: ((field_id = 8) AND (v_num >= '100'::numeric) AND (v_num <= '110'::numeric))
+                    Index Searches: 1
+                    Buffers: shared read=34
+        ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..4.25 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=8123)
+              Index Cond: (id = c.issue_id)
+              Heap Fetches: 0
+              Index Searches: 8123
+              Buffers: shared hit=21989 read=2381
+Planning:
+  Buffers: shared hit=381
+Planning Time: 0.912 ms
+Execution Time: 182.104 ms

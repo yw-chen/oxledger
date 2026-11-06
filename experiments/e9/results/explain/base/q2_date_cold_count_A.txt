@@ -1,0 +1,21 @@
+Aggregate  (cost=442.01..442.02 rows=1 width=8) (actual time=5.768..5.770 rows=1.00 loops=1)
+  Buffers: shared hit=429 read=363
+  ->  Nested Loop  (cost=5.52..441.88 rows=52 width=0) (actual time=0.215..5.724 rows=197.00 loops=1)
+        Buffers: shared hit=429 read=363
+        ->  Bitmap Heap Scan on issue_cf c  (cost=5.09..210.87 rows=52 width=16) (actual time=0.197..3.650 rows=197.00 loops=1)
+              Recheck Cond: ((field_id = 806) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-06-30'::date))
+              Heap Blocks: exact=197
+              Buffers: shared read=200
+              ->  Bitmap Index Scan on issue_cf_date  (cost=0.00..5.08 rows=52 width=0) (actual time=0.039..0.039 rows=197.00 loops=1)
+                    Index Cond: ((field_id = 806) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-06-30'::date))
+                    Index Searches: 1
+                    Buffers: shared read=3
+        ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..4.44 rows=1 width=16) (actual time=0.010..0.010 rows=1.00 loops=197)
+              Index Cond: (id = c.issue_id)
+              Heap Fetches: 0
+              Index Searches: 197
+              Buffers: shared hit=429 read=163
+Planning:
+  Buffers: shared hit=388 read=1
+Planning Time: 1.020 ms
+Execution Time: 5.831 ms

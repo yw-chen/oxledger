@@ -1,0 +1,18 @@
+Limit  (cost=1628.93..1629.05 rows=50 width=16) (actual time=12.718..12.724 rows=50.00 loops=1)
+  Buffers: shared hit=9183
+  ->  Sort  (cost=1628.93..1629.99 rows=426 width=16) (actual time=12.717..12.719 rows=50.00 loops=1)
+        Sort Key: id DESC
+        Sort Method: still in progress  Memory: 0kB
+        Buffers: shared hit=9183
+        ->  Bitmap Heap Scan on issues_b  (cost=8.79..1614.78 rows=426 width=16) (actual time=2.596..11.117 rows=9758.00 loops=1)
+              Recheck Cond: (((fields ->> '2'::text) >= '2024-01-01'::text) AND ((fields ->> '2'::text) <= '2024-01-31'::text))
+              Heap Blocks: exact=9169
+              Buffers: shared hit=9180
+              ->  Bitmap Index Scan on issues_b_f2  (cost=0.00..8.69 rows=426 width=0) (actual time=1.587..1.588 rows=9758.00 loops=1)
+                    Index Cond: (((fields ->> '2'::text) >= '2024-01-01'::text) AND ((fields ->> '2'::text) <= '2024-01-31'::text))
+                    Index Searches: 1
+                    Buffers: shared hit=11
+Planning:
+  Buffers: shared hit=222
+Planning Time: 0.501 ms
+Execution Time: 12.804 ms

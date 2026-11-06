@@ -1,0 +1,30 @@
+Aggregate  (cost=3880.36..3880.37 rows=1 width=8) (actual time=53.883..53.884 rows=1.00 loops=1)
+  Buffers: shared hit=3331 read=3800
+  ->  Nested Loop  (cost=13.30..3880.36 rows=1 width=0) (actual time=1.682..53.871 rows=21.00 loops=1)
+        Buffers: shared hit=3331 read=3800
+        ->  Nested Loop  (cost=12.74..3667.19 rows=31 width=32) (actual time=1.104..51.730 rows=137.00 loops=1)
+              Buffers: shared hit=2915 read=3537
+              ->  Bitmap Heap Scan on issue_cf c_1  (cost=12.24..1170.21 rows=299 width=16) (actual time=0.481..29.535 rows=1290.00 loops=1)
+                    Recheck Cond: ((field_id = 800) AND (v_num >= '1000'::numeric) AND (v_num <= '5000'::numeric))
+                    Heap Blocks: exact=1284
+                    Buffers: shared hit=123 read=1169
+                    ->  Bitmap Index Scan on issue_cf_num  (cost=0.00..12.17 rows=299 width=0) (actual time=0.212..0.212 rows=1290.00 loops=1)
+                          Index Cond: ((field_id = 800) AND (v_num >= '1000'::numeric) AND (v_num <= '5000'::numeric))
+                          Index Searches: 1
+                          Buffers: shared read=8
+              ->  Index Scan using issues_a_pkey on issues_a i  (cost=0.50..8.35 rows=1 width=16) (actual time=0.016..0.016 rows=0.11 loops=1290)
+                    Index Cond: (id = c_1.issue_id)
+                    Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])))
+                    Rows Removed by Filter: 1
+                    Index Searches: 1290
+                    Buffers: shared hit=2792 read=2368
+        ->  Index Scan using issue_cf_pkey on issue_cf c  (cost=0.56..6.88 rows=1 width=16) (actual time=0.015..0.015 rows=0.15 loops=137)
+              Index Cond: ((issue_id = i.id) AND (field_id = 3))
+              Filter: (v_text = 'opt1'::text)
+              Rows Removed by Filter: 1
+              Index Searches: 137
+              Buffers: shared hit=416 read=263
+Planning:
+  Buffers: shared hit=462 read=27
+Planning Time: 1.651 ms
+Execution Time: 53.940 ms

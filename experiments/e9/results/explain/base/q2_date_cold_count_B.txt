@@ -1,0 +1,16 @@
+Finalize Aggregate  (cost=75057.90..75057.91 rows=1 width=8) (actual time=106.684..110.081 rows=1.00 loops=1)
+  Buffers: shared hit=14087 read=51630
+  ->  Gather  (cost=75057.69..75057.90 rows=2 width=8) (actual time=106.542..110.076 rows=3.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=14087 read=51630
+        ->  Partial Aggregate  (cost=74057.69..74057.70 rows=1 width=8) (actual time=104.289..104.290 rows=1.00 loops=3)
+              Buffers: shared hit=14087 read=51630
+              ->  Parallel Seq Scan on issues_b  (cost=0.00..74052.48 rows=2084 width=0) (actual time=1.394..104.254 rows=65.67 loops=3)
+                    Filter: (((fields ->> '806'::text) >= '2024-01-01'::text) AND ((fields ->> '806'::text) <= '2024-06-30'::text))
+                    Rows Removed by Filter: 333268
+                    Buffers: shared hit=14087 read=51630
+Planning:
+  Buffers: shared hit=169
+Planning Time: 0.379 ms
+Execution Time: 110.151 ms

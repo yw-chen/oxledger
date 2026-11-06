@@ -65,6 +65,8 @@ ol.tl li::before{content:"";position:absolute;left:-7px;top:6px;width:12px;heigh
   <div class="card"><b>D11 · outbox 用 xid8 快照</b>SQL 輪詢，at-least-once + 冪等</div>
   <div class="card"><b>D12 · 遮蔽後留痕</b>內容換成 [已遮蔽]，記錄誰、何時、為什麼</div>
   <div class="card"><b>D13 · 名稱 oxledger</b>README 寫 derived from Redmine；scheme oxledger://</div>
+  <div class="card"><b>D14 · 自訂欄位用型別化 EAV</b>每欄位 covering partial index，不加 JSONB 快取（E9：冷門篩選 1–5 ms vs 100–300 ms）<a href="02-e9-custom-fields.md">02 報告</a></div>
+  <div class="card"><b>D15 · 中文檢索維持 unigram+bigram</b>查詢加 0.1–0.2 權重單字（nDCG 0.781→0.810）；別名展開待 E2 <a href="03-e1-zh-retrieval.md">03 報告</a></div>
 </div>
 <div class="warn"><b>D3 的背景：</b>rmcp 是 Apache-2.0 單一授權，FSF 認定它與 <code>GPL-2.0-only</code> 不相容、與 GPLv3 相容。Redmine 檔頭本來就是「v2 or any later」→ 建議用 <code>GPL-2.0-or-later</code>。ParadeDB 因 AGPL 網路義務會轉嫁給部署方而不採用。（非法律意見）</div>
 
@@ -89,7 +91,7 @@ ol.tl li::before{content:"";position:absolute;left:-7px;top:6px;width:12px;heigh
 <h2>資料庫：比 Redmine 好在哪（已依獨立審查修正）</h2>
 <div class="tw"><table>
 <tr><th>Redmine</th><th>問題</th><th>新設計</th></tr>
-<tr><td>自訂欄位 EAV（值都是字串）</td><td>要轉型</td><td><b>型別化 EAV</b> <code>issue_cf(field_id, v_num, v_date, v_text…)</code> + partial index；JSONB 只當讀取快取。E9 基準後定（Q9）</td></tr>
+<tr><td>自訂欄位 EAV（值都是字串）</td><td>要轉型</td><td><b>型別化 EAV</b> <code>issue_cf(field_id, v_num, v_date, v_text…)</code> + partial index；每欄位 covering partial index；不加 JSONB 快取（D14）</td></tr>
 <tr><td>nested set</td><td>搬移改寫同一棵樹</td><td><code>parent_id</code>；彙總值寫入時算好存父節點</td></tr>
 <tr><td>journals（字串）</td><td>歷史值查詢要掃字串</td><td><code>issue_events</code> + 型別化 <code>issue_field_changes</code> 投影；要有 redaction</td></tr>
 <tr><td>private notes</td><td>—</td><td>搜尋裡獨立子文件、自己的可見性過濾</td></tr>
@@ -163,8 +165,8 @@ ol.tl li::before{content:"";position:absolute;left:-7px;top:6px;width:12px;heigh
 
 <h2>階段</h2>
 <ol class="tl">
-  <li><b>M0 骨架</b>　權限核心 + 核心實體 + workflow + 最小 tantivy + MCP 唯讀；先跑 E4、E1、E9</li>
-  <li><b>M1 可日用</b>　自訂欄位（依 E9）、Filter AST、ViewDef、issue_events、工時、MCP 寫入</li>
+  <li><b>M0 骨架</b>　權限核心 + 核心實體 + workflow + 最小 tantivy + MCP 唯讀；E4、E1、E9 已完成</li>
+  <li><b>M1 可日用</b>　自訂欄位（型別化 EAV）、查詢端單字低權重、別名展開、Filter AST、ViewDef、issue_events、工時、MCP 寫入</li>
   <li><b>M2 整合</b>　CommonMark、Git webhook、fixed_by、wiki、CSV 匯入匯出</li>
   <li><b>M3</b>　Gantt、dashboard、automation、sprint、外掛 slot</li>
 </ol>
@@ -172,15 +174,15 @@ ol.tl li::before{content:"";position:absolute;left:-7px;top:6px;width:12px;heigh
 <h2>待驗證實驗</h2>
 <div class="tw"><table>
 <tr><th>#</th><th>驗證</th></tr>
-<tr><td>E1</td><td>繁中檢索：bigram vs ICU vs lindera(CC-CEDICT)，nDCG@10／recall@20</td></tr>
-<tr><td>E2</td><td>欄位權重與概念欄位消融</td></tr>
+<tr><td>E1</td><td>✅ 繁中檢索：bigram vs ICU vs lindera(CC-CEDICT)，nDCG@10／recall@20 → D15</td></tr>
+<tr><td>E2</td><td>欄位權重與概念欄位消融；別名展開用獨立查詢集量</td></tr>
 <tr><td>E3</td><td>1 跳圖擴展對重複單、被擋單的召回</td></tr>
 <tr><td>E4</td><td>可見性性質測試，對照 Ruby 版 Redmine</td></tr>
 <tr><td>E5</td><td>LLM 工具使用：20 個 PM 問題的正確率／往返／token</td></tr>
 <tr><td>E6</td><td>10 萬筆時 tantivy 近即時延遲、read-your-write</td></tr>
 <tr><td>E7</td><td>rmcp OAuth + Claude／Cursor 實連</td></tr>
 <tr><td>E8</td><td>向量 RRF 值不值得（E1 之後）</td></tr>
-<tr><td>E9</td><td>自訂欄位基準：100 萬 issue × 1000 欄位，型別化 EAV vs JSONB</td></tr>
+<tr><td>E9</td><td>✅ 自訂欄位基準：100 萬 issue × 1000 欄位，型別化 EAV vs JSONB → D14</td></tr>
 </table></div>
 
 <h2>待你決定</h2>
@@ -191,7 +193,7 @@ ol.tl li::before{content:"";position:absolute;left:-7px;top:6px;width:12px;heigh
 <div class="q"><s>Q5 repo 名稱</s>：已定 oxledger（D13）；oxledger.com 已被註冊，.dev／.org 查無註冊</div>
 <div class="q"><s>Q7 issue 編號</s>：已定專案前綴 AUTH-123（D9）</div>
 <div class="q"><s>Q8 多租戶</s>：已定單一組織（D5）</div>
-<div class="q"><b>Q9 自訂欄位存法</b>：型別化 EAV／JSONB／混合，E9 後定</div>
+<div class="q"><s>Q9 自訂欄位存法</s>：已定型別化 EAV（D14）</div>
 <div class="q"><s>Q10 可見範圍</s>：已定每請求計算（D10）</div>
 <div class="q"><s>Q11 outbox 順序</s>：已定 xid8 快照（D11）</div>
 <div class="q"><s>Q12 事件紀錄</s>：已定遮蔽後留痕（D12）；保留期限預設永久待確認</div>

@@ -1,0 +1,16 @@
+Finalize Aggregate  (cost=71926.99..71927.00 rows=1 width=8) (actual time=248.217..251.449 rows=1.00 loops=1)
+  Buffers: shared hit=8317 read=57400
+  ->  Gather  (cost=71926.78..71926.99 rows=2 width=8) (actual time=248.045..251.441 rows=3.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=8317 read=57400
+        ->  Partial Aggregate  (cost=70926.78..70926.79 rows=1 width=8) (actual time=245.415..245.416 rows=1.00 loops=3)
+              Buffers: shared hit=8317 read=57400
+              ->  Parallel Seq Scan on issues_b  (cost=0.00..70926.67 rows=42 width=0) (actual time=0.349..244.801 rows=2707.67 loops=3)
+                    Filter: (fields @@ '($."8" >= 100 && $."8" <= 110)'::jsonpath)
+                    Rows Removed by Filter: 330626
+                    Buffers: shared hit=8317 read=57400
+Planning:
+  Buffers: shared hit=217
+Planning Time: 0.680 ms
+Execution Time: 251.527 ms

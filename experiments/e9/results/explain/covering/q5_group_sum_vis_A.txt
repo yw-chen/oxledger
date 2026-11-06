@@ -1,0 +1,52 @@
+Finalize GroupAggregate  (cost=90767.13..91812.89 rows=3309 width=46) (actual time=479.257..484.765 rows=5.00 loops=1)
+  Group Key: c3.v_text
+  Buffers: shared hit=326387 read=193299
+  ->  Gather Merge  (cost=90767.13..91692.10 rows=7942 width=46) (actual time=479.249..484.753 rows=15.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=326387 read=193299
+        ->  Sort  (cost=89767.10..89775.38 rows=3309 width=46) (actual time=476.494..476.497 rows=5.00 loops=3)
+              Sort Key: c3.v_text
+              Sort Method: quicksort  Memory: 25kB
+              Buffers: shared hit=326387 read=193299
+              Worker 0:  Sort Method: quicksort  Memory: 25kB
+              Worker 1:  Sort Method: quicksort  Memory: 25kB
+              ->  Partial HashAggregate  (cost=89532.29..89573.66 rows=3309 width=46) (actual time=476.457..476.469 rows=5.00 loops=3)
+                    Group Key: c3.v_text
+                    Batches: 1  Memory Usage: 97kB
+                    Buffers: shared hit=326371 read=193299
+                    Worker 0:  Batches: 1  Memory Usage: 97kB
+                    Worker 1:  Batches: 1  Memory Usage: 97kB
+                    ->  Nested Loop Left Join  (cost=23208.22..89391.01 rows=18838 width=12) (actual time=49.008..464.395 rows=34300.00 loops=3)
+                          Buffers: shared hit=326371 read=193299
+                          ->  Parallel Hash Join  (cost=23207.65..39272.58 rows=18838 width=22) (actual time=48.971..174.648 rows=34300.00 loops=3)
+                                Hash Cond: (c3.issue_id = i.id)
+                                Buffers: shared hit=93 read=25991
+                                ->  Parallel Index Only Scan using issue_cf_text_cov on issue_cf c3  (cost=0.56..15593.29 rows=179883 width=22) (actual time=0.133..41.668 rows=316707.67 loops=3)
+                                      Index Cond: (field_id = 3)
+                                      Heap Fetches: 0
+                                      Index Searches: 1
+                                      Buffers: shared hit=53 read=5735
+                                ->  Parallel Hash  (cost=22661.65..22661.65 rows=43636 width=16) (actual time=48.333..48.334 rows=36142.67 loops=3)
+                                      Buckets: 131072  Batches: 1  Memory Usage: 6176kB
+                                      Buffers: shared hit=40 read=20256
+                                      ->  Parallel Bitmap Heap Scan on issues_a i  (cost=1816.86..22661.65 rows=43636 width=16) (actual time=10.119..38.877 rows=36142.67 loops=3)
+                                            Recheck Cond: (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[]))
+                                            Filter: ((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid))
+                                            Rows Removed by Filter: 4124
+                                            Heap Blocks: exact=6691
+                                            Buffers: shared hit=40 read=20256
+                                            Worker 0:  Heap Blocks: exact=6774
+                                            Worker 1:  Heap Blocks: exact=6519
+                                            ->  Bitmap Index Scan on issues_a_vis  (cost=0.00..1790.60 rows=115994 width=0) (actual time=8.674..8.675 rows=120800.00 loops=1)
+                                                  Index Cond: (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[]))
+                                                  Index Searches: 1
+                                                  Buffers: shared read=272
+                          ->  Index Scan using issue_cf_pkey on issue_cf c8  (cost=0.56..6.86 rows=3 width=22) (actual time=0.008..0.008 rows=0.80 loops=102900)
+                                Index Cond: ((issue_id = i.id) AND (field_id = 8))
+                                Index Searches: 102900
+                                Buffers: shared hit=326278 read=167308
+Planning:
+  Buffers: shared hit=411 read=76
+Planning Time: 1.977 ms
+Execution Time: 484.963 ms

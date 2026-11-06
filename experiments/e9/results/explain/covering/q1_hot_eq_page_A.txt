@@ -1,0 +1,18 @@
+Limit  (cost=0.85..194.31 rows=50 width=16) (actual time=0.047..0.131 rows=50.00 loops=1)
+  Buffers: shared hit=154 read=1
+  ->  Nested Loop  (cost=0.85..5506.57 rows=1423 width=16) (actual time=0.046..0.128 rows=50.00 loops=1)
+        Buffers: shared hit=154 read=1
+        ->  Index Only Scan Backward using issue_cf_ref_cov on issue_cf c  (cost=0.43..68.89 rows=1423 width=16) (actual time=0.035..0.038 rows=50.00 loops=1)
+              Index Cond: ((field_id = 4) AND (v_ref = '00000000-0001-7000-8000-000000000003'::uuid))
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=3 read=1
+        ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..3.82 rows=1 width=16) (actual time=0.002..0.002 rows=1.00 loops=50)
+              Index Cond: (id = c.issue_id)
+              Heap Fetches: 0
+              Index Searches: 50
+              Buffers: shared hit=151
+Planning:
+  Buffers: shared hit=327
+Planning Time: 0.913 ms
+Execution Time: 0.151 ms

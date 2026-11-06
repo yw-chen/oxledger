@@ -1,0 +1,11 @@
+Limit  (cost=0.42..631.57 rows=50 width=16) (actual time=0.087..4.143 rows=50.00 loops=1)
+  Buffers: shared hit=178 read=283
+  ->  Index Scan Backward using issues_b_pkey on issues_b  (cost=0.42..116143.68 rows=9201 width=16) (actual time=0.086..4.137 rows=50.00 loops=1)
+        Filter: ((((fields ->> '8'::text))::numeric >= '100'::numeric) AND (((fields ->> '8'::text))::numeric <= '110'::numeric))
+        Rows Removed by Filter: 5385
+        Index Searches: 1
+        Buffers: shared hit=178 read=283
+Planning:
+  Buffers: shared hit=219 read=2
+Planning Time: 0.547 ms
+Execution Time: 4.164 ms

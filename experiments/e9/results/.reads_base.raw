@@ -1,0 +1,1748 @@
+@@T q1_hot_eq_count A 0
+Time: 147.221 ms
+@@T q1_hot_eq_count B 0
+Time: 177.408 ms
+@@T q1_hot_eq_count Bx 0
+Time: 8.741 ms
+@@T q1_hot_eq_count A 1
+Time: 122.574 ms
+@@T q1_hot_eq_count B 1
+Time: 184.378 ms
+@@T q1_hot_eq_count Bx 1
+Time: 8.626 ms
+@@T q1_hot_eq_count A 2
+Time: 118.241 ms
+@@T q1_hot_eq_count B 2
+Time: 180.236 ms
+@@T q1_hot_eq_count Bx 2
+Time: 9.807 ms
+@@T q1_hot_eq_count A 3
+Time: 101.374 ms
+@@T q1_hot_eq_count B 3
+Time: 180.967 ms
+@@T q1_hot_eq_count Bx 3
+Time: 8.572 ms
+@@T q1_hot_eq_count A 4
+Time: 123.326 ms
+@@T q1_hot_eq_count B 4
+Time: 179.773 ms
+@@T q1_hot_eq_count Bx 4
+Time: 10.239 ms
+@@T q1_hot_eq_count A 5
+Time: 125.336 ms
+@@T q1_hot_eq_count B 5
+Time: 182.392 ms
+@@T q1_hot_eq_count Bx 5
+Time: 8.525 ms
+@@T q1_hot_eq_count A 6
+Time: 114.878 ms
+@@T q1_hot_eq_count B 6
+Time: 183.359 ms
+@@T q1_hot_eq_count Bx 6
+Time: 8.625 ms
+@@T q1_hot_eq_count A 7
+Time: 120.538 ms
+@@T q1_hot_eq_count B 7
+Time: 174.980 ms
+@@T q1_hot_eq_count Bx 7
+Time: 8.553 ms
+@@T q1_hot_eq_count A 8
+Time: 121.281 ms
+@@T q1_hot_eq_count B 8
+Time: 178.399 ms
+@@T q1_hot_eq_count Bx 8
+Time: 8.433 ms
+@@T q1_hot_eq_count A 9
+Time: 124.418 ms
+@@T q1_hot_eq_count B 9
+Time: 181.152 ms
+@@T q1_hot_eq_count Bx 9
+Time: 8.688 ms
+@@T q1_hot_eq_count A 10
+Time: 114.885 ms
+@@T q1_hot_eq_count B 10
+Time: 176.236 ms
+@@T q1_hot_eq_count Bx 10
+Time: 9.651 ms
+@@T q1_hot_eq_count A 11
+Time: 116.854 ms
+@@T q1_hot_eq_count B 11
+Time: 171.674 ms
+@@T q1_hot_eq_count Bx 11
+Time: 9.588 ms
+@@T q1_hot_eq_count A 12
+Time: 103.313 ms
+@@T q1_hot_eq_count B 12
+Time: 159.063 ms
+@@T q1_hot_eq_count Bx 12
+Time: 9.839 ms
+@@T q1_hot_eq_count A 13
+Time: 109.932 ms
+@@T q1_hot_eq_count B 13
+Time: 181.444 ms
+@@T q1_hot_eq_count Bx 13
+Time: 9.487 ms
+@@T q1_hot_eq_count A 14
+Time: 126.575 ms
+@@T q1_hot_eq_count B 14
+Time: 173.309 ms
+@@T q1_hot_eq_count Bx 14
+Time: 8.696 ms
+@@T q1_hot_eq_count A 15
+Time: 123.681 ms
+@@T q1_hot_eq_count B 15
+Time: 180.852 ms
+@@T q1_hot_eq_count Bx 15
+Time: 8.973 ms
+@@T q1_hot_eq_page A 0
+Time: 158.197 ms
+@@T q1_hot_eq_page B 0
+Time: 3.520 ms
+@@T q1_hot_eq_page Bx 0
+Time: 1.550 ms
+@@T q1_hot_eq_page A 1
+Time: 44.810 ms
+@@T q1_hot_eq_page B 1
+Time: 1.836 ms
+@@T q1_hot_eq_page Bx 1
+Time: 1.553 ms
+@@T q1_hot_eq_page A 2
+Time: 10.512 ms
+@@T q1_hot_eq_page B 2
+Time: 1.870 ms
+@@T q1_hot_eq_page Bx 2
+Time: 1.714 ms
+@@T q1_hot_eq_page A 3
+Time: 10.612 ms
+@@T q1_hot_eq_page B 3
+Time: 1.818 ms
+@@T q1_hot_eq_page Bx 3
+Time: 1.501 ms
+@@T q1_hot_eq_page A 4
+Time: 10.869 ms
+@@T q1_hot_eq_page B 4
+Time: 1.801 ms
+@@T q1_hot_eq_page Bx 4
+Time: 1.419 ms
+@@T q1_hot_eq_page A 5
+Time: 10.620 ms
+@@T q1_hot_eq_page B 5
+Time: 1.896 ms
+@@T q1_hot_eq_page Bx 5
+Time: 1.633 ms
+@@T q1_hot_eq_page A 6
+Time: 11.359 ms
+@@T q1_hot_eq_page B 6
+Time: 1.837 ms
+@@T q1_hot_eq_page Bx 6
+Time: 1.485 ms
+@@T q1_hot_eq_page A 7
+Time: 10.839 ms
+@@T q1_hot_eq_page B 7
+Time: 1.846 ms
+@@T q1_hot_eq_page Bx 7
+Time: 1.549 ms
+@@T q1_hot_eq_page A 8
+Time: 10.930 ms
+@@T q1_hot_eq_page B 8
+Time: 1.871 ms
+@@T q1_hot_eq_page Bx 8
+Time: 1.467 ms
+@@T q1_hot_eq_page A 9
+Time: 10.532 ms
+@@T q1_hot_eq_page B 9
+Time: 1.827 ms
+@@T q1_hot_eq_page Bx 9
+Time: 1.463 ms
+@@T q1_hot_eq_page A 10
+Time: 10.446 ms
+@@T q1_hot_eq_page B 10
+Time: 1.870 ms
+@@T q1_hot_eq_page Bx 10
+Time: 1.390 ms
+@@T q1_hot_eq_page A 11
+Time: 10.603 ms
+@@T q1_hot_eq_page B 11
+Time: 1.865 ms
+@@T q1_hot_eq_page Bx 11
+Time: 1.514 ms
+@@T q1_hot_eq_page A 12
+Time: 10.535 ms
+@@T q1_hot_eq_page B 12
+Time: 2.087 ms
+@@T q1_hot_eq_page Bx 12
+Time: 1.422 ms
+@@T q1_hot_eq_page A 13
+Time: 10.516 ms
+@@T q1_hot_eq_page B 13
+Time: 1.815 ms
+@@T q1_hot_eq_page Bx 13
+Time: 1.532 ms
+@@T q1_hot_eq_page A 14
+Time: 10.476 ms
+@@T q1_hot_eq_page B 14
+Time: 1.928 ms
+@@T q1_hot_eq_page Bx 14
+Time: 1.502 ms
+@@T q1_hot_eq_page A 15
+Time: 10.418 ms
+@@T q1_hot_eq_page B 15
+Time: 1.811 ms
+@@T q1_hot_eq_page Bx 15
+Time: 1.653 ms
+@@T q1_cold_eq_count A 0
+Time: 10.809 ms
+@@T q1_cold_eq_count B 0
+Time: 6.681 ms
+@@T q1_cold_eq_count A 1
+Time: 1.551 ms
+@@T q1_cold_eq_count B 1
+Time: 0.663 ms
+@@T q1_cold_eq_count A 2
+Time: 1.353 ms
+@@T q1_cold_eq_count B 2
+Time: 0.940 ms
+@@T q1_cold_eq_count A 3
+Time: 1.364 ms
+@@T q1_cold_eq_count B 3
+Time: 0.669 ms
+@@T q1_cold_eq_count A 4
+Time: 1.308 ms
+@@T q1_cold_eq_count B 4
+Time: 0.700 ms
+@@T q1_cold_eq_count A 5
+Time: 1.308 ms
+@@T q1_cold_eq_count B 5
+Time: 0.652 ms
+@@T q1_cold_eq_count A 6
+Time: 1.595 ms
+@@T q1_cold_eq_count B 6
+Time: 0.739 ms
+@@T q1_cold_eq_count A 7
+Time: 1.532 ms
+@@T q1_cold_eq_count B 7
+Time: 0.739 ms
+@@T q1_cold_eq_count A 8
+Time: 1.277 ms
+@@T q1_cold_eq_count B 8
+Time: 0.699 ms
+@@T q1_cold_eq_count A 9
+Time: 1.229 ms
+@@T q1_cold_eq_count B 9
+Time: 0.653 ms
+@@T q1_cold_eq_count A 10
+Time: 1.253 ms
+@@T q1_cold_eq_count B 10
+Time: 0.692 ms
+@@T q1_cold_eq_count A 11
+Time: 1.186 ms
+@@T q1_cold_eq_count B 11
+Time: 0.618 ms
+@@T q1_cold_eq_count A 12
+Time: 1.153 ms
+@@T q1_cold_eq_count B 12
+Time: 0.626 ms
+@@T q1_cold_eq_count A 13
+Time: 1.191 ms
+@@T q1_cold_eq_count B 13
+Time: 0.848 ms
+@@T q1_cold_eq_count A 14
+Time: 1.273 ms
+@@T q1_cold_eq_count B 14
+Time: 0.679 ms
+@@T q1_cold_eq_count A 15
+Time: 1.242 ms
+@@T q1_cold_eq_count B 15
+Time: 0.694 ms
+@@T q1_cold_eq_page A 0
+Time: 1.390 ms
+@@T q1_cold_eq_page B 0
+Time: 0.749 ms
+@@T q1_cold_eq_page A 1
+Time: 1.360 ms
+@@T q1_cold_eq_page B 1
+Time: 0.713 ms
+@@T q1_cold_eq_page A 2
+Time: 1.452 ms
+@@T q1_cold_eq_page B 2
+Time: 0.748 ms
+@@T q1_cold_eq_page A 3
+Time: 1.345 ms
+@@T q1_cold_eq_page B 3
+Time: 0.689 ms
+@@T q1_cold_eq_page A 4
+Time: 1.565 ms
+@@T q1_cold_eq_page B 4
+Time: 1.171 ms
+@@T q1_cold_eq_page A 5
+Time: 1.671 ms
+@@T q1_cold_eq_page B 5
+Time: 0.812 ms
+@@T q1_cold_eq_page A 6
+Time: 1.461 ms
+@@T q1_cold_eq_page B 6
+Time: 0.731 ms
+@@T q1_cold_eq_page A 7
+Time: 1.362 ms
+@@T q1_cold_eq_page B 7
+Time: 0.726 ms
+@@T q1_cold_eq_page A 8
+Time: 1.246 ms
+@@T q1_cold_eq_page B 8
+Time: 0.752 ms
+@@T q1_cold_eq_page A 9
+Time: 1.296 ms
+@@T q1_cold_eq_page B 9
+Time: 0.716 ms
+@@T q1_cold_eq_page A 10
+Time: 1.278 ms
+@@T q1_cold_eq_page B 10
+Time: 0.966 ms
+@@T q1_cold_eq_page A 11
+Time: 1.317 ms
+@@T q1_cold_eq_page B 11
+Time: 0.710 ms
+@@T q1_cold_eq_page A 12
+Time: 1.288 ms
+@@T q1_cold_eq_page B 12
+Time: 0.715 ms
+@@T q1_cold_eq_page A 13
+Time: 1.299 ms
+@@T q1_cold_eq_page B 13
+Time: 0.715 ms
+@@T q1_cold_eq_page A 14
+Time: 1.316 ms
+@@T q1_cold_eq_page B 14
+Time: 0.756 ms
+@@T q1_cold_eq_page A 15
+Time: 1.268 ms
+@@T q1_cold_eq_page B 15
+Time: 0.719 ms
+@@T q2_num_hot_count A 0
+Time: 164.256 ms
+@@T q2_num_hot_count Bx 0
+Time: 108.225 ms
+@@T q2_num_hot_count Bp 0
+Time: 232.566 ms
+@@T q2_num_hot_count A 1
+Time: 172.508 ms
+@@T q2_num_hot_count Bx 1
+Time: 99.504 ms
+@@T q2_num_hot_count Bp 1
+Time: 224.463 ms
+@@T q2_num_hot_count A 2
+Time: 168.376 ms
+@@T q2_num_hot_count Bx 2
+Time: 118.122 ms
+@@T q2_num_hot_count Bp 2
+Time: 233.313 ms
+@@T q2_num_hot_count A 3
+Time: 166.164 ms
+@@T q2_num_hot_count Bx 3
+Time: 111.883 ms
+@@T q2_num_hot_count Bp 3
+Time: 240.781 ms
+@@T q2_num_hot_count A 4
+Time: 178.743 ms
+@@T q2_num_hot_count Bx 4
+Time: 119.693 ms
+@@T q2_num_hot_count Bp 4
+Time: 242.129 ms
+@@T q2_num_hot_count A 5
+Time: 171.203 ms
+@@T q2_num_hot_count Bx 5
+Time: 100.047 ms
+@@T q2_num_hot_count Bp 5
+Time: 239.704 ms
+@@T q2_num_hot_count A 6
+Time: 168.916 ms
+@@T q2_num_hot_count Bx 6
+Time: 104.842 ms
+@@T q2_num_hot_count A 7
+Time: 166.590 ms
+@@T q2_num_hot_count Bx 7
+Time: 99.030 ms
+@@T q2_num_hot_count A 8
+Time: 166.918 ms
+@@T q2_num_hot_count Bx 8
+Time: 111.554 ms
+@@T q2_num_hot_count A 9
+Time: 168.421 ms
+@@T q2_num_hot_count Bx 9
+Time: 108.031 ms
+@@T q2_num_hot_count A 10
+Time: 168.401 ms
+@@T q2_num_hot_count Bx 10
+Time: 113.528 ms
+@@T q2_num_hot_count A 11
+Time: 167.655 ms
+@@T q2_num_hot_count Bx 11
+Time: 111.016 ms
+@@T q2_num_hot_count A 12
+Time: 166.530 ms
+@@T q2_num_hot_count Bx 12
+Time: 107.362 ms
+@@T q2_num_hot_count A 13
+Time: 172.075 ms
+@@T q2_num_hot_count Bx 13
+Time: 112.127 ms
+@@T q2_num_hot_count A 14
+Time: 178.019 ms
+@@T q2_num_hot_count Bx 14
+Time: 109.693 ms
+@@T q2_num_hot_count A 15
+Time: 191.476 ms
+@@T q2_num_hot_count Bx 15
+Time: 127.968 ms
+@@T q2_num_hot_page A 0
+Time: 170.499 ms
+@@T q2_num_hot_page Bx 0
+Time: 4.219 ms
+@@T q2_num_hot_page A 1
+Time: 19.129 ms
+@@T q2_num_hot_page Bx 1
+Time: 2.921 ms
+@@T q2_num_hot_page A 2
+Time: 19.958 ms
+@@T q2_num_hot_page Bx 2
+Time: 3.079 ms
+@@T q2_num_hot_page A 3
+Time: 20.001 ms
+@@T q2_num_hot_page Bx 3
+Time: 2.982 ms
+@@T q2_num_hot_page A 4
+Time: 19.118 ms
+@@T q2_num_hot_page Bx 4
+Time: 3.291 ms
+@@T q2_num_hot_page A 5
+Time: 19.278 ms
+@@T q2_num_hot_page Bx 5
+Time: 3.076 ms
+@@T q2_num_hot_page A 6
+Time: 18.823 ms
+@@T q2_num_hot_page Bx 6
+Time: 3.398 ms
+@@T q2_num_hot_page A 7
+Time: 19.208 ms
+@@T q2_num_hot_page Bx 7
+Time: 2.934 ms
+@@T q2_num_hot_page A 8
+Time: 19.492 ms
+@@T q2_num_hot_page Bx 8
+Time: 3.002 ms
+@@T q2_num_hot_page A 9
+Time: 20.615 ms
+@@T q2_num_hot_page Bx 9
+Time: 3.015 ms
+@@T q2_num_hot_page A 10
+Time: 18.973 ms
+@@T q2_num_hot_page Bx 10
+Time: 2.963 ms
+@@T q2_num_hot_page A 11
+Time: 19.256 ms
+@@T q2_num_hot_page Bx 11
+Time: 2.961 ms
+@@T q2_num_hot_page A 12
+Time: 19.075 ms
+@@T q2_num_hot_page Bx 12
+Time: 2.935 ms
+@@T q2_num_hot_page A 13
+Time: 19.077 ms
+@@T q2_num_hot_page Bx 13
+Time: 3.044 ms
+@@T q2_num_hot_page A 14
+Time: 19.504 ms
+@@T q2_num_hot_page Bx 14
+Time: 2.964 ms
+@@T q2_num_hot_page A 15
+Time: 18.842 ms
+@@T q2_num_hot_page Bx 15
+Time: 3.315 ms
+@@T q2_date_hot_count A 0
+Time: 94.873 ms
+@@T q2_date_hot_count Bx 0
+Time: 131.514 ms
+@@T q2_date_hot_count A 1
+Time: 99.878 ms
+@@T q2_date_hot_count Bx 1
+Time: 135.647 ms
+@@T q2_date_hot_count A 2
+Time: 101.840 ms
+@@T q2_date_hot_count Bx 2
+Time: 124.273 ms
+@@T q2_date_hot_count A 3
+Time: 101.007 ms
+@@T q2_date_hot_count Bx 3
+Time: 134.028 ms
+@@T q2_date_hot_count A 4
+Time: 104.160 ms
+@@T q2_date_hot_count Bx 4
+Time: 134.395 ms
+@@T q2_date_hot_count A 5
+Time: 105.293 ms
+@@T q2_date_hot_count Bx 5
+Time: 134.941 ms
+@@T q2_date_hot_count A 6
+Time: 102.477 ms
+@@T q2_date_hot_count Bx 6
+Time: 132.413 ms
+@@T q2_date_hot_count A 7
+Time: 96.740 ms
+@@T q2_date_hot_count Bx 7
+Time: 134.246 ms
+@@T q2_date_hot_count A 8
+Time: 107.785 ms
+@@T q2_date_hot_count Bx 8
+Time: 128.582 ms
+@@T q2_date_hot_count A 9
+Time: 106.712 ms
+@@T q2_date_hot_count Bx 9
+Time: 137.504 ms
+@@T q2_date_hot_count A 10
+Time: 98.421 ms
+@@T q2_date_hot_count Bx 10
+Time: 132.051 ms
+@@T q2_date_hot_count A 11
+Time: 110.914 ms
+@@T q2_date_hot_count Bx 11
+Time: 132.282 ms
+@@T q2_date_hot_count A 12
+Time: 102.187 ms
+@@T q2_date_hot_count Bx 12
+Time: 129.671 ms
+@@T q2_date_hot_count A 13
+Time: 106.027 ms
+@@T q2_date_hot_count Bx 13
+Time: 130.007 ms
+@@T q2_date_hot_count A 14
+Time: 105.664 ms
+@@T q2_date_hot_count Bx 14
+Time: 128.193 ms
+@@T q2_date_hot_count A 15
+Time: 103.593 ms
+@@T q2_date_hot_count Bx 15
+Time: 134.903 ms
+@@T q2_date_hot_page A 0
+Time: 137.308 ms
+@@T q2_date_hot_page Bx 0
+Time: 135.658 ms
+@@T q2_date_hot_page A 1
+Time: 142.944 ms
+@@T q2_date_hot_page Bx 1
+Time: 145.940 ms
+@@T q2_date_hot_page A 2
+Time: 147.398 ms
+@@T q2_date_hot_page Bx 2
+Time: 148.178 ms
+@@T q2_date_hot_page A 3
+Time: 142.324 ms
+@@T q2_date_hot_page Bx 3
+Time: 142.729 ms
+@@T q2_date_hot_page A 4
+Time: 124.762 ms
+@@T q2_date_hot_page Bx 4
+Time: 134.338 ms
+@@T q2_date_hot_page A 5
+Time: 131.473 ms
+@@T q2_date_hot_page Bx 5
+Time: 143.631 ms
+@@T q2_date_hot_page A 6
+Time: 145.488 ms
+@@T q2_date_hot_page Bx 6
+Time: 122.841 ms
+@@T q2_date_hot_page A 7
+Time: 140.655 ms
+@@T q2_date_hot_page Bx 7
+Time: 142.939 ms
+@@T q2_date_hot_page A 8
+Time: 132.783 ms
+@@T q2_date_hot_page Bx 8
+Time: 135.570 ms
+@@T q2_date_hot_page A 9
+Time: 144.413 ms
+@@T q2_date_hot_page Bx 9
+Time: 137.982 ms
+@@T q2_date_hot_page A 10
+Time: 136.403 ms
+@@T q2_date_hot_page Bx 10
+Time: 133.697 ms
+@@T q2_date_hot_page A 11
+Time: 116.852 ms
+@@T q2_date_hot_page Bx 11
+Time: 129.452 ms
+@@T q2_date_hot_page A 12
+Time: 148.066 ms
+@@T q2_date_hot_page Bx 12
+Time: 140.763 ms
+@@T q2_date_hot_page A 13
+Time: 136.798 ms
+@@T q2_date_hot_page Bx 13
+Time: 132.534 ms
+@@T q2_date_hot_page A 14
+Time: 143.262 ms
+@@T q2_date_hot_page Bx 14
+Time: 139.125 ms
+@@T q2_date_hot_page A 15
+Time: 135.716 ms
+@@T q2_date_hot_page Bx 15
+Time: 129.609 ms
+@@T q2_num_cold_count A 0
+Time: 8.339 ms
+@@T q2_num_cold_count B 0
+Time: 117.410 ms
+@@T q2_num_cold_count Bp 0
+Time: 165.737 ms
+@@T q2_num_cold_count A 1
+Time: 1.201 ms
+@@T q2_num_cold_count B 1
+Time: 122.290 ms
+@@T q2_num_cold_count Bp 1
+Time: 173.911 ms
+@@T q2_num_cold_count A 2
+Time: 1.326 ms
+@@T q2_num_cold_count B 2
+Time: 125.169 ms
+@@T q2_num_cold_count Bp 2
+Time: 164.551 ms
+@@T q2_num_cold_count A 3
+Time: 1.432 ms
+@@T q2_num_cold_count B 3
+Time: 117.694 ms
+@@T q2_num_cold_count Bp 3
+Time: 192.374 ms
+@@T q2_num_cold_count A 4
+Time: 1.267 ms
+@@T q2_num_cold_count B 4
+Time: 122.328 ms
+@@T q2_num_cold_count Bp 4
+Time: 167.704 ms
+@@T q2_num_cold_count A 5
+Time: 1.965 ms
+@@T q2_num_cold_count B 5
+Time: 116.711 ms
+@@T q2_num_cold_count Bp 5
+Time: 161.913 ms
+@@T q2_num_cold_count A 6
+Time: 1.327 ms
+@@T q2_num_cold_count A 7
+Time: 1.096 ms
+@@T q2_num_cold_count A 8
+Time: 1.123 ms
+@@T q2_num_cold_count A 9
+Time: 0.992 ms
+@@T q2_num_cold_count A 10
+Time: 1.130 ms
+@@T q2_num_cold_count A 11
+Time: 0.927 ms
+@@T q2_num_cold_count A 12
+Time: 1.367 ms
+@@T q2_num_cold_count A 13
+Time: 1.245 ms
+@@T q2_num_cold_count A 14
+Time: 1.110 ms
+@@T q2_num_cold_count A 15
+Time: 0.946 ms
+@@T q2_num_cold_page A 0
+Time: 0.896 ms
+@@T q2_num_cold_page B 0
+Time: 61.379 ms
+@@T q2_num_cold_page A 1
+Time: 1.333 ms
+@@T q2_num_cold_page B 1
+Time: 38.435 ms
+@@T q2_num_cold_page A 2
+Time: 1.336 ms
+@@T q2_num_cold_page B 2
+Time: 38.178 ms
+@@T q2_num_cold_page A 3
+Time: 1.380 ms
+@@T q2_num_cold_page B 3
+Time: 37.264 ms
+@@T q2_num_cold_page A 4
+Time: 1.284 ms
+@@T q2_num_cold_page B 4
+Time: 37.575 ms
+@@T q2_num_cold_page A 5
+Time: 1.324 ms
+@@T q2_num_cold_page B 5
+Time: 37.390 ms
+@@T q2_num_cold_page A 6
+Time: 1.276 ms
+@@T q2_num_cold_page A 7
+Time: 1.262 ms
+@@T q2_num_cold_page A 8
+Time: 1.049 ms
+@@T q2_num_cold_page A 9
+Time: 1.264 ms
+@@T q2_num_cold_page A 10
+Time: 0.870 ms
+@@T q2_num_cold_page A 11
+Time: 0.925 ms
+@@T q2_num_cold_page A 12
+Time: 0.890 ms
+@@T q2_num_cold_page A 13
+Time: 0.820 ms
+@@T q2_num_cold_page A 14
+Time: 0.855 ms
+@@T q2_num_cold_page A 15
+Time: 0.958 ms
+@@T q2_date_cold_count A 0
+Time: 4.976 ms
+@@T q2_date_cold_count B 0
+Time: 102.388 ms
+@@T q2_date_cold_count A 1
+Time: 0.960 ms
+@@T q2_date_cold_count B 1
+Time: 104.865 ms
+@@T q2_date_cold_count A 2
+Time: 0.933 ms
+@@T q2_date_cold_count B 2
+Time: 123.149 ms
+@@T q2_date_cold_count A 3
+Time: 0.955 ms
+@@T q2_date_cold_count B 3
+Time: 105.689 ms
+@@T q2_date_cold_count A 4
+Time: 0.930 ms
+@@T q2_date_cold_count B 4
+Time: 96.310 ms
+@@T q2_date_cold_count A 5
+Time: 0.965 ms
+@@T q2_date_cold_count B 5
+Time: 104.756 ms
+@@T q2_date_cold_count A 6
+Time: 0.936 ms
+@@T q2_date_cold_count A 7
+Time: 0.736 ms
+@@T q2_date_cold_count A 8
+Time: 0.607 ms
+@@T q2_date_cold_count A 9
+Time: 0.625 ms
+@@T q2_date_cold_count A 10
+Time: 0.615 ms
+@@T q2_date_cold_count A 11
+Time: 0.589 ms
+@@T q2_date_cold_count A 12
+Time: 0.581 ms
+@@T q2_date_cold_count A 13
+Time: 0.746 ms
+@@T q2_date_cold_count A 14
+Time: 0.606 ms
+@@T q2_date_cold_count A 15
+Time: 0.582 ms
+@@T q3_hot2_count A 0
+Time: 747.165 ms
+@@T q3_hot2_count B 0
+Time: 304.052 ms
+@@T q3_hot2_count A 1
+Time: 703.636 ms
+@@T q3_hot2_count B 1
+Time: 293.136 ms
+@@T q3_hot2_count A 2
+Time: 721.666 ms
+@@T q3_hot2_count B 2
+Time: 298.793 ms
+@@T q3_hot2_count A 3
+Time: 722.397 ms
+@@T q3_hot2_count B 3
+Time: 306.117 ms
+@@T q3_hot2_count A 4
+Time: 720.435 ms
+@@T q3_hot2_count B 4
+Time: 299.982 ms
+@@T q3_hot2_count A 5
+Time: 737.557 ms
+@@T q3_hot2_count B 5
+Time: 306.648 ms
+@@T q3_hot2_count A 6
+Time: 715.225 ms
+@@T q3_hot2_count B 6
+Time: 295.134 ms
+@@T q3_hot2_count A 7
+Time: 691.861 ms
+@@T q3_hot2_count B 7
+Time: 298.673 ms
+@@T q3_hot2_count A 8
+Time: 723.239 ms
+@@T q3_hot2_count B 8
+Time: 298.739 ms
+@@T q3_hot2_count A 9
+Time: 705.046 ms
+@@T q3_hot2_count B 9
+Time: 303.567 ms
+@@T q3_hot2_count A 10
+Time: 741.877 ms
+@@T q3_hot2_count B 10
+Time: 306.842 ms
+@@T q3_hot2_count A 11
+Time: 772.066 ms
+@@T q3_hot2_count B 11
+Time: 299.702 ms
+@@T q3_hot2_count A 12
+Time: 756.299 ms
+@@T q3_hot2_count B 12
+Time: 292.582 ms
+@@T q3_hot2_count A 13
+Time: 739.457 ms
+@@T q3_hot2_count B 13
+Time: 299.856 ms
+@@T q3_hot2_count A 14
+Time: 706.655 ms
+@@T q3_hot2_count B 14
+Time: 303.099 ms
+@@T q3_hot2_count A 15
+Time: 684.367 ms
+@@T q3_hot2_count B 15
+Time: 298.205 ms
+@@T q3_hot2_page A 0
+Time: 1277.165 ms (00:01.277)
+@@T q3_hot2_page B 0
+Time: 2.071 ms
+@@T q3_hot2_page A 1
+Time: 1282.040 ms (00:01.282)
+@@T q3_hot2_page B 1
+Time: 2.101 ms
+@@T q3_hot2_page A 2
+Time: 1286.214 ms (00:01.286)
+@@T q3_hot2_page B 2
+Time: 2.038 ms
+@@T q3_hot2_page A 3
+Time: 1347.462 ms (00:01.347)
+@@T q3_hot2_page B 3
+Time: 2.126 ms
+@@T q3_hot2_page A 4
+Time: 1295.245 ms (00:01.295)
+@@T q3_hot2_page B 4
+Time: 2.623 ms
+@@T q3_hot2_page A 5
+Time: 1287.091 ms (00:01.287)
+@@T q3_hot2_page B 5
+Time: 2.131 ms
+@@T q3_hot2_page A 6
+Time: 1285.753 ms (00:01.286)
+@@T q3_hot2_page B 6
+Time: 2.121 ms
+@@T q3_hot2_page A 7
+Time: 1296.402 ms (00:01.296)
+@@T q3_hot2_page B 7
+Time: 2.107 ms
+@@T q3_hot2_page A 8
+Time: 1297.212 ms (00:01.297)
+@@T q3_hot2_page B 8
+Time: 2.164 ms
+@@T q3_hot2_page A 9
+Time: 1285.827 ms (00:01.286)
+@@T q3_hot2_page B 9
+Time: 2.049 ms
+@@T q3_hot2_page A 10
+Time: 1285.451 ms (00:01.285)
+@@T q3_hot2_page B 10
+Time: 2.046 ms
+@@T q3_hot2_page A 11
+Time: 1292.697 ms (00:01.293)
+@@T q3_hot2_page B 11
+Time: 2.118 ms
+@@T q3_hot2_page A 12
+Time: 1295.591 ms (00:01.296)
+@@T q3_hot2_page B 12
+Time: 2.345 ms
+@@T q3_hot2_page A 13
+Time: 1287.140 ms (00:01.287)
+@@T q3_hot2_page B 13
+Time: 2.013 ms
+@@T q3_hot2_page A 14
+Time: 1294.384 ms (00:01.294)
+@@T q3_hot2_page B 14
+Time: 2.201 ms
+@@T q3_hot2_page A 15
+Time: 1292.120 ms (00:01.292)
+@@T q3_hot2_page B 15
+Time: 2.148 ms
+@@T q3_hot_cold_count A 0
+Time: 39.631 ms
+@@T q3_hot_cold_count B 0
+Time: 310.579 ms
+@@T q3_hot_cold_count A 1
+Time: 42.493 ms
+@@T q3_hot_cold_count B 1
+Time: 308.047 ms
+@@T q3_hot_cold_count A 2
+Time: 44.508 ms
+@@T q3_hot_cold_count B 2
+Time: 313.849 ms
+@@T q3_hot_cold_count A 3
+Time: 40.930 ms
+@@T q3_hot_cold_count B 3
+Time: 308.869 ms
+@@T q3_hot_cold_count A 4
+Time: 43.940 ms
+@@T q3_hot_cold_count B 4
+Time: 298.856 ms
+@@T q3_hot_cold_count A 5
+Time: 42.312 ms
+@@T q3_hot_cold_count B 5
+Time: 306.594 ms
+@@T q3_hot_cold_count A 6
+Time: 40.958 ms
+@@T q3_hot_cold_count B 6
+Time: 312.300 ms
+@@T q3_hot_cold_count A 7
+Time: 41.201 ms
+@@T q3_hot_cold_count B 7
+Time: 303.945 ms
+@@T q3_hot_cold_count A 8
+Time: 42.060 ms
+@@T q3_hot_cold_count B 8
+Time: 308.851 ms
+@@T q3_hot_cold_count A 9
+Time: 40.728 ms
+@@T q3_hot_cold_count B 9
+Time: 307.318 ms
+@@T q3_hot_cold_count A 10
+Time: 43.337 ms
+@@T q3_hot_cold_count B 10
+Time: 312.098 ms
+@@T q3_hot_cold_count A 11
+Time: 41.938 ms
+@@T q3_hot_cold_count B 11
+Time: 297.426 ms
+@@T q3_hot_cold_count A 12
+Time: 42.276 ms
+@@T q3_hot_cold_count B 12
+Time: 307.485 ms
+@@T q3_hot_cold_count A 13
+Time: 39.676 ms
+@@T q3_hot_cold_count B 13
+Time: 312.047 ms
+@@T q3_hot_cold_count A 14
+Time: 42.153 ms
+@@T q3_hot_cold_count B 14
+Time: 311.120 ms
+@@T q3_hot_cold_count A 15
+Time: 42.023 ms
+@@T q3_hot_cold_count B 15
+Time: 313.042 ms
+@@T q3_hot_cold_page A 0
+Time: 42.884 ms
+@@T q3_hot_cold_page B 0
+Time: 302.513 ms
+@@T q3_hot_cold_page A 1
+Time: 45.416 ms
+@@T q3_hot_cold_page B 1
+Time: 301.304 ms
+@@T q3_hot_cold_page A 2
+Time: 42.702 ms
+@@T q3_hot_cold_page B 2
+Time: 296.971 ms
+@@T q3_hot_cold_page A 3
+Time: 43.088 ms
+@@T q3_hot_cold_page B 3
+Time: 303.029 ms
+@@T q3_hot_cold_page A 4
+Time: 41.568 ms
+@@T q3_hot_cold_page B 4
+Time: 305.453 ms
+@@T q3_hot_cold_page A 5
+Time: 42.667 ms
+@@T q3_hot_cold_page B 5
+Time: 312.408 ms
+@@T q3_hot_cold_page A 6
+Time: 43.700 ms
+@@T q3_hot_cold_page B 6
+Time: 309.587 ms
+@@T q3_hot_cold_page A 7
+Time: 41.561 ms
+@@T q3_hot_cold_page B 7
+Time: 307.938 ms
+@@T q3_hot_cold_page A 8
+Time: 44.213 ms
+@@T q3_hot_cold_page B 8
+Time: 305.771 ms
+@@T q3_hot_cold_page A 9
+Time: 40.884 ms
+@@T q3_hot_cold_page B 9
+Time: 310.855 ms
+@@T q3_hot_cold_page A 10
+Time: 41.872 ms
+@@T q3_hot_cold_page B 10
+Time: 308.630 ms
+@@T q3_hot_cold_page A 11
+Time: 41.233 ms
+@@T q3_hot_cold_page B 11
+Time: 299.461 ms
+@@T q3_hot_cold_page A 12
+Time: 43.820 ms
+@@T q3_hot_cold_page B 12
+Time: 303.033 ms
+@@T q3_hot_cold_page A 13
+Time: 40.698 ms
+@@T q3_hot_cold_page B 13
+Time: 308.220 ms
+@@T q3_hot_cold_page A 14
+Time: 42.386 ms
+@@T q3_hot_cold_page B 14
+Time: 301.004 ms
+@@T q3_hot_cold_page A 15
+Time: 44.525 ms
+@@T q3_hot_cold_page B 15
+Time: 302.650 ms
+@@T q3_three_count A 0
+Time: 656.675 ms
+@@T q3_three_count B 0
+Time: 308.692 ms
+@@T q3_three_count A 1
+Time: 684.623 ms
+@@T q3_three_count B 1
+Time: 318.368 ms
+@@T q3_three_count A 2
+Time: 674.444 ms
+@@T q3_three_count B 2
+Time: 316.861 ms
+@@T q3_three_count A 3
+Time: 673.709 ms
+@@T q3_three_count B 3
+Time: 318.001 ms
+@@T q3_three_count A 4
+Time: 662.088 ms
+@@T q3_three_count B 4
+Time: 320.392 ms
+@@T q3_three_count A 5
+Time: 671.696 ms
+@@T q3_three_count B 5
+Time: 327.394 ms
+@@T q3_three_count A 6
+Time: 753.581 ms
+@@T q3_three_count B 6
+Time: 323.349 ms
+@@T q3_three_count A 7
+Time: 682.265 ms
+@@T q3_three_count B 7
+Time: 321.606 ms
+@@T q3_three_count A 8
+Time: 680.787 ms
+@@T q3_three_count B 8
+Time: 324.033 ms
+@@T q3_three_count A 9
+Time: 676.314 ms
+@@T q3_three_count B 9
+Time: 320.510 ms
+@@T q3_three_count A 10
+Time: 677.998 ms
+@@T q3_three_count B 10
+Time: 322.059 ms
+@@T q3_three_count A 11
+Time: 665.303 ms
+@@T q3_three_count B 11
+Time: 320.361 ms
+@@T q3_three_count A 12
+Time: 653.577 ms
+@@T q3_three_count B 12
+Time: 313.495 ms
+@@T q3_three_count A 13
+Time: 655.989 ms
+@@T q3_three_count B 13
+Time: 319.240 ms
+@@T q3_three_count A 14
+Time: 680.108 ms
+@@T q3_three_count B 14
+Time: 320.161 ms
+@@T q3_three_count A 15
+Time: 672.803 ms
+@@T q3_three_count B 15
+Time: 321.291 ms
+@@T q3_three_page A 0
+Time: 658.194 ms
+@@T q3_three_page B 0
+Time: 3.247 ms
+@@T q3_three_page A 1
+Time: 665.658 ms
+@@T q3_three_page B 1
+Time: 3.032 ms
+@@T q3_three_page A 2
+Time: 661.193 ms
+@@T q3_three_page B 2
+Time: 2.697 ms
+@@T q3_three_page A 3
+Time: 677.235 ms
+@@T q3_three_page B 3
+Time: 2.743 ms
+@@T q3_three_page A 4
+Time: 726.691 ms
+@@T q3_three_page B 4
+Time: 2.906 ms
+@@T q3_three_page A 5
+Time: 745.981 ms
+@@T q3_three_page B 5
+Time: 2.898 ms
+@@T q3_three_page A 6
+Time: 736.862 ms
+@@T q3_three_page B 6
+Time: 2.897 ms
+@@T q3_three_page A 7
+Time: 740.186 ms
+@@T q3_three_page B 7
+Time: 3.204 ms
+@@T q3_three_page A 8
+Time: 732.044 ms
+@@T q3_three_page B 8
+Time: 3.109 ms
+@@T q3_three_page A 9
+Time: 723.167 ms
+@@T q3_three_page B 9
+Time: 2.797 ms
+@@T q3_three_page A 10
+Time: 723.195 ms
+@@T q3_three_page B 10
+Time: 2.964 ms
+@@T q3_three_page A 11
+Time: 790.295 ms
+@@T q3_three_page B 11
+Time: 2.915 ms
+@@T q3_three_page A 12
+Time: 747.593 ms
+@@T q3_three_page B 12
+Time: 2.899 ms
+@@T q3_three_page A 13
+Time: 757.635 ms
+@@T q3_three_page B 13
+Time: 2.967 ms
+@@T q3_three_page A 14
+Time: 720.840 ms
+@@T q3_three_page B 14
+Time: 3.020 ms
+@@T q3_three_page A 15
+Time: 730.218 ms
+@@T q3_three_page B 15
+Time: 3.195 ms
+@@T q4_sort_hot_all A 0
+Time: 2.515 ms
+@@T q4_sort_hot_all Bx 0
+Time: 0.518 ms
+@@T q4_sort_hot_all A 1
+Time: 0.675 ms
+@@T q4_sort_hot_all Bx 1
+Time: 0.307 ms
+@@T q4_sort_hot_all A 2
+Time: 0.586 ms
+@@T q4_sort_hot_all Bx 2
+Time: 0.283 ms
+@@T q4_sort_hot_all A 3
+Time: 0.627 ms
+@@T q4_sort_hot_all Bx 3
+Time: 0.245 ms
+@@T q4_sort_hot_all A 4
+Time: 0.609 ms
+@@T q4_sort_hot_all Bx 4
+Time: 0.280 ms
+@@T q4_sort_hot_all A 5
+Time: 0.650 ms
+@@T q4_sort_hot_all Bx 5
+Time: 0.244 ms
+@@T q4_sort_hot_all A 6
+Time: 0.574 ms
+@@T q4_sort_hot_all Bx 6
+Time: 0.247 ms
+@@T q4_sort_hot_all A 7
+Time: 0.573 ms
+@@T q4_sort_hot_all Bx 7
+Time: 0.240 ms
+@@T q4_sort_hot_all A 8
+Time: 0.586 ms
+@@T q4_sort_hot_all Bx 8
+Time: 0.219 ms
+@@T q4_sort_hot_all A 9
+Time: 0.883 ms
+@@T q4_sort_hot_all Bx 9
+Time: 0.337 ms
+@@T q4_sort_hot_all A 10
+Time: 0.656 ms
+@@T q4_sort_hot_all Bx 10
+Time: 0.254 ms
+@@T q4_sort_hot_all A 11
+Time: 0.686 ms
+@@T q4_sort_hot_all Bx 11
+Time: 0.325 ms
+@@T q4_sort_hot_all A 12
+Time: 0.605 ms
+@@T q4_sort_hot_all Bx 12
+Time: 0.250 ms
+@@T q4_sort_hot_all A 13
+Time: 0.643 ms
+@@T q4_sort_hot_all Bx 13
+Time: 0.269 ms
+@@T q4_sort_hot_all A 14
+Time: 0.606 ms
+@@T q4_sort_hot_all Bx 14
+Time: 0.257 ms
+@@T q4_sort_hot_all A 15
+Time: 0.648 ms
+@@T q4_sort_hot_all Bx 15
+Time: 0.271 ms
+@@T q4_sort_hot_vis A 0
+Time: 7.079 ms
+@@T q4_sort_hot_vis Bx 0
+Time: 2.463 ms
+@@T q4_sort_hot_vis A 1
+Time: 2.716 ms
+@@T q4_sort_hot_vis Bx 1
+Time: 0.784 ms
+@@T q4_sort_hot_vis A 2
+Time: 2.371 ms
+@@T q4_sort_hot_vis Bx 2
+Time: 0.822 ms
+@@T q4_sort_hot_vis A 3
+Time: 2.306 ms
+@@T q4_sort_hot_vis Bx 3
+Time: 0.816 ms
+@@T q4_sort_hot_vis A 4
+Time: 2.556 ms
+@@T q4_sort_hot_vis Bx 4
+Time: 1.039 ms
+@@T q4_sort_hot_vis A 5
+Time: 2.425 ms
+@@T q4_sort_hot_vis Bx 5
+Time: 0.864 ms
+@@T q4_sort_hot_vis A 6
+Time: 2.376 ms
+@@T q4_sort_hot_vis Bx 6
+Time: 0.829 ms
+@@T q4_sort_hot_vis A 7
+Time: 2.534 ms
+@@T q4_sort_hot_vis Bx 7
+Time: 0.814 ms
+@@T q4_sort_hot_vis A 8
+Time: 2.283 ms
+@@T q4_sort_hot_vis Bx 8
+Time: 0.831 ms
+@@T q4_sort_hot_vis A 9
+Time: 2.491 ms
+@@T q4_sort_hot_vis Bx 9
+Time: 0.843 ms
+@@T q4_sort_hot_vis A 10
+Time: 2.519 ms
+@@T q4_sort_hot_vis Bx 10
+Time: 0.786 ms
+@@T q4_sort_hot_vis A 11
+Time: 2.418 ms
+@@T q4_sort_hot_vis Bx 11
+Time: 0.794 ms
+@@T q4_sort_hot_vis A 12
+Time: 2.191 ms
+@@T q4_sort_hot_vis Bx 12
+Time: 0.706 ms
+@@T q4_sort_hot_vis A 13
+Time: 2.413 ms
+@@T q4_sort_hot_vis Bx 13
+Time: 0.843 ms
+@@T q4_sort_hot_vis A 14
+Time: 2.294 ms
+@@T q4_sort_hot_vis Bx 14
+Time: 0.762 ms
+@@T q4_sort_hot_vis A 15
+Time: 2.196 ms
+@@T q4_sort_hot_vis Bx 15
+Time: 0.772 ms
+@@T q4_sort_cold_vis A 0
+Time: 6.124 ms
+@@T q4_sort_cold_vis B 0
+Time: 103.139 ms
+@@T q4_sort_cold_vis A 1
+Time: 6.709 ms
+@@T q4_sort_cold_vis B 1
+Time: 94.420 ms
+@@T q4_sort_cold_vis A 2
+Time: 6.689 ms
+@@T q4_sort_cold_vis B 2
+Time: 101.247 ms
+@@T q4_sort_cold_vis A 3
+Time: 6.747 ms
+@@T q4_sort_cold_vis B 3
+Time: 96.421 ms
+@@T q4_sort_cold_vis A 4
+Time: 6.783 ms
+@@T q4_sort_cold_vis B 4
+Time: 101.673 ms
+@@T q4_sort_cold_vis A 5
+Time: 6.736 ms
+@@T q4_sort_cold_vis B 5
+Time: 108.977 ms
+@@T q4_sort_cold_vis A 6
+Time: 7.169 ms
+@@T q4_sort_cold_vis B 6
+Time: 104.526 ms
+@@T q4_sort_cold_vis A 7
+Time: 6.926 ms
+@@T q4_sort_cold_vis B 7
+Time: 101.531 ms
+@@T q4_sort_cold_vis A 8
+Time: 6.698 ms
+@@T q4_sort_cold_vis B 8
+Time: 103.207 ms
+@@T q4_sort_cold_vis A 9
+Time: 7.881 ms
+@@T q4_sort_cold_vis B 9
+Time: 97.985 ms
+@@T q4_sort_cold_vis A 10
+Time: 6.821 ms
+@@T q4_sort_cold_vis B 10
+Time: 104.292 ms
+@@T q4_sort_cold_vis A 11
+Time: 6.695 ms
+@@T q4_sort_cold_vis B 11
+Time: 97.045 ms
+@@T q4_sort_cold_vis A 12
+Time: 6.718 ms
+@@T q4_sort_cold_vis B 12
+Time: 99.822 ms
+@@T q4_sort_cold_vis A 13
+Time: 6.755 ms
+@@T q4_sort_cold_vis B 13
+Time: 94.249 ms
+@@T q4_sort_cold_vis A 14
+Time: 6.808 ms
+@@T q4_sort_cold_vis B 14
+Time: 102.602 ms
+@@T q4_sort_cold_vis A 15
+Time: 7.387 ms
+@@T q4_sort_cold_vis B 15
+Time: 98.636 ms
+@@T q4_sort_date_filtered A 0
+Time: 84.831 ms
+@@T q4_sort_date_filtered Bx 0
+Time: 25.675 ms
+@@T q4_sort_date_filtered A 1
+Time: 79.694 ms
+@@T q4_sort_date_filtered Bx 1
+Time: 25.869 ms
+@@T q4_sort_date_filtered A 2
+Time: 77.332 ms
+@@T q4_sort_date_filtered Bx 2
+Time: 25.719 ms
+@@T q4_sort_date_filtered A 3
+Time: 77.056 ms
+@@T q4_sort_date_filtered Bx 3
+Time: 25.875 ms
+@@T q4_sort_date_filtered A 4
+Time: 77.193 ms
+@@T q4_sort_date_filtered Bx 4
+Time: 26.123 ms
+@@T q4_sort_date_filtered A 5
+Time: 76.451 ms
+@@T q4_sort_date_filtered Bx 5
+Time: 26.291 ms
+@@T q4_sort_date_filtered A 6
+Time: 77.754 ms
+@@T q4_sort_date_filtered Bx 6
+Time: 26.800 ms
+@@T q4_sort_date_filtered A 7
+Time: 77.940 ms
+@@T q4_sort_date_filtered Bx 7
+Time: 26.040 ms
+@@T q4_sort_date_filtered A 8
+Time: 76.382 ms
+@@T q4_sort_date_filtered Bx 8
+Time: 25.946 ms
+@@T q4_sort_date_filtered A 9
+Time: 75.604 ms
+@@T q4_sort_date_filtered Bx 9
+Time: 25.579 ms
+@@T q4_sort_date_filtered A 10
+Time: 77.439 ms
+@@T q4_sort_date_filtered Bx 10
+Time: 25.712 ms
+@@T q4_sort_date_filtered A 11
+Time: 75.857 ms
+@@T q4_sort_date_filtered Bx 11
+Time: 25.834 ms
+@@T q4_sort_date_filtered A 12
+Time: 76.929 ms
+@@T q4_sort_date_filtered Bx 12
+Time: 25.776 ms
+@@T q4_sort_date_filtered A 13
+Time: 87.373 ms
+@@T q4_sort_date_filtered Bx 13
+Time: 26.513 ms
+@@T q4_sort_date_filtered A 14
+Time: 78.136 ms
+@@T q4_sort_date_filtered Bx 14
+Time: 25.820 ms
+@@T q4_sort_date_filtered A 15
+Time: 79.454 ms
+@@T q4_sort_date_filtered Bx 15
+Time: 26.046 ms
+@@T q5_group_hot_all A 0
+Time: 50.619 ms
+@@T q5_group_hot_all B 0
+Time: 197.068 ms
+@@T q5_group_hot_all A 1
+Time: 35.681 ms
+@@T q5_group_hot_all B 1
+Time: 187.934 ms
+@@T q5_group_hot_all A 2
+Time: 41.662 ms
+@@T q5_group_hot_all B 2
+Time: 189.003 ms
+@@T q5_group_hot_all A 3
+Time: 36.919 ms
+@@T q5_group_hot_all B 3
+Time: 189.101 ms
+@@T q5_group_hot_all A 4
+Time: 47.729 ms
+@@T q5_group_hot_all B 4
+Time: 183.363 ms
+@@T q5_group_hot_all A 5
+Time: 35.673 ms
+@@T q5_group_hot_all B 5
+Time: 213.838 ms
+@@T q5_group_hot_all A 6
+Time: 48.841 ms
+@@T q5_group_hot_all A 7
+Time: 43.289 ms
+@@T q5_group_hot_all A 8
+Time: 40.290 ms
+@@T q5_group_hot_all A 9
+Time: 41.283 ms
+@@T q5_group_hot_all A 10
+Time: 36.761 ms
+@@T q5_group_hot_all A 11
+Time: 36.735 ms
+@@T q5_group_hot_all A 12
+Time: 42.024 ms
+@@T q5_group_hot_all A 13
+Time: 45.190 ms
+@@T q5_group_hot_all A 14
+Time: 42.937 ms
+@@T q5_group_hot_all A 15
+Time: 41.745 ms
+@@T q5_group_hot_vis A 0
+Time: 363.805 ms
+@@T q5_group_hot_vis B 0
+Time: 111.267 ms
+@@T q5_group_hot_vis A 1
+Time: 363.489 ms
+@@T q5_group_hot_vis B 1
+Time: 105.371 ms
+@@T q5_group_hot_vis A 2
+Time: 357.377 ms
+@@T q5_group_hot_vis B 2
+Time: 114.633 ms
+@@T q5_group_hot_vis A 3
+Time: 372.424 ms
+@@T q5_group_hot_vis B 3
+Time: 107.881 ms
+@@T q5_group_hot_vis A 4
+Time: 371.220 ms
+@@T q5_group_hot_vis B 4
+Time: 114.678 ms
+@@T q5_group_hot_vis A 5
+Time: 358.782 ms
+@@T q5_group_hot_vis B 5
+Time: 105.487 ms
+@@T q5_group_hot_vis A 6
+Time: 380.206 ms
+@@T q5_group_hot_vis B 6
+Time: 108.701 ms
+@@T q5_group_hot_vis A 7
+Time: 392.337 ms
+@@T q5_group_hot_vis B 7
+Time: 112.719 ms
+@@T q5_group_hot_vis A 8
+Time: 381.500 ms
+@@T q5_group_hot_vis B 8
+Time: 122.474 ms
+@@T q5_group_hot_vis A 9
+Time: 387.740 ms
+@@T q5_group_hot_vis B 9
+Time: 125.603 ms
+@@T q5_group_hot_vis A 10
+Time: 395.117 ms
+@@T q5_group_hot_vis B 10
+Time: 123.463 ms
+@@T q5_group_hot_vis A 11
+Time: 417.123 ms
+@@T q5_group_hot_vis B 11
+Time: 155.718 ms
+@@T q5_group_hot_vis A 12
+Time: 533.259 ms
+@@T q5_group_hot_vis B 12
+Time: 203.774 ms
+@@T q5_group_hot_vis A 13
+Time: 419.056 ms
+@@T q5_group_hot_vis B 13
+Time: 117.121 ms
+@@T q5_group_hot_vis A 14
+Time: 396.026 ms
+@@T q5_group_hot_vis B 14
+Time: 116.548 ms
+@@T q5_group_hot_vis A 15
+Time: 397.810 ms
+@@T q5_group_hot_vis B 15
+Time: 150.824 ms
+@@T q5_group_cold_all A 0
+Time: 0.759 ms
+@@T q5_group_cold_all B 0
+Time: 310.221 ms
+@@T q5_group_cold_all A 1
+Time: 0.557 ms
+@@T q5_group_cold_all B 1
+Time: 301.130 ms
+@@T q5_group_cold_all A 2
+Time: 0.580 ms
+@@T q5_group_cold_all B 2
+Time: 288.434 ms
+@@T q5_group_cold_all A 3
+Time: 0.553 ms
+@@T q5_group_cold_all B 3
+Time: 290.161 ms
+@@T q5_group_cold_all A 4
+Time: 0.579 ms
+@@T q5_group_cold_all B 4
+Time: 287.349 ms
+@@T q5_group_cold_all A 5
+Time: 0.533 ms
+@@T q5_group_cold_all B 5
+Time: 285.562 ms
+@@T q5_group_cold_all A 6
+Time: 0.601 ms
+@@T q5_group_cold_all A 7
+Time: 0.554 ms
+@@T q5_group_cold_all A 8
+Time: 0.490 ms
+@@T q5_group_cold_all A 9
+Time: 0.583 ms
+@@T q5_group_cold_all A 10
+Time: 0.497 ms
+@@T q5_group_cold_all A 11
+Time: 0.442 ms
+@@T q5_group_cold_all A 12
+Time: 0.578 ms
+@@T q5_group_cold_all A 13
+Time: 0.567 ms
+@@T q5_group_cold_all A 14
+Time: 0.461 ms
+@@T q5_group_cold_all A 15
+Time: 0.555 ms
+@@T q5_sum_hot_vis A 0
+Time: 693.615 ms
+@@T q5_sum_hot_vis B 0
+Time: 96.365 ms
+@@T q5_sum_hot_vis A 1
+Time: 683.671 ms
+@@T q5_sum_hot_vis B 1
+Time: 101.613 ms
+@@T q5_sum_hot_vis A 2
+Time: 692.311 ms
+@@T q5_sum_hot_vis B 2
+Time: 109.960 ms
+@@T q5_sum_hot_vis A 3
+Time: 724.849 ms
+@@T q5_sum_hot_vis B 3
+Time: 110.957 ms
+@@T q5_sum_hot_vis A 4
+Time: 742.907 ms
+@@T q5_sum_hot_vis B 4
+Time: 112.584 ms
+@@T q5_sum_hot_vis A 5
+Time: 737.640 ms
+@@T q5_sum_hot_vis B 5
+Time: 109.075 ms
+@@T q5_sum_hot_vis A 6
+Time: 735.917 ms
+@@T q5_sum_hot_vis B 6
+Time: 110.444 ms
+@@T q5_sum_hot_vis A 7
+Time: 742.355 ms
+@@T q5_sum_hot_vis B 7
+Time: 107.443 ms
+@@T q5_sum_hot_vis A 8
+Time: 769.901 ms
+@@T q5_sum_hot_vis B 8
+Time: 110.409 ms
+@@T q5_sum_hot_vis A 9
+Time: 722.804 ms
+@@T q5_sum_hot_vis B 9
+Time: 105.854 ms
+@@T q5_sum_hot_vis A 10
+Time: 736.320 ms
+@@T q5_sum_hot_vis B 10
+Time: 104.954 ms
+@@T q5_sum_hot_vis A 11
+Time: 699.139 ms
+@@T q5_sum_hot_vis B 11
+Time: 102.120 ms
+@@T q5_sum_hot_vis A 12
+Time: 719.652 ms
+@@T q5_sum_hot_vis B 12
+Time: 106.093 ms
+@@T q5_sum_hot_vis A 13
+Time: 751.024 ms
+@@T q5_sum_hot_vis B 13
+Time: 105.758 ms
+@@T q5_sum_hot_vis A 14
+Time: 768.585 ms
+@@T q5_sum_hot_vis B 14
+Time: 106.882 ms
+@@T q5_sum_hot_vis A 15
+Time: 701.918 ms
+@@T q5_sum_hot_vis B 15
+Time: 111.399 ms
+@@T q5_group_sum_vis A 0
+Time: 469.525 ms
+@@T q5_group_sum_vis B 0
+Time: 119.395 ms
+@@T q5_group_sum_vis A 1
+Time: 476.224 ms
+@@T q5_group_sum_vis B 1
+Time: 124.970 ms
+@@T q5_group_sum_vis A 2
+Time: 474.746 ms
+@@T q5_group_sum_vis B 2
+Time: 134.394 ms
+@@T q5_group_sum_vis A 3
+Time: 485.434 ms
+@@T q5_group_sum_vis B 3
+Time: 119.520 ms
+@@T q5_group_sum_vis A 4
+Time: 471.210 ms
+@@T q5_group_sum_vis B 4
+Time: 131.048 ms
+@@T q5_group_sum_vis A 5
+Time: 476.400 ms
+@@T q5_group_sum_vis B 5
+Time: 141.334 ms
+@@T q5_group_sum_vis A 6
+Time: 537.326 ms
+@@T q5_group_sum_vis B 6
+Time: 142.491 ms
+@@T q5_group_sum_vis A 7
+Time: 491.014 ms
+@@T q5_group_sum_vis B 7
+Time: 121.201 ms
+@@T q5_group_sum_vis A 8
+Time: 483.669 ms
+@@T q5_group_sum_vis B 8
+Time: 184.964 ms
+@@T q5_group_sum_vis A 9
+Time: 479.138 ms
+@@T q5_group_sum_vis B 9
+Time: 133.214 ms
+@@T q5_group_sum_vis A 10
+Time: 456.495 ms
+@@T q5_group_sum_vis B 10
+Time: 119.515 ms
+@@T q5_group_sum_vis A 11
+Time: 453.914 ms
+@@T q5_group_sum_vis B 11
+Time: 136.218 ms
+@@T q5_group_sum_vis A 12
+Time: 478.411 ms
+@@T q5_group_sum_vis B 12
+Time: 125.743 ms
+@@T q5_group_sum_vis A 13
+Time: 466.975 ms
+@@T q5_group_sum_vis B 13
+Time: 125.987 ms
+@@T q5_group_sum_vis A 14
+Time: 463.940 ms
+@@T q5_group_sum_vis B 14
+Time: 120.095 ms
+@@T q5_group_sum_vis A 15
+Time: 467.424 ms
+@@T q5_group_sum_vis B 15
+Time: 130.082 ms
+@@T q9_page_render A 0
+Time: 3.189 ms
+@@T q9_page_render B 0
+Time: 0.827 ms
+@@T q9_page_render C 0
+Time: 1.266 ms
+@@T q9_page_render A 1
+Time: 1.780 ms
+@@T q9_page_render B 1
+Time: 0.751 ms
+@@T q9_page_render C 1
+Time: 0.662 ms
+@@T q9_page_render A 2
+Time: 2.121 ms
+@@T q9_page_render B 2
+Time: 0.672 ms
+@@T q9_page_render C 2
+Time: 0.685 ms
+@@T q9_page_render A 3
+Time: 1.766 ms
+@@T q9_page_render B 3
+Time: 0.621 ms
+@@T q9_page_render C 3
+Time: 0.627 ms
+@@T q9_page_render A 4
+Time: 2.338 ms
+@@T q9_page_render B 4
+Time: 0.596 ms
+@@T q9_page_render C 4
+Time: 0.626 ms
+@@T q9_page_render A 5
+Time: 1.962 ms
+@@T q9_page_render B 5
+Time: 0.661 ms
+@@T q9_page_render C 5
+Time: 0.642 ms
+@@T q9_page_render A 6
+Time: 1.802 ms
+@@T q9_page_render B 6
+Time: 0.658 ms
+@@T q9_page_render C 6
+Time: 0.639 ms
+@@T q9_page_render A 7
+Time: 1.731 ms
+@@T q9_page_render B 7
+Time: 0.611 ms
+@@T q9_page_render C 7
+Time: 0.672 ms
+@@T q9_page_render A 8
+Time: 1.598 ms
+@@T q9_page_render B 8
+Time: 0.692 ms
+@@T q9_page_render C 8
+Time: 0.663 ms
+@@T q9_page_render A 9
+Time: 1.758 ms
+@@T q9_page_render B 9
+Time: 0.639 ms
+@@T q9_page_render C 9
+Time: 0.580 ms
+@@T q9_page_render A 10
+Time: 1.606 ms
+@@T q9_page_render B 10
+Time: 0.589 ms
+@@T q9_page_render C 10
+Time: 0.548 ms
+@@T q9_page_render A 11
+Time: 1.681 ms
+@@T q9_page_render B 11
+Time: 0.578 ms
+@@T q9_page_render C 11
+Time: 0.694 ms
+@@T q9_page_render A 12
+Time: 3.351 ms
+@@T q9_page_render B 12
+Time: 0.663 ms
+@@T q9_page_render C 12
+Time: 0.562 ms
+@@T q9_page_render A 13
+Time: 1.634 ms
+@@T q9_page_render B 13
+Time: 0.586 ms
+@@T q9_page_render C 13
+Time: 0.580 ms
+@@T q9_page_render A 14
+Time: 1.579 ms
+@@T q9_page_render B 14
+Time: 0.636 ms
+@@T q9_page_render C 14
+Time: 0.687 ms
+@@T q9_page_render A 15
+Time: 1.683 ms
+@@T q9_page_render B 15
+Time: 0.674 ms
+@@T q9_page_render C 15
+Time: 0.597 ms

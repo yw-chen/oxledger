@@ -1,0 +1,26 @@
+relation	kind	parent	MB
+issue_cf	table	issue_cf	1004.5
+issue_cf_bool	index	issue_cf	9.0
+issue_cf_date	index	issue_cf	24.4
+issue_cf_num	index	issue_cf	123.1
+issue_cf_pkey	index	issue_cf	687.2
+issue_cf_ref	index	issue_cf	13.4
+issue_cf_text	index	issue_cf	66.1
+issues_a	table	issues_a	156.3
+issues_a_pkey	index	issues_a	30.1
+issues_a_vis	index	issues_a	15.7
+issues_b	table	issues_b	513.6
+issues_b_f1	index	issues_b	21.5
+issues_b_f2	index	issues_b	6.8
+issues_b_f3	index	issues_b	6.6
+issues_b_f4	index	issues_b	7.1
+issues_b_f8	index	issues_b	21.5
+issues_b_gin	index	issues_b	242.0
+issues_b_pkey	index	issues_b	30.1
+issues_b_vis	index	issues_b	15.7
+issues_c	table	issues_c	513.6
+issues_c_pkey	index	issues_c	30.1
+issues_c_vis	index	issues_c	15.7
+TOTAL A			2129.9
+TOTAL B			864.9
+TOTAL C			2487.2

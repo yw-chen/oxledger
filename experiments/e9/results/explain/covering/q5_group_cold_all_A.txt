@@ -1,0 +1,12 @@
+GroupAggregate  (cost=0.56..131.76 rows=1709 width=14) (actual time=0.149..0.725 rows=41.00 loops=1)
+  Group Key: v_text
+  Buffers: shared hit=160 read=28
+  ->  Index Only Scan using issue_cf_text_cov on issue_cf  (cost=0.56..102.64 rows=2405 width=6) (actual time=0.043..0.445 rows=3181.00 loops=1)
+        Index Cond: (field_id = 807)
+        Heap Fetches: 0
+        Index Searches: 1
+        Buffers: shared hit=160 read=28
+Planning:
+  Buffers: shared hit=192 read=42
+Planning Time: 0.761 ms
+Execution Time: 0.779 ms

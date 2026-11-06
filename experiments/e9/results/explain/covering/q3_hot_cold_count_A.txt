@@ -1,0 +1,30 @@
+Aggregate  (cost=1433.24..1433.25 rows=1 width=8) (actual time=33.606..33.609 rows=1.00 loops=1)
+  Buffers: shared hit=1657 read=1318
+  ->  Nested Loop  (cost=20.13..1433.24 rows=1 width=0) (actual time=1.046..33.598 rows=21.00 loops=1)
+        Buffers: shared hit=1657 read=1318
+        ->  Hash Join  (cost=19.63..1312.14 rows=35 width=32) (actual time=0.565..30.833 rows=231.00 loops=1)
+              Hash Cond: (c.issue_id = c_1.issue_id)
+              Buffers: shared hit=983 read=1068
+              ->  Index Only Scan using issue_cf_text_cov on issue_cf c  (cost=0.56..1221.08 rows=27426 width=16) (actual time=0.035..18.798 rows=175968.00 loops=1)
+                    Index Cond: ((field_id = 3) AND (v_text = 'opt1'::text))
+                    Heap Fetches: 0
+                    Index Searches: 1
+                    Buffers: shared hit=10 read=1058
+              ->  Hash  (cost=15.27..15.27 rows=304 width=16) (actual time=0.487..0.488 rows=1290.00 loops=1)
+                    Buckets: 2048 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 77kB
+                    Buffers: shared hit=973 read=10
+                    ->  Index Only Scan using issue_cf_num_cov on issue_cf c_1  (cost=0.43..15.27 rows=304 width=16) (actual time=0.038..0.325 rows=1290.00 loops=1)
+                          Index Cond: ((field_id = 800) AND (v_num >= '1000'::numeric) AND (v_num <= '5000'::numeric))
+                          Heap Fetches: 0
+                          Index Searches: 1
+                          Buffers: shared hit=973 read=10
+        ->  Index Scan using issues_a_pkey on issues_a i  (cost=0.50..3.46 rows=1 width=16) (actual time=0.011..0.011 rows=0.09 loops=231)
+              Index Cond: (id = c.issue_id)
+              Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])))
+              Rows Removed by Filter: 1
+              Index Searches: 231
+              Buffers: shared hit=674 read=250
+Planning:
+  Buffers: shared hit=505 read=2
+Planning Time: 1.529 ms
+Execution Time: 33.675 ms

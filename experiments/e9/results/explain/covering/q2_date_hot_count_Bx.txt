@@ -1,0 +1,14 @@
+Aggregate  (cost=1615.84..1615.85 rows=1 width=8) (actual time=135.664..135.666 rows=1.00 loops=1)
+  Buffers: shared hit=1063 read=8117
+  ->  Bitmap Heap Scan on issues_b  (cost=8.79..1614.78 rows=426 width=0) (actual time=2.941..133.526 rows=9758.00 loops=1)
+        Recheck Cond: (((fields ->> '2'::text) >= '2024-01-01'::text) AND ((fields ->> '2'::text) <= '2024-01-31'::text))
+        Heap Blocks: exact=9169
+        Buffers: shared hit=1063 read=8117
+        ->  Bitmap Index Scan on issues_b_f2  (cost=0.00..8.69 rows=426 width=0) (actual time=1.825..1.825 rows=9758.00 loops=1)
+              Index Cond: (((fields ->> '2'::text) >= '2024-01-01'::text) AND ((fields ->> '2'::text) <= '2024-01-31'::text))
+              Index Searches: 1
+              Buffers: shared read=11
+Planning:
+  Buffers: shared hit=189
+Planning Time: 0.489 ms
+Execution Time: 135.781 ms

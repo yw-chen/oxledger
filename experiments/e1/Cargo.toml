@@ -1,0 +1,27 @@
+# Experiment E1: Traditional Chinese retrieval quality (see README.md).
+# Standalone package — not a member of the root workspace.
+[package]
+name = "e1-eval"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0.104"
+oxledger = { path = "../../crates/oxledger" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tantivy = "0.27.0"
+# Scheme d. Unicode-3.0; CJ dictionary = ICU cjdict (libtabe + IPADIC).
+icu_segmenter = { version = "2.4.0", optional = true }
+# Scheme e. Code MIT; the CC-CEDICT dictionary is CC BY-SA 4.0 (experiment only,
+# not GPL-2.0 compatible). Its build script downloads the dictionary from lindera.dev.
+lindera = { version = "6.2.0", optional = true, default-features = false, features = ["embed-cc-cedict"] }
+
+[features]
+default = []
+icu = ["dep:icu_segmenter"]
+lindera = ["dep:lindera"]

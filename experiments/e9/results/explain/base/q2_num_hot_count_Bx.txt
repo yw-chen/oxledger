@@ -1,0 +1,14 @@
+Aggregate  (cost=25564.58..25564.59 rows=1 width=8) (actual time=127.932..127.933 rows=1.00 loops=1)
+  Buffers: shared hit=94 read=7593
+  ->  Bitmap Heap Scan on issues_b  (cost=198.74..25541.58 rows=9201 width=0) (actual time=2.321..125.972 rows=8123.00 loops=1)
+        Recheck Cond: ((((fields ->> '8'::text))::numeric >= '100'::numeric) AND (((fields ->> '8'::text))::numeric <= '110'::numeric))
+        Heap Blocks: exact=7662
+        Buffers: shared hit=94 read=7593
+        ->  Bitmap Index Scan on issues_b_f8  (cost=0.00..196.44 rows=9201 width=0) (actual time=1.368..1.368 rows=8123.00 loops=1)
+              Index Cond: ((((fields ->> '8'::text))::numeric >= '100'::numeric) AND (((fields ->> '8'::text))::numeric <= '110'::numeric))
+              Index Searches: 1
+              Buffers: shared read=25
+Planning:
+  Buffers: shared hit=186 read=2
+Planning Time: 0.627 ms
+Execution Time: 128.059 ms

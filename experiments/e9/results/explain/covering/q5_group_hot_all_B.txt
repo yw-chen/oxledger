@@ -1,0 +1,27 @@
+Finalize GroupAggregate  (cost=74897.89..74899.41 rows=5 width=40) (actual time=239.162..242.739 rows=5.00 loops=1)
+  Group Key: ((fields ->> '3'::text))
+  Buffers: shared hit=6579 read=59154
+  ->  Gather Merge  (cost=74897.89..74899.29 rows=12 width=40) (actual time=239.158..242.733 rows=15.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=6579 read=59154
+        ->  Sort  (cost=73897.86..73897.88 rows=5 width=40) (actual time=235.721..235.722 rows=5.00 loops=3)
+              Sort Key: ((fields ->> '3'::text))
+              Sort Method: quicksort  Memory: 25kB
+              Buffers: shared hit=6579 read=59154
+              Worker 0:  Sort Method: quicksort  Memory: 25kB
+              Worker 1:  Sort Method: quicksort  Memory: 25kB
+              ->  Partial HashAggregate  (cost=73897.74..73897.81 rows=5 width=40) (actual time=235.686..235.687 rows=5.00 loops=3)
+                    Group Key: (fields ->> '3'::text)
+                    Batches: 1  Memory Usage: 32kB
+                    Buffers: shared hit=6563 read=59154
+                    Worker 0:  Batches: 1  Memory Usage: 32kB
+                    Worker 1:  Batches: 1  Memory Usage: 32kB
+                    ->  Parallel Seq Scan on issues_b  (cost=0.00..71917.03 rows=396143 width=32) (actual time=0.183..182.901 rows=316707.67 loops=3)
+                          Filter: ((fields ->> '3'::text) IS NOT NULL)
+                          Rows Removed by Filter: 16626
+                          Buffers: shared hit=6563 read=59154
+Planning:
+  Buffers: shared hit=250
+Planning Time: 0.561 ms
+Execution Time: 242.841 ms

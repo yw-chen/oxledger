@@ -1,0 +1,11 @@
+Limit  (cost=0.42..244.50 rows=50 width=16) (actual time=0.025..3.147 rows=50.00 loops=1)
+  Buffers: shared hit=140 read=291
+  ->  Index Scan Backward using issues_b_pkey on issues_b  (cost=0.42..98639.18 rows=20207 width=16) (actual time=0.024..3.140 rows=50.00 loops=1)
+        Filter: (fields @> '{"4": "00000000-0001-7000-8000-000000000003"}'::jsonb)
+        Rows Removed by Filter: 5022
+        Index Searches: 1
+        Buffers: shared hit=140 read=291
+Planning:
+  Buffers: shared hit=233 read=18
+Planning Time: 1.133 ms
+Execution Time: 3.173 ms

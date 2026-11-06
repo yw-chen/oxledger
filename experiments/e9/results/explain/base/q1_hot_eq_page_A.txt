@@ -1,0 +1,25 @@
+Limit  (cost=5510.74..6623.84 rows=50 width=16) (actual time=203.825..204.515 rows=50.00 loops=1)
+  Buffers: shared hit=20 read=11560
+  ->  Merge Join  (cost=5510.74..38280.26 rows=1472 width=16) (actual time=203.824..204.511 rows=50.00 loops=1)
+        Merge Cond: (i.id = c.issue_id)
+        Buffers: shared hit=20 read=11560
+        ->  Index Only Scan Backward using issues_a_pkey on issues_a i  (cost=0.42..30412.42 rows=1000000 width=16) (actual time=0.008..0.454 rows=5072.00 loops=1)
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=15 read=9
+        ->  Sort  (cost=5510.32..5514.00 rows=1472 width=16) (actual time=203.806..203.810 rows=50.00 loops=1)
+              Sort Key: c.issue_id DESC
+              Sort Method: quicksort  Memory: 385kB
+              Buffers: shared hit=5 read=11551
+              ->  Bitmap Heap Scan on issue_cf c  (cost=23.52..5432.87 rows=1472 width=16) (actual time=2.996..198.815 rows=11951.00 loops=1)
+                    Recheck Cond: ((field_id = 4) AND (v_ref = '00000000-0001-7000-8000-000000000003'::uuid))
+                    Heap Blocks: exact=11543
+                    Buffers: shared hit=5 read=11551
+                    ->  Bitmap Index Scan on issue_cf_ref  (cost=0.00..23.15 rows=1472 width=0) (actual time=1.675..1.675 rows=11951.00 loops=1)
+                          Index Cond: ((field_id = 4) AND (v_ref = '00000000-0001-7000-8000-000000000003'::uuid))
+                          Index Searches: 1
+                          Buffers: shared read=13
+Planning:
+  Buffers: shared hit=277 read=32
+Planning Time: 1.198 ms
+Execution Time: 204.695 ms

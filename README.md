@@ -27,7 +27,9 @@ See [docs/playbook.md](docs/playbook.md) for MCP client setup, the demo permissi
 
 ## Design docs
 
-- [docs/research/01-redmine-rust-rewrite.md](docs/research/01-redmine-rust-rewrite.md) — research, decisions D1–D13, architecture, experiments (Traditional Chinese)
+- [docs/research/01-redmine-rust-rewrite.md](docs/research/01-redmine-rust-rewrite.md) — research, decisions D1–D15, architecture, experiments (Traditional Chinese)
+- [docs/research/02-e9-custom-fields.md](docs/research/02-e9-custom-fields.md) — E9: custom field storage benchmark (typed EAV vs JSONB)
+- [docs/research/03-e1-zh-retrieval.md](docs/research/03-e1-zh-retrieval.md) — E1: Traditional Chinese retrieval evaluation
 - [docs/playbook.md](docs/playbook.md) — dev setup and symptom → cause → fix notes (Traditional Chinese)
 
 ## Relationship to Redmine

@@ -1,0 +1,20 @@
+Finalize HashAggregate  (cost=9337.46..9371.20 rows=3374 width=14) (actual time=43.914..45.664 rows=5.00 loops=1)
+  Group Key: v_text
+  Batches: 1  Memory Usage: 97kB
+  Buffers: shared hit=58 read=818
+  ->  Gather  (cost=1000.43..9296.97 rows=8098 width=14) (actual time=22.023..45.633 rows=15.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=58 read=818
+        ->  Partial GroupAggregate  (cost=0.43..7487.17 rows=3374 width=14) (actual time=19.567..41.407 rows=5.00 loops=3)
+              Group Key: v_text
+              Buffers: shared hit=58 read=818
+              ->  Parallel Index Only Scan using issue_cf_text on issue_cf  (cost=0.43..6590.85 rows=172515 width=6) (actual time=0.038..20.646 rows=316707.67 loops=3)
+                    Index Cond: (field_id = 3)
+                    Heap Fetches: 0
+                    Index Searches: 1
+                    Buffers: shared hit=58 read=818
+Planning:
+  Buffers: shared hit=208 read=8
+Planning Time: 0.534 ms
+Execution Time: 45.772 ms

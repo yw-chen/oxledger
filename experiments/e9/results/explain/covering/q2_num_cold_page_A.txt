@@ -1,0 +1,22 @@
+Limit  (cost=337.14..337.26 rows=50 width=16) (actual time=1.553..1.557 rows=50.00 loops=1)
+  Buffers: shared hit=1149
+  ->  Sort  (cost=337.14..337.32 rows=74 width=16) (actual time=1.551..1.554 rows=50.00 loops=1)
+        Sort Key: i.id DESC
+        Sort Method: top-N heapsort  Memory: 19kB
+        Buffers: shared hit=1149
+        ->  Nested Loop  (cost=0.85..334.84 rows=74 width=16) (actual time=0.053..1.491 rows=305.00 loops=1)
+              Buffers: shared hit=1146
+              ->  Index Only Scan using issue_cf_num_cov on issue_cf c  (cost=0.43..6.09 rows=74 width=16) (actual time=0.035..0.115 rows=305.00 loops=1)
+                    Index Cond: ((field_id = 800) AND (v_num >= '1000'::numeric) AND (v_num <= '2000'::numeric))
+                    Heap Fetches: 0
+                    Index Searches: 1
+                    Buffers: shared hit=230
+              ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..4.44 rows=1 width=16) (actual time=0.004..0.004 rows=1.00 loops=305)
+                    Index Cond: (id = c.issue_id)
+                    Heap Fetches: 0
+                    Index Searches: 305
+                    Buffers: shared hit=916
+Planning:
+  Buffers: shared hit=312
+Planning Time: 0.732 ms
+Execution Time: 1.588 ms

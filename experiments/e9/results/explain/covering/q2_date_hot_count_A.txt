@@ -1,0 +1,18 @@
+Aggregate  (cost=5241.22..5241.23 rows=1 width=8) (actual time=21.539..21.540 rows=1.00 loops=1)
+  Buffers: shared hit=29106 read=344
+  ->  Nested Loop  (cost=0.85..5237.86 rows=1345 width=0) (actual time=0.061..21.096 rows=9758.00 loops=1)
+        Buffers: shared hit=29106 read=344
+        ->  Index Only Scan using issue_cf_date_cov on issue_cf c  (cost=0.43..58.69 rows=1345 width=16) (actual time=0.038..1.133 rows=9758.00 loops=1)
+              Index Cond: ((field_id = 2) AND (v_date >= '2024-01-01'::date) AND (v_date <= '2024-01-31'::date))
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=124 read=51
+        ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..3.85 rows=1 width=16) (actual time=0.002..0.002 rows=1.00 loops=9758)
+              Index Cond: (id = c.issue_id)
+              Heap Fetches: 0
+              Index Searches: 9758
+              Buffers: shared hit=28982 read=293
+Planning:
+  Buffers: shared hit=405 read=2
+Planning Time: 1.172 ms
+Execution Time: 21.598 ms

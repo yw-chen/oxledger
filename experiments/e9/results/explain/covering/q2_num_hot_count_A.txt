@@ -1,0 +1,18 @@
+Aggregate  (cost=1931.27..1931.28 rows=1 width=8) (actual time=18.624..18.625 rows=1.00 loops=1)
+  Buffers: shared hit=27713 read=189
+  ->  Nested Loop  (cost=0.85..1930.15 rows=451 width=0) (actual time=0.053..18.267 rows=8123.00 loops=1)
+        Buffers: shared hit=27713 read=189
+        ->  Index Only Scan using issue_cf_num_cov on issue_cf c  (cost=0.43..22.58 rows=451 width=16) (actual time=0.039..1.434 rows=8123.00 loops=1)
+              Index Cond: ((field_id = 8) AND (v_num >= '100'::numeric) AND (v_num <= '110'::numeric))
+              Heap Fetches: 0
+              Index Searches: 1
+              Buffers: shared hit=3480 read=52
+        ->  Index Only Scan using issues_a_pkey on issues_a i  (cost=0.42..4.23 rows=1 width=16) (actual time=0.002..0.002 rows=1.00 loops=8123)
+              Index Cond: (id = c.issue_id)
+              Heap Fetches: 0
+              Index Searches: 8123
+              Buffers: shared hit=24233 read=137
+Planning:
+  Buffers: shared hit=399
+Planning Time: 0.945 ms
+Execution Time: 18.664 ms
