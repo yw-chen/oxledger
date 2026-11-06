@@ -19,6 +19,7 @@
 //! * [`reconcile_indexes`] is the background job: it finishes whatever a crash
 //!   interrupted. `oxledger serve` runs it at startup and periodically.
 
+use crate::db::Caller;
 use anyhow::{Context, Result, bail};
 use ox_core::filter::{FieldType, Value, ValueKind};
 use sqlx::{PgExecutor, PgPool};
@@ -51,7 +52,8 @@ pub struct NewField<'a> {
     /// Option labels, for `list` fields.
     pub options: &'a [&'a str],
     /// Readable by everyone who can see the issue; otherwise only by admins and
-    /// holders of `roles` (non-builtin) in the issue's project.
+    /// callers whose effective roles in the issue's project include one of
+    /// `roles` (builtin Non member / Anonymous allowed, see migration 0003).
     pub visible: bool,
     pub roles: &'a [Uuid],
 }
@@ -316,23 +318,42 @@ pub async fn list_fields(pool: &PgPool) -> Result<Vec<FieldRow>> {
     .await?)
 }
 
-/// For fields with `visible = false`: the projects where one of `principals`
-/// (a user and their groups) holds a member role listed in `field_roles`.
-/// This is Redmine's `CustomField#visibility_by_project_condition` (member
-/// roles only; builtin roles cannot be listed, see the migration).
+/// For fields with `visible = false`: the projects where the caller's
+/// effective roles include one listed in `field_roles`. Effective roles are
+/// the same as `db::role_ids_for` (non-admin): member roles where `principals`
+/// (the user and their groups) are members; the builtin Non member role on
+/// public projects they are not a member of; Anonymous on public projects when
+/// not signed in. `get` uses the same rule, so filtering and display agree
+/// (Redmine differs here: it filters by member roles only).
 pub async fn readable_projects(
     pool: &PgPool,
+    caller: Caller,
     principals: &[Uuid],
 ) -> Result<std::collections::HashMap<i32, Vec<Uuid>>> {
+    let builtin = if caller.0.is_some() {
+        "non_member"
+    } else {
+        "anonymous"
+    };
     let rows: Vec<(i32, Vec<Uuid>)> = sqlx::query_as(
-        "SELECT fr.field_id, array_agg(DISTINCT m.project_id ORDER BY m.project_id)
-         FROM field_roles fr
-         JOIN member_roles mr ON mr.role_id = fr.role_id
-         JOIN members m ON m.id = mr.member_id
-         WHERE m.principal_id = ANY($1)
+        "WITH mine AS (
+             SELECT m.project_id, mr.role_id
+             FROM members m JOIN member_roles mr ON mr.member_id = m.id
+             WHERE m.principal_id = ANY($1)
+         ), eff AS (
+             SELECT project_id, role_id FROM mine
+             UNION
+             SELECT p.id, r.id FROM projects p JOIN roles r ON r.builtin = $2
+             WHERE p.is_public
+               AND NOT EXISTS (SELECT 1 FROM members m
+                               WHERE m.project_id = p.id AND m.principal_id = ANY($1))
+         )
+         SELECT fr.field_id, array_agg(DISTINCT eff.project_id ORDER BY eff.project_id)
+         FROM field_roles fr JOIN eff ON eff.role_id = fr.role_id
          GROUP BY fr.field_id",
     )
     .bind(principals)
+    .bind(builtin)
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().collect())

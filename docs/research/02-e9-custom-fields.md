@@ -323,7 +323,9 @@ PostgreSQL 統計的部分以 §8 的實測為準。
 |---|---|---|
 | 篩選加適用性 E（tracker、專案、可讀專案），positive 寫成 `E AND EXISTS`、ne 寫成 `NOT (E AND EXISTS =)`、is_null 寫成 `E AND NOT EXISTS` | **採用** | 已核對 Redmine 原文；PG 測試用獨立的 reference 比對 4 種身分 × 120 組隨機篩選 |
 | leaf 層級權限（不採用 GPT 第 1 輪的整體交集） | **採用**（GPT 第 2 輪同意） | 不會洩漏；整體交集會讓 `public = X OR restricted = Y` 整個排除隱藏專案，和 Redmine 不同 |
-| `visible` + `field_roles`，不能放內建角色 | **採用** | 對應 Redmine 的 `Role.givable`；oxledger 沒有內建群組覆寫，所以篩選和顯示的規則一致。**要不要支援內建群組覆寫是產品決策，還沒定** |
+| `visible` + `field_roles`，不能放內建角色 | **採用** | 對應 Redmine 的 `Role.givable`；oxledger 沒有內建群組覆寫，所以篩選和顯示的規則一致。~~要不要支援內建群組覆寫是產品決策，還沒定~~ **2026-11-06 使用者決定支援內建角色**，見下方 |
+
+**2026-11-06 決定：`field_roles` 可以放內建角色（Non member、Anonymous），篩選與顯示用同一套規則**（migration 0003）。受限欄位在某專案讀得到，條件是呼叫者在該專案的「實際角色」包含 `field_roles` 之一。實際角色和 workflow 用的 `db::role_ids_for` 相同：是成員就用成員角色（含透過群組）；不是成員的公開專案用 Non member；沒登入時，公開專案用 Anonymous。admin 一律讀得到。Redmine 的篩選只看成員角色，這一點 oxledger 刻意不照抄，避免「看得到欄位卻篩不到」或反過來的情況。`custom_fields_pg` 加了只給內建角色的欄位 Triage，驗證篩選與 `get` 一致；拿掉內建角色那一段時測試會失敗。
 | 讀不到的欄位回「no custom field」 | 採用 | 不洩漏欄位是否存在；錯誤訊息只列出讀得到的欄位 |
 | `get` 回 `custom_fields`（適用且可讀；list 給 {id, label, active}，user 給 {id, name}） | 採用 | 等於 Redmine 的 `visible_custom_field_values`；採納 GPT 回 id 的修正 |
 | `(field_id, (v_num IS NOT NULL))` 運算式統計 | **不採用** | §8 實測沒有改善，PG 原始碼也說明它比對不到 |

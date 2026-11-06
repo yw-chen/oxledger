@@ -84,7 +84,7 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - **搜尋結果一律回 DB 複驗**：tantivy 可能落後資料庫（outbox 非同步），所以 `service::search` 會把候選 id 再過一次 SQL 可見性條件。
 - **看不到 = 不存在**：`get` 對沒權限的 issue 回「no issue X」，和真的不存在一樣，避免用 key 探測。
 - **自訂欄位（D14，型別化 EAV）**：值在 `issue_cf`，每種型別一個值欄位；觸發器 `issue_cf_check` 保證值放在該型別的欄位（`int` 必須是整數、list 必須是該欄位的選項、user 必須存在、string／link 最多 2000 bytes 以免超過 btree 單筆上限）。空字串不存（`set_value("")` 等於清除），對齊 Redmine 把 '' 當成沒有值。篩選器依賴這些保證：每個條件都是一個 `EXISTS (… cf.field_id = <id> …)`，帶型別條件，也就是對 `v_x` 的比較，或 is_null／not_null 時的 `v_x IS NOT NULL`（報告 02 §5.3、§8）。外面再包一層適用性條件 E（tracker、專案、可讀專案），由 `db::push_pred` 編譯。
-- **受限欄位（`field_defs.visible = false` + `field_roles`）**：只有 admin，以及在該專案有指定角色的成員（含透過群組）讀得到。`field_roles` 不能放內建角色，對應 Redmine 的 `Role.givable`，這樣 Redmine「篩選用成員角色、顯示用 roles_for_project」兩套規則在 oxledger 結果一致。`search`（filter）和 `get`（custom_fields）都套用。
+- **受限欄位（`field_defs.visible = false` + `field_roles`）**：只有 admin，以及在該專案的實際角色包含指定角色的人讀得到。實際角色同 `db::role_ids_for`：成員角色（含透過群組）；不是成員的公開專案用內建 Non member；沒登入用 Anonymous。`field_roles` 可以放內建角色（migration 0003）。`search`（filter，`custom_fields::readable_projects`）和 `get`（custom_fields）用同一套規則；改其中一邊要同步改另一邊，`custom_fields_pg` 的 Triage 欄位會抓到不一致。
 - **欄位不能改型別**：有觸發器擋，Redmine 也不允許。
 - **list 選項**：使用中的選項不能刪（觸發器檢查，且只接受 READ COMMITTED，原因寫在 migration 註解），要停用就設 `active = false`；寫入值時對選項加 `FOR KEY SHARE`，和刪除互斥。
 - **每個欄位一個 covering partial index** `issue_cf_f<id> (field_id, v_x, issue_id) WHERE field_id = <id>`。建立欄位時同步建（`create_field` 等索引建完才回傳），刪欄位走 `drop_field`：先標成 `dropping`。寫入觸發器會對欄位定義加 `FOR SHARE`，所以這個 UPDATE 會等正在寫值的交易結束，之後新的寫入一律被拒。接著經索引刪值 → `DROP INDEX CONCURRENTLY` → 刪定義。`serve` 每 60 秒跑 `reconcile_indexes` 收拾中斷的建立或刪除。

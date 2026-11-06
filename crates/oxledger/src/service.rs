@@ -572,7 +572,7 @@ pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
         .iter()
         .filter_map(|id| statuses.iter().find(|s| s.0 == *id).map(|s| s.1.clone()))
         .collect();
-    let custom_fields = custom_field_values(app, caller, &scope, &row).await?;
+    let custom_fields = custom_field_values(app, caller, &role_ids, &row).await?;
 
     Ok(IssueDetail {
         requested_key: (row.current_key != key).then_some(key.clone()),
@@ -615,10 +615,13 @@ struct CfRow {
 /// Redmine `Issue#visible_custom_field_values`: fields available for the
 /// issue (tracker ∩ project) that the caller may read, with their values.
 /// Values of fields that no longer apply stay stored but are not shown.
+/// `roles` are the caller's effective roles in the issue's project
+/// (`db::role_ids_for`), the same rule filtering uses
+/// (`custom_fields::readable_projects`).
 async fn custom_field_values(
     app: &App,
     caller: Caller,
-    scope: &ox_core::Scope,
+    roles: &[Uuid],
     row: &DetailRow,
 ) -> Result<Vec<CustomFieldValue>> {
     let admin = db::is_admin(&app.pool, caller).await?;
@@ -635,16 +638,14 @@ async fn custom_field_values(
                                         WHERE fp.field_id = d.id AND fp.project_id = $3))
            AND (d.visible OR $4 OR EXISTS (
                  SELECT 1 FROM field_roles fr
-                 JOIN member_roles mr ON mr.role_id = fr.role_id
-                 JOIN members m ON m.id = mr.member_id
-                 WHERE fr.field_id = d.id AND m.project_id = $3 AND m.principal_id = ANY($5)))
+                 WHERE fr.field_id = d.id AND fr.role_id = ANY($5)))
          ORDER BY d.position, d.name",
     )
     .bind(row.id)
     .bind(row.tracker_id)
     .bind(row.project_id)
     .bind(admin)
-    .bind(&scope.principal_ids)
+    .bind(roles)
     .fetch_all(&app.pool)
     .await?;
     Ok(rows

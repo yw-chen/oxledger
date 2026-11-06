@@ -12,7 +12,7 @@
 //! Also covers: the per-field partial index under a generic plan,
 //! `service::search` (JSON filter, paging, free text with candidate growth),
 //! `service::get` custom fields, input errors, the database guards (type,
-//! empty string, option deletion, builtin roles, type change), dropping a field
+//! empty string, option deletion, type change), dropping a field
 //! and the index reconcile job.
 //!
 //! Needs PostgreSQL 18; see `common::test_pool` for which database it uses.
@@ -60,8 +60,9 @@ struct Def {
     trackers: Vec<Uuid>,
     /// None = all projects
     projects: Option<Vec<Uuid>>,
-    /// None = visible to all; Some(projects) = readable (by the member) only there
-    member_readable: Option<Vec<Uuid>>,
+    /// None = visible to all; Some(viewer → projects) = readable by that
+    /// viewer (None = anonymous) only there; admins read everything.
+    readable_by: Option<HashMap<Option<Uuid>, Vec<Uuid>>>,
 }
 
 struct World {
@@ -116,7 +117,7 @@ async fn new_field(
     projects: Option<&[Uuid]>,
     roles: Option<&[Uuid]>,
     options: &[&str],
-    member_readable: Option<Vec<Uuid>>,
+    readable_by: Option<HashMap<Option<Uuid>, Vec<Uuid>>>,
 ) -> Def {
     let id = custom_fields::create_field(
         pool,
@@ -140,7 +141,7 @@ async fn new_field(
         name,
         trackers: trackers.to_vec(),
         projects: projects.map(<[Uuid]>::to_vec),
-        member_readable,
+        readable_by,
     }
 }
 
@@ -197,6 +198,8 @@ async fn load_world(pool: &PgPool, rng: &mut Rng) -> World {
     let private_project = scalar(pool, "SELECT id FROM projects WHERE key = 'PRIV'").await;
     let public_project = scalar(pool, "SELECT id FROM projects WHERE key = 'PUB'").await;
     let dev = scalar(pool, "SELECT id FROM roles WHERE name = 'Dev'").await;
+    let non_member = scalar(pool, "SELECT id FROM roles WHERE builtin = 'non_member'").await;
+    let anonymous = scalar(pool, "SELECT id FROM roles WHERE builtin = 'anonymous'").await;
     let admin = scalar(pool, "SELECT id FROM principals WHERE login = 'admin'").await;
     let member = scalar(pool, "SELECT id FROM principals WHERE login = 'member'").await;
     let outsider = scalar(pool, "SELECT id FROM principals WHERE login = 'outsider'").await;
@@ -244,7 +247,25 @@ async fn load_world(pool: &PgPool, rng: &mut Rng) -> World {
             None,
             Some(&[dev]),
             &[],
-            Some(vec![private_project]),
+            Some(HashMap::from([(Some(member), vec![private_project])])),
+        )
+        .await,
+        // Readable with the builtin roles only: Non member (member and
+        // outsider in PUB) and Anonymous (PUB). The member's Dev role in PRIV
+        // does not grant it.
+        new_field(
+            pool,
+            "Triage",
+            T::Int,
+            &both,
+            None,
+            Some(&[non_member, anonymous]),
+            &[],
+            Some(HashMap::from([
+                (Some(member), vec![public_project]),
+                (Some(outsider), vec![public_project]),
+                (None, vec![public_project]),
+            ])),
         )
         .await,
     ];
@@ -316,6 +337,8 @@ async fn load_world(pool: &PgPool, rng: &mut Rng) -> World {
         put(&defs[7], 0.1, Value::Text(format!("long note {n}")), rng);
         let r = rng.below(5) as f64;
         put(&defs[9], 0.5, Value::Num(r), rng);
+        let r = rng.below(4) as f64;
+        put(&defs[10], 0.5, Value::Num(r), rng);
         if n % 200 == 37 {
             vals.insert(defs[8].f.id, Value::Num(n as f64 / 10.0));
         }
@@ -354,15 +377,18 @@ async fn load_world(pool: &PgPool, rng: &mut Rng) -> World {
 // ---------------------------------------------------------------- reference
 
 /// The test's own gate E for `def` and `viewer` (None = anonymous):
-/// tracker ∩ project applicability, and readability (Redmine member roles).
+/// tracker ∩ project applicability, and readability (effective roles,
+/// builtin included; the same rule for filtering and display).
 /// `None` when the viewer may not read the field anywhere.
 fn ref_gate(w: &World, def: &Def, viewer: Option<Uuid>) -> Option<Pred> {
     let projects = |ids: &[Uuid]| Pred::Or(ids.iter().map(|p| Pred::ProjectIs(*p)).collect());
-    let readable = match (&def.member_readable, viewer) {
+    let readable = match (&def.readable_by, viewer) {
         (None, _) => Pred::True,
         (Some(_), Some(v)) if v == w.admin => Pred::True,
-        (Some(ps), Some(v)) if v == w.member => projects(ps),
-        (Some(_), _) => return None,
+        (Some(by), v) => match by.get(&v) {
+            Some(ps) if !ps.is_empty() => projects(ps),
+            _ => return None,
+        },
     };
     let project = def.projects.as_deref().map_or(Pred::True, projects);
     Some(Pred::And(vec![
@@ -854,6 +880,10 @@ async fn custom_field_filters_match_reference_on_pg() {
         .0;
     let names = get_fields(w.member, priv_bug).await;
     assert!(names.contains(&"Secret".into()) && names.contains(&"Severity".into()));
+    assert!(
+        !names.contains(&"Triage".into()),
+        "Dev in PRIV does not grant Triage: {names:?}"
+    );
     assert!(names.contains(&"Due".into()), "Due applies in PRIV");
     assert!(
         !names.contains(&"Points".into()),
@@ -867,6 +897,15 @@ async fn custom_field_filters_match_reference_on_pg() {
         .0;
     let names = get_fields(w.outsider, pub_bug).await;
     assert!(!names.contains(&"Secret".into()), "{names:?}");
+    assert!(
+        names.contains(&"Triage".into()),
+        "Non member reads Triage in PUB: {names:?}"
+    );
+    let names = get_fields(w.member, pub_bug).await;
+    assert!(
+        names.contains(&"Triage".into()) && !names.contains(&"Secret".into()),
+        "the member is a non-member of PUB: {names:?}"
+    );
     assert!(
         !names.contains(&"Due".into()),
         "Due is PRIV-only: {names:?}"
@@ -956,13 +995,6 @@ async fn custom_field_filters_match_reference_on_pg() {
         .execute(&pool)
         .await;
     assert!(change_type.is_err(), "type change must be refused");
-    let builtin_role = sqlx::query(
-        "INSERT INTO field_roles SELECT $1, id FROM roles WHERE builtin = 'non_member'",
-    )
-    .bind(sev.id)
-    .execute(&pool)
-    .await;
-    assert!(builtin_role.is_err(), "builtin roles are not givable");
     // Options: in use → refused; unused → deleted; REPEATABLE READ → refused.
     let used = w
         .values

@@ -170,7 +170,8 @@ struct Ctx<'a> {
 /// Where a field counts for the caller (Redmine
 /// `IssueCustomField#visibility_by_project_condition`): its trackers, its
 /// projects (or all), and — unless the field is visible or the caller is an
-/// admin — the projects where the caller holds one of the field's roles.
+/// admin — the projects where the caller's effective roles (builtin ones
+/// included) contain one of the field's roles.
 /// `None` when the caller can read the field nowhere.
 fn applies(row: &FieldRow, admin: bool, readable: &HashMap<i32, Vec<Uuid>>) -> Option<Pred> {
     let projects_pred = |ids: &[Uuid]| Pred::Or(ids.iter().map(|p| Pred::ProjectIs(*p)).collect());
@@ -208,7 +209,8 @@ pub async fn resolve(
     input: &FilterInput,
 ) -> Result<Filter> {
     let admin = db::is_admin(&app.pool, caller).await?;
-    let readable = custom_fields::readable_projects(&app.pool, &scope.principal_ids).await?;
+    let readable =
+        custom_fields::readable_projects(&app.pool, caller, &scope.principal_ids).await?;
     let fields = custom_fields::list_fields(&app.pool)
         .await?
         .into_iter()
