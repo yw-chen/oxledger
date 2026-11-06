@@ -227,6 +227,7 @@ axum ─┬─ REST (OpenAPI, schemars)
 ## 8. 建議的階段
 
 - **M0 骨架**：axum + Postgres + 權限核心 + Issue/Project/User/Tracker/Status/Workflow + 最小 tantivy 索引 + MCP `search/get/resolve`（唯讀）。先跑 E4、E1、E9。
+  - **2026-11-06 進度**：骨架完成（未含 E1、E9）。ox-core（可見性 `Pred`、workflow）；PostgreSQL schema（migrations/0001_init.sql）；每請求可見範圍 → SQL 與 tantivy filter；tantivy 索引（索引存 unigram+bigram、查詢端兩字以上只用 bigram）跟 xid8 outbox；MCP `search`／`get`／`resolve`（HTTP bearer key 與 stdio）。E4 雛形：40 個隨機世界、240 次檢查，SQL／索引／記憶體／service 四者都與 Redmine 規則的獨立實作一致；故意放入 bug 時第一個世界就失敗。尚未做：OAuth、寫入工具、ontology 概念擴展、E1、E9、REST。
 - **M1 可日用**：自訂欄位（依 E9 結果）、Filter AST、ViewDef（list/board）、issue_events、time tracking、MCP 寫入工具、完整 BM25F 欄位。
 - **M2 整合**：CommonMark（comrak）、Git webhook、`fixed_by`、wiki、CSV 匯入匯出。（D4：不做 Redmine 匯入器與 Textile）
 - **M3**：Gantt、dashboard、automation、sprint、外掛 slot。
