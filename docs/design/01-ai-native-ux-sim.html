@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oxledger 流程模擬</title>
+<style>
+:root{
+  --bg:#0B1220;--bg2:#0F1829;--card:#142033;--card2:#1A2840;--line:#24344F;--line2:#30466A;
+  --fg:#F1F5F9;--muted:#B6C2D3;--dim:#7D8BA1;
+  --act:#67E8F9;--prop:#C4B5FD;--ok:#6EE7B7;--warn:#FCD34D;--bad:#FDA4AF;
+  --act-a:rgba(103,232,249,.13);--prop-a:rgba(196,181,253,.13);--ok-a:rgba(110,231,183,.13);--warn-a:rgba(252,211,77,.11);--bad-a:rgba(253,164,175,.11);
+  --glow:0 0 0 1px rgba(103,232,249,.25),0 8px 30px -12px rgba(103,232,249,.35);
+  --term:#070C16;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#F4F7FB;--bg2:#EAF0F7;--card:#FFFFFF;--card2:#F2F6FB;--line:#D5DFEC;--line2:#B9C8DC;
+  --fg:#0E1726;--muted:#3E4C63;--dim:#66748A;
+  --act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;
+  --act-a:rgba(14,116,144,.10);--prop-a:rgba(109,40,217,.08);--ok-a:rgba(4,120,87,.10);--warn-a:rgba(161,98,7,.10);--bad-a:rgba(190,18,60,.08);
+  --glow:0 0 0 1px rgba(14,116,144,.2),0 8px 24px -14px rgba(14,116,144,.35);--term:#0E1726;
+}}
+:root[data-theme="light"]{
+  --bg:#F4F7FB;--bg2:#EAF0F7;--card:#FFFFFF;--card2:#F2F6FB;--line:#D5DFEC;--line2:#B9C8DC;
+  --fg:#0E1726;--muted:#3E4C63;--dim:#66748A;
+  --act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;
+  --act-a:rgba(14,116,144,.10);--prop-a:rgba(109,40,217,.08);--ok-a:rgba(4,120,87,.10);--warn-a:rgba(161,98,7,.10);--bad-a:rgba(190,18,60,.08);
+  --glow:0 0 0 1px rgba(14,116,144,.2),0 8px 24px -14px rgba(14,116,144,.35);--term:#0E1726;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14.5px/1.65 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
+.mono,code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible{outline:2px solid var(--act);outline-offset:2px}
+.chip{display:inline-block;padding:0 8px;border-radius:99px;font-size:11.5px;font-weight:600;border:1px solid currentColor;white-space:nowrap;line-height:19px}
+.c-act{color:var(--act)}.c-prop{color:var(--prop)}.c-ok{color:var(--ok)}.c-warn{color:var(--warn)}.c-bad{color:var(--bad)}.c-dim{color:var(--dim)}
+.k{font:600 10.5px ui-monospace,Consolas,monospace;letter-spacing:.08em;color:var(--dim);text-transform:uppercase}
+
+/* top */
+header.top{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.topin{max-width:1360px;margin:0 auto;padding:10px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:.02em}
+.brand small{display:block;font-weight:400;color:var(--dim);font-size:12px}
+.weeks{display:flex;gap:2px;flex:1;min-width:260px}
+.weeks div{flex:1;height:26px;border-radius:5px;background:var(--card);border:1px solid var(--line);font:600 11px ui-monospace,Consolas,monospace;color:var(--dim);display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.weeks div.past{color:var(--muted);background:var(--card2)}
+.weeks div.now{color:var(--bg);background:var(--act);border-color:var(--act)}
+.toggles{display:flex;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.tg{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.tg input{accent-color:var(--act)}
+.themeb{border:1px solid var(--line2);background:var(--card);border-radius:99px;padding:2px 10px;font-size:12px;cursor:pointer;color:var(--muted)}
+
+/* layout */
+.wrap{max-width:1360px;margin:0 auto;padding:14px 16px 60px;display:grid;grid-template-columns:230px minmax(0,1fr) 320px;gap:14px;align-items:start}
+nav.ch{position:sticky;top:70px;max-height:calc(100vh - 84px);overflow:auto;padding-right:4px}
+nav.ch .grp{margin:0 0 8px}
+nav.ch .gt{font:600 11px ui-monospace,Consolas,monospace;color:var(--dim);margin:8px 0 3px;letter-spacing:.05em}
+nav.ch button{display:block;width:100%;text-align:left;background:none;border:0;border-left:2px solid var(--line);padding:3px 8px;font-size:13px;color:var(--muted);cursor:pointer}
+nav.ch button:hover{color:var(--fg)}
+nav.ch button.on{border-left-color:var(--act);color:var(--fg);background:var(--act-a)}
+nav.ch button.done{color:var(--dim)}
+
+/* app frame */
+.frame{background:var(--bg2);border:1px solid var(--line2);border-radius:14px;overflow:hidden;box-shadow:var(--glow)}
+.fbar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--card)}
+.dots3{display:flex;gap:5px}.dots3 i{width:9px;height:9px;border-radius:50%;background:var(--line2)}
+.where{font-size:12.5px;color:var(--dim)}
+.who{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px}
+.av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:12px;color:var(--bg)}
+.aiflag{font-size:11.5px}
+.fbody{padding:14px}
+.cmd{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line2);border-radius:10px;padding:9px 12px;margin-bottom:12px}
+.cmd .kbd{font:600 11px ui-monospace,Consolas,monospace;border:1px solid var(--line2);border-radius:5px;padding:0 6px;color:var(--muted)}
+.cmd .tx{flex:1;min-height:22px}
+.cmd .tx.ph{color:var(--dim)}
+.caret{display:inline-block;width:2px;height:15px;background:var(--act);vertical-align:-2px;margin-left:1px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.intent{font-size:11.5px}
+.banner{border-radius:8px;padding:7px 12px;margin:0 0 10px;font-size:13px;display:flex;gap:8px;align-items:center}
+.banner.p{background:var(--prop-a);border:1px dashed var(--prop)}
+.banner.w{background:var(--warn-a);border:1px solid var(--warn)}
+.banner.o{background:var(--ok-a);border:1px solid var(--ok)}
+.banner.b{background:var(--bad-a);border:1px solid var(--bad)}
+.sec{margin:12px 0 4px}
+.row{display:flex;gap:10px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px;margin:5px 0;flex-wrap:wrap}
+.row .r{margin-left:auto;color:var(--dim);font-size:12px}
+.row.prop{border-style:dashed;border-color:var(--prop)}
+.qs{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 10px}
+.qs span{border:1px solid var(--line2);border-radius:99px;padding:0 10px;font-size:12px;color:var(--muted)}
+.cols{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.box h5{margin:0 0 6px;font-size:13px}
+.box ul{margin:0;padding-left:18px}
+.box li{margin:2px 0}
+table.t{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+table.t th,table.t td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+table.t th{color:var(--dim);font-size:11.5px;font-weight:600;background:var(--card2)}
+table.t tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto}
+.old{color:var(--dim);text-decoration:line-through}
+.new{color:var(--prop);font-weight:600}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.btn{background:var(--card);border:1px solid var(--line2);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--act)}
+.btn.pri{border-color:var(--act);background:var(--act-a);font-weight:600}
+.btn.okb{border-color:var(--ok);background:var(--ok-a);font-weight:600}
+.btn.danger{border-color:var(--bad);background:var(--bad-a);font-weight:600}
+.small{font-size:12px;color:var(--dim)}
+.why{display:none;margin-top:6px;font-size:12.5px;color:var(--muted);border-left:2px solid var(--prop);padding-left:8px}
+.why.on{display:block}
+.lnk{background:none;border:0;color:var(--act);cursor:pointer;padding:0;font-size:12.5px;text-decoration:underline}
+
+/* sources ripple */
+.src{display:flex;align-items:center;gap:10px;padding:6px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--card2);position:relative;margin:4px 0;font-size:13px}
+.src .st{margin-left:auto;font-size:11.5px;color:var(--dim)}
+.src.fetch::after{content:"";position:absolute;inset:-1px;border-radius:8px;border:1.5px solid var(--act);animation:srcr .45s ease-out forwards;pointer-events:none}
+@keyframes srcr{from{opacity:.9;transform:scale(1)}to{opacity:0;transform:scale(1.05,1.4)}}
+.src.done .st{color:var(--ok)}
+.hit{position:relative}
+.hit::after{content:"";position:absolute;inset:-1px;border-radius:inherit;animation:okr .34s ease-out forwards;pointer-events:none}
+@keyframes okr{from{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 70%,transparent)}to{box-shadow:0 0 0 14px transparent}}
+.gated{opacity:.0;transform:translateY(4px);transition:opacity .25s,transform .25s}
+.gated.show{opacity:1;transform:none}
+
+/* board */
+.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.colb{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;min-height:120px}
+.colb h6{margin:0 0 6px;font-size:12px;color:var(--dim);display:flex;justify-content:space-between}
+.cardi{border:1px solid var(--line2);background:var(--card2);border-radius:7px;padding:6px 8px;margin:5px 0;font-size:12.5px}
+.cardi.ghost{border:1.5px dashed var(--prop);background:var(--prop-a)}
+.cardi .lab{font-size:11px;color:var(--prop);font-weight:600}
+.cap{height:8px;border-radius:4px;background:var(--line);overflow:hidden;display:flex;margin:4px 0 2px}
+.cap i{display:block;height:100%}
+
+/* terminal */
+.term{background:var(--term);color:#D5E2F0;border-radius:10px;padding:12px 14px;font:12.5px/1.6 ui-monospace,Consolas,monospace;overflow-x:auto;border:1px solid var(--line2)}
+.term .p{color:#67E8F9}.term .d{color:#7D8BA1}.term .g{color:#6EE7B7}.term .y{color:#FCD34D}.term .v{color:#C4B5FD}
+.term .ln{white-space:pre-wrap;opacity:0;transition:opacity .2s}.term .ln.show{opacity:1}
+
+/* side */
+aside.side{position:sticky;top:70px;display:flex;flex-direction:column;gap:10px}
+.sc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.sc h3{margin:2px 0 6px;font-size:16px;line-height:1.35}
+.sc p{margin:4px 0;font-size:13.5px;color:var(--muted)}
+.sc .trad{font-size:13px;color:var(--dim);border-left:2px solid var(--line2);padding-left:8px;margin-top:8px}
+.sc ul{margin:4px 0 0;padding-left:16px;font-size:13px;color:var(--muted)}
+.sc li{margin:3px 0}
+.caps{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.capi{font:12px ui-monospace,Consolas,monospace;border:1px solid var(--line2);border-radius:6px;padding:0 6px;display:flex;gap:5px;align-items:center}
+.capi b{font-size:10.5px;font-weight:700}
+.nav2{display:flex;gap:8px;align-items:center}
+.nav2 .btn{flex:1}
+.prog{font:12px ui-monospace,Consolas,monospace;color:var(--dim);text-align:center}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px}
+.stat b{display:block;font:700 22px ui-monospace,Consolas,monospace;color:var(--act)}
+.stat span{font-size:12px;color:var(--dim)}
+
+@media (max-width:1100px){
+  .wrap{grid-template-columns:minmax(0,1fr) 300px}
+  nav.ch{display:none}
+}
+@media (max-width:760px){
+  .wrap{grid-template-columns:minmax(0,1fr)}
+  aside.side{position:static}
+  .fbar{flex-wrap:wrap}.dots3{display:none}.who{margin-left:0}.who .small{display:none}
+  .cols,.board{grid-template-columns:1fr}
+  .weeks{order:3;min-width:100%}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .gated{opacity:1;transform:none}
+  .term .ln{opacity:1}
+}
+</style>
+</head>
+<body>
+<header class="top"><div class="topin">
+  <div class="brand">oxledger 流程模擬<small>開發案：AUTH「登入改版 v2.0（支援 SSO）」· 示範資料</small></div>
+  <div class="weeks" id="weeks" aria-label="專案週次"></div>
+  <div class="toggles">
+    <label class="tg"><input type="checkbox" id="tgAi" checked> AI 可用</label>
+    <label class="tg"><input type="checkbox" id="tgConf"> 模擬衝突</label>
+    <button class="themeb" id="themeBtn" type="button">◐ 主題</button>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <nav class="ch" id="chnav" aria-label="章節"></nav>
+  <section>
+    <div class="frame">
+      <div class="fbar">
+        <div class="dots3"><i></i><i></i><i></i></div>
+        <span class="where" id="where"></span>
+        <div class="who" id="who"></div>
+      </div>
+      <div class="fbody" id="stage"></div>
+    </div>
+    <p class="small" style="margin:10px 2px">這是設計模擬，不是產品程式碼。人物、編號、數字都是虛構的示範資料。右上角可以關掉「AI 可用」看沒有 AI 時的退路，或打開「模擬衝突」看套用失敗時的畫面。鍵盤 ← → 可以切換步驟。</p>
+  </section>
+  <aside class="side">
+    <div class="sc">
+      <div class="k" id="sStep"></div>
+      <h3 id="sTitle"></h3>
+      <p id="sWhat"></p>
+      <div class="trad" id="sTrad"></div>
+    </div>
+    <div class="sc">
+      <div class="k">這一步用到的設計原則</div>
+      <ul id="sRules"></ul>
+    </div>
+    <div class="sc">
+      <div class="k">需要的後端能力</div>
+      <div class="caps" id="sCaps"></div>
+      <p class="small" style="margin-top:6px"><b class="c-ok">M0</b> 已有 · <b class="c-act">規劃</b> 研究文件已規劃 · <b class="c-prop">新增</b> 這次設計新增</p>
+    </div>
+    <div class="nav2">
+      <button class="btn" id="prevB" type="button">← 上一步</button>
+      <span class="prog" id="prog"></span>
+      <button class="btn pri" id="nextB" type="button">下一步 →</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function(){
+var S={ai:true,conf:false,i:0};
+var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+var PEOPLE={
+  alice:{n:'alice',r:'PM（Manager）',c:'#67E8F9'},
+  bob:{n:'bob',r:'後端開發',c:'#6EE7B7'},
+  dave:{n:'dave',r:'前端開發',c:'#FCD34D'},
+  carol:{n:'carol',r:'QA（Reporter）',c:'#FDA4AF'},
+  admin:{n:'admin',r:'管理員',c:'#C4B5FD'},
+  agent:{n:'Claude Code',r:'bob 委派的外部 agent（MCP）',c:'#B6C2D3'}
+};
+function C(cls,t){return '<span class="chip '+cls+'">'+t+'</span>'}
+function M(t){return '<span class="mono">'+t+'</span>'}
+function cmd(t,intent){return '<div class="cmd"><span class="kbd">⌘K</span><span class="tx" data-type="'+t.replace(/"/g,'&quot;')+'"></span>'+(intent?'<span class="intent '+(S.ai?'c-act':'c-dim')+'">'+(S.ai?'意圖：'+intent:'搜尋')+'</span>':'')+'</div>'}
+function srcs(list){return '<div class="k sec">AI 擷取的來源（只限你看得到的）</div><div class="srcs" data-auto>'+list.map(function(s){return '<div class="src"><span class="mono">'+s[0]+'</span><span>'+s[1]+'</span><span class="st">待擷取</span></div>'}).join('')+'</div>'}
+function gated(h){return '<div class="gated">'+h+'</div>'}
+function diff(rows){return '<div class="tw"><table class="t"><tr><th>目標</th><th>欄位</th><th>目前</th><th>套用後</th></tr>'+rows.map(function(r){return '<tr><td>'+M(r[0])+'</td><td>'+r[1]+'</td><td class="old">'+r[2]+'</td><td class="new">'+r[3]+'</td></tr>'}).join('')+'</table></div>'}
+function btns(arr){return '<div class="btns">'+arr.map(function(b){return '<button type="button" class="btn '+(b[1]||'')+'" data-act="'+(b[2]||'next')+'">'+b[0]+'</button>'}).join('')+'</div>'}
+function receipt(title,items){return '<div class="banner o">'+C('c-ok','server 回執')+' '+title+'</div>'+items.map(function(t){return '<div class="row hitme">'+C('c-ok','✓ 已寫入')+'<span>'+t+'</span></div>'}).join('')}
+function noAi(text){return '<div class="banner w">'+C('c-warn','AI 暫時無法使用')+' 資料與操作正常。'+text+'</div>'}
+
+var STEPS=[
+/* 1 */{ch:'開案',w:0,who:'alice',where:'oxledger · 首頁',
+ title:'首頁：從「需要你決定的事」開始',
+ what:'專案剛建立，alice 打開首頁。首頁頂端是意圖列，下面是「需要你決定」「繼續處理」「我的工作」。這些都由規則和事件產生，打開首頁不會呼叫模型。',
+ trad:'傳統：首頁是 dashboard 或「指派給我」的列表。',
+ rules:['首頁以決定與例外為中心（§6）','還沒經過模型的項目不標成「AI 建議」','沒有待決定的事不是缺陷，不硬補內容'],
+ caps:[['search','M0'],['ChangeSet 查詢','新增'],['attention items','新增']],
+ body:function(){return cmd('','')+
+  '<div class="qs"><span>回報問題</span><span>整理待分流</span><span>找相關紀錄</span><span>規劃 sprint</span></div>'+
+  '<div class="k sec">需要你決定</div>'+
+  '<div class="row">'+C('c-dim','可協助分析')+'<span>'+M('AUTH')+' 專案已建立，還沒有 workflow 規則和 backlog</span><span class="r">規則</span></div>'+
+  '<div class="k sec">繼續處理</div><div class="row"><span class="small">目前沒有未完成的任務</span></div>'+
+  '<div class="k sec">我的工作</div><div class="row">'+C('c-dim','view')+'<span>指派給我 · 我關注 · 最近的 view</span></div>'+
+  btns([['交給管理員設定流程 →','pri']])}},
+
+/* 2 */{ch:'管理員設定',w:0,who:'admin',where:'oxledger · 管理 › 流程',
+ title:'管理員用一句話描述規則，先模擬再發布',
+ what:'admin 描述 QA 驗證規則。系統產出三份東西：設定草稿 diff、對現有資料的影響報告、角色 × 狀態的測試案例。這時還沒有任何東西生效。',
+ trad:'傳統：逐頁改欄位、角色、轉移矩陣，存檔就生效，影響要自己推想。',
+ rules:['管理設定先模擬再發布（§5.7）','改顯示名稱和改型別、合法值是不同的風險等級','改流程不會偷偷搬動既有 issue 的狀態'],
+ caps:[['describe','新增'],['管理設定版本化','新增'],['影響分析','新增']],
+ body:function(){
+  if(!S.ai) return noAi('意圖列退化成搜尋，管理員改用原本的設定頁。')+
+   '<div class="tw"><table class="t"><tr><th>Bug 的轉移</th><th>Developer</th><th>QA</th><th>Reporter</th></tr><tr><td>修正中 → 待驗證</td><td>✓</td><td>✓</td><td>—</td></tr><tr><td>待驗證 → 已驗證</td><td><label><input type="checkbox" checked> </label></td><td><label><input type="checkbox" checked> </label></td><td>—</td></tr></table></div>'+
+   '<p class="small">設定頁照常可用。模擬和影響報告是領域功能，不需要模型，所以仍然看得到。</p>'+btns([['模擬並發布 →','pri']]);
+  return cmd('Bug 進「待驗證」前必須填「修正版本」，只有 QA 能把 Bug 轉成「已驗證」','管理設定')+
+  '<div class="banner p">'+C('c-prop','設定草稿 v3')+' 尚未發布 · 目前生效的是 v2</div>'+
+  '<div class="cols"><div class="box"><h5>① 設定草稿 diff</h5><ul>'+
+  '<li>欄位規則：<b>修正版本</b> 在轉入 <i>待驗證</i> 時 <span class="new">必填</span></li>'+
+  '<li>轉移 <i>待驗證 → 已驗證</i>：角色 <span class="old">Developer, QA</span> → <span class="new">QA</span></li></ul></div>'+
+  '<div class="box"><h5>② 影響報告</h5><ul><li>現有 14 張 Bug 中，<b>3 張</b>在待驗證狀態但沒有修正版本 → 不會被搬動，下次轉移時才要求補填</li><li>Developer 失去 1 條轉移</li><li>影響 view：「QA 待驗」</li></ul></div></div>'+
+  '<div class="k sec">③ 測試案例（自動產生，可以增修）</div>'+
+  '<div class="tw"><table class="t"><tr><th>角色</th><th>修正中 → 待驗證（沒填版本）</th><th>修正中 → 待驗證（有填）</th><th>待驗證 → 已驗證</th></tr>'+
+  '<tr><td>Developer（bob）</td><td class="c-bad">拒絕：缺修正版本</td><td class="c-ok">允許</td><td class="c-bad">拒絕</td></tr>'+
+  '<tr><td>QA（carol 另有 QA 角色）</td><td class="c-bad">拒絕</td><td class="c-ok">允許</td><td class="c-ok">允許</td></tr></table></div>'+
+  btns([['在模擬環境跑測試','','sim'],['發布 v3 →','pri']])+'<div class="small" id="simres" style="margin-top:6px"></div>'}},
+
+/* 3 */{ch:'管理員設定',w:0,who:'admin',where:'oxledger · 管理 › 流程',
+ title:'發布：只有實際生效的項目會亮',
+ what:'發布 v3 之後，回執列出實際生效的變更。既有 issue 的狀態沒有被動過，所以不會亮。',
+ trad:'傳統：存檔成功，但不知道影響了什麼。',
+ rules:['回執後才播波紋，只標實際寫入的項目（§7 規則 3、7）','ViewDef 的版本不取代 workflow 自己的版本'],
+ caps:[['issue_events','規劃'],['管理設定版本化','新增']],
+ body:function(){return receipt('workflow v3 已發布 · v2 保留，可以比對',['欄位規則「修正版本」在轉入待驗證時必填','轉移「待驗證 → 已驗證」限 QA'])+
+  '<div class="row">'+C('c-dim','未變動')+'<span>既有 3 張待驗證 Bug 狀態不變</span></div>'+btns([['下一章：拆需求 →','pri']])}},
+
+/* 4 */{ch:'拆需求',w:0,who:'alice',where:'oxledger · AUTH',
+ title:'把規格拆成 epic 和 story：AI 準備，alice 決定範圍',
+ what:'alice 請 AI 參考 wiki 上的規格拆工作。AI 先擷取來源（波紋代表「正在擷取這個來源」），再產生一個 ChangeSet：建立 1 個 epic 和 6 個 story。估點留白，因為規格裡沒有根據。',
+ trad:'傳統：PM 開 7 次表單，手動設定 parent。',
+ rules:['AI 只產生提案，寫入要經過 ChangeSet（§4.1）','沒有根據的欄位留白，不用猜測換取完整','尚未建立的 issue 用暫時代號互相引用'],
+ caps:[['search / get','M0'],['create_issue','規劃'],['ChangeSet','新增'],['search explain','新增']],
+ body:function(){
+  if(!S.ai) return noAi('意圖列只做搜尋。')+'<div class="box"><h5>手動建立</h5><p class="small">alice 用「新 issue」表單逐一建立，或匯入 CSV（M2）。ChangeSet 仍然可以用來一次審閱多筆手動草稿。</p></div>'+btns([['跳到 sprint 規劃 →','pri']]);
+  var rows=[['新1','Epic','SSO 登入（OIDC）','—'],['新2','Story','OIDC 授權碼流程與 callback','父：新1'],['新3','Story','帳號連結：既有帳號綁定 IdP','父：新1'],['新4','Story','登入頁 UI：IdP 按鈕','父：新1'],['新5','Story','Session 與 cookie SameSite 調整','父：新1'],['新6','Story','管理員設定 IdP','父：新1'],['新7','Story','SAML 支援','父：新1']];
+  return cmd('依 wiki「SSO 規格」把 v2.0 拆成 epic 和 story','拆需求')+
+  srcs([['wiki/AUTH/SSO規格','SSO 規格 v0.3'],['AUTH-61','SSO 登入後 302 迴圈（已關閉）'],['AUTH-88','OAuth callback Safari 失敗（已關閉）']])+
+  gated('<div class="banner p" style="margin-top:10px">'+C('c-prop','ChangeSet #12 · 提案 v1')+' 提案建立 7 筆 · 尚未寫入</div>'+
+  '<div class="tw"><table class="t"><tr><th></th><th>暫時代號</th><th>類型</th><th>標題</th><th>關係</th><th>估點</th></tr>'+
+  rows.map(function(r,i){return '<tr><td><input type="checkbox" '+(i===6?'':'checked')+' aria-label="納入 '+r[2]+'"></td><td>'+M(r[0])+'</td><td>'+r[1]+'</td><td>'+r[2]+(i===6?' <span class="small">← alice 取消勾選：超出 v2.0 範圍</span>':'')+'</td><td class="small">'+r[3]+'</td><td class="c-dim">留白</td></tr>'}).join('')+'</table></div>'+
+  '<p class="small">依據：每一列都附規格段落連結。「SAML 支援」在規格裡標為「未來」，AI 仍然列出，但標了 '+C('c-warn','待確認')+'。</p>'+
+  btns([['核准並套用（6 筆）→','okb']]))}},
+
+/* 5 */{ch:'拆需求',w:0,who:'alice',where:'oxledger · AUTH',
+ title:'回執：暫時代號換成正式編號',
+ what:'ChangeSet #12 在同一個交易裡建立 6 筆 issue 和它們的父子關係。暫時代號換成 AUTH-140～145。搜尋索引晚幾秒才會更新，畫面直接說明，不把它顯示成失敗。',
+ trad:'傳統：建完之後，在列表裡找不到剛建的單，以為沒存到。',
+ rules:['批次語意要明訂：這裡是整批原子','寫入後的搜尋一致性要說清楚（§10）'],
+ caps:[['create_issue','規劃'],['ChangeSet apply','新增'],['xid8 outbox','M0']],
+ body:function(){return receipt('ChangeSet #12 已套用 · 6 / 6 成功 · operation_id 可查',['新1 → '+M('AUTH-140')+' Epic SSO 登入（OIDC）','新2–新6 → '+M('AUTH-141')+'～'+M('AUTH-145')+'，parent = AUTH-140'])+
+  '<div class="row">'+C('c-dim','索引')+'<span class="small">搜尋索引約 2 秒後更新；在那之前用編號可以直接開單</span></div>'+btns([['看全局：mindmap →','pri']])}},
+
+/* M */{ch:'拆需求',w:0,who:'alice',where:'oxledger · AUTH › mindmap 視圖',
+ title:'Mindmap：正式節點、推導群組、建議節點分清楚',
+ what:'alice 想從全局看 SSO epic，請 AI 畫成 mindmap。這是投影視圖：節點就是 issue。為了好讀，AI 加了「後端／前端／管理」的推導群組（灰色虛線），這些群組不是新的 parent。另外提了一個建議節點（紫色虛線），還沒建立。',
+ trad:'傳統：只能在列表或樹狀清單裡看父子關係。',
+ rules:['同一個手勢分三層：呈現、ViewDef、領域（§14.1）','不為了畫成樹而默默改 parent','建議節點走 ChangeSet，推導群組不寫入資料'],
+ caps:[['ViewDef kind=mindmap','新增'],['view session','新增'],['get（children）','M0'],['ChangeSet','新增']],
+ body:function(){
+  var svg='<svg viewBox="0 0 640 250" style="width:100%;height:auto;display:block" role="img" aria-label="SSO epic 心智圖">'+
+  '<g fill="none" stroke="var(--line2)" stroke-width="1.4">'+
+  '<path d="M270 125 C220 125 220 55 170 55"/><path d="M270 125 C220 125 220 195 170 195"/><path d="M370 125 C420 125 420 70 470 70"/><path stroke="var(--prop)" stroke-dasharray="4 4" d="M370 125 C420 125 420 190 470 190"/>'+
+  '<path d="M110 55 L60 25"/><path d="M110 55 L60 85"/><path d="M110 195 L60 175"/><path d="M110 195 L60 225"/><path d="M530 70 L590 45"/><path d="M530 70 L590 98"/></g>'+
+  '<rect x="270" y="105" width="100" height="40" rx="20" fill="var(--act-a)" stroke="var(--act)" stroke-width="1.6"/><text x="320" y="122" text-anchor="middle" font-size="12" fill="var(--fg)" class="mono">AUTH-140</text><text x="320" y="137" text-anchor="middle" font-size="10.5" fill="var(--muted)">SSO 登入</text>'+
+  '<g font-size="11" fill="var(--fg)">'+
+  '<rect x="110" y="42" width="60" height="26" rx="13" fill="none" stroke="var(--dim)" stroke-dasharray="3 3"/><text x="140" y="59" text-anchor="middle" fill="var(--dim)">後端</text>'+
+  '<rect x="110" y="182" width="60" height="26" rx="13" fill="none" stroke="var(--dim)" stroke-dasharray="3 3"/><text x="140" y="199" text-anchor="middle" fill="var(--dim)">管理</text>'+
+  '<rect x="470" y="57" width="60" height="26" rx="13" fill="none" stroke="var(--dim)" stroke-dasharray="3 3"/><text x="500" y="74" text-anchor="middle" fill="var(--dim)">前端</text>'+
+  '<rect x="0" y="12" width="64" height="26" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="32" y="29" text-anchor="middle" class="mono">141</text>'+
+  '<rect x="0" y="72" width="64" height="26" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="32" y="89" text-anchor="middle" class="mono">142</text>'+
+  '<rect x="0" y="162" width="64" height="26" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="32" y="179" text-anchor="middle" class="mono">145</text>'+
+  '<rect x="0" y="212" width="64" height="26" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="32" y="229" text-anchor="middle" class="mono">144</text>'+
+  '<rect x="576" y="32" width="64" height="26" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="608" y="49" text-anchor="middle" class="mono">143</text>'+
+  '<rect x="576" y="85" width="64" height="26" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="608" y="102" text-anchor="middle" class="mono">132</text>'+
+  '<rect x="470" y="176" width="130" height="28" rx="14" fill="var(--prop-a)" stroke="var(--prop)" stroke-dasharray="4 3"/><text x="535" y="194" text-anchor="middle" fill="var(--prop)">建議：錯誤頁文案</text></g></svg>';
+  return cmd('把 SSO epic 畫成 mindmap','視圖')+
+  '<div class="banner p"><span class="small">圖例：</span>'+C('c-act','實框＝正式 issue')+C('c-dim','灰虛線＝推導群組（不寫入）')+C('c-prop','紫虛線＝建議節點（未建立）')+'</div>'+
+  '<div class="box">'+svg+'</div>'+
+  '<div class="row">'+C('c-dim','模式')+'<span class="small">目前是「呈現」模式：拖動節點只改位置。切到「編輯結構」模式，拖動才會改 parent，並產生 ChangeSet。</span></div>'+
+  '<div class="btns"><button type="button" class="btn" data-act="saveview">存成我的 view</button><button type="button" class="btn" data-act="mknode">建立建議節點（提案）</button><button type="button" class="btn pri" data-act="next">下一章：sprint 規劃 →</button></div><div class="small" id="mmres" style="margin-top:6px"></div>'}},
+
+/* 6 */{ch:'Sprint 規劃',w:1,who:'alice',where:'oxledger · AUTH › 看板（規劃模式）',
+ title:'規劃模式：紫色虛線是提案，還沒生效',
+ what:'alice 描述目標和限制。系統先檢查資料夠不夠：AUTH-144 沒有估點，所以另外列出，不當成 0 點。提案卡用紫色虛線框加文字標記，容量條也把正式和提案分開算。',
+ trad:'傳統：從 backlog 拖進 sprint，拖了就生效，容量要自己心算。',
+ rules:['幽靈卡片是明確的規劃模式（§5.4）','未估點不當 0','sprint 資料模型待決（Q5）：定案前只叫「候選範圍整理」'],
+ caps:[['search','M0'],['update_issue','規劃'],['ChangeSet','新增'],['sprint／容量模型','規劃']],
+ body:function(){
+  var ghost=S.ai;
+  return cmd('Sprint 1 先完成 OIDC 主流程，留兩成給維運','規劃')+
+  (ghost?'<div class="banner p">'+C('c-prop','規劃中，尚未套用')+' 方案 A（主流程優先） · <span class="small">方案 B：範圍較小，風險較低</span></div>':noAi('規劃模式照常可以手動拖曳，只是沒有提案卡。'))+
+  '<div class="k">容量 · 20 點（留 4 點維運）</div><div class="cap"><i style="width:0%;background:var(--ok)"></i><i style="width:'+(ghost?65:0)+'%;background:var(--prop)"></i><i style="width:20%;background:var(--warn)"></i></div>'+
+  '<div class="small">'+(ghost?'提案 13 點 · 維運保留 4 點 · 剩 3 點':'尚未排入')+'</div>'+
+  '<div class="board" style="margin-top:8px"><div class="colb"><h6><span>Backlog</span><span>'+(ghost?'2':'5')+'</span></h6>'+
+  (ghost?'':'<div class="cardi">'+M('AUTH-141')+' OIDC 授權碼流程 · 5</div><div class="cardi">'+M('AUTH-143')+' 登入頁 UI · 3</div><div class="cardi">'+M('AUTH-142')+' 帳號連結 · 5</div>')+
+  '<div class="cardi">'+M('AUTH-145')+' 管理員設定 IdP · 5</div><div class="cardi">'+M('AUTH-144')+' Session／cookie · <b class="c-warn">未估點</b></div></div>'+
+  '<div class="colb"><h6><span>Sprint 1</span><span>'+(ghost?'3 提案':'0')+'</span></h6>'+
+  (ghost?'<div class="cardi ghost"><div class="lab">＋ 新增至 sprint</div>'+M('AUTH-141')+' OIDC 授權碼流程 · 5</div><div class="cardi ghost"><div class="lab">＋ 新增至 sprint</div>'+M('AUTH-142')+' 帳號連結 · 5</div><div class="cardi ghost"><div class="lab">＋ 新增至 sprint</div>'+M('AUTH-143')+' 登入頁 UI · 3</div>':'<p class="small">拖曳卡片到這裡</p>')+'</div>'+
+  '<div class="colb"><h6><span>需要注意</span></h6><div class="cardi"><b class="c-warn">未估點</b> AUTH-144 不計入容量，請先估點</div><div class="cardi"><b class="c-dim">推測的相依</b> AUTH-143 可能依賴 AUTH-141（從文字推測，不是正式 blocks）</div></div></div>'+
+  btns([[ghost?'套用方案 A →':'手動排完，套用 →','pri']])}},
+
+/* 7 */{ch:'Sprint 規劃',w:1,who:'alice',where:'oxledger · AUTH › 看板',
+ title:'套用後，看板變回正式狀態',
+ what:'ChangeSet #13 套用前重新驗證過，3 張卡現在正式在 Sprint 1 裡，指派也一起完成。',
+ trad:'',
+ rules:['預覽和執行是同一份結構化計畫（§4.2）','執行時重驗權限、workflow、lock_version'],
+ caps:[['update_issue','規劃'],['ChangeSet','新增']],
+ body:function(){return receipt('ChangeSet #13 · 3 / 3 成功',[M('AUTH-141')+' → Sprint 1，指派 bob',M('AUTH-142')+' → Sprint 1，指派 bob',M('AUTH-143')+' → Sprint 1，指派 dave'])+btns([['下一章：開發中 →','pri']])}},
+
+/* 8 */{ch:'開發中',w:2,who:'agent',where:'bob 的終端機 · Claude Code ↔ oxledger MCP',
+ title:'外部 agent 透過 MCP：可以查、可以提案，不能核准',
+ what:'bob 在 IDE 裡請 Claude Code 更新進度。agent 用 bob 委派的憑證呼叫 MCP：search、get、describe、changeset.propose。委派政策只允許它提案，所以最後停在「等 bob 核准」。',
+ trad:'傳統：開發者切到瀏覽器，手動改狀態、貼 commit 連結。',
+ rules:['外部 agent 用有範圍的委派政策，不用信任等級（§9）','人工核准是 server 端狀態，不是 approved=true 參數','共用 tool registry：approve 永遠不交給模型'],
+ caps:[['search / get','M0'],['describe','新增'],['委派政策','新增'],['tool registry','新增'],['transition','規劃']],
+ body:function(){
+  var L=['<span class="p">bob@dev</span> <span class="d">~/auth-service</span> $ claude',
+  '<span class="v">›</span> 把 AUTH-141 轉成「修正中」，附上今天的進度 note，順便找有沒有類似的 callback 問題',
+  '<span class="d">● oxledger.search</span>(q="OIDC callback", project="AUTH", detail="brief")  <span class="g">→ 3 筆</span>',
+  '<span class="d">● oxledger.get</span>(key="AUTH-141", include=["relations"])  <span class="g">→ lock_version 4</span>',
+  '<span class="d">● oxledger.describe</span>(key="AUTH-141")  <span class="g">→ 可用轉移：進行中→修正中、進行中→擱置</span>',
+  '<span class="d">● oxledger.changeset.propose</span>(ops=[transition 修正中, add_note …], target_preconditions=[lock_version 4], operation_id="op_a71")',
+  '  <span class="g">→ ChangeSet #21 已建立（proposed）</span>',
+  '  <span class="y">委派政策：bob 的 Claude Code · 專案 AUTH · 只能提案 · auto_apply_ops=[] · 2026-11-30 到期</span>',
+  '',
+  '已建立提案 #21。這個 agent 沒有核准權限，請在 oxledger 核准。',
+  '相關紀錄：AUTH-88（Safari callback，已關閉，fixed_by 3f2a91c）可能值得參考。'];
+  return '<div class="term" id="term">'+L.map(function(l){return '<div class="ln">'+l+'</div>'}).join('')+'</div>'+
+  '<div class="btns"><button type="button" class="btn" data-act="tryapprove">讓 agent 試著自己核准</button><button type="button" class="btn pri" data-act="next">切到 bob 的瀏覽器 →</button></div><div id="tryres" class="small" style="margin-top:6px"></div>'}},
+
+/* 9 */{ch:'開發中',w:2,who:'bob',where:'oxledger · 首頁',
+ title:'bob 在首頁看到「待核准」，審閱後套用',
+ what:'agent 的提案出現在 bob 首頁的「需要你決定」。展開可以看到完整 diff、提案者和委派範圍。bob 核准的是這個特定版本：如果 agent 之後改了內容，會變成新版本，舊的核准就失效。',
+ trad:'',
+ rules:['ChangeSet 是 DB 一級物件：提案版本、核准、執行分開記錄','稽核記錄提案者、核准者、執行者、委派來源'],
+ caps:[['ChangeSet approve / apply','新增'],['issue_events + 身分','規劃']],
+ body:function(){
+  var c=S.conf;
+  return '<div class="k">需要你決定</div><div class="row prop">'+C('c-prop','待核准')+'<span>ChangeSet '+M('#21')+'：'+M('AUTH-141')+' 轉修正中 + note</span><span class="r">Claude Code（bob 委派）· 2 分鐘前</span></div>'+
+  diff([['AUTH-141','狀態','進行中','修正中'],['AUTH-141','note（公開）','—','「callback 改用 state + PKCE 驗證；Safari ITP 情境待測」']])+
+  '<p class="small">提案者：Claude Code · 委派者：bob · 範圍：AUTH，只能提案 · 根據 lock_version 4</p>'+
+  (c?'<div class="banner b">'+C('c-bad','檢查已過期')+' AUTH-141 在提案之後被 dave 修改過（lock_version 4 → 5）。舊的檢查和核准都不能用。</div>'+
+   '<div class="tw"><table class="t"><tr><th>欄位</th><th>原始值</th><th>目前值</th><th>原提案結果</th><th>你的選擇</th></tr>'+
+   '<tr><td>描述</td><td>（舊版）</td><td class="c-warn">dave 補了重現步驟</td><td class="c-dim">提案沒有改這欄</td><td class="small">沒有差異，不用決定</td></tr>'+
+   '<tr><td>狀態</td><td>進行中</td><td>進行中</td><td>修正中</td><td class="small">重新取得合法轉移：<b>修正中</b> 仍然合法</td></tr>'+
+   '<tr><td>note</td><td>—</td><td>—</td><td>新增 1 則</td><td class="small">不合併；請確認還需要新增</td></tr></table></div>'+
+   btns([['建立修正版提案（v2）→','pri','next'],['駁回','','next']]):
+  '<div class="row">'+C('c-ok','目前檢查通過')+'<span class="small">依 14:32 的資料與權限檢查：結構 ✓ 合法值 ✓ 權限 ✓ workflow ✓ 版本前置條件 ✓。套用時會再檢查一次。</span></div>'+
+  btns([['核准並套用 →','okb']])+'<p class="small">一個按鈕，後端寫兩筆紀錄：approval（綁 v1 + proposal_hash）和 execution（operation_id 由瀏覽器產生，重送不會重複執行）。</p>')}},
+
+/* G */{ch:'開發中',w:2,who:'agent',where:'bob 的終端機 · Claude Code ↔ oxledger MCP（view.*）',
+ title:'agent 操控 ontology graph 並截圖：語意操作，不是點像素',
+ what:'bob 請 agent 看 AUTH-141 的周邊關係，附一張圖放進 PR 說明。agent 開了自己的 view session：先讀語意摘要，展開一個節點，再渲染目前視窗。agent 不會動到 bob 瀏覽器上的畫面。截圖算資料匯出，會記稽核，圖上印資料時間和版本。',
+ trad:'傳統：人手動截圖貼進 PR，看不出資料時間，也可能截到不該外流的側欄。',
+ rules:['MCP 預設提供 view.open／state／act／render（§14.3）','先過濾可見性再算版面；看不到的鄰居不畫，也不提示數量（§14.5）','截圖屬於資料匯出：有上限、記稽核；浮水印只能追溯'],
+ caps:[['view.open / state / act','新增'],['view.render','新增'],['neighborhood','規劃'],['可見性核心','M0']],
+ body:function(){
+  var L=['<span class="v">›</span> 畫出 AUTH-141 周邊兩層的關係圖，存一張 PNG 給 PR 用',
+  '<span class="d">● oxledger.view.kinds</span>()  <span class="g">→ list, board, mindmap, graph(唯讀)；render: png, svg；max_nodes 200</span>',
+  '<span class="d">● oxledger.view.open</span>(kind="graph", root="AUTH-141", rels=["relates","blocks","fixed_by","about"], depth=2, max_nodes=40)',
+  '  <span class="g">→ session vs_9 · revision 1 · 擁有者：Claude Code（bob 委派）· TTL 30 分</span>',
+  '<span class="d">● oxledger.view.state</span>(session="vs_9", scope="summary")',
+  '  <span class="g">→ 9 節點、10 條邊 · truncated: false · coverage: AUTH-141 的 2 跳鄰域，只含你可見的資料</span>',
+  '<span class="d">● oxledger.view.act</span>(session="vs_9", ops=[expand "AUTH-88"], expected_revision=1)  <span class="g">→ revision 2（呈現操作，不寫資料）</span>',
+  '<span class="d">● oxledger.view.render</span>(session="vs_9", format="png", viewport="current")',
+  '  <span class="g">→ 1280×720 PNG · 浮水印：oxledger · 2026-11-12 14:03 · rev 2 · 匯出者 bob/Claude Code</span>',
+  '  <span class="y">稽核：export#5521（view.render）· 已計入今日額度 3 / 50</span>'];
+  var g='<svg viewBox="0 0 640 260" style="width:100%;height:auto;display:block" role="img" aria-label="AUTH-141 關係圖截圖">'+
+  '<rect x="0" y="0" width="640" height="260" fill="var(--bg2)"/>'+
+  '<g stroke="var(--line2)" stroke-width="1.4" fill="none"><path d="M320 120 L180 60"/><path d="M320 120 L470 60"/><path d="M320 120 L190 195"/><path d="M320 120 L460 195"/><path d="M180 60 L70 40"/><path d="M180 60 L80 110"/><path d="M470 60 L590 120"/><path d="M460 195 L590 220"/><path d="M190 195 L80 220"/></g>'+
+  '<g font-size="11" fill="var(--fg)" text-anchor="middle">'+
+  '<circle cx="320" cy="120" r="26" fill="var(--act-a)" stroke="var(--act)" stroke-width="2"/><text x="320" y="124" class="mono">141</text>'+
+  '<circle cx="180" cy="60" r="20" fill="var(--card2)" stroke="var(--line2)"/><text x="180" y="64" class="mono">88</text>'+
+  '<circle cx="470" cy="60" r="20" fill="var(--card2)" stroke="var(--line2)"/><text x="470" y="64" class="mono">131</text>'+
+  '<rect x="150" y="183" width="80" height="24" rx="4" fill="var(--warn-a)" stroke="var(--warn)"/><text x="190" y="199">概念:登入</text>'+
+  '<rect x="420" y="183" width="80" height="24" rx="4" fill="var(--card2)" stroke="var(--line2)"/><text x="460" y="199" class="mono">8c1d0e2</text>'+
+  '<rect x="30" y="28" width="80" height="24" rx="4" fill="var(--card2)" stroke="var(--line2)"/><text x="70" y="44" class="mono">3f2a91c</text>'+
+  '<circle cx="80" cy="110" r="18" fill="var(--card2)" stroke="var(--line2)"/><text x="80" y="114" class="mono">61</text>'+
+  '<circle cx="590" cy="120" r="18" fill="var(--card2)" stroke="var(--line2)"/><text x="590" y="124" class="mono">143</text>'+
+  '<rect x="545" y="208" width="90" height="24" rx="4" fill="var(--warn-a)" stroke="var(--warn)"/><text x="590" y="224">概念:Cookie</text>'+
+  '<rect x="40" y="208" width="80" height="24" rx="4" fill="var(--warn-a)" stroke="var(--warn)"/><text x="80" y="224">概念:SSO</text></g>'+
+  '<g font-size="9.5" fill="var(--dim)"><text x="245" y="82">duplicates?</text><text x="395" y="82">relates</text><text x="235" y="168">about</text><text x="395" y="168">fixed_by</text></g>'+
+  '<text x="632" y="252" text-anchor="end" font-size="9.5" fill="var(--dim)" class="mono">oxledger · 2026-11-12 14:03 · rev 2 · export#5521</text></svg>';
+  return '<div class="term" id="term">'+L.map(function(l){return '<div class="ln">'+l+'</div>'}).join('')+'</div>'+
+  '<div class="k sec">view.render 的輸出（agent 拿到的圖）</div><div class="box" style="padding:6px">'+g+'</div>'+
+  '<p class="small">AUTH-5（私有）和 AUTH-141 有 relates 關係，但 bob 看不到它，所以圖上沒有那個節點，也沒有那條邊，摘要的計數也不包含它。agent 用的是 bob 的委派權限，因此結果相同。</p>'+
+  '<div class="btns"><button type="button" class="btn" data-act="tryscreen">讓 agent 擷取 bob 目前的瀏覽器畫面</button><button type="button" class="btn pri" data-act="next">下一章：回報與分流 →</button></div><div class="small" id="scrres" style="margin-top:6px"></div>'}},
+
+/* 10 */{ch:'回報與分流',w:3,who:'carol',where:'oxledger · 首頁',
+ title:'carol 回報 bug：先分清事實和推測，送出前先找重複',
+ what:'carol 只貼一段描述。AI 把內容分成「你明說的」和「待確認」，預填欄位並附依據；沒把握的 priority 留白。送出前在 carol 看得到的範圍內找相似單，找到已關閉的 AUTH-88。',
+ trad:'傳統：選專案、選 tracker、填完整張表單；重複的單事後才被發現。',
+ rules:['只追問會影響處理的缺漏（§5.1）','可能重複 ≠ 關閉為重複','不能把私有內容複製到公開描述'],
+ caps:[['search','M0'],['resolve','M0'],['describe','新增'],['create_issue','規劃'],['ChangeSet','新增']],
+ body:function(){
+  if(!S.ai) return cmd('登入後跳回登入頁','')+noAi('意圖列只做搜尋：找到 AUTH-88。')+
+   '<div class="box"><h5>新 issue（直接填表）</h5><p class="small">專案 [AUTH ▾] · 類型 [Bug ▾] · 標題 [______] · 描述 [______]</p><p class="small">送出前一樣會用 BM25 列出相似單，不需要模型。</p></div>'+btns([['送出 →','pri']]);
+  return cmd('登入後會跳回登入頁，只有 Safari 會，昨天開始','回報')+
+  srcs([['AUTH-88','OAuth callback Safari 失敗（已關閉）'],['AUTH-141','OIDC 授權碼流程（修正中）']])+
+  gated('<div class="cols" style="margin-top:10px"><div class="box"><h5>你明說的</h5><ul><li>登入後被導回登入頁</li><li>只有 Safari</li><li>昨天開始</li></ul></div>'+
+  '<div class="box"><h5>'+C('c-warn','待確認')+'</h5><ul><li>Safari 版本？</li><li>用 SSO 還是帳密登入？</li></ul><p class="small">「昨天開始」不會被寫成「確認是部署造成的回歸」</p></div></div>'+
+  '<div class="tw" style="margin-top:8px"><table class="t"><tr><th>欄位</th><th>值</th><th>依據</th></tr>'+
+  '<tr><td>專案</td><td>AUTH '+C('c-prop','AI 建議')+'</td><td class="small">你目前在 AUTH 的工作區；內容提到登入 <button class="lnk" type="button">改選</button></td></tr>'+
+  '<tr><td>類型</td><td>Bug '+C('c-prop','AI 建議')+'</td><td class="small">描述的是非預期行為</td></tr>'+
+  '<tr><td>priority</td><td class="c-dim">留白</td><td class="small">根據不足，由分流決定</td></tr></table></div>'+
+  '<div class="k sec">可能重複（還沒建立關係）</div><div class="cols"><div class="box"><h5>'+M('AUTH-88')+' 已關閉</h5><p class="small">相同：callback 後回到登入頁<br>不同：AUTH-88 是 Chrome 舊版、2026-08 修正</p></div><div class="box"><h5>你的回報</h5><p class="small">Safari、昨天開始、OIDC 上線後</p></div></div>'+
+  btns([['建立新 issue →','pri'],['補充到 AUTH-88','', 'next'],['存成草稿','','next']]))}},
+
+/* 11 */{ch:'回報與分流',w:3,who:'carol',where:'oxledger · 首頁',
+ title:'回執：AUTH-131 已建立',
+ what:'carol 得到的是一個明確的回執，不是一句「處理好了」。草稿裡的「待確認」問題也跟著帶進 issue。',
+ trad:'',
+ rules:['結果有回執，部分成功不會被摘要蓋過（§11 風險 1）'],
+ caps:[['create_issue','規劃'],['issue_events','規劃']],
+ body:function(){return receipt('ChangeSet #27 · 1 / 1 成功',[M('AUTH-131')+' 登入後跳回登入頁（Safari）· Bug · AUTH'])+
+  '<div class="row">'+C('c-dim','提醒')+'<span class="small">之後可以在 AUTH-131 補上 Safari 版本與登入方式</span></div>'+btns([['切到 alice 分流 →','pri']])}},
+
+/* 12 */{ch:'回報與分流',w:3,who:'alice',where:'oxledger · 分流工作台',
+ title:'分流工作台：規則先處理，AI 建議預設收合',
+ what:'alice 從首頁的「整理待分流」進入工作台。「負責人」由確定性規則決定（元件 Auth → bob），AI 只處理規則無法判斷的欄位。建議預設收合，點開才看得到依據，避免使用者被先入為主。',
+ trad:'傳統：打開「未分派」列表，一張一張點開、改欄位。',
+ rules:['確定性規則先於模型（§5.2）','建議預設收合，避免錨定效應','建議標出資料版本；資料變了就標成「需重算」'],
+ caps:[['search','M0'],['update_issue','規劃'],['ChangeSet','新增'],['search explain','新增']],
+ body:function(){
+  return '<div class="tw"><table class="t"><tr><th></th><th>Issue</th><th>建議變更</th><th>來源</th><th>待確認</th></tr>'+
+  '<tr><td><input type="checkbox" checked aria-label="選取 AUTH-131"></td><td>'+M('AUTH-131')+'<br><span class="small">登入後跳回（Safari）</span></td><td>負責人 → bob<br>'+(S.ai?'priority → High':'<span class="c-dim">priority：—</span>')+'<br>影響版本 → v2.0-rc1</td><td>'+C('c-act','規則')+' 元件 Auth → bob<br>'+(S.ai?C('c-prop','AI')+' <button class="lnk" type="button" data-act="why1">展開依據</button><div class="why" id="why1">影響登入主流程；和 AUTH-141（OIDC callback）同一段程式。引用：AUTH-141 note #3、AUTH-88。<br>資料版本：AUTH-131 lock_version 1</div>':C('c-dim','AI 停用'))+'</td><td class="small">Safari 版本不明</td></tr>'+
+  '<tr><td><input type="checkbox" aria-label="選取 AUTH-132"></td><td>'+M('AUTH-132')+'<br><span class="small">IdP 按鈕在暗色模式看不清</span></td><td>負責人 → dave</td><td>'+C('c-act','規則')+' 元件 UI → dave</td><td class="small">—</td></tr>'+
+  '<tr><td><input type="checkbox" aria-label="選取 AUTH-133"></td><td>'+M('AUTH-133')+'<br><span class="small">登入很慢</span></td><td>'+(S.ai?'<span class="c-dim">根據不足</span>':'—')+'</td><td>'+(S.ai?C('c-prop','AI')+' 沒有足夠依據，不硬給建議':'')+'</td><td class="small">哪個頁面？多慢？</td></tr></table></div>'+
+  '<div class="k sec">選取的 1 筆 · 套用前 diff</div>'+
+  diff([['AUTH-131','負責人','—','bob'],['AUTH-131','priority','Normal',S.ai?'High':'Normal']].concat([['AUTH-131','影響版本','—','v2.0-rc1']]).filter(function(r){return r[2]!==r[3]}))+
+  btns([['套用選取的 1 筆 →','okb']])}},
+
+/* 13 */{ch:'回報與分流',w:3,who:'alice',where:'oxledger · 分流工作台',
+ title:'套用結果：成功，或誠實地顯示衝突',
+ what:'套用時，server 在同一個交易裡重新檢查權限、workflow 和 lock_version。打開右上角的「模擬衝突」，可以看到 bob 在預覽之後改過這張單時的畫面。',
+ trad:'傳統：後寫的人默默蓋掉先寫的人。',
+ rules:['dry run 不保證成功，apply 時重驗（§4.2）','衝突時不自動覆蓋，提供目前值讓人重新審閱'],
+ caps:[['ChangeSet apply','新增'],['lock_version','規劃'],['operation_id 查詢','新增']],
+ body:function(){
+  if(S.conf) return '<div class="banner b">'+C('c-bad','未套用 · conflict')+' AUTH-131 在你預覽之後被 bob 修改（lock_version 1 → 2）。整批 rollback，沒有任何欄位被寫入。</div>'+
+   '<div class="tw"><table class="t"><tr><th>欄位</th><th>原始值</th><th>目前值</th><th>原提案結果</th><th>你的選擇</th></tr>'+
+   '<tr><td>priority</td><td>Normal</td><td class="c-warn">Urgent（bob 改的）</td><td>High</td><td><label class="small"><input type="radio" name="pr" checked> 保留目前值</label><br><label class="small"><input type="radio" name="pr"> 採用提案值</label><br><label class="small"><input type="radio" name="pr"> 另填</label></td></tr>'+
+   '<tr><td>負責人</td><td>—</td><td>—</td><td>bob</td><td class="small">沒有衝突，沿用提案</td></tr>'+
+   '<tr><td>影響版本</td><td>—</td><td>—</td><td>v2.0-rc1</td><td class="small">沒有衝突，沿用提案</td></tr></table></div>'+
+   '<p class="small">確認後一定建立新版本（v2），舊的核准不能用，要再「核准並套用」一次。不會強制覆蓋；你的選擇會記進稽核。</p>'+btns([['建立修正版提案（v2）→','pri'],['請 AI 重新建議','','next']]);
+  return receipt('ChangeSet #29 · 1 / 1 成功',[M('AUTH-131')+' 負責人 → bob',M('AUTH-131')+' priority → '+(S.ai?'High':'Normal'),M('AUTH-131')+' 影響版本 → v2.0-rc1'])+
+  '<div class="row">'+C('c-dim','相關')+'<span>'+M('AUTH-141')+' 相關，未修改（不會亮）</span></div>'+btns([['下一章：站會 →','pri']])}},
+
+/* 14 */{ch:'每日站會',w:3,who:'bob',where:'oxledger · 我的站會',
+ title:'站會：本人確認草稿，團隊只看阻礙',
+ what:'bob 看到的草稿只放「已記錄的變動」。「今天預計」由他自己填，或沿用上次確認過的計畫。確認之後，團隊畫面只聚焦新增阻礙、需要別人決定的事、有風險的承諾。不做依人輪播，也不做活動量評比。',
+ trad:'傳統：每個人回想昨天做了什麼，輪流講。',
+ rules:['沒有事件 ≠ 沒有工作（§5.5）','私人筆記不進團隊摘要','先用事件產生確定性摘要，點開時才請模型潤飾'],
+ caps:[['events_since','新增'],['get','M0']],
+ body:function(){
+  return '<div class="cols"><div class="box"><h5>bob · 待確認的更新</h5><div class="k">上次確認後已記錄的變動</div><ul><li>'+M('AUTH-141')+' 進行中 → 修正中（#21）</li><li>2 個 commit fixed_by '+M('AUTH-141')+'</li><li>記錄工時 6h</li></ul>'+
+  '<div class="k" style="margin-top:6px">今天預計（你填）</div><div class="row" style="margin:4px 0"><span class="small">'+(S.ai?'AI 草稿：「測 Safari ITP 情境；處理 AUTH-131」— 可以改':'沿用上次：「完成 callback 驗證」')+'</span></div>'+
+  '<div class="k">阻礙</div><ul><li>'+M('AUTH-142')+' 帳號連結被 '+M('WEB-7')+'（會員 API）擋住</li></ul><div class="btns"><button type="button" class="btn okb" data-act="stand">確認並發布</button></div></div>'+
+  '<div class="box"><h5>團隊 · 今天</h5><div class="k">新增阻礙</div><div class="row" style="margin:4px 0">'+C('c-warn','阻礙')+'<span>'+M('AUTH-142')+' ← '+M('WEB-7')+' · 3 天</span></div>'+
+  '<div class="k">需要決定</div><div class="row" style="margin:4px 0">'+C('c-prop','待決')+'<span>AUTH-133「登入很慢」要不要排進 Sprint 1？</span></div>'+
+  '<div class="k">有風險的承諾</div><div class="row" style="margin:4px 0">'+C('c-dim','判斷')+'<span>Sprint 1 剩 4 天，AUTH-142 未開始</span></div>'+
+  '<p class="small">刻意沒有「誰昨天做最多」這種東西。</p></div></div>'+btns([['下一章：風險 →','pri']])}},
+
+/* 15 */{ch:'追進度與風險',w:4,who:'alice',where:'oxledger · AUTH',
+ title:'風險：每一項都說得出觀察、判定方式和證據',
+ what:'alice 問上線最可能卡在哪。結果是一張風險工作視圖。「已逾期」是算得出來的事實，「可能延誤」是判斷，兩者樣式不同；每一項的建議行動都可以一鍵變成待確認的 ChangeSet，不會直接調高 priority，也不會通知所有人。',
+ trad:'傳統：看紅黃綠 dashboard，自己解讀。',
+ rules:['事實和判斷分開（§5.6）','顯示資料時間','建議行動只產生提案'],
+ caps:[['search（含 facets）','M0'],['neighborhood','規劃'],['events_since','新增'],['ChangeSet','新增']],
+ body:function(){
+  var items=[['c-bad','已逾期','規則',M('AUTH-142')+' 帳號連結','到期 11/20，今天 11/24','被 WEB-7 擋住 7 天','WEB-7 負責人是否已在處理','請 WEB-7 負責人更新'],
+   ['c-warn','可能延誤','AI 推論',M('AUTH-145')+' 管理員設定 IdP','還沒開始；剩 9 個工作天；估 5 點','和 AUTH-141 共用設定模組（note #5）','dave 本週是否有空','提議縮小範圍：先只支援 1 家 IdP']];
+  var head=cmd('v2.0 上線最可能卡在哪？','風險分析')+'<div class="small" style="margin:-4px 0 8px">資料時間：2026-11-24 09:12 · 只計算你看得到的 issue</div>';
+  if(!S.ai) items=items.slice(0,1);
+  return head+(S.ai?'':noAi('只顯示規則算得出來的事實。'))+items.map(function(x,i){return '<div class="box" style="margin:6px 0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+C(x[0],x[1])+C(x[2]==='規則'?'c-act':'c-prop','判定：'+x[2])+'<b>'+x[3]+'</b></div>'+
+   '<div class="cols" style="margin-top:6px"><div class="small"><b>觀察</b> '+x[4]+'<br><b>證據</b> '+x[5]+'</div><div class="small"><b>未知</b> '+x[6]+'<br><b>建議</b> '+x[7]+'</div></div>'+
+   '<div class="btns" style="margin-top:6px"><button type="button" class="btn" data-act="mkcs'+i+'">建立待確認的 ChangeSet</button><span class="small" id="mk'+i+'"></span></div></div>'}).join('')+btns([['處理風險：到 Gantt 調整 →','pri']])}},
+
+/* T */{ch:'追進度與風險',w:4,who:'alice',where:'oxledger · AUTH › Gantt',
+ title:'Gantt：延後一週並順延相依，由確定性的計算器算',
+ what:'針對上一步的風險，alice 決定把 AUTH-145 延後一週。AI 只負責把句子解析成參數；連鎖順延由確定性的排程計算器算，並把假設攤開來。原日期用淡色輪廓，提案日期用紫色 bar。AUTH-146 撞到固定的上線日，計算器不會自己決定，而是列成未解決的問題。',
+ trad:'傳統：拖動一條 bar，後面的相依要一條一條手動拖，很容易漏。',
+ rules:['連鎖排程不讓 LLM 自己算（§14.7）','計算假設要攤開：依賴型態、工作日曆、固定日期','不可見的項目不動，也不透露它存在'],
+ caps:[['ViewDef kind=gantt','新增'],['排程計算器','新增'],['update_issue','規劃'],['ChangeSet','新增'],['sprint／日曆模型','規劃']],
+ body:function(){
+  var bar=function(y,x0,w0,x1,w1,lab){return '<text x="4" y="'+(y+11)+'" font-size="11" fill="var(--muted)" class="mono">'+lab+'</text>'+
+    (x1==null?'<rect x="'+x0+'" y="'+y+'" width="'+w0+'" height="16" rx="4" fill="var(--act-a)" stroke="var(--act)"/>':
+    '<rect x="'+x0+'" y="'+y+'" width="'+w0+'" height="16" rx="4" fill="none" stroke="var(--dim)" stroke-dasharray="3 3"/><rect x="'+x1+'" y="'+y+'" width="'+w1+'" height="16" rx="4" fill="var(--prop-a)" stroke="var(--prop)" stroke-width="1.5"/>')};
+  var svg='<svg viewBox="0 0 690 200" style="width:100%;height:auto;display:block" role="img" aria-label="Gantt 順延預覽">'+
+  '<g stroke="var(--line)"><path d="M90 20V190M200 20V190M310 20V190M420 20V190M530 20V190M640 20V190"/></g>'+
+  '<g font-size="10" fill="var(--dim)" class="mono"><text x="92" y="14">11/24</text><text x="202" y="14">12/01</text><text x="312" y="14">12/08</text><text x="422" y="14">12/15</text><text x="532" y="14">12/22</text><text x="642" y="14">12/29</text></g>'+
+  '<path d="M451 20V190" stroke="var(--bad)" stroke-width="1.5" stroke-dasharray="5 3"/><text x="455" y="186" font-size="10" fill="var(--bad)">上線日 12/17（固定）</text>'+
+  bar(40,90,94,null,null,'AUTH-141')+bar(75,231,141,341,141,'AUTH-145')+bar(110,372,79,482,79,'AUTH-147')+bar(145,451,110,561,110,'AUTH-146')+
+  '<g fill="none" stroke="var(--prop)" stroke-width="1.3"><path d="M482 83 C492 83 472 118 482 118"/><path d="M561 118 C571 118 551 153 561 153"/></g>'+
+  '<text x="341" y="70" font-size="10" fill="var(--prop)">+5 工作天（7 個日曆天）</text></svg>';
+  return cmd('把 AUTH-145 延後一週，並順延相依','排程')+
+  '<div class="banner p">'+C('c-prop','計算假設')+' precedes＝完成後才開始 · 一週＝5 個工作天（團隊日曆）· 保持工期 · 已完成的項目不動 · <button class="lnk" type="button">修改</button></div>'+
+  '<div class="box" style="padding:6px">'+svg+'</div>'+
+  diff([['AUTH-145','開始～到期','12/03～12/12','12/10～12/19'],['AUTH-147','開始～到期','12/12～12/17','12/19～12/24'],['AUTH-146','開始～到期','12/17～12/24','12/24～12/31']])+
+  '<div class="banner b" style="margin-top:8px">'+C('c-bad','未解決')+' AUTH-146 原本在上線日 12/17 開始，順延後落在上線日之後。計算器不會自己挪動上線日，請選一個：</div>'+
+  '<div class="btns"><button type="button" class="btn okb" data-act="next">只順延到上線日前可完成的部分</button><button type="button" class="btn" data-act="next">連上線日一起提案延後（強確認）</button><button type="button" class="btn" data-act="next">只移 AUTH-145</button></div>'+
+  (S.ai?'':'<p class="small">AI 停用時，alice 直接拖動 AUTH-145 的 bar，會得到一樣的計算器預覽；只是沒有自然語言解析。</p>')}},
+
+/* 16 */{ch:'找相關紀錄',w:4,who:'alice',where:'oxledger · 搜尋',
+ title:'同一個問句，alice 和 carol 看到的不一樣',
+ what:'找相關紀錄分三層：直接命中、關係延伸、附來源的結論。AUTH-5 是私有單，只有 alice 看得到。切換到 carol 時，AUTH-5 完全不存在：沒有標題、沒有數量、也沒有「另有 1 筆無權限」這種提示。',
+ trad:'傳統：關鍵字搜尋，開一堆分頁自己比對。',
+ rules:['看不到＝不存在，衍生內容也一樣（§4.6）','「沒找到」要說成「在目前可見範圍和這些條件下沒找到」','引用只能用工具回傳的來源 ID'],
+ caps:[['search','M0'],['get','M0'],['可見性核心','M0'],['search explain','新增'],['neighborhood','規劃']],
+ body:function(){
+  var who=S.viewer||'alice';
+  var a=who==='alice';
+  return '<div class="btns" style="margin:0 0 10px"><button type="button" class="btn '+(a?'pri':'')+'" data-act="vA">以 alice 檢視</button><button type="button" class="btn '+(a?'':'pri')+'" data-act="vC">以 carol 檢視</button></div>'+
+  cmd('之前 OAuth callback 在 Safari 失敗，有沒有修過？','找紀錄')+
+  '<div class="small" style="margin:-4px 0 6px">解析成：q="OAuth callback Safari" · status=any · 別名：callback ≈ 回呼 · <button class="lnk" type="button">編輯條件</button></div>'+
+  '<div class="k sec">直接命中</div>'+
+  '<div class="row">'+M('AUTH-88')+'<span>OAuth callback Safari 失敗</span><span class="r">命中：標題、note #2</span></div>'+
+  (a?'<div class="row">'+M('AUTH-5')+' '+C('c-warn','私有')+'<span>客戶 X 的 SSO callback 例外</span><span class="r">命中：描述</span></div>':'')+
+  '<div class="k sec">關係延伸</div><div class="row">'+M('commit 3f2a91c')+'<span>fix cookie SameSite</span><span class="r">AUTH-88 —fixed_by→</span></div>'+
+  '<div class="k sec">附來源的結論</div><div class="box"><p style="margin:0">有修過。AUTH-88 在 2026-08 由 commit 3f2a91c 修正，原因是 cookie SameSite 設定'+(a?'；AUTH-5 是同一原因在客戶 X 環境的特例':'')+'。<span class="small">［引用：AUTH-88 note #2、3f2a91c'+(a?'、AUTH-5':'')+'］</span></p><p class="small" style="margin:6px 0 0">無法確認：這次 Safari 的問題是否同一原因。</p></div>'+
+  '<p class="small">以 '+who+' 的身分：'+(a?'Manager，看得到 AUTH 的所有 issue，包含私有單。':'Reporter（own），只看得到自己的單和公開資料。AUTH-5 對 carol 等同不存在，結論裡也不會提到它。')+'</p>'+btns([['下一章：出錯與補償 →','pri']])}},
+
+/* 17 */{ch:'出錯與補償',w:5,who:'alice',where:'oxledger · ChangeSet #30',
+ title:'AI 分錯了：撤銷是「補償提案」，不是時光倒流',
+ what:'上週的 ChangeSet #30 把 AUTH-133 指派給 dave，其實應該給 bob。alice 按「撤銷」，系統產生補償提案，逐項標示能不能還原：priority 可以安全還原；指派之後 dave 已經寫了筆記，屬於後續依賴；通知已經寄出，無法撤回。',
+ trad:'傳統：自己手動改回去，忘了其中一欄，也不知道誰已經收到通知。',
+ rules:['撤銷＝補償提案（§4.4）','衝突分技術衝突、領域依賴、外部副作用','駁回只對這次有效，不自動污染全組織規則'],
+ caps:[['ChangeSet compensate','新增'],['issue_events','規劃']],
+ body:function(){return '<div class="banner p">'+C('c-prop','補償提案 #31')+' 由 #30 產生 · 尚未套用</div>'+
+  '<div class="tw"><table class="t"><tr><th></th><th>原變更</th><th>補償</th><th>判斷</th></tr>'+
+  '<tr><td><input type="checkbox" checked aria-label="還原 priority"></td><td>'+M('AUTH-133')+' priority Normal → High</td><td>High → Normal</td><td>'+C('c-ok','可以安全還原')+'</td></tr>'+
+  '<tr><td><input type="checkbox" checked aria-label="改指派"></td><td>'+M('AUTH-133')+' 負責人 → dave</td><td>dave → bob</td><td>'+C('c-warn','已有後續依賴')+' <span class="small">dave 已寫 1 則筆記，會一起轉給 bob</span></td></tr>'+
+  '<tr><td><input type="checkbox" disabled aria-label="通知無法撤回"></td><td>通知 dave（email）</td><td>—</td><td>'+C('c-bad','無法撤回')+' <span class="small">改寄一封更正說明？</span></td></tr></table></div>'+
+  '<div class="row" style="margin-top:8px">'+C('c-dim','學習')+'<span class="small">「元件 Perf 不要自動指派給前端」只套用在 alice 自己的建議設定，不會自動變成全組織規則</span></div>'+
+  btns([['套用補償（2 項）→','okb']])}},
+
+/* B */{ch:'BPMN 圖件',w:5,who:'carol',where:'oxledger · AUTH › 圖件 › QA 驗證流程（BPMN）',
+ title:'BPMN 是獨立圖件：可以連到 issue，但不等於 workflow',
+ what:'carol 畫了一張 QA 驗證流程的 BPMN，部分節點連到 issue。她請 AI「依這張圖產生 issue」。AI 先確認要產生的是什麼（一次性工作、範本，還是導入計畫），然後只對真正的工作提案：gateway、事件、自動化服務不會變成 issue；lane 只用來建議負責人，不代表授權。',
+ trad:'傳統：流程圖放在另一個工具裡，和 issue 完全斷開。',
+ rules:['BPMN 獨立圖件 ≠ workflow，不承諾通用往返（§14.2）','BPMN task 不一定是 issue（§14.7）','sequence flow 預設不全部變成 blocks'],
+ caps:[['圖件儲存與版本','新增'],['diagram.get / propose_edit','新增'],['create_issue','規劃'],['ChangeSet','新增']],
+ body:function(){
+  var svg='<svg viewBox="0 0 640 210" style="width:100%;height:auto;display:block" role="img" aria-label="QA 驗證流程 BPMN">'+
+  '<rect x="4" y="8" width="632" height="96" rx="4" fill="none" stroke="var(--line2)"/><rect x="4" y="104" width="632" height="96" rx="4" fill="none" stroke="var(--line2)"/>'+
+  '<text x="14" y="24" font-size="10" fill="var(--dim)">lane：QA</text><text x="14" y="120" font-size="10" fill="var(--dim)">lane：開發</text>'+
+  '<circle cx="40" cy="58" r="12" fill="none" stroke="var(--ok)" stroke-width="1.6"/>'+
+  '<rect x="70" y="40" width="100" height="36" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="120" y="62" text-anchor="middle" font-size="11" fill="var(--fg)">重現問題</text>'+
+  '<path d="M215 38 L235 58 L215 78 L195 58Z" fill="var(--card2)" stroke="var(--warn)"/><text x="215" y="62" text-anchor="middle" font-size="12" fill="var(--fg)">×</text>'+
+  '<rect x="260" y="40" width="110" height="36" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="315" y="56" text-anchor="middle" font-size="11" fill="var(--fg)">自動化回歸測試</text><text x="315" y="70" text-anchor="middle" font-size="9" fill="var(--dim)">service task</text>'+
+  '<rect x="400" y="40" width="100" height="36" rx="6" fill="var(--act-a)" stroke="var(--act)"/><text x="450" y="56" text-anchor="middle" font-size="11" fill="var(--fg)">Safari 手動驗證</text><text x="450" y="70" text-anchor="middle" font-size="9" fill="var(--act)" class="mono">→ AUTH-131</text>'+
+  '<circle cx="560" cy="58" r="12" fill="none" stroke="var(--bad)" stroke-width="3"/>'+
+  '<rect x="160" y="136" width="110" height="36" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="215" y="158" text-anchor="middle" font-size="11" fill="var(--fg)">修正並補測試</text>'+
+  '<rect x="320" y="136" width="120" height="36" rx="6" fill="var(--card2)" stroke="var(--line2)"/><text x="380" y="158" text-anchor="middle" font-size="11" fill="var(--fg)">撰寫 Safari 測試指引</text>'+
+  '<g fill="none" stroke="var(--dim)" stroke-width="1.3"><path d="M52 58H70M170 58H195M235 58H260M370 58H400M500 58H548"/><path d="M215 78V136"/><path d="M270 154H320"/><path d="M440 154 C470 154 450 76 450 76"/></g>'+
+  '<text x="222" y="100" font-size="9.5" fill="var(--dim)">無法重現</text></svg>';
+  return '<div class="banner p">'+C('c-prop','圖件 v4')+' QA 驗證流程 · carol 編輯中 · 這是文件，不是 workflow 設定</div>'+
+  '<div class="box" style="padding:6px">'+svg+'</div>'+
+  cmd('依這張圖產生 issue','從圖件產生')+
+  (S.ai?'<div class="row">'+C('c-warn','先確認')+'<span>要產生的是：</span><button class="btn pri" type="button" style="padding:0 8px">一次性工作清單</button><button class="btn" type="button" style="padding:0 8px">工作範本</button><button class="btn" type="button" style="padding:0 8px">流程導入計畫</button></div>'+
+  '<div class="tw" style="margin-top:6px"><table class="t"><tr><th>BPMN 節點</th><th>處理</th><th>理由</th></tr>'+
+  '<tr><td>修正並補測試</td><td class="new">建立 issue · 建議負責：開發 lane（bob）</td><td class="small">一次性工作；lane 只是建議，不授權</td></tr>'+
+  '<tr><td>撰寫 Safari 測試指引</td><td class="new">建立 issue · 建議負責：開發 lane</td><td class="small">一次性工作</td></tr>'+
+  '<tr><td>Safari 手動驗證</td><td class="c-dim">已連到 AUTH-131，不重複建立</td><td class="small">圖件 v4 已有連結</td></tr>'+
+  '<tr><td>自動化回歸測試</td><td class="c-dim">不建立</td><td class="small">service task：反覆執行的自動化，不是一次性工作</td></tr>'+
+  '<tr><td>gateway、開始／結束事件</td><td class="c-dim">不建立</td><td class="small">不是工作</td></tr>'+
+  '<tr><td>sequence flow</td><td class="c-dim">不轉成 blocks</td><td class="small">流向不等於排程依賴；需要的話另外提案</td></tr></table></div>':noAi('BPMN 圖件照常可以編輯；節點可以手動連到 issue。'))+
+  '<div class="btns">'+(S.ai?'<button type="button" class="btn okb" data-act="next">送出 ChangeSet（建立 2 筆）→</button>':'<button type="button" class="btn pri" data-act="next">下一步 →</button>')+'<button type="button" class="btn" data-act="tryflow">發布成 AUTH 的 workflow</button></div><div class="small" id="flowres" style="margin-top:6px"></div>'}},
+
+/* 18 */{ch:'AI 故障演練',w:5,who:'alice',where:'oxledger · 首頁',
+ title:'模型故障：tracker 照常可用',
+ what:'這一步模擬模型供應商故障（右上角的 AI 開關也會一起關掉，可以回頭看前面每一步的退化版本）。頂部只出現一條小提示，資料和操作都正常；意圖列退化成搜尋加指令；沒有任何寫入在背景排隊。server 回的是 ai_unavailable（熔斷打開），和「額度用完」的 quota_exceeded 分開顯示；進行中的 run 停下來，任務本身不受影響（§16.3）。',
+ trad:'',
+ rules:['核心不依賴模型（§9）','不排隊寫入，重連後也不自動送出（§8 D4）','超出預算時不偷偷換用沒核准的供應商','ai_unavailable ≠ quota_exceeded ≠ budget_exhausted（§16.3）'],
+ caps:[['search','M0'],['能力開關','新增'],['AI 執行層熔斷','新增']],
+ enter:function(){S.ai=false;document.getElementById('tgAi').checked=false},
+ body:function(){return noAi('意圖列可以搜尋、開單（AUTH-123）、執行指令。')+cmd('AUTH-131','')+
+  '<div class="row">'+M('AUTH-131')+'<span>登入後跳回登入頁（Safari）</span><span class="r">直接開啟，不經模型</span></div>'+
+  '<div class="k sec">需要你決定（規則與事件，不受影響）</div><div class="row prop">'+C('c-prop','待核准')+'<span>ChangeSet '+M('#33')+'（dave 手動建立）</span></div>'+
+  '<div class="row">'+C('c-warn','需要協調')+'<span>'+M('AUTH-142')+' 被 '+M('WEB-7')+' 擋住 8 天</span></div>'+
+  '<div class="k sec">未完成的 AI 任務</div><div class="row">'+C('c-dim','暫停')+'<span>「整理 Sprint 2 候選」· run 已停止（ai_unavailable）· 任務和你的輸入都保留</span><span class="r"><button class="btn" type="button" style="padding:0 8px;font-size:12px">AI 恢復後重試</button></span></div>'+
+  btns([['恢復 AI，進入發布 →','pri','restoreai']])}},
+
+/* 19 */{ch:'發布',w:6,who:'alice',where:'oxledger · v2.0 › 發布說明',
+ title:'發布說明：引用 commit，排除私有內容，對外發布要強確認',
+ what:'alice 請 AI 產生 v2.0 的發布說明。來源是這個版本已完成的 issue 和 fixed_by commit。私有單 AUTH-5 的內容不會進入要對外發布的草稿。對外發布屬於高影響操作，需要強確認。',
+ trad:'傳統：PM 翻 issue 列表，自己寫 release notes，容易漏，也可能誤貼內部內容。',
+ rules:['受限資料不自動轉成給更多人看的內容（Q4）','對外發布是高影響操作，需要另外確認（§4.3）','引用可以點回原始紀錄'],
+ caps:[['search','M0'],['get','M0'],['ChangeSet','新增'],['wiki 發布','規劃']],
+ body:function(){
+  if(!S.ai) return noAi('')+'<p>手動撰寫；版本頁列出已完成 issue 和 fixed_by commit 供參考。</p>'+btns([['看總結 →','pri']]);
+  return cmd('產生 v2.0 發布說明（對外）','發布說明')+
+  srcs([['v2.0','已完成 9 筆 issue'],['fixed_by','14 個 commit'],['AUTH-140','Epic SSO 登入（OIDC）']])+
+  gated('<div class="box" style="margin-top:10px"><h5>v2.0 發布說明（草稿）</h5><ul><li>新增 SSO 登入（OIDC），支援既有帳號綁定 <span class="small">［AUTH-140、141、142］</span></li><li>登入頁加上 IdP 按鈕，暗色模式可讀性修正 <span class="small">［AUTH-143、132］</span></li><li>修正 Safari 登入後被導回登入頁 <span class="small">［AUTH-131 · commit 8c1d0e2］</span></li></ul></div>'+
+  '<div class="banner w" style="margin-top:8px">'+C('c-warn','受限來源')+' 有 1 筆私有 issue 的內容沒有納入草稿。這一行只有有權限的人看得到；發布出去的版本不會出現。</div>'+
+  '<div class="box" style="border-color:var(--bad)"><h5 class="c-bad">強確認：對外發布</h5><p class="small" style="margin:0">將發布到公開 wiki「Release notes」並通知 3 位關注者。發布後無法收回已讀內容。</p><label class="small"><input type="checkbox" id="cfm"> 我已確認內容不含內部資訊</label></div>'+
+  btns([['發布 →','danger','publish']])+'<div class="small" id="pubres" style="margin-top:6px"></div>')}},
+
+/* 20 */{ch:'總結',w:6,who:'alice',where:'oxledger · AUTH › 專案回顧',
+ title:'整個開發案下來，AI 做了什麼、人決定了什麼',
+ what:'回顧頁統計所有 ChangeSet 的來源和結果。衡量的是更正率、審閱時間、恢復成本，不是 AI 建議的接受率。下面的數字是示意，不是量測結果。',
+ trad:'',
+ rules:['不追求最大接受率（§8 D6）','觀察數據只當設計訊號，不做成個人分數'],
+ caps:[['issue_events + ChangeSet','新增']],
+ body:function(){return '<div class="stats">'+
+  [['41','ChangeSet 總數'],['17','AI 提案'],['6','外部 agent 提案'],['18','人工直接操作'],['3','提案被部分修改後套用'],['2','衝突重新審閱'],['1','補償'],['0','自動套用（政策未開放）']].map(function(s){return '<div class="stat"><b>'+s[0]+'</b><span>'+s[1]+'</span></div>'}).join('')+'</div>'+
+  '<div class="k sec">這個案子走過的流程</div><div class="tw"><table class="t"><tr><th>週</th><th>情境</th><th>主要互動</th></tr>'+
+  '<tr><td>W0</td><td>管理員設定、拆需求</td><td>設定草稿 + 影響報告 + 測試案例；批次建立 ChangeSet</td></tr>'+
+  '<tr><td>W1</td><td>sprint 規劃</td><td>規劃模式、紫色虛線提案卡、未估點另外列出</td></tr>'+
+  '<tr><td>W2</td><td>開發中</td><td>外部 agent 經 MCP 提案，人在 SPA 核准</td></tr>'+
+  '<tr><td>W3</td><td>回報、分流、站會</td><td>事實與待確認分開、可能重複、規則先於 AI、衝突重審、站會只看阻礙</td></tr>'+
+  '<tr><td>W4</td><td>風險、找紀錄</td><td>事實和判斷分開；同一問句依可見範圍給不同結果</td></tr>'+
+  '<tr><td>W5</td><td>出錯、AI 故障</td><td>補償提案；退化成搜尋加指令</td></tr>'+
+  '<tr><td>W0–W5</td><td>多種視圖</td><td>mindmap 三種節點；agent 用 view.* 操控 graph 並截圖；Gantt 由計算器順延；BPMN 圖件只對真正的工作提案</td></tr>'+
+  '<tr><td>W6</td><td>發布</td><td>引用 commit、排除私有內容、強確認</td></tr></table></div>'+
+  '<p class="small">設計細節見 <a href="01-ai-native-ux.html">01-ai-native-ux.html</a> 和 <a href="01-ai-native-ux.md">01-ai-native-ux.md</a>。</p>'+
+  btns([['從頭再看一次','', 'restart']])}}
+];
+
+/* ---------- render ---------- */
+var TAGS=["第一切片：待審 ChangeSet · 目標設計：提醒規則", "目標設計：管理設定版本化（M2 以後）", "目標設計：管理設定版本化", "目標設計：多目標 atomic＋多個 bind＋parent 關係", "目標設計：多目標 atomic", "目標設計：mindmap 視圖（M1 後續）", "目標設計：sprint／容量模型（Q5）＋多目標 atomic", "目標設計：多目標 atomic", "第一切片：agent 只能提案", "第一切片：核准並套用", "目標設計：view.*、render（M1 後續）", "第一切片：只收文字", "第一切片", "第一切片：單筆分流", "第一切片", "目標設計：events_since", "目標設計：提醒規則、neighborhood", "目標設計：排程計算器、工作日曆（M3）", "第一切片：search（explain 縮小版）", "目標設計：compensate", "目標設計：BPMN 圖件（M2）", "第一切片", "目標設計：公開發布流程（Q4）", ""];
+var CHS=[];STEPS.forEach(function(s,i){var g=CHS.find(function(c){return c.n===s.ch});if(!g){g={n:s.ch,w:s.w,items:[]};CHS.push(g)}g.items.push(i)});
+function buildNav(){
+  var h='';CHS.forEach(function(c){h+='<div class="grp"><div class="gt">W'+c.w+' · '+c.n+'</div>'+c.items.map(function(i){return '<button type="button" data-go="'+i+'" class="'+(i===S.i?'on':(i<S.i?'done':''))+'">'+(i+1)+'. '+STEPS[i].title.split('：')[0]+'</button>'}).join('')+'</div>'});
+  document.getElementById('chnav').innerHTML=h;
+  var w='';for(var k=0;k<=6;k++){var cw=STEPS[S.i].w;w+='<div class="'+(k===cw?'now':(k<cw?'past':''))+'">W'+k+'</div>'}
+  document.getElementById('weeks').innerHTML=w;
+}
+function typeIn(){
+  document.querySelectorAll('#stage .tx[data-type]').forEach(function(el){
+    var t=el.getAttribute('data-type');
+    if(!t){el.classList.add('ph');el.textContent='搜尋紀錄、輸入指令，或描述你要完成的事……';return}
+    if(reduce){el.textContent=t;return}
+    var n=0;el.innerHTML='<span></span><span class="caret"></span>';var sp=el.firstChild;
+    var iv=setInterval(function(){n++;sp.textContent=t.slice(0,n);if(n>=t.length){clearInterval(iv)}},28);
+  });
+}
+function runSources(){
+  var box=document.querySelector('#stage .srcs[data-auto]');var gate=document.querySelectorAll('#stage .gated');
+  if(!box){gate.forEach(function(g){g.classList.add('show')});return}
+  var items=box.querySelectorAll('.src');var base=reduce?0:700;var gap=reduce?0:420;
+  items.forEach(function(el,i){
+    setTimeout(function(){el.classList.add('fetch');el.querySelector('.st').textContent='正在擷取來源'},base+i*gap);
+    setTimeout(function(){el.classList.remove('fetch');el.classList.add('done');el.querySelector('.st').textContent='✓ 已擷取'},base+i*gap+(reduce?0:480));
+  });
+  setTimeout(function(){gate.forEach(function(g){g.classList.add('show')})},base+items.length*gap+(reduce?0:520));
+}
+function runHits(){
+  document.querySelectorAll('#stage .hitme').forEach(function(el,i){setTimeout(function(){el.classList.add('hit')},reduce?0:200+i*140)});
+}
+function runTerm(){
+  var t=document.getElementById('term');if(!t)return;
+  t.querySelectorAll('.ln').forEach(function(l,i){setTimeout(function(){l.classList.add('show')},reduce?0:250+i*260)});
+}
+function render(){
+  var s=STEPS[S.i];
+  if(s.enter&&!s._entered){s.enter();s._entered=true}
+  var p=PEOPLE[s.who];
+  document.getElementById('where').textContent=s.where;
+  document.getElementById('who').innerHTML='<span class="aiflag '+(S.ai?'c-act':'c-warn')+'">'+(S.ai?'● AI 可用':'○ AI 停用')+'</span><span>'+p.n+' · <span class="small">'+p.r+'</span></span><span class="av" style="background:'+p.c+'">'+p.n[0].toUpperCase()+'</span>';
+  document.getElementById('stage').innerHTML=s.body();
+  document.getElementById('sStep').innerHTML='第 '+(S.i+1)+' 步 · W'+s.w+' · '+s.ch+(TAGS[S.i]?'<br><span class="chip '+(TAGS[S.i].indexOf('第一切片')===0?'c-ok':'c-prop')+'" style="margin-top:4px;text-transform:none;letter-spacing:0">'+TAGS[S.i]+'</span>':'');
+  document.getElementById('sTitle').textContent=s.title;
+  document.getElementById('sWhat').textContent=s.what;
+  var tr=document.getElementById('sTrad');tr.textContent=s.trad;tr.style.display=s.trad?'block':'none';
+  document.getElementById('sRules').innerHTML=s.rules.map(function(r){return '<li>'+r+'</li>'}).join('');
+  var cc={'M0':'c-ok','規劃':'c-act','新增':'c-prop'};
+  document.getElementById('sCaps').innerHTML=s.caps.map(function(c){return '<span class="capi">'+c[0]+' <b class="'+cc[c[1]]+'">'+c[1]+'</b></span>'}).join('');
+  document.getElementById('prog').textContent=(S.i+1)+' / '+STEPS.length;
+  document.getElementById('prevB').disabled=S.i===0;
+  document.getElementById('nextB').disabled=S.i===STEPS.length-1;
+  buildNav();typeIn();runSources();runHits();runTerm();
+}
+function go(i){S.i=Math.max(0,Math.min(STEPS.length-1,i));render();var st=document.querySelector('.frame');if(st&&st.getBoundingClientRect().top<0)st.scrollIntoView({behavior:reduce?'auto':'smooth'})}
+
+document.addEventListener('click',function(e){
+  var g=e.target.closest('[data-go]');if(g){go(+g.dataset.go);return}
+  var b=e.target.closest('[data-act]');if(!b)return;
+  var a=b.dataset.act;
+  if(a==='next')go(S.i+1);
+  else if(a==='sim'){var r=document.getElementById('simres');r.innerHTML='模擬完成：6 個測試案例 <b class="c-ok">全部符合預期</b>，沒有寫入任何正式資料。'}
+  else if(a==='tryapprove'){document.getElementById('tryres').innerHTML='<span class="c-bad">● 不在 agent 的工具集合裡；就算直接呼叫 SPA 的 approve API，server 也會回 forbidden_op（approve／apply 的 handler 自己拒絕 agent，不只靠隱藏工具）。</span>'}
+  else if(a==='saveview'){document.getElementById('mmres').innerHTML=C('c-ok','✓ 已存成個人 view「SSO 全景」')+' ViewDef v1：kind=mindmap, root=AUTH-140, child_rel=parent；推導群組只存在呈現設定裡'}
+  else if(a==='mknode'){document.getElementById('mmres').innerHTML=C('c-prop','ChangeSet #14 已建立，待確認')+' 建立 story「錯誤頁文案」，parent = AUTH-140'}
+  else if(a==='tryscreen'){document.getElementById('scrres').innerHTML='<span class="c-bad">● 不提供：擷取使用者目前的畫面不在 agent 的工具集合裡。</span> 這種畫面可能有側欄、未儲存的內容或其他任務。需要時，請 bob 在自己的瀏覽器主動截圖。'}
+  else if(a==='tryflow'){document.getElementById('flowres').innerHTML='<span class="c-warn">● 不支援：BPMN 圖件不能直接發布成 workflow。</span> 要改流程，請到管理設定（草稿 → 影響報告 → 模擬 → 發布）。受限的 BPMN ↔ workflow 匯入匯出還沒決定（Q8）。'}
+  else if(a==='why1'){document.getElementById('why1').classList.toggle('on')}
+  else if(a==='stand'){b.outerHTML=C('c-ok','✓ 已發布到團隊（只含已確認內容）')}
+  else if(a.indexOf('mkcs')===0){var k=a.slice(4);document.getElementById('mk'+k).innerHTML=C('c-prop','ChangeSet #'+(35+ +k)+' 已建立，待確認');b.disabled=true}
+  else if(a==='vA'){S.viewer='alice';render()}
+  else if(a==='vC'){S.viewer='carol';render()}
+  else if(a==='restoreai'){S.ai=true;document.getElementById('tgAi').checked=true;go(S.i+1)}
+  else if(a==='publish'){var c=document.getElementById('cfm');var r2=document.getElementById('pubres');
+    if(!c||!c.checked){r2.innerHTML='<span class="c-warn">請先勾選確認。對外發布不能用一般的確認按鈕帶過。</span>';return}
+    r2.innerHTML=C('c-ok','✓ 已發布')+' wiki「Release notes v2.0」· 通知 3 人 · operation_id op_7f3a';b.disabled=true}
+  else if(a==='restart'){STEPS.forEach(function(s){s._entered=false});S.ai=true;S.conf=false;S.viewer='alice';document.getElementById('tgAi').checked=true;document.getElementById('tgConf').checked=false;go(0)}
+});
+document.getElementById('prevB').addEventListener('click',function(){go(S.i-1)});
+document.getElementById('nextB').addEventListener('click',function(){go(S.i+1)});
+document.getElementById('tgAi').addEventListener('change',function(e){S.ai=e.target.checked;render()});
+document.getElementById('tgConf').addEventListener('change',function(e){S.conf=e.target.checked;render()});
+document.addEventListener('keydown',function(e){if(e.target.closest('input,textarea'))return;if(e.key==='ArrowRight')go(S.i+1);if(e.key==='ArrowLeft')go(S.i-1)});
+var tb=document.getElementById('themeBtn');
+try{var sv=localStorage.getItem('ox-theme');if(sv)document.documentElement.dataset.theme=sv}catch(e){}
+tb.addEventListener('click',function(){var cur=document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');var nx=cur==='light'?'dark':'light';document.documentElement.dataset.theme=nx;try{localStorage.setItem('ox-theme',nx)}catch(e){}});
+render();
+})();
+</script>
+</body>
+</html>
