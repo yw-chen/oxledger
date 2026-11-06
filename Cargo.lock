@@ -1315,6 +1315,7 @@ dependencies = [
 name = "ox-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "thiserror",
  "uuid",

@@ -55,6 +55,22 @@ fn spawn_indexer(app: Arc<App>) {
     });
 }
 
+/// Background job for custom field indexes (custom_fields::reconcile_indexes):
+/// builds pending/broken per-field indexes and finishes interrupted drops.
+/// Only `serve` runs it, so stdio processes never race on the same DDL.
+fn spawn_field_indexer(app: Arc<App>) {
+    tokio::spawn(async move {
+        loop {
+            match oxledger::custom_fields::reconcile_indexes(&app.pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(fixed = n, "custom field indexes reconciled"),
+                Err(e) => tracing::warn!("custom field index job failed: {e:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+}
+
 async fn auth(
     State(app): State<Arc<App>>,
     mut req: Request,
@@ -79,6 +95,7 @@ async fn auth(
 async fn serve() -> Result<()> {
     let app = open_app().await?;
     spawn_indexer(app.clone());
+    spawn_field_indexer(app.clone());
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let mcp_app = app.clone();
     let mcp = StreamableHttpService::new(

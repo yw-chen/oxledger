@@ -346,3 +346,15 @@ pub async fn caller_for_key(pool: &PgPool, raw: &str) -> Result<Option<Uuid>> {
     .fetch_optional(pool)
     .await?)
 }
+
+/// Whether the caller is an administrator (anonymous: false).
+pub async fn is_admin(pool: &PgPool, caller: Caller) -> Result<bool> {
+    let Some(id) = caller.0 else { return Ok(false) };
+    Ok(
+        sqlx::query_scalar("SELECT is_admin FROM principals WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false),
+    )
+}

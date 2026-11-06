@@ -2,13 +2,41 @@
 //! Demo data for local development: `oxledger seed-demo`.
 //! Prints freshly generated API keys; only their hashes are stored.
 
+use crate::custom_fields::{self, NewField, set_value};
 use crate::db::{self, NewIssue};
 use anyhow::{Result, bail};
+use ox_core::filter::{FieldType, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn id(pool: &PgPool, sql: &'static str, name: &str) -> Result<Uuid> {
     Ok(sqlx::query_scalar(sql).bind(name).fetch_one(pool).await?)
+}
+
+/// A demo custom field for `trackers`, in every project or only in `project`.
+async fn field(
+    pool: &PgPool,
+    (name, ty): (&str, FieldType),
+    trackers: &[Uuid],
+    project: Option<Uuid>,
+    options: &[&str],
+) -> Result<i32> {
+    custom_fields::create_field(
+        pool,
+        NewField {
+            name,
+            ty,
+            description: "",
+            is_required: false,
+            is_for_all: project.is_none(),
+            trackers,
+            projects: project.as_slice(),
+            options,
+            visible: true,
+            roles: &[],
+        },
+    )
+    .await
 }
 
 pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
@@ -166,7 +194,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
-    issue(
+    let (oidc, _) = issue(
         auth,
         task,
         new,
@@ -178,7 +206,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         Some(sso),
     )
     .await?;
-    issue(
+    let (logout, _) = issue(
         auth,
         bug,
         new,
@@ -190,7 +218,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
-    issue(
+    let (smtp, _) = issue(
         auth,
         bug,
         doing,
@@ -202,7 +230,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
-    issue(
+    let (brute, _) = issue(
         auth,
         bug,
         new,
@@ -214,7 +242,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
-    issue(
+    let (lang, _) = issue(
         auth,
         bug,
         resolved,
@@ -226,7 +254,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
-    issue(
+    let (img, _) = issue(
         web,
         bug,
         new,
@@ -238,7 +266,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
-    issue(
+    let (docsearch, _) = issue(
         web,
         feature,
         new,
@@ -250,6 +278,79 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         None,
     )
     .await?;
+
+    // Custom fields (D14), covering every indexed value kind plus long text.
+    let all = [bug, feature, task];
+    let severity = field(
+        pool,
+        ("Severity", FieldType::List),
+        &[bug],
+        None,
+        &["Low", "Normal", "High", "Critical"],
+    )
+    .await?;
+    let estimate = field(pool, ("Estimate (h)", FieldType::Float), &all, None, &[]).await?;
+    let target = field(
+        pool,
+        ("Target date", FieldType::Date),
+        &[feature, task],
+        None,
+        &[],
+    )
+    .await?;
+    // Customer names are restricted: only Managers (alice on AUTH) and admins see them.
+    let manager = id(pool, "SELECT id FROM roles WHERE name=$1", "Manager").await?;
+    let customer = field(pool, ("Customer", FieldType::String), &all, Some(auth), &[]).await?;
+    sqlx::query("UPDATE field_defs SET visible = false WHERE id = $1")
+        .bind(customer)
+        .execute(pool)
+        .await?;
+    sqlx::query("INSERT INTO field_roles (field_id, role_id) VALUES ($1, $2)")
+        .bind(customer)
+        .bind(manager)
+        .execute(pool)
+        .await?;
+    let reviewer = field(pool, ("Reviewer", FieldType::User), &all, None, &[]).await?;
+    let regression = field(pool, ("Regression", FieldType::Bool), &[bug], None, &[]).await?;
+    let root_cause = field(pool, ("Root cause", FieldType::Text), &[bug], None, &[]).await?;
+
+    let opt = |label| async move {
+        custom_fields::option_id(pool, severity, label)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no option {label}"))
+    };
+    let date = |s: &str| Value::Date(s.parse().expect("valid date"));
+    let values = [
+        (sso, estimate, Value::Num(16.0)),
+        (sso, target, date("2026-12-15")),
+        (sso, customer, Value::Text("台灣銀行".into())),
+        (sso, reviewer, Value::Ref(alice)),
+        (oidc, estimate, Value::Num(2.5)),
+        (oidc, target, date("2026-11-30")),
+        (logout, severity, Value::Ref(opt("High").await?)),
+        (logout, estimate, Value::Num(4.0)),
+        (logout, regression, Value::Bool(true)),
+        (logout, customer, Value::Text("台灣銀行".into())),
+        (
+            logout,
+            root_cause,
+            Value::Text("SameSite=Strict 讓 Safari 在跨站導回時不送 cookie。".into()),
+        ),
+        (smtp, severity, Value::Ref(opt("Critical").await?)),
+        (smtp, estimate, Value::Num(1.0)),
+        (smtp, reviewer, Value::Ref(bob)),
+        (brute, severity, Value::Ref(opt("Critical").await?)),
+        (lang, severity, Value::Ref(opt("Low").await?)),
+        (lang, regression, Value::Bool(false)),
+        (img, severity, Value::Ref(opt("Normal").await?)),
+        (img, estimate, Value::Num(0.5)),
+        (docsearch, estimate, Value::Num(24.0)),
+        (docsearch, target, date("2027-01-31")),
+        (docsearch, reviewer, Value::Ref(carol)),
+    ];
+    for (issue_id, field_id, value) in &values {
+        set_value(pool, *issue_id, *field_id, value).await?;
+    }
 
     let mut keys = Vec::new();
     for login in ["admin", "alice", "bob", "carol"] {

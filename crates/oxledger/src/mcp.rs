@@ -73,7 +73,7 @@ impl OxServer {
 impl OxServer {
     #[tool(
         name = "search",
-        description = "Find issues the caller can see. Combine structured filters (project, tracker, status, status_category, assignee) with optional free text `q`. Returns one line per issue, newest first (or by relevance when `q` is given), with `next_cursor` for paging. Use `resolve` first if unsure of a name.",
+        description = "Find issues the caller can see. Combine structured filters (project, tracker, status, status_category, assignee), a custom field `filter` (conditions eq/ne/lt/le/gt/ge/between/in/is_null/not_null on fields by name, nested with and/or) and optional free text `q`. Returns one line per issue, newest first (or by relevance when `q` is given), with `next_cursor` for paging. Use `resolve` first if unsure of a name.",
         annotations(read_only_hint = true)
     )]
     async fn search(

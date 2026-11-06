@@ -250,6 +250,7 @@ CREATE INDEX issue_cf_bool ON issue_cf (field_id, v_bool, issue_id) WHERE v_bool
 3. planner 會低估列數：`field_id` 與 `v_x` 的統計是分開算的，`v_x` 的 null 比例（對某型別約 95%）又被重複計算，
    例如 `field_id = 8 AND v_num IS NOT NULL` 估 18 萬、實際 80 萬。這是 A 唯一明顯的規劃問題（例如「可見 + 熱門 3 欄」取第一頁選了先做 hash join，216 ms）。
    M1 可以試 `CREATE STATISTICS` 或依欄位覆蓋率決定 join 順序，這次沒測。
+   （後續：D14 實作時實測了統計與查詢形狀，結果見 §8。）
 4. 在大集合上的 group by、加總、facet 交給 tantivy，與 §5.5 原規劃一致；SQL 版當備援。
 
 ## 6. 限制與沒測到的東西
@@ -274,3 +275,93 @@ CREATE INDEX issue_cf_bool ON issue_cf (field_id, v_bool, issue_id) WHERE v_bool
   用 bigint 代替 uuid 當 `issue_cf` 的 issue 鍵（PK 與索引會小約三成）、`CREATE STATISTICS`、`work_mem` 調大。
 - 1000 萬筆以上、更多欄位、更寬的值（長文字）、多值欄位。
 - 與 tantivy 的分工（facet 交給 tantivy 之後，SQL 端還剩哪些查詢）——要等 Filter AST 與 E6。
+
+## 7. D14 實作後續：GPT 討論紀錄（2026-11-06）
+
+D14 第一版實作後還有 8 個未決事項。依使用者指示「各session如果有細節問題，跟gpt多輪討論後執行」，用 aura:gpt 和 GPT（gpt-6.1-sol，effort high）討論了 2 輪
+（thread `oxledger-d14-open-issues`，call `20261106-212649-2653ad`、`20261106-213257-ba5aca`）。
+GPT 的說法一律當資料看：Redmine 原始碼由本 session 另外抓 master 的 `issue_custom_field.rb`、`custom_field.rb`、`query.rb`、`role.rb` 原文核對；
+PostgreSQL 統計的部分以 §8 的實測為準。
+
+### 7.1 第 1 輪：讓 GPT 獨立提方案
+
+只給現況與問題，不給我的方案。重點：
+
+1. **planner 低估**：建議 `CREATE STATISTICS (mcv) ON field_id, (v_num IS NOT NULL)`；另外為廣泛篩選與選擇性篩選準備兩種執行策略（含 `OFFSET 0` 屏障），並在 `field_defs` 非同步記錄覆蓋率。
+2. **欄位權限**：建議 `visible` + `field_roles`；但主張把「被引用欄位的可讀專案」在整個 AST 外面取交集，理由是每個 leaf 各自加權限檢查，遇到 NOT 會洩漏。
+3. **get**：列出適用且可讀的欄位，用 LEFT JOIN 帶值，空值也列出。
+4. **outbox**：現在就把自訂欄位的變動接進 outbox。
+5. **改型別**：先拒絕；之後要支援就用複製、切換的遷移流程。
+6. **刪選項**：預設停用；硬刪要嘛被擋，要嘛換成別的選項。建議加 `value_kind` + 生成欄位 + 複合 FK，也建議 `issue_cf.field_id` 加 FK。
+7. **q + filter**：逐批取排名候選，直到湊滿 limit；碰到上限要明確標示「結果不完整」。
+8. **Redmine 語意**：認為 `!*`、`!` 都會包含不適用的單，但沒把握。
+
+### 7.2 第 2 輪：拿我的方案請 GPT 批判（開 web search 查 Redmine 原始碼）
+
+我提的方案：權限檢查放在 leaf 層級（讀不到的值一律當作不存在）、不接 outbox、刪選項用觸發器加 `FOR KEY SHARE`、
+候選以 500 → 2000 → 8000 擴充、空字串一律存成沒有值。GPT 的回應：
+
+- **它收回第 1 輪的 NOT 洩漏論點**：只要每個 leaf 的真假只依賴可讀資料，任何布林組合都不會依賴隱藏值。
+- **指出我漏掉適用性**（已核對原文）：`IssueCustomField#visibility_by_project_condition` 在權限之外，還 AND 了
+  `issues.tracker_id IN (custom_fields_trackers)` 與 `is_for_all OR issues.project_id IN (custom_fields_projects)`。
+  `sql_for_custom_field` 把 `!` 改成 `=` 再包 `NOT EXISTS`，`!*` 則是一般的 `EXISTS`（LEFT JOIN 後判斷 value IS NULL 或 ''）。
+  所以 `!` 會包含不適用或讀不到的單，`!*` 不會；不適用的單上留著的舊值不算。admin 只免除角色檢查，適用性照算。
+- **指出 Redmine 本身前後不一**（已核對原文）：篩選用的 SQL 只看成員角色（`m.user_id`），anonymous 一律 `1=0`；
+  顯示用的 `visible_by?` 則看 `roles_for_project`，會包含公開專案的內建 Non member／Anonymous 角色，以及內建群組的覆寫。
+  不過 `Role.givable` 排除內建角色，所以正常 UI 設不出差異，只有內建群組覆寫會讓兩者不同。
+- **PG18 原始碼**：NullTest 子句比對的是 `nt->arg`，所以 `(v_num IS NOT NULL)` 的運算式統計對裸的 `v_num IS NOT NULL` 不會生效，它收回第 1 輪的建議。§8 實測確認沒有改善。
+- **刪選項**：在 READ COMMITTED 下鎖的順序沒問題（`ExecBRDeleteTriggers` 會先鎖 tuple 再跑 BEFORE DELETE 觸發器）。
+  但在 REPEATABLE READ 下，刪除方的舊快照可能看不到剛 commit 的引用，所以不等於 FK，應該限制隔離層級。
+- **欄位刪除**：`DROP INDEX CONCURRENTLY` 不是寫入屏障；應該讓寫入方對欄位定義加 `FOR SHARE`，把欄位標成 `dropping` 時就會等這些寫入結束。
+- **get**：list 和 user 要回 id，不能只回名稱，否則 client 無法 round-trip，也分不出同名的選項或使用者。
+- **outbox**：接受延後，但合約應該寫成「影響索引內容的變動才發事件」，等到要索引自訂欄位時連同 backfill 一起做。
+- **擴充候選**：「不夠」的標準是 `offset + limit + 1`，不是一頁；整頁滿了但找不到下一筆時，也要標 truncated。
+
+### 7.3 採用與不採用
+
+| 項目 | 結果 | 理由 |
+|---|---|---|
+| 篩選加適用性 E（tracker、專案、可讀專案），positive 寫成 `E AND EXISTS`、ne 寫成 `NOT (E AND EXISTS =)`、is_null 寫成 `E AND NOT EXISTS` | **採用** | 已核對 Redmine 原文；PG 測試用獨立的 reference 比對 4 種身分 × 120 組隨機篩選 |
+| leaf 層級權限（不採用 GPT 第 1 輪的整體交集） | **採用**（GPT 第 2 輪同意） | 不會洩漏；整體交集會讓 `public = X OR restricted = Y` 整個排除隱藏專案，和 Redmine 不同 |
+| `visible` + `field_roles`，不能放內建角色 | **採用** | 對應 Redmine 的 `Role.givable`；oxledger 沒有內建群組覆寫，所以篩選和顯示的規則一致。**要不要支援內建群組覆寫是產品決策，還沒定** |
+| 讀不到的欄位回「no custom field」 | 採用 | 不洩漏欄位是否存在；錯誤訊息只列出讀得到的欄位 |
+| `get` 回 `custom_fields`（適用且可讀；list 給 {id, label, active}，user 給 {id, name}） | 採用 | 等於 Redmine 的 `visible_custom_field_values`；採納 GPT 回 id 的修正 |
+| `(field_id, (v_num IS NOT NULL))` 運算式統計 | **不採用** | §8 實測沒有改善，PG 原始碼也說明它比對不到 |
+| `(field_id, v_ref)` MCV 統計 | **採用** | §8：list／user 等值的低估從約 30 倍修到約 1 倍 |
+| 比較條件不再多帶 `IS NOT NULL` | **採用** | §8：熱門數字範圍的低估從 22 倍降到 4.9 倍；§5.3 規則 1 原文本來就是「`IS NOT NULL` 或對 `v_x` 的比較」 |
+| is_null／not_null 也拿掉 `IS NOT NULL` | **不採用，待上層決定** | §8：低估可從 4.75 倍降到約 1 倍，語意也由觸發器保證；但 D14 明文規定「每個條件都必須帶型別條件」 |
+| 兩種執行策略、`OFFSET 0` 屏障、覆蓋率統計 | 不採用 | 除了 E9 那個個案，沒有量到需要；GPT 第 2 輪也同意延後 |
+| outbox 接自訂欄位 | 不採用（延後） | tantivy 沒有索引自訂欄位；刪除熱門欄位會一次排入約 100 萬筆無用的重建。GPT 第 2 輪接受 |
+| 禁止改型別（觸發器） | 採用 | Redmine 也不允許（`field_format=` 只對新紀錄生效） |
+| 刪選項：觸發器 + `FOR KEY SHARE` + 只接受 READ COMMITTED；不加 `value_kind` 和複合 FK | 採用 | 正確性和 FK 相同（RC 下）；不必在 1700 萬列上多存一欄 |
+| `issue_cf.field_id` 加 FK | 不採用 | 刪欄位時的 FK 檢查需要 field_id 索引；改成寫入加 `FOR SHARE`、標 `dropping` 等寫入結束（採用 GPT 的屏障建議），刪除流程也因此少了一次全表掃描 |
+| q 的候選 500 → 2000 → 8000，加 `truncated` | 採用 | 「不夠」的標準用 `offset + limit + 1`；每輪重查索引，所以是 best effort，有註明 |
+| 空字串一律存成沒有值 | 採用 | 對齊 Redmine 把 '' 當成 none；0 和 false 仍然是值 |
+
+## 8. Planner 估計實測（D14 後續，2026-11-06）
+
+合成資料 `oxledger_d14_bench`：10 萬筆 issue、200 個欄位（1–10 號熱門 60–95%，其餘 0.3–5%）、`issue_cf` 129 萬列，
+用 `hashint8extended` 決定性抽樣，PostgreSQL 18.6，預設設定。每種統計都是單獨建立，各自 ANALYZE 3 次，表中列出最差的低估倍數（實際列數 ÷ 最小估計）。
+只量了基表的估計值，**沒有重跑 E9 的多欄位 + LIMIT 查詢與延遲**，也沒有在 100 萬筆規模重做。
+
+| 查詢 | 實際 | 無統計 | (b) `field_id, (v_num IS NOT NULL)` | (c) MCV `field_id, v_x` | (c2) 同 (c)，target 2000 | (d) dependencies |
+|---|---:|---:|---:|---:|---:|---:|
+| 熱門 num 有值（f1） | 94,970 | 4.75× | 4.73× | 4.75× | 4.61× | 4.75× |
+| 熱門 num 範圍 | 9,613 | 22.1× | 22.7× | 21.7× | 21.8× | 22.3× |
+| 冷門 num 範圍（f11） | 83 | 13.8× | 11.9× | 11.9× | 11.9× | 11.9× |
+| 熱門 date 有值 | 91,523 | 4.93× | 4.98× | 5.13× | **1.00×** | 4.91× |
+| 熱門 ref 等值（f3） | 4,431 | 29.9× | 27.4× | **1.21×** | **1.02×** | 26.4× |
+
+拿掉比較條件上多餘的 `IS NOT NULL` 後（同一份資料）：
+
+| 查詢 | 實際 | 只拿掉 `IS NOT NULL` | 再加 MCV `field_id, v_ref` |
+|---|---:|---:|---:|
+| 熱門 num 有值（只剩 `field_id = 1`） | 94,970 | 1.04× | 1.02× |
+| 熱門 num 範圍 | 9,613 | 4.91× | 4.81× |
+| 冷門 num 範圍 | 83 | 2.68× | 2.77× |
+| 熱門 ref 等值 | 4,431 | 5.33× | **1.17×** |
+
+解讀：低估倍數大約是 v_x 非 null 比例的倒數，代表型別條件的 null 比例被重複計算。數字欄位值太分散，MCV 放不下，所以任何統計都救不了；
+值少的 ref（20 種）用 MCV 就能修好；date（400 種）要 target 2000 才行，但 ANALYZE 的抽樣量會變成 60 萬列，沒有採用。
+剩下的低估（數字和日期範圍約 3–5 倍、is_null／not_null 4.75 倍）留給 M1：可以在真實資料上重跑 E9 的「可見 + 熱門 3 欄」案例，
+再決定要不要讓 presence 條件只用 `field_id = N`（需要上層同意調整 D14 規則），或改成每種型別一張表（§6.2）。

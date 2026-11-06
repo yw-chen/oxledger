@@ -12,8 +12,11 @@
 //!
 //! It also checks the MCP-facing `service::search` result.
 //!
-//! Needs PostgreSQL 18. Uses OXLEDGER_TEST_DATABASE_URL, or creates database
-//! `oxledger_test` next to DATABASE_URL / the local docker default.
+//! Needs PostgreSQL 18. Uses OXLEDGER_TEST_DATABASE_URL, or database
+//! `oxledger_test` next to DATABASE_URL / the local docker default (created if
+//! missing, see `common::test_pool`).
+
+mod common;
 
 use ox_core::IssueFacts;
 use oxledger::db::{self, Caller, push_pred};
@@ -23,7 +26,6 @@ use sqlx::{PgPool, Postgres, QueryBuilder};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-const DEFAULT_ADMIN_URL: &str = "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger";
 const WORLDS: u64 = 40;
 
 struct Rng(u64);
@@ -245,31 +247,7 @@ fn reference_visible(w: &World, viewer: Option<&User>, f: &IssueFacts) -> bool {
     })
 }
 
-async fn test_pool() -> PgPool {
-    if let Ok(url) = std::env::var("OXLEDGER_TEST_DATABASE_URL") {
-        return db::connect(&url)
-            .await
-            .expect("connect OXLEDGER_TEST_DATABASE_URL");
-    }
-    let admin_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into());
-    let admin = PgPool::connect(&admin_url)
-        .await
-        .expect("PostgreSQL 18 not reachable; start the docker container from docs/playbook.md");
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'oxledger_test')",
-    )
-    .fetch_one(&admin)
-    .await
-    .unwrap();
-    if !exists {
-        sqlx::query("CREATE DATABASE oxledger_test")
-            .execute(&admin)
-            .await
-            .unwrap();
-    }
-    let base = admin_url.rsplit_once('/').unwrap().0;
-    db::connect(&format!("{base}/oxledger_test")).await.unwrap()
-}
+use common::test_pool;
 
 async fn load_world(pool: &PgPool, w: &World) {
     sqlx::query(

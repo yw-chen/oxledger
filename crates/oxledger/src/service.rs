@@ -3,6 +3,7 @@
 //! Every query goes through the caller's per-request scope.
 
 use crate::db::{self, Caller, push_pred};
+use crate::filter::{self, FilterInput};
 use crate::search::SearchIndex;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -29,13 +30,17 @@ impl std::fmt::Display for UserError {
 }
 impl std::error::Error for UserError {}
 
-fn user_err(msg: impl Into<String>) -> anyhow::Error {
+pub(crate) fn user_err(msg: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(UserError(msg.into()))
 }
 
 const MAX_LIMIT: u32 = 100;
 const DEFAULT_LIMIT: u32 = 20;
 const SEARCH_CANDIDATES: usize = 500;
+/// With free text, the ranked candidate list grows 500 → 2000 → 8000 until
+/// enough candidates survive the SQL re-check (visibility drift, status and
+/// custom field filters live only in SQL). Beyond this the result is truncated.
+const MAX_SEARCH_CANDIDATES: usize = 8000;
 
 // ---------------------------------------------------------------- types
 
@@ -53,6 +58,10 @@ pub struct SearchParams {
     pub status_category: Option<String>,
     /// "me", "none", a user login/name, or a group name.
     pub assignee: Option<String>,
+    /// Custom field filter, e.g. {"and": [{"field": "Severity", "op": "in", "value": ["High", "Critical"]},
+    /// {"field": "Estimate (h)", "op": "between", "value": [2, 8]}]}. Combined with the other filters by AND.
+    #[schemars(with = "Option<FilterInput>")]
+    pub filter: Option<serde_json::Value>,
     /// Max items, default 20, max 100.
     pub limit: Option<u32>,
     /// Opaque cursor from a previous `next_cursor`.
@@ -84,6 +93,11 @@ pub struct SearchResult {
     pub items: Vec<IssueBrief>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// Only with `q`: the server stopped after ranking 8000 candidates without
+    /// finding everything this page needs. More matches may exist (even if there
+    /// is no `next_cursor`); narrow `q` or the filters.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -111,6 +125,19 @@ pub struct IssueDetail {
     pub lock_version: i32,
     /// Statuses the caller may move this issue to (workflow), current first.
     pub allowed_statuses: Vec<String>,
+    /// Custom fields that apply to this issue (tracker and project) and that the
+    /// caller may read, in display order; `value` is null when empty.
+    pub custom_fields: Vec<CustomFieldValue>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CustomFieldValue {
+    pub name: String,
+    /// int | float | date | string | text | list | user | bool | link
+    #[serde(rename = "type")]
+    pub field_type: String,
+    /// Number, "YYYY-MM-DD", string or bool; list: {id, label, active}; user: {id, name}.
+    pub value: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, JsonSchema, FromRow)]
@@ -221,7 +248,7 @@ pub async fn resolve(
 }
 
 /// Resolves a filter value to exactly one id of `kind`, or explains why not.
-async fn resolve_one(app: &App, caller: Caller, kind: &str, text: &str) -> Result<Uuid> {
+pub(crate) async fn resolve_one(app: &App, caller: Caller, kind: &str, text: &str) -> Result<Uuid> {
     let r = resolve(app, caller, text, Some(kind)).await?;
     let mut ids: Vec<Uuid> = r.candidates.iter().map(|c| c.id).collect();
     ids.sort();
@@ -322,73 +349,104 @@ pub async fn search(app: &App, caller: Caller, p: SearchParams) -> Result<Search
         ])),
     }
 
+    let custom = match &p.filter {
+        None => None,
+        Some(v) => Some(filter::resolve(app, caller, &scope, &filter::parse_input(v)?).await?),
+    };
+
     let mut all = vec![visible];
     all.extend(filters);
     let pred = Pred::And(all).simplify();
 
-    // Free text: rank in the index (already filtered by visibility + filters),
-    // then re-check every candidate in SQL — the index may lag the database.
-    let ranked: Option<Vec<(Uuid, f32)>> =
-        match p.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-            None => None,
-            Some(q) => Some(
-                app.index
-                    .search(q, &pred, SEARCH_CANDIDATES)?
-                    .into_iter()
-                    .map(|h| (h.issue_id, h.score))
-                    .collect(),
-            ),
-        };
+    let build = |ids: Option<Vec<Uuid>>| {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(BRIEF_SELECT);
+        push_pred(&mut qb, "i", &pred);
+        for (frag, id) in &sql_extra {
+            qb.push(" AND ").push(*frag).push_bind(*id);
+        }
+        if let Some(c) = &categories {
+            qb.push(" AND s.category = ANY(")
+                .push_bind(c.clone())
+                .push(")");
+        }
+        if assignee_none {
+            qb.push(" AND i.assigned_to_id IS NULL");
+        }
+        // Custom fields live only in PostgreSQL.
+        if let Some(f) = &custom {
+            qb.push(" AND ");
+            filter::push_filter(&mut qb, "i", f);
+        }
+        match ids {
+            Some(ids) => {
+                qb.push(" AND i.id = ANY(").push_bind(ids).push(")");
+            }
+            None => {
+                qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
+                    .push_bind(limit + 1)
+                    .push(" OFFSET ")
+                    .push_bind(offset);
+            }
+        }
+        qb
+    };
 
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(BRIEF_SELECT);
-    push_pred(&mut qb, "i", &pred);
-    for (frag, id) in &sql_extra {
-        qb.push(" AND ").push(*frag).push_bind(*id);
-    }
-    if let Some(c) = &categories {
-        qb.push(" AND s.category = ANY(")
-            .push_bind(c.clone())
-            .push(")");
-    }
-    if assignee_none {
-        qb.push(" AND i.assigned_to_id IS NULL");
-    }
-    match &ranked {
-        Some(r) => {
-            let ids: Vec<Uuid> = r.iter().map(|(id, _)| *id).collect();
-            qb.push(" AND i.id = ANY(").push_bind(ids).push(")");
+    let mut truncated = false;
+    let mut items = match p.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        None => rows_to_briefs(build(None).build_query_as().fetch_all(&app.pool).await?),
+        // Free text: rank in the index (already filtered by visibility + the
+        // index-side filters), then re-check every candidate in SQL — the index
+        // may lag the database, and some filters exist only in SQL. Grow the
+        // candidate list until this page and one lookahead item survive.
+        // Best effort: each round asks the index again, so a concurrent index
+        // update can shift the ranking between rounds.
+        Some(q) => {
+            let need = (offset + limit + 1) as usize;
+            let mut k = SEARCH_CANDIDATES;
+            let mut items = loop {
+                let hits = app.index.search(q, &pred, k)?;
+                let exhausted = hits.len() < k;
+                let score_of: std::collections::HashMap<Uuid, f32> =
+                    hits.iter().map(|h| (h.issue_id, h.score)).collect();
+                let ids: Vec<Uuid> = score_of.keys().copied().collect();
+                let mut items = rows_to_briefs(
+                    build(Some(ids))
+                        .build_query_as()
+                        .fetch_all(&app.pool)
+                        .await?,
+                );
+                for i in &mut items {
+                    i.score = score_of.get(&i.id).copied();
+                }
+                if items.len() >= need || exhausted {
+                    break items;
+                }
+                if k >= MAX_SEARCH_CANDIDATES {
+                    truncated = true;
+                    break items;
+                }
+                k = (k * 4).min(MAX_SEARCH_CANDIDATES);
+            };
+            items.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.key.cmp(&b.key))
+            });
+            items
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize + 1)
+                .collect()
         }
-        None => {
-            qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
-                .push_bind(limit + 1)
-                .push(" OFFSET ")
-                .push_bind(offset);
-        }
-    }
-    let rows: Vec<BriefRow> = qb.build_query_as().fetch_all(&app.pool).await?;
-    let mut items = rows_to_briefs(rows);
-
-    if let Some(r) = ranked {
-        let score_of: std::collections::HashMap<Uuid, f32> = r.into_iter().collect();
-        items.retain(|i| score_of.contains_key(&i.id));
-        for i in &mut items {
-            i.score = score_of.get(&i.id).copied();
-        }
-        items.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.key.cmp(&b.key))
-        });
-        items = items
-            .into_iter()
-            .skip(offset as usize)
-            .take(limit as usize + 1)
-            .collect();
-    }
+    };
     let next_cursor = (items.len() as i64 > limit).then(|| (offset + limit).to_string());
     items.truncate(limit as usize);
-    Ok(SearchResult { items, next_cursor })
+    Ok(SearchResult {
+        items,
+        next_cursor,
+        truncated,
+    })
 }
 
 // ---------------------------------------------------------------- get
@@ -514,6 +572,7 @@ pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
         .iter()
         .filter_map(|id| statuses.iter().find(|s| s.0 == *id).map(|s| s.1.clone()))
         .collect();
+    let custom_fields = custom_field_values(app, caller, &scope, &row).await?;
 
     Ok(IssueDetail {
         requested_key: (row.current_key != key).then_some(key.clone()),
@@ -535,7 +594,83 @@ pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
         updated_at: row.updated_at,
         lock_version: row.lock_version,
         allowed_statuses,
+        custom_fields,
     })
+}
+
+#[derive(FromRow)]
+struct CfRow {
+    name: String,
+    ftype: String,
+    v_num: Option<f64>,
+    v_date: Option<NaiveDate>,
+    v_text: Option<String>,
+    v_ref: Option<Uuid>,
+    v_bool: Option<bool>,
+    option_label: Option<String>,
+    option_active: Option<bool>,
+    principal_name: Option<String>,
+}
+
+/// Redmine `Issue#visible_custom_field_values`: fields available for the
+/// issue (tracker ∩ project) that the caller may read, with their values.
+/// Values of fields that no longer apply stay stored but are not shown.
+async fn custom_field_values(
+    app: &App,
+    caller: Caller,
+    scope: &ox_core::Scope,
+    row: &DetailRow,
+) -> Result<Vec<CustomFieldValue>> {
+    let admin = db::is_admin(&app.pool, caller).await?;
+    let rows: Vec<CfRow> = sqlx::query_as(
+        "SELECT d.name, d.ftype, cf.v_num::float8 AS v_num, cf.v_date, cf.v_text, cf.v_ref, cf.v_bool,
+                o.label AS option_label, o.active AS option_active, pr.name AS principal_name
+         FROM field_defs d
+         JOIN field_trackers ft ON ft.field_id = d.id AND ft.tracker_id = $2
+         LEFT JOIN issue_cf cf ON cf.issue_id = $1 AND cf.field_id = d.id
+         LEFT JOIN field_options o ON d.ftype = 'list' AND o.id = cf.v_ref
+         LEFT JOIN principals pr ON d.ftype = 'user' AND pr.id = cf.v_ref
+         WHERE d.index_state <> 'dropping'
+           AND (d.is_for_all OR EXISTS (SELECT 1 FROM field_projects fp
+                                        WHERE fp.field_id = d.id AND fp.project_id = $3))
+           AND (d.visible OR $4 OR EXISTS (
+                 SELECT 1 FROM field_roles fr
+                 JOIN member_roles mr ON mr.role_id = fr.role_id
+                 JOIN members m ON m.id = mr.member_id
+                 WHERE fr.field_id = d.id AND m.project_id = $3 AND m.principal_id = ANY($5)))
+         ORDER BY d.position, d.name",
+    )
+    .bind(row.id)
+    .bind(row.tracker_id)
+    .bind(row.project_id)
+    .bind(admin)
+    .bind(&scope.principal_ids)
+    .fetch_all(&app.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            use serde_json::json;
+            let value = match r.ftype.as_str() {
+                "int" => r.v_num.map(|n| json!(n as i64)),
+                "float" => r.v_num.map(|n| json!(n)),
+                "date" => r.v_date.map(|d| json!(d.to_string())),
+                "bool" => r.v_bool.map(|b| json!(b)),
+                "list" => r.v_ref.map(
+                    |id| json!({"id": id, "label": r.option_label, "active": r.option_active}),
+                ),
+                "user" => r
+                    .v_ref
+                    .map(|id| json!({"id": id, "name": r.principal_name})),
+                _ => r.v_text.map(|t| json!(t)),
+            };
+            CustomFieldValue {
+                name: r.name,
+                field_type: r.ftype,
+                value,
+            }
+        })
+        .collect())
 }
 
 /// Unwraps a [`UserError`] if that is what `e` is.
