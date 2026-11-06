@@ -65,7 +65,8 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | `Uuid: JsonSchema` not satisfied | rmcp 帶的 schemars 只開 `chrono04` | 自己加 `schemars = { version = "1", features = ["uuid1"] }`，feature 會合併 |
 | `field tool_router is never read` | `#[tool_handler]` 預設每次呼叫 `Self::tool_router()` 重建 | `#[tool_handler(router = self.tool_router, ...)]` |
 | `cargo test` 報 failed to remove `target\debug\oxledger.exe` | Windows 上執行中的 exe 被鎖住 | 先停掉 `oxledger serve`／`stdio` 再編譯 |
-| 搜「登入」出現「首頁圖片載入太慢」 | 索引有單字（unigram），查詢「登入」的「入」命中「載入」 | 查詢端：兩字以上的中文串只用 bigram，單字才用 unigram（`tokenize_query`）；索引仍存兩種。品質由 E1 驗證 |
+| 搜「登入」出現「首頁圖片載入太慢」 | 索引有單字（unigram），查詢「登入」的「入」命中「載入」 | 查詢端：兩字以上的中文串用 bigram（權重 1，`tokenize_query`），串裡的單字另以 `CJK_UNIGRAM_WEIGHT` = 0.1 加入（D15，`query_terms`），讓「付不了錢」這類 bigram 全空的查詢仍有結果；索引仍存兩種。E1 實測 nDCG＠10 0.781 → 0.810，權重 0.5 以上「載入」誤命中會回來，不要調高（見 `docs/research/03-e1-zh-retrieval.md`；測試 `login_does_not_rank_loading_issue_high` 在 0.5 會失敗） |
+| 搜 `invalid_grant` 時 `invalid_request` 排得一樣前面；搜 `v3.2.0` 命中任何含 `2`、`0` 的 issue | 舊斷詞把 `_`、`.` 當分隔符，識別碼只剩零件 | 索引端在零件之外另存整串（`_`、`.` 連接時），查詢端整串權重 1、零件 `COMPOUND_PART_WEIGHT` = 0.2。改了斷詞要**重建索引**（`oxledger reindex`）。細節與取捨見下方「識別碼斷詞」 |
 | 用 Python 讀 MCP stdio 輸出時 JSONDecodeError | Windows 預設以 cp950 解碼管線 | `io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")` |
 | Docker 指令連不到 `dockerDesktopLinuxEngine` | Docker Desktop 沒在跑，或剛啟動 engine 還沒好 | 啟動 Docker Desktop，等 `docker info` 有 ServerVersion（約 1 分鐘） |
 | 自訂欄位篩選在 generic plan 下全表掃描 `issue_cf` | 每欄位的 partial index 條件是 `WHERE field_id = 5`；`field_id = $1` 在 prepared statement 換成 generic plan 後，planner 無法證明它蘊含索引條件 | field id 直接以整數字面值寫進 SQL（`filter::push_filter`）。`tests/custom_fields_pg.rs` 用 `EXPLAIN (GENERIC_PLAN)` 驗證兩種寫法 |
@@ -92,3 +93,35 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - **planner 低估列數：部分處理**（報告 02 §8 有實測數字）。比較條件不再多帶 `IS NOT NULL`，熱門數字範圍的低估從 22 倍降到 4.9 倍；`issue_cf_field_ref` 統計讓 list／user 等值從 30 倍修到約 1 倍。剩下的是數字和日期範圍的低估、is_null／not_null 的 4.75 倍低估，以及跨欄位或 join 的相關性。多個熱門欄位加 `LIMIT` 時的 join 順序沒有重測。
 - **free text + 篩選**：tantivy 不知道自訂欄位、狀態和 assignee=none，所以 `q` 的候選從 500 開始，存活數不夠就擴到 2000、8000。到 8000 還不夠時回 `truncated: true`，表示可能還有更多。每輪都重新查索引，索引在查詢期間更新時排序可能變動（best effort）。
 - **outbox 用 xid8**：只消費 `xid < pg_snapshot_xmin(pg_current_snapshot())` 的列；長交易會拖住索引更新，之後要加監控。
+
+## 識別碼斷詞（2026-11-06，和 GPT 討論 2 輪後實作）
+
+起因：E1 報告 §6 第 5 點，`_`、`.` 把錯誤碼和版本號拆散。規則寫在 `search.rs` 的 `Lexer`。
+
+**規則**
+- 非 CJK 的英數字串（Unicode `is_alphanumeric`，和原本的詞一樣）之間只隔一個 `_` 或 `.` 時，除了各段，再存一個完整的詞：`invalid_grant` → `invalid`、`grant`、`invalid_grant`；`v3.2.0` → `v3`、`2`、`0`、`v3.2.0`。
+- 只取最長的那一串，不產生中間組合（`foo_bar.baz` 只多一個 `foo_bar.baz`）。
+- 不會連接的情況：
+  - 結尾的連接符：`invalid_grant.` 只產生 `invalid_grant`。
+  - 開頭的連接符，或連續兩個連接符：`__init__` → `init`；`a..b`、`a._b` → `a`、`b`。
+  - 中文是硬邊界：`登入.失敗` 不連接。
+- 整串超過 128 bytes 時不存整串，各段當一般的詞。
+- `-`、`/`、`:`、`@`、全形破折號仍是分隔符。
+- 查詢端權重：整串 1、各段 0.2。各段的 0.2 沒有校準過，E1 的查詢集裡沒有識別碼查詢。
+
+**討論中決定的事**
+- `-` 先不連接，因為 `登入-失敗` 這類中文混寫，以及日期的語意都要另外想。`/`、`:`、`@`（路徑、URL、時間、email）也延後，等有實際需求再說。
+- 版本號不特別處理（GPT 第 1 輪建議版本號只搜整串、不搜各段，第 2 輪改成和其他複合詞一樣）。代價是：
+  - 搜 `v3.2` 而 issue 寫 `v3.2.0`，或搜 `3.2.0` 而 issue 寫 `v3.2.0` 時，沒有整串可以對上，只能靠 `v3`、`2`、`0` 這些零件，所以 `v3.9.2` 也可能排上來。這只能找回大致相關的結果，不懂版本前綴。
+  - 之後若版本號查詢重要，做法是在索引端加有上限的前綴和去掉 `v` 的別名（`v3.2`、`3.2.0`），並寫專門的測試。
+  - 「零命中才退回搜零件」不採用：只要有一筆不相關的命中，退回就不會觸發。
+- 段落用 Unicode 英數字，不限 ASCII，和原本的詞一致；但不做正規化，全形 `ｖ３.２` 不等於 `v3.2`。
+- 驗收：E1 的 nDCG＠10 不能低於 0.810，同時逐題看變化，並看索引大小。
+
+**結果**
+- E1（只跑 a、a2、b、c）：a 0.781、a+uni0.1 0.810，到小數第 3 位都沒變，recall／MRR／P＠10 也一樣。60 題裡只有 q01 降了 0.002。
+- 索引：200 筆時 103.1 → 103.8 KB；10,000 筆時 1869.5 → 1880.4 KB（+0.6%）。
+- E1 沒有識別碼查詢，所以精確度的提升只由測試證明：
+  - `identifiers_glued_by_underscore_or_dot_are_kept_whole`：斷詞的邊界情況。
+  - `exact_identifier_ranks_first`：只有零件命中的 issue，分數低於第一名的 0.15 倍；各段權重若改成 1.0，這個比例約 0.3，測試會失敗。
+- 還沒做：真實或獨立撰寫的識別碼查詢集，包括版本號、相近錯誤碼、路徑、日期和中文邊界的反例。
