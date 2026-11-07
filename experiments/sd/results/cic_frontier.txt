@@ -1,0 +1,17 @@
+NOTICE:  index "issue_cf_cic_test" does not exist, skipping
++  1642ms prev_probe_visible=true -
++  2821ms prev_probe_visible=true -
++  4001ms prev_probe_visible=true -
++  5209ms prev_probe_visible=true -
++  6385ms prev_probe_visible=true -
++  7581ms prev_probe_visible=true -
++  8748ms prev_probe_visible=true -
++  9994ms prev_probe_visible=true -
++ 11215ms prev_probe_visible=true -
++ 12392ms prev_probe_visible=true -
++ 13601ms prev_probe_visible=true -
++ 15081ms prev_probe_visible=true -
++ 16269ms prev_probe_visible=true -
++ 17474ms prev_probe_visible=true -
+CIC done at +17838ms
++ 18615ms prev_probe_visible=true -

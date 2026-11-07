@@ -1,0 +1,1 @@
+SELECT count(*) FROM (SELECT 1 FROM issue_cf WHERE field_id = 9 AND v_date BETWEEN '2019-01-01' AND '2019-03-31' LIMIT 10001) s;

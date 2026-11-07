@@ -1,0 +1,23 @@
+Time: 1502.955 ms (00:01.503)
+Time: 3.625 ms
+Time: 550.381 ms
+          t           |  est   |  act   
+----------------------+--------+--------
+ (4) case expr, alone | 172301 | 160194
+
+                                                                                          QUERY PLAN                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=6138.51..265610.02 rows=172301 width=4)
+   Workers Planned: 2
+   ->  Parallel Bitmap Heap Scan on issue_cf  (cost=5138.51..247379.92 rows=71792 width=4)
+         Recheck Cond: ((CASE WHEN (field_id = 8) THEN v_num ELSE NULL::numeric END >= '100'::numeric) AND (CASE WHEN (field_id = 8) THEN v_num ELSE NULL::numeric END <= '300'::numeric))
+         ->  Bitmap Index Scan on issue_cf_f8_case  (cost=0.00..5095.44 rows=172301 width=0)
+               Index Cond: ((CASE WHEN (field_id = 8) THEN v_num ELSE NULL::numeric END >= '100'::numeric) AND (CASE WHEN (field_id = 8) THEN v_num ELSE NULL::numeric END <= '300'::numeric))
+ JIT:
+   Functions: 4
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+
+ case_idx | f8_idx 
+----------+--------
+ 31 MB    | 38 MB
+

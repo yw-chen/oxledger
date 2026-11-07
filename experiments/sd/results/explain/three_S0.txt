@@ -1,0 +1,39 @@
+Limit  (cost=7209.91..17400.83 rows=50 width=16) (actual time=58.294..60.046 rows=50.00 loops=1)
+  Buffers: shared hit=7883, temp read=364 written=538
+  ->  Nested Loop  (cost=7209.91..63259.99 rows=275 width=16) (actual time=58.292..60.039 rows=50.00 loops=1)
+        Buffers: shared hit=7883, temp read=364 written=538
+        ->  Nested Loop  (cost=7209.34..59182.14 rows=1431 width=48) (actual time=58.282..59.761 rows=72.00 loops=1)
+              Buffers: shared hit=7529, temp read=364 written=538
+              ->  Merge Join  (cost=7208.84..13488.77 rows=59706 width=32) (actual time=58.245..58.724 rows=721.00 loops=1)
+                    Merge Cond: (c.issue_id = c_2.issue_id)
+                    Buffers: shared hit=4645, temp read=364 written=538
+                    ->  Index Only Scan Backward using issue_cf_f3 on issue_cf c  (cost=0.42..4518.89 rows=397027 width=16) (actual time=0.047..0.210 rows=1647.00 loops=1)
+                          Index Cond: (v_ref = '00000000-0002-7000-8003-000000000000'::uuid)
+                          Heap Fetches: 0
+                          Index Searches: 2
+                          Buffers: shared hit=22
+                    ->  Sort  (cost=7208.42..7294.34 rows=34368 width=16) (actual time=58.188..58.255 rows=847.00 loops=1)
+                          Sort Key: c_2.issue_id DESC
+                          Sort Method: external merge  Disk: 4296kB
+                          Buffers: shared hit=4623, temp read=364 written=538
+                          ->  Index Only Scan using issue_cf_f2 on issue_cf c_2  (cost=0.42..4619.00 rows=34368 width=16) (actual time=0.016..20.155 rows=219289.00 loops=1)
+                                Index Cond: (v_date >= '2025-01-01'::date)
+                                Heap Fetches: 0
+                                Index Searches: 2
+                                Buffers: shared hit=4623
+              ->  Index Scan using issues_pkey on issues i  (cost=0.50..0.77 rows=1 width=16) (actual time=0.001..0.001 rows=0.10 loops=721)
+                    Index Cond: (id = c.issue_id)
+                    Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])))
+                    Rows Removed by Filter: 1
+                    Index Searches: 721
+                    Buffers: shared hit=2884
+        ->  Index Scan using issue_cf_pkey on issue_cf c_1  (cost=0.56..2.85 rows=1 width=16) (actual time=0.004..0.004 rows=0.69 loops=72)
+              Index Cond: ((issue_id = c.issue_id) AND (field_id = 1))
+              Filter: (v_num >= '10'::numeric)
+              Rows Removed by Filter: 0
+              Index Searches: 72
+              Buffers: shared hit=354
+Planning:
+  Buffers: shared hit=590
+Planning Time: 2.555 ms
+Execution Time: 60.773 ms

@@ -1,0 +1,13 @@
+Aggregate  (cost=677.17..677.18 rows=1 width=8) (actual time=1.993..1.994 rows=1.00 loops=1)
+  Buffers: shared hit=70
+  ->  Limit  (cost=0.42..552.16 rows=10001 width=4) (actual time=0.062..1.557 rows=10001.00 loops=1)
+        Buffers: shared hit=70
+        ->  Index Only Scan using issue_cf_f1 on issue_cf  (cost=0.42..10585.91 rows=191877 width=4) (actual time=0.061..1.059 rows=10001.00 loops=1)
+              Index Cond: (v_num >= '10'::numeric)
+              Heap Fetches: 0
+              Index Searches: 2
+              Buffers: shared hit=70
+Planning:
+  Buffers: shared hit=300
+Planning Time: 0.776 ms
+Execution Time: 2.025 ms

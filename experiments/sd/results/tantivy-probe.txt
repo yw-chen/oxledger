@@ -1,0 +1,205 @@
+﻿== offsets=false  payload after commit: Some("{\"applied_through_xid\":\"645406\"}")
+snippet terms (term -> weight; boosts ignored?): see highlights below
+  d1 score=12.1574 fragment_bytes=0 fragment_chars=0 highlighted=["", "", "", ""]
+  d3 score=2.7090 fragment_bytes=0 fragment_chars=0 highlighted=["", "", ""]
+  d2 score=0.0000 fragment_bytes=0 fragment_chars=0 highlighted=[""]
+== offsets=true  payload after commit: Some("{\"applied_through_xid\":\"645406\"}")
+snippet terms (term -> weight; boosts ignored?): see highlights below
+  d1 score=12.1574 fragment_bytes=56 fragment_chars=28 highlighted=["入", "登", "登入", "入"]
+  d3 score=2.7090 fragment_bytes=150 fragment_chars=50 highlighted=["登", "登入", "入"]
+  d2 score=0.0000 fragment_bytes=51 fragment_chars=17 highlighted=["入"]
+explain json (6275 bytes):
+{
+  "value": 12.157433,
+  "description": "BooleanClause. sum of ...",
+  "details": [
+    {
+      "value": 12.157433,
+      "description": "BooleanClause. sum of ...",
+      "details": [
+        {
+          "value": 11.052208,
+          "description": "Boost x1 of ...",
+          "details": [
+            {
+              "value": 11.052208,
+              "description": "TermQuery, product of...",
+              "details": [
+                {
+                  "value": 2.2,
+                  "description": "(K1+1)"
+                },
+                {
+                  "value": 8.987397,
+                  "description": "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5))",
+                  "details": [
+                    {
+                      "value": 2.0,
+                      "description": "n, number of docs containing this term"
+                    },
+                    {
+                      "value": 20003.0,
+                      "description": "N, total number of docs"
+                    }
+                  ]
+                },
+                {
+                  "value": 0.55897504,
+                  "description": "freq / (freq + k1 * (1 - b + b * dl / avgdl))",
+                  "details": [
+                    {
+                      "value": 1.0,
+                      "description": "freq, occurrences of term within document"
+                    },
+                    {
+                      "value": 1.2,
+                      "description": "k1, term saturation parameter"
+                    },
+                    {
+                      "value": 0.75,
+                      "description": "b, length normalization parameter"
+                    },
+                    {
+                      "value": 25.0,
+                      "description": "dl, length of field"
+                    },
+                    {
+                      "value": 46.013348,
+                      "description": "avgdl, average length of field"
+                    }
+                  ]
+                }
+              ],
+              "context": [
+                "Term=Term(field=2, type=Str, \"登入\")"
+              ]
+            }
+          ]
+        },
+        {
+          "value": 1.1052208,
+          "description": "Boost x0.1 of ...",
+          "details": [
+            {
+              "value": 11.052208,
+              "description": "TermQuery, product of...",
+              "details": [
+                {
+                  "value": 2.2,
+                  "description": "(K1+1)"
+                },
+                {
+                  "value": 8.987397,
+                  "description": "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5))",
+                  "details": [
+                    {
+                      "value": 2.0,
+                      "description": "n, number of docs containing this term"
+                    },
+                    {
+                      "value": 20003.0,
+                      "description": "N, total number of docs"
+                    }
+                  ]
+                },
+                {
+                  "value": 0.55897504,
+                  "description": "freq / (freq + k1 * (1 - b + b * dl / avgdl))",
+                  "details": [
+                    {
+                      "value": 1.0,
+                      "description": "freq, occurrences of term within document"
+                    },
+                    {
+                      "value": 1.2,
+                      "description": "k1, term saturation parameter"
+                    },
+                    {
+                      "value": 0.75,
+                      "description": "b, length normalization parameter"
+                    },
+                    {
+                      "value": 25.0,
+                      "description": "dl, length of field"
+                    },
+                    {
+                      "value": 46.013348,
+                      "description": "avgdl, average length of field"
+                    }
+                  ]
+                }
+              ],
+              "context": [
+                "Term=Term(field=2, type=Str, \"登\")"
+              ]
+            }
+          ]
+        },
+        {
+          "value": 0.0000039493893,
+          "description": "Boost x0.1 of ...",
+          "details": [
+            {
+              "value": 0.00003949389,
+              "description": "TermQuery, product of...",
+              "details": [
+                {
+                  "value": 2.2,
+                  "description": "(K1+1)"
+                },
+                {
+                  "value": 0.000025033638,
+                  "description": "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5))",
+                  "details": [
+                    {
+                      "value": 20003.0,
+                      "description": "n, number of docs containing this term"
+                    },
+                    {
+                      "value": 20003.0,
+                      "description": "N, total number of docs"
+                    }
+                  ]
+                },
+                {
+                  "value": 0.71710587,
+                  "description": "freq / (freq + k1 * (1 - b + b * dl / avgdl))",
+                  "details": [
+                    {
+                      "value": 2.0,
+                      "description": "freq, occurrences of term within document"
+                    },
+                    {
+                      "value": 1.2,
+                      "description": "k1, term saturation parameter"
+                    },
+                    {
+                      "value": 0.75,
+                      "description": "b, length normalization parameter"
+                    },
+                    {
+                      "value": 25.0,
+                      "description": "dl, length of field"
+                    },
+                    {
+                      "value": 46.013348,
+                      "description": "avgdl, average length of field"
+                    }
+                  ]
+                }
+              ],
+              "context": [
+                "Term=Term(field=2, type=Str, \"入\")"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "value": 0.0,
+      "description": "Const"
+    }
+  ]
+}
+search top20 57.3µs, explain x20 (one weight) 614.1µs

@@ -1,0 +1,1 @@
+SELECT count(*) FROM (SELECT 1 FROM issue_cf WHERE field_id = 800 AND v_num BETWEEN 1000 AND 5000 LIMIT 10001) s;

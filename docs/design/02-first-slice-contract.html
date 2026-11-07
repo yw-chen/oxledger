@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oxledger 第一切片後端契約</title>
+<style>
+:root{
+  --bg:#0B1220;--bg2:#0F1829;--card:#142033;--card2:#1A2840;--line:#24344F;--line2:#30466A;
+  --fg:#F1F5F9;--muted:#B6C2D3;--dim:#7D8BA1;
+  --act:#67E8F9;--prop:#C4B5FD;--ok:#6EE7B7;--warn:#FCD34D;--bad:#FDA4AF;
+  --act-a:rgba(103,232,249,.14);--prop-a:rgba(196,181,253,.14);--ok-a:rgba(110,231,183,.14);--warn-a:rgba(252,211,77,.12);--bad-a:rgba(253,164,175,.12);
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#F4F7FB;--bg2:#EAF0F7;--card:#FFFFFF;--card2:#F2F6FB;--line:#D5DFEC;--line2:#B9C8DC;
+  --fg:#0E1726;--muted:#3E4C63;--dim:#66748A;
+  --act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;
+  --act-a:rgba(14,116,144,.10);--prop-a:rgba(109,40,217,.09);--ok-a:rgba(4,120,87,.10);--warn-a:rgba(161,98,7,.10);--bad-a:rgba(190,18,60,.08);
+}}
+:root[data-theme="light"]{
+  --bg:#F4F7FB;--bg2:#EAF0F7;--card:#FFFFFF;--card2:#F2F6FB;--line:#D5DFEC;--line2:#B9C8DC;
+  --fg:#0E1726;--muted:#3E4C63;--dim:#66748A;
+  --act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;
+  --act-a:rgba(14,116,144,.10);--prop-a:rgba(109,40,217,.09);--ok-a:rgba(4,120,87,.10);--warn-a:rgba(161,98,7,.10);--bad-a:rgba(190,18,60,.08);
+}
+:root[data-theme="dark"]{
+  --bg:#0B1220;--bg2:#0F1829;--card:#142033;--card2:#1A2840;--line:#24344F;--line2:#30466A;
+  --fg:#F1F5F9;--muted:#B6C2D3;--dim:#7D8BA1;
+  --act:#67E8F9;--prop:#C4B5FD;--ok:#6EE7B7;--warn:#FCD34D;--bad:#FDA4AF;
+  --act-a:rgba(103,232,249,.14);--prop-a:rgba(196,181,253,.14);--ok-a:rgba(110,231,183,.14);--warn-a:rgba(252,211,77,.12);--bad-a:rgba(253,164,175,.12);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.7 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif;overflow-x:hidden}
+code,.mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
+code{background:var(--card2);border:1px solid var(--line);padding:0 5px;border-radius:4px;font-size:13px}
+main{max-width:1080px;margin:0 auto;padding:0 16px 80px}
+header{padding:56px 0 20px;border-bottom:1px solid var(--line)}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px}
+h1 em{font-style:normal;background:linear-gradient(90deg,var(--act),var(--prop));-webkit-background-clip:text;background-clip:text;color:transparent}
+.meta{color:var(--dim);font-size:13px}
+.lead{color:var(--muted);margin:6px 0 16px}
+h2{font-size:20px;margin:52px 0 6px;display:flex;align-items:center;gap:10px}
+h2 .n{font:600 12px ui-monospace,Consolas,monospace;color:var(--act);border:1px solid var(--act);border-radius:4px;padding:1px 6px}
+h3{font-size:16px;margin:20px 0 6px}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px}
+nav.toc a{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:99px;padding:2px 10px}
+nav.toc a:hover{color:var(--act);border-color:var(--act)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;border-left:3px solid var(--act)}
+.card.p{border-left-color:var(--prop)}.card.o{border-left-color:var(--ok)}.card.w{border-left-color:var(--warn)}.card.b{border-left-color:var(--bad)}
+.card h4{margin:0 0 4px;font-size:15px}
+.card p{margin:0;color:var(--muted);font-size:14px}
+.card .why{margin-top:6px;font-size:13px;color:var(--dim)}
+.k{font:600 11px ui-monospace,Consolas,monospace;letter-spacing:.08em;color:var(--dim)}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{color:var(--dim);font-weight:600;font-size:12px;background:var(--card2)}
+.chip{display:inline-block;padding:0 8px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor;white-space:nowrap;line-height:20px}
+.c-act{color:var(--act)}.c-prop{color:var(--prop)}.c-ok{color:var(--ok)}.c-warn{color:var(--warn)}.c-bad{color:var(--bad)}.c-dim{color:var(--dim)}
+.diag{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;overflow-x:auto}
+.diag svg{display:block;min-width:720px;width:100%;height:auto}
+.diag figcaption{color:var(--dim);font-size:13px;margin-top:8px}
+svg text{font-family:system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif;fill:var(--fg)}
+svg .t-dim{fill:var(--dim)} svg .t-mut{fill:var(--muted)}
+svg .t-act{fill:var(--act)} svg .t-ok{fill:var(--ok)} svg .t-bad{fill:var(--bad)} svg .t-warn{fill:var(--warn)} svg .t-prop{fill:var(--prop)}
+svg .box{fill:var(--card2);stroke:var(--line2);stroke-width:1.2}
+svg .box-act{fill:var(--act-a);stroke:var(--act);stroke-width:1.4}
+svg .box-ok{fill:var(--ok-a);stroke:var(--ok);stroke-width:1.4}
+svg .box-bad{fill:var(--bad-a);stroke:var(--bad);stroke-width:1.4}
+svg .box-warn{fill:var(--warn-a);stroke:var(--warn);stroke-width:1.4}
+svg .box-prop{fill:var(--prop-a);stroke:var(--prop);stroke-width:1.4}
+svg .ln{stroke:var(--line2);stroke-width:1.4;fill:none}
+svg .ar{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#arw)}
+svg .ar-ok{stroke:var(--ok);stroke-width:1.4;fill:none;marker-end:url(#arw-ok)}
+svg .ar-bad{stroke:var(--bad);stroke-width:1.4;fill:none;marker-end:url(#arw-bad)}
+svg .ar-d{stroke:var(--dim);stroke-width:1.2;fill:none;stroke-dasharray:4 4;marker-end:url(#arw)}
+svg .life{stroke:var(--line2);stroke-width:1.2;stroke-dasharray:3 5}
+svg .tx{fill:var(--act-a);stroke:var(--act);stroke-width:1}
+svg .tx-b{fill:var(--prop-a);stroke:var(--prop);stroke-width:1}
+svg .tx-c{fill:var(--warn-a);stroke:var(--warn);stroke-width:1}
+.steps{counter-reset:s;display:grid;gap:10px}
+.step{display:grid;grid-template-columns:56px 1fr;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.step .sid{font:700 14px ui-monospace,Consolas,monospace;color:var(--act)}
+.step h4{margin:0;font-size:15px}
+.step p{margin:2px 0 0;color:var(--muted);font-size:14px}
+.step .done{margin-top:4px;font-size:13px;color:var(--ok)}
+.round{border-left:2px solid var(--line2);padding:0 0 14px 16px;margin-left:6px;position:relative}
+.round::before{content:"";position:absolute;left:-6px;top:6px;width:10px;height:10px;border-radius:50%;background:var(--act)}
+.round h4{margin:0;font-size:15px}
+.round p{margin:2px 0 0;color:var(--muted);font-size:14px}
+footer{margin-top:60px;color:var(--dim);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+@media (max-width:600px){h1{font-size:24px}.step{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+    <marker id="arw-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ok)"/></marker>
+    <marker id="arw-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--bad)"/></marker>
+  </defs>
+</svg>
+
+<header>
+  <div class="k">設計 02 · 草案 · 2026-11-06</div>
+  <h1>第一個可用版本的<em>後端契約</em></h1>
+  <p class="lead">外部 agent 只能提案；人在 SPA 一次明確的「核准並套用」，遇到撤權、衝突、逾時或程序崩潰時，結果只會是「沒有效果」或「剛好一次完整效果」。</p>
+  <div class="meta">範圍：設計 01 §10 阻塞順序 ①–③、⑤ · 與 GPT 討論 22 輪 · 已對齊設計 03 · Redmine 原始碼與 PG18 行為已查證 · 完整規格見 <code>02-first-slice-contract.md</code></div>
+  <nav class="toc">
+    <a href="#decisions">關鍵決定</a><a href="#identity">身分模型</a><a href="#cs">ChangeSet 狀態機</a>
+    <a href="#seq">核准並套用時序</a><a href="#locks">鎖順序</a><a href="#audience">受眾一致與 epoch</a>
+    <a href="#perm">權限對照</a><a href="#mcp">MCP 主要用法</a><a href="#ux">使用者方便性</a><a href="#steps">實作順序</a><a href="#pending">待你決定</a><a href="#align">對齊 03</a><a href="#gpt">GPT 討論</a>
+  </nav>
+</header>
+
+<h2 id="decisions"><span class="n">00</span>關鍵決定</h2>
+<p class="lead">每張卡：決定，加上理由。</p>
+<div class="grid">
+  <div class="card"><div class="k">K1 · 身分</div><h4>核准只接受瀏覽器 session 裡的人</h4><p>本機密碼 + <code>__Host-</code> cookie + 綁 session 的 CSRF token。agent 用新的、綁委派的 bearer；舊 <code>api_keys</code> 降為 MCP 唯讀。</p><div class="why">從身分模型上堵住「agent 拿人的 key 去按核准」。</div></div>
+  <div class="card"><div class="k">K2 · API</div><h4>REST + 動作端點</h4><p><code>/api/v1</code>，資源清楚（issue、ChangeSet、execution）；MCP 和 REST 都是 adapter，共用 application service。</p><div class="why">OpenAPI → TS 型別（D6）；HTTP 語意可用。</div></div>
+  <div class="card o"><div class="k">K3 · 一個引擎</div><h4>直接操作不建 ChangeSet</h4><p><code>human_direct</code> 和 agent 提案共用驗證與命令引擎；直接操作只寫冪等紀錄、效果、事件。</p><div class="why">設計 01 §4.3 只要求「不能有兩套寫入規則」。</div></div>
+  <div class="card p"><div class="k">K4 · Redmine 語意</div><h4>照查證過的原始碼</h4><p>改狀態需 <code>edit_issues</code>（或 <code>edit_own_issues</code>＋作者）＋workflow；欄位規則「每個角色都有才生效、不一致取 required」；私有 note 只要 <code>set_notes_private</code>。</p><div class="why">GPT 第 1 輪的 reducer 與 Redmine 不同，已改正。</div></div>
+  <div class="card"><div class="k">K5 · 執行</div><h4>同步套用，靠 PG 列鎖</h4><p>短交易建 approval + execution，同請求內開領域交易；application 和效果同交易提交。不做 worker、lease、fencing。</p><div class="why">DB 永遠判斷得出有沒有效果。</div></div>
+  <div class="card w"><div class="k">K6 · Q4</div><h4>受眾一致專案 + security_epoch</h4><p>agent 只能委派在沒有 <code>own</code>／tracker 限制的專案，讀不到私有內容；可同時委派多專案（U1 已決定），同屬一個工作脈絡，寫入目的地的讀者必須 ⊆ 每個曾授予專案的受眾；任一專案安全設定或遮蔽一變，整個脈絡與未套用提案全部失效。</p><div class="why">不做逐筆 taint，但能證明一個工作脈絡內不擴大受眾。</div></div>
+  <div class="card"><div class="k">K7 · 撤銷</div><h4>兩級保證</h4><p>身分與委派：列鎖，和套用嚴格分先後。角色、workflow 設定：驗證時重讀，接受驗證到提交的窗口。</p><div class="why">不用全組織一把鎖。</div></div>
+  <div class="card b"><div class="k">K8 · 樂觀鎖</div><h4>任何效果都 lock_version +1</h4><p>包含只加 note（Redmine 也會更新 <code>updated_on</code>）。代價：別人加 note 會讓欄位提案 conflict，版本號透露「有變動」。</p><div class="why">列為 U7 待決。</div></div>
+  <div class="card p"><div class="k">K9 · MCP</div><h4>工具從主要用法反推</h4><p>輸入直接用 <code>AUTH-123</code>；describe 接受專案 key／tracker 名稱；<code>get</code> 可帶 actions 與有限歷史；<code>get_many</code>；propose 自帶驗證、回精簡交接資訊；錯誤附封閉的 <code>next_actions</code>。</p><div class="why">常見用法 1–3 次往返；agent 依錯誤碼自己修正。</div></div>
+  <div class="card o"><div class="k">K10 · 審閱</div><h4>以待審佇列為中心</h4><p>可勾選多份、各自核准套用（只限短欄位與單次 transition）；衝突頁一次「建立修訂版並核准套用」，用完整預覽綁定。</p><div class="why">一次處理多份，又不讓長文與關係操作被略過。</div></div>
+</div>
+
+<h2 id="identity"><span class="n">01</span>身分模型</h2>
+<p class="lead">agent 沒有自己的角色；它能讀、能提的全部來自委派，而且只會縮小。</p>
+<figure class="diag">
+<svg viewBox="0 0 900 300" role="img" aria-label="身分模型：使用者、委派、agent 與權限交集">
+  <rect class="box-act" x="20" y="30" width="190" height="70" rx="10"/>
+  <text x="115" y="58" text-anchor="middle" font-weight="600">alice（user）</text>
+  <text x="115" y="80" text-anchor="middle" class="t-dim" font-size="12">瀏覽器 session · 角色、權限</text>
+
+  <rect class="box-prop" x="300" y="30" width="250" height="70" rx="10"/>
+  <text x="425" y="56" text-anchor="middle" font-weight="600">delegation</text>
+  <text x="425" y="76" text-anchor="middle" class="t-dim" font-size="12">一個專案 · 操作 · 欄位 · ≤30 天 · epoch</text>
+  <text x="425" y="92" text-anchor="middle" class="t-dim" font-size="12">auto_apply_ops = ∅</text>
+
+  <rect class="box" x="640" y="30" width="240" height="70" rx="10"/>
+  <text x="760" y="56" text-anchor="middle" font-weight="600">agent principal</text>
+  <text x="760" y="76" text-anchor="middle" class="t-dim" font-size="12">alice 的 Claude Code</text>
+  <text x="760" y="92" text-anchor="middle" class="t-dim" font-size="12">不能是成員、不能被指派</text>
+
+  <path class="ar" d="M210 65 H298"/><text x="254" y="58" text-anchor="middle" class="t-dim" font-size="11">建立（step-up）</text>
+  <path class="ar" d="M550 65 H638"/><text x="594" y="58" text-anchor="middle" class="t-dim" font-size="11">bearer token</text>
+
+  <rect class="box" x="20" y="150" width="420" height="120" rx="10"/>
+  <text x="36" y="176" font-weight="600">agent 讀取範圍</text>
+  <text x="36" y="200" class="t-mut" font-size="13">load_scope(alice) ∩ 脈絡內有效委派的專案</text>
+  <text x="36" y="222" class="t-mut" font-size="13">∩ 非私有 issue ∩ 非私有 note ∩ visible 欄位</text>
+  <text x="36" y="250" class="t-act" font-size="12">專案受眾一致；R 中每個專案 epoch 都相符</text>
+
+  <rect class="box" x="460" y="150" width="420" height="120" rx="10"/>
+  <text x="476" y="176" font-weight="600">agent 提案資格</text>
+  <text x="476" y="200" class="t-mut" font-size="13">alice 目前的 Redmine 權限</text>
+  <text x="476" y="222" class="t-mut" font-size="13">∩ 目標專案那份委派的操作與欄位 ∩ 上限</text>
+  <text x="476" y="250" class="t-bad" font-size="12">不能核准、不能套用（service 自己檢查）</text>
+  <path class="ar-d" d="M425 100 V148"/><path class="ar-d" d="M560 100 Q600 130 650 148"/>
+</svg>
+<figcaption>一個（使用者, agent 軟體）可同時委派多個專案，全部屬於一個工作脈絡；token 綁脈絡，加專案不用換 token。撤銷一份委派只收縮該專案、不解除寫入限制；關閉脈絡讓所有 token 失效。</figcaption>
+</figure>
+
+<h2 id="cs"><span class="n">02</span>ChangeSet 狀態機</h2>
+<p class="lead">版本、決定、執行、application 都不可改寫；<code>state</code> 只是目前狀態的索引。</p>
+<figure class="diag">
+<svg viewBox="0 0 900 380" role="img" aria-label="ChangeSet 狀態機">
+  <circle cx="40" cy="150" r="7" fill="var(--muted)"/>
+  <path class="ar" d="M48 150 H108"/><text x="78" y="140" text-anchor="middle" class="t-dim" font-size="11">propose</text>
+
+  <rect class="box-prop" x="110" y="125" width="130" height="50" rx="25"/>
+  <text x="175" y="155" text-anchor="middle" font-weight="600">proposed</text>
+  <path class="ar" d="M150 125 C140 70 210 70 200 123"/>
+  <text x="175" y="68" text-anchor="middle" class="t-dim" font-size="11">revise（新版本，舊核准失效）</text>
+
+  <rect class="box-act" x="320" y="125" width="130" height="50" rx="25"/>
+  <text x="385" y="155" text-anchor="middle" font-weight="600">approved</text>
+  <path class="ar" d="M240 150 H318"/><text x="279" y="140" text-anchor="middle" class="t-dim" font-size="11">核准並套用</text>
+
+  <rect class="box-act" x="530" y="125" width="130" height="50" rx="25"/>
+  <text x="595" y="155" text-anchor="middle" font-weight="600">executing</text>
+  <path class="ar" d="M450 150 H528"/><text x="489" y="140" text-anchor="middle" class="t-dim" font-size="11">交易 B</text>
+
+  <rect class="box-ok" x="740" y="80" width="130" height="50" rx="25"/>
+  <text x="805" y="110" text-anchor="middle" font-weight="600">succeeded</text>
+  <path class="ar-ok" d="M660 140 L738 112"/>
+
+  <rect class="box-bad" x="740" y="190" width="130" height="50" rx="25"/>
+  <text x="805" y="220" text-anchor="middle" font-weight="600">failed</text>
+  <path class="ar-bad" d="M660 162 L738 205"/>
+
+  <path class="ar" d="M805 240 C805 320 400 320 385 177"/>
+  <text x="600" y="312" text-anchor="middle" class="t-dim" font-size="11">新 operation_id 重試（版本沒變、核准與委派仍有效）</text>
+  <path class="ar" d="M745 230 C600 280 260 260 190 177"/>
+  <text x="640" y="244" text-anchor="middle" class="t-dim" font-size="11">revise → 新版本</text>
+
+  <rect class="box" x="60" y="250" width="110" height="40" rx="20"/><text x="115" y="275" text-anchor="middle">rejected</text>
+  <path class="ar" d="M150 175 L120 248"/>
+  <rect class="box" x="200" y="250" width="110" height="40" rx="20"/><text x="255" y="275" text-anchor="middle">canceled</text>
+  <path class="ar" d="M190 175 L240 248"/><path class="ar-d" d="M360 175 L290 248"/>
+  <rect class="box-warn" x="60" y="320" width="110" height="40" rx="20"/><text x="115" y="345" text-anchor="middle">expired</text>
+  <path class="ar-d" d="M130 175 C60 220 70 290 105 318"/>
+  <text x="20" y="20" class="t-dim" font-size="12">終態：succeeded · rejected · canceled · expired（succeeded 之後不能修訂或重跑）</text>
+</svg>
+<figcaption>期限在套用時用 <code>clock_timestamp()</code>、於取得所有鎖之後判斷；背景 job 只整理狀態。stale／conflict 是 validation 結果，不是生命週期狀態。</figcaption>
+</figure>
+
+<h3>執行（execution）的狀態</h3>
+<figure class="diag">
+<svg viewBox="0 0 900 150" role="img" aria-label="execution 狀態">
+  <rect class="box" x="30" y="50" width="130" height="46" rx="23"/><text x="95" y="78" text-anchor="middle" font-weight="600">queued</text>
+  <rect class="box-act" x="280" y="50" width="130" height="46" rx="23"/><text x="345" y="78" text-anchor="middle" font-weight="600">running</text>
+  <rect class="box-ok" x="560" y="14" width="130" height="46" rx="23"/><text x="625" y="42" text-anchor="middle" font-weight="600">succeeded</text>
+  <rect class="box-bad" x="560" y="90" width="130" height="46" rx="23"/><text x="625" y="118" text-anchor="middle" font-weight="600">failed</text>
+  <path class="ar" d="M160 73 H278"/><text x="219" y="64" text-anchor="middle" class="t-dim" font-size="11">同請求內</text>
+  <path class="ar-ok" d="M410 66 L558 40"/><text x="480" y="44" text-anchor="middle" class="t-dim" font-size="11">與 application 同交易</text>
+  <path class="ar-bad" d="M410 82 L558 110"/><text x="480" y="112" text-anchor="middle" class="t-dim" font-size="11">交易 C 收尾</text>
+  <path class="ar-d" d="M95 96 C95 140 560 140 560 116"/><text x="300" y="146" text-anchor="middle" class="t-dim" font-size="11">cancel／expire 一併結束</text>
+  <text x="720" y="70" class="t-mut" font-size="12">沒有 reconciling：</text>
+  <text x="720" y="88" class="t-mut" font-size="12">鎖後查得到 application＝成功</text>
+  <text x="720" y="106" class="t-mut" font-size="12">查不到＝沒有已提交效果</text>
+</svg>
+<figcaption>GET 查詢絕不開始寫入；只有用同一個 operation_id 重送 approve-and-apply 才會繼續。</figcaption>
+</figure>
+
+<h2 id="seq"><span class="n">03</span>核准並套用時序</h2>
+<p class="lead">核准和執行請求同一個短交易：執行失敗時「曾經核准」不會消失，也不會只有核准、請求卻遺失。</p>
+<figure class="diag">
+<svg viewBox="0 0 900 560" role="img" aria-label="approve-and-apply 時序圖">
+  <g font-weight="600" text-anchor="middle">
+    <rect class="box" x="40" y="14" width="120" height="34" rx="8"/><text x="100" y="36">SPA（alice）</text>
+    <rect class="box" x="300" y="14" width="120" height="34" rx="8"/><text x="360" y="36">API</text>
+    <rect class="box" x="640" y="14" width="160" height="34" rx="8"/><text x="720" y="36">PostgreSQL</text>
+  </g>
+  <line class="life" x1="100" y1="48" x2="100" y2="545"/>
+  <line class="life" x1="360" y1="48" x2="360" y2="545"/>
+  <line class="life" x1="720" y1="48" x2="720" y2="545"/>
+
+  <path class="ar" d="M100 74 H356"/>
+  <text x="228" y="68" text-anchor="middle" font-size="12">POST approve-and-apply</text>
+  <text x="228" y="88" text-anchor="middle" class="t-dim" font-size="11">version · hash · Idempotency-Key · CSRF</text>
+
+  <rect class="tx" x="380" y="104" width="500" height="118" rx="8"/>
+  <text x="392" y="122" class="t-act" font-size="12" font-weight="600">交易 A（短）</text>
+  <text x="392" y="142" font-size="12">鎖 changeset FOR UPDATE · 查 operation_requests（同 key 同內容 → 既有結果）</text>
+  <text x="392" y="162" font-size="12">檢查目前版本、hash、狀態、期限、session、owner</text>
+  <text x="392" y="182" font-size="12">INSERT decision(approve) + execution(queued) · state = approved</text>
+  <text x="392" y="208" class="t-dim" font-size="11">COMMIT A</text>
+
+  <rect class="tx-b" x="380" y="236" width="500" height="178" rx="8"/>
+  <text x="392" y="254" class="t-prop" font-size="12" font-weight="600">交易 B（領域效果）</text>
+  <text x="392" y="274" font-size="12">鎖 changeset → execution → principals → session → delegation → project</text>
+  <text x="392" y="294" font-size="12">→ issues（id 排序）→ field_defs／options</text>
+  <text x="392" y="314" font-size="12">期限（clock_timestamp）· 可見性 · 上限 · 委派者與執行者權限</text>
+  <text x="392" y="334" font-size="12">lock_version 前置條件（先確認欄位可讀）· 依序模擬全部 op</text>
+  <text x="392" y="354" font-size="12">寫 issue／CF／note／duplicate · issue_events · lock_version +1（觸發 outbox）</text>
+  <text x="392" y="374" font-size="12">application + execution succeeded + changeset succeeded</text>
+  <text x="392" y="400" class="t-dim" font-size="11">COMMIT B　（失敗 → ROLLBACK B）</text>
+
+  <rect class="tx-c" x="380" y="428" width="500" height="70" rx="8"/>
+  <text x="392" y="446" class="t-warn" font-size="12" font-weight="600">交易 C（只在 B 失敗時）</text>
+  <text x="392" y="466" font-size="12">重鎖 changeset → execution · 已有 application → 回成功，不覆寫</text>
+  <text x="392" y="486" font-size="12">execution = failed；changeset 只在仍 approved 且版本沒變時改 failed</text>
+
+  <path class="ar-ok" d="M356 520 H104"/>
+  <text x="228" y="514" text-anchor="middle" font-size="12">200 + execution（或 202：等鎖逾時／結果確認中）</text>
+  <text x="228" y="538" text-anchor="middle" class="t-dim" font-size="11">503 → 用同一個 operation_id 重送，不要換 key</text>
+</svg>
+<figcaption>接受之後才發現的過期、衝突、權限不足，記成 execution failed，HTTP 200 回結果；不在同一個動作混用兩種表示法。</figcaption>
+</figure>
+
+<h2 id="locks"><span class="n">04</span>鎖的固定順序</h2>
+<p class="lead">所有寫入入口、撤銷入口都遵守；管理交易改安全設定時，先依序鎖受影響專案，trigger 只是防漏。</p>
+<figure class="diag">
+<svg viewBox="0 0 900 140" role="img" aria-label="鎖順序">
+  <g font-size="12" text-anchor="middle">
+    <rect class="box-prop" x="10" y="40" width="100" height="44" rx="8"/><text x="60" y="60">changesets</text><text x="60" y="76" class="t-dim" font-size="10">FOR UPDATE</text>
+    <rect class="box-prop" x="120" y="40" width="100" height="44" rx="8"/><text x="170" y="60">executions</text><text x="170" y="76" class="t-dim" font-size="10">FOR UPDATE</text>
+    <rect class="box-act" x="230" y="40" width="100" height="44" rx="8"/><text x="280" y="60">principals</text><text x="280" y="76" class="t-dim" font-size="10">id 排序 SHARE</text>
+    <rect class="box-act" x="340" y="40" width="90" height="44" rx="8"/><text x="385" y="60">session</text><text x="385" y="76" class="t-dim" font-size="10">SHARE</text>
+    <rect class="box-act" x="440" y="40" width="100" height="44" rx="8"/><text x="490" y="60">delegation</text><text x="490" y="76" class="t-dim" font-size="10">+ client SHARE</text>
+    <rect class="box-warn" x="550" y="40" width="100" height="44" rx="8"/><text x="600" y="60">projects</text><text x="600" y="76" class="t-dim" font-size="10">SHARE／UPDATE*</text>
+    <rect class="box-ok" x="660" y="40" width="100" height="44" rx="8"/><text x="710" y="60">issues</text><text x="710" y="76" class="t-dim" font-size="10">id 排序 UPDATE</text>
+    <rect class="box" x="770" y="40" width="120" height="44" rx="8"/><text x="830" y="60">field_defs／opt</text><text x="830" y="76" class="t-dim" font-size="10">SHARE／KEY SHARE</text>
+  </g>
+  <g><path class="ar" d="M110 62 H118"/><path class="ar" d="M220 62 H228"/><path class="ar" d="M330 62 H338"/><path class="ar" d="M430 62 H438"/><path class="ar" d="M540 62 H548"/><path class="ar" d="M650 62 H658"/><path class="ar" d="M760 62 H768"/></g>
+  <text x="10" y="20" class="t-dim" font-size="12">硬撤銷列（principal、session、delegation、epoch）：撤銷是 UPDATE 同一列 → 和套用必定有先後</text>
+  <text x="450" y="112" text-anchor="middle" class="t-act" font-size="12">全部取得之後才檢查期限（clock_timestamp），然後寫入</text>
+  <text x="450" y="132" text-anchor="middle" class="t-dim" font-size="11">* 提案含 create_issue 時專案列用 FOR UPDATE（要遞增 issue_counter）</text>
+</svg>
+</figure>
+<p class="lead">圖中省略的協調列：<code>executions</code> 之後是 <code>agent_work_contexts</code>（propose／revise／套用 SHARE，建立委派、關閉脈絡 UPDATE）；<code>agent_clients</code> 之後是單列 <code>project_catalog</code>（全專案 epoch 更新 UPDATE、建立專案 SHARE，第 20 輪）；agent 提案的 projects 是「R ∪ 目的地」依 UUID 排序。管理交易：principal 類先鎖 principal、群組類先鎖群組 principal（第 19 輪），之後才算受影響專案並鎖 projects；epoch 更新不鎖脈絡。</p>
+<p class="lead">已在 PG18 實測：持有 <code>FOR SHARE</code> 時另一交易 UPDATE 同列會等待（<code>lock_timeout</code> 逾時失敗）；兩個 <code>FOR SHARE</code> 可並存。</p>
+
+<h2 id="audience"><span class="n">05</span>受眾一致專案與 security_epoch</h2>
+<p class="lead">Q4 關閉：server 要能證明 agent 寫的地方，受眾不會比它讀的地方大。</p>
+<div class="grid">
+  <div class="card w"><div class="k">定義</div><h4>受眾一致專案</h4><p>每個給出 <code>view_issues</code> 的有效角色：<code>issues_visibility ∈ {all, default}</code> 且 view_issues 不限 tracker。這時所有非私有 issue／note／visible 欄位對同一組人可見。</p></div>
+  <div class="card b"><div class="k">反例（第 2 輪）</div><h4>同專案也可能擴大</h4><p>角色是 <code>own</code> 時，Alice 的單與 Bob 的單可讀的人不同；agent 從 A 抄到 B 就擴大受眾。所以第一版拒絕這類專案。</p></div>
+  <div class="card b"><div class="k">反例（第 3 輪）</div><h4>跨時間</h4><p>agent 讀到欄位 7 → 欄位 7 改成受限 → agent 寫進 note。只重算「是否一致」擋不住，所以加 epoch。</p></div>
+  <div class="card b"><div class="k">反例（第 4、5 輪）</div><h4>跨委派、遮蔽後重提</h4><p>兩份委派 P 讀 Q 寫；遮蔽後用原委派重提原文。遮蔽也 bump epoch；P 讀 Q 寫在 U1 改成多專案後由下面的工作脈絡規則處理。</p></div>
+  <div class="card w"><div class="k">多專案（第 14–17 輪）</div><h4>工作脈絡與曾授予集合 R</h4><p>R＝脈絡曾授予的專案，撤銷、到期、換 token 都不移除。每個提案版本存下當時的 R 快照；寫入目的地的讀者 ⊆ 快照中每個專案的受眾（比使用者集合＋匿名，不比人數）。私有目的地算實際讀者。owner 修訂不能洗掉來源。</p></div>
+  <div class="card b"><div class="k">脈絡失效</div><h4>任一專案設定變，整個停用</h4><p>R 中任一專案 epoch 改變 → <code>context_unavailable</code>，包括只涉及其他專案的提案。要恢復只能由人在 SPA 建新工作脈絡（step-up＋宣告）；server 無法驗證 agent 真的忘了舊內容（U14）。</p></div>
+</div>
+<figure class="diag" style="margin-top:12px">
+<svg viewBox="0 0 900 190" role="img" aria-label="多專案委派的寫入方向">
+  <rect class="box" x="40" y="40" width="240" height="90" rx="10"/>
+  <text x="160" y="72" text-anchor="middle" font-weight="600">WEB</text>
+  <text x="160" y="96" text-anchor="middle" class="t-dim" font-size="12">讀者：工程部 20 人</text>
+  <rect class="box" x="620" y="40" width="240" height="90" rx="10"/>
+  <text x="740" y="72" text-anchor="middle" font-weight="600">AUTH</text>
+  <text x="740" y="96" text-anchor="middle" class="t-dim" font-size="12">讀者：其中 5 人</text>
+  <path class="ar-ok" d="M285 70 H615"/>
+  <text x="450" y="62" text-anchor="middle" class="t-ok" font-size="12">WEB → AUTH：可以（讀者更少）</text>
+  <path class="ar-bad" d="M615 108 H285"/>
+  <text x="450" y="126" text-anchor="middle" class="t-bad" font-size="12">AUTH → WEB：audience_expansion_forbidden</text>
+  <text x="450" y="170" text-anchor="middle" class="t-dim" font-size="12">R = {WEB, AUTH} 之後建立的版本，寫 WEB 公開內容也被擋；加 AUTH 之前的舊版照自己的快照判斷</text>
+</svg>
+<figcaption>describe {"scope":"context"} 只回每個專案的發布方向（same_or_narrower／blocked），不回讀者名單或人數。</figcaption>
+</figure>
+<figure class="diag" style="margin-top:12px">
+<svg viewBox="0 0 900 200" role="img" aria-label="security_epoch 時間軸">
+  <line class="ln" x1="40" y1="100" x2="870" y2="100"/>
+  <g font-size="12" text-anchor="middle">
+    <circle cx="90" cy="100" r="6" fill="var(--ok)"/><text x="90" y="80">建立委派</text><text x="90" y="128" class="t-dim">記 epoch = 7</text>
+    <circle cx="260" cy="100" r="6" fill="var(--act)"/><text x="260" y="80">agent 讀取</text><text x="260" y="128" class="t-dim">RR 交易內比對 7</text>
+    <circle cx="420" cy="100" r="6" fill="var(--act)"/><text x="420" y="80">propose</text><text x="420" y="128" class="t-dim">同交易 FOR SHARE 比對</text>
+    <circle cx="580" cy="100" r="8" fill="var(--bad)"/><text x="580" y="80" class="t-bad">CF 改受限／遮蔽／改角色</text><text x="580" y="128" class="t-dim">trigger：epoch → 8</text>
+    <circle cx="760" cy="100" r="6" fill="var(--bad)"/><text x="760" y="80">approve-and-apply</text><text x="760" y="128" class="t-bad">7 ≠ 8 → context_unavailable</text>
+  </g>
+  <text x="40" y="176" class="t-dim" font-size="12">變了又變回來也不能用；R 中任一專案變了，整個脈絡停用，要繼續就建新工作脈絡並宣告。一般 subject、note、指派變更不改 epoch。</text>
+</svg>
+</figure>
+
+<h2 id="perm"><span class="n">06</span>權限對照（已讀 Redmine 原始碼）</h2>
+<div class="tw"><table>
+<thead><tr><th>命令</th><th>必要條件</th><th>和 Redmine</th></tr></thead>
+<tbody>
+<tr><td><code>create_issue</code></td><td><code>add_issues</code>；tracker 啟用；設私有需 <code>set_issues_private</code> 或作者＋<code>set_own_issues_private</code></td><td><span class="chip c-ok">一致</span></td></tr>
+<tr><td><code>update_fields</code></td><td>可見；<code>edit_issues</code> 或（<code>edit_own_issues</code>＋作者）；欄位可讀、非 readonly</td><td><span class="chip c-ok">一致</span> <span class="chip c-warn">讀不到的欄位一律不能寫</span></td></tr>
+<tr><td><code>transition</code></td><td>同上 ＋ 目標在 workflow 允許清單（always／author／assignee，用交易開始時的 baseline）；每版本最多一次</td><td><span class="chip c-ok">一致</span></td></tr>
+<tr><td><code>add_note</code></td><td>可見；<code>add_issue_notes</code>；私有另需 <code>set_notes_private</code></td><td><span class="chip c-ok">一致</span></td></tr>
+<tr><td><code>duplicate_of</code></td><td>兩端可見且可編輯；<code>manage_issue_relations</code>；同專案；不檢查循環</td><td><span class="chip c-warn">比 Redmine 嚴</span> <span class="chip c-warn">不做 close_duplicates</span></td></tr>
+</tbody></table></div>
+<p class="lead" style="margin-top:10px">workflow 欄位規則：只考慮有 <code>add_issues</code> 或 <code>edit_issues</code> 的角色；一個欄位只有在每個角色都有規則時才套用，一致取該值、不一致取 required。</p>
+
+<h2 id="mcp"><span class="n">07</span>MCP 主要用法與呼叫序列</h2>
+<p class="lead">以外部 agent 為第一使用者。往返＝工具呼叫次數；平行的呼叫只算一個等待階段。完整參數見 md §14。</p>
+<div class="tw"><table>
+<thead><tr><th>用法</th><th>呼叫序列</th><th>往返</th><th>人</th></tr></thead>
+<tbody>
+<tr><td>回報 bug</td><td><code>describe</code>(AUTH, Bug) ∥ <code>search</code>(duplicate_candidates) → <code>changeset_propose</code>(create_issue)</td><td><b>3</b>（2 階段）</td><td>開連結＋1 下核准</td></tr>
+<tr><td>跟哪些舊單重複</td><td><code>get</code>(AUTH-123, actions) → <code>search</code>(exclude 自己) → [<code>get_many</code>] → [propose duplicate_of]</td><td><b>2–4</b></td><td>只有提案時要核准</td></tr>
+<tr><td>把這週分流完 <span class="chip c-warn">U11</span></td><td><code>search</code>(triage) → <code>describe</code>×K → <code>get_many</code>×⌈M/10⌉ → propose×N（同一 group）</td><td><b>1+K+⌈M/10⌉+N</b>（10 張＝13）</td><td>佇列勾選＋1 下</td></tr>
+<tr><td>AUTH-123 卡在哪</td><td><code>get</code>(recent_notes, recent_events) → status_since、last_activity_at</td><td><b>1</b></td><td>—</td></tr>
+<tr><td>改成下個版本 <span class="chip c-bad">U12 U13</span></td><td><code>describe</code> 回 <code>unsupported: fixed_version_id</code>；不建假提案</td><td><b>0–1</b></td><td>—</td></tr>
+<tr><td>指派給 Bob＋處理中</td><td><code>get</code>(actions) ∥ <code>resolve</code>(bob, purpose=assignee) → propose</td><td><b>3</b>（2 階段）</td><td>1 下核准</td></tr>
+<tr><td>核准了沒／逾時／衝突</td><td><code>changeset_get</code>；<code>operation_get</code>→原 key 重送；get→<code>changeset_revise</code></td><td><b>1／1–2／3</b></td><td>衝突時再核准</td></tr>
+<tr><td>補一則 note</td><td><code>get</code>(actions) → propose add_note</td><td><b>2</b></td><td>1 下核准</td></tr>
+</tbody></table></div>
+
+<figure class="diag" style="margin:14px 0 0">
+<svg viewBox="0 0 960 430" role="img" aria-label="把這週分流完：agent、MCP server 與人之間的交接時序">
+  <rect class="box-prop" x="60" y="14" width="120" height="30" rx="6"/><text x="120" y="34" text-anchor="middle" font-size="13">外部 agent</text>
+  <rect class="box-act" x="420" y="14" width="120" height="30" rx="6"/><text x="480" y="34" text-anchor="middle" font-size="13">oxledger</text>
+  <rect class="box-ok" x="780" y="14" width="120" height="30" rx="6"/><text x="840" y="34" text-anchor="middle" font-size="13">人（SPA）</text>
+  <line class="life" x1="120" y1="44" x2="120" y2="420"/><line class="life" x1="480" y1="44" x2="480" y2="420"/><line class="life" x1="840" y1="44" x2="840" y2="420"/>
+  <text x="300" y="72" text-anchor="middle" font-size="12">search(projection: triage)</text><path class="ar" d="M120,80 L476,80"/>
+  <text x="300" y="110" text-anchor="middle" font-size="12" class="t-mut">20 張＋lock_version＋schema_refs</text><path class="ar" d="M480,118 L124,118"/>
+  <text x="300" y="148" text-anchor="middle" font-size="12">describe ×K、get_many（≤10）</text><path class="ar" d="M120,156 L476,156"/>
+  <text x="300" y="186" text-anchor="middle" font-size="12">changeset_propose ×N（同一 group）</text><path class="ar" d="M120,194 L476,194"/>
+  <text x="300" y="224" text-anchor="middle" font-size="12" class="t-mut">compact：review_url、next_actions</text><path class="ar" d="M480,232 L124,232"/>
+  <text x="300" y="262" text-anchor="middle" font-size="12" class="t-prop">交接：「8 份待審，尚未套用」＋分組連結</text><path class="ar-d" d="M120,270 L836,270"/>
+  <text x="660" y="300" text-anchor="middle" font-size="12">勾選 → approve-and-apply ×N</text><path class="ar" d="M840,308 L484,308"/>
+  <text x="660" y="324" text-anchor="middle" font-size="11" class="t-dim">各自 operation_id、review_mode=queue</text>
+  <text x="660" y="352" text-anchor="middle" font-size="12" class="t-ok">每列各自：成功／失敗／確認中</text><path class="ar-ok" d="M480,360 L836,360"/>
+  <text x="300" y="392" text-anchor="middle" font-size="12">changeset_list(group_id)</text><path class="ar" d="M120,400 L476,400"/>
+</svg>
+<figcaption>「把這週分流完」：agent 只提案；每份各自冪等、各自核准、各自交易，可能部分成功。〔U11 已決定（2026-11-07）〕</figcaption>
+</figure>
+
+<div class="grid" style="margin-top:12px">
+  <div class="card p"><div class="k">對齊設計 03</div><h4>同一套讀取與引用</h4><p><code>search</code>／<code>get</code> 的 <code>fields</code>、<code>explain</code>、<code>citations</code> 照 03；提案 evidence 用 <code>{citation_id, quote}</code>，propose 時驗證。純讀取用法（03 的 A、C、E）不重寫。</p></div>
+  <div class="card o"><div class="k">寫入回執</div><h4><code>search.consistent_after</code></h4><p><code>/commands</code>、approve-and-apply、<code>changeset_get</code>、<code>operation_get</code> 都帶同一個 token（<code>c1.&lt;epoch&gt;.&lt;xid8&gt;</code>），交易內存完整 token、不事後重組。剛建立的單用 <code>get(citations)</code>，不靠搜尋。</p></div>
+</div>
+<h3>錯誤碼讓 agent 自己修正：封閉的 <code>next_actions</code></h3>
+<div class="grid">
+  <div class="card"><div class="k">fix_input</div><p>依 <code>details.allowed</code> 修正，當新請求。invalid_value、required_field_missing、ambiguous_reference…</p></div>
+  <div class="card p"><div class="k">refresh_and_revise</div><p>重讀目前資料，用 <code>changeset_revise</code> 建新版本。conflict、version_superseded</p></div>
+  <div class="card o"><div class="k">retry_same_request／wait_and_retry</div><p>原 operation_id、原內容；依 <code>retry_after_ms</code>。temporarily_unavailable、rate_limited</p></div>
+  <div class="card b"><div class="k">ask_human／stop</div><p>delegation_unavailable、forbidden_op、unsupported_operation——不自動建新委派繞過。</p></div>
+</div>
+
+<h2 id="ux"><span class="n">08</span>使用者方便性檢查表</h2>
+<p class="lead">點擊數從「已在相關頁面」起算，是驗收目標不是量測值。完整表見 md §15。</p>
+<div class="tw"><table>
+<thead><tr><th>流程</th><th>點幾下／等多久</th><th>錯誤與下一步</th><th>多份／預設值</th></tr></thead>
+<tbody>
+<tr><td>登入</td><td>帳密＋1 下；12 小時閒置才重登</td><td>「帳號或密碼不正確」＋聯絡管理員；到期後回原頁、不清草稿</td><td>支援密碼管理員</td></tr>
+<tr><td>建委派＋發 token</td><td>一個精靈約 4 下；step-up 整個精靈最多一次</td><td>不符合受眾一致時，建立<b>前</b>就說原因</td><td>專案自動選、最小範本、7 天、token 和 MCP 設定同頁</td></tr>
+<tr><td>加第二個專案</td><td>同一精靈「加入專案」，沿用 token，一次 step-up</td><td>選專案時就預覽方向：「加入 AUTH 後不能再寫 WEB 的公開內容」；「可讀」「可發布」分兩欄</td><td>委派頁明說撤銷不解除限制；脈絡停用時指出是哪個專案的設定變了</td></tr>
+<tr><td>交接到審閱</td><td>1 下（review_url／分組連結）</td><td>版本已非目前時明確提示</td><td>導覽列「等我審 N」</td></tr>
+<tr><td>核准</td><td>1 下；通常 1 秒內；10 秒後轉「確認中」</td><td>結果確認中不重複送；沿用原 operation_id</td><td>不加泛用「你確定嗎」</td></tr>
+<tr><td>多份核准 <span class="chip c-warn">U11</span></td><td>勾選＋1 下，最多 4 個並行</td><td>每列各自結果；中途出錯只停未送出的</td><td>只限 server 標 <code>queue</code> 的短欄位／單次 transition；不全選</td></tr>
+<tr><td>衝突</td><td>逐欄選＋1 下「建立修訂版並核准套用」</td><td>三欄比對；預覽後又變 → <code>review_outdated</code>，不核准也不建版本</td><td>預設選提案值；另有「只儲存修訂版」</td></tr>
+</tbody></table></div>
+<div class="grid" style="margin-top:12px">
+  <div class="card w"><div class="k">保留的確認</div><h4>值得多這一步</h4><p>每份都要人核准（agent 可能被提示注入）；長文、note、建立、duplicate 不能用佇列勾選；發 token 要 step-up；建新工作脈絡要宣告；衝突由人選值。</p></div>
+  <div class="card o"><div class="k">移除的摩擦</div><h4>不削弱保證</h4><p>讀取與核准不重新登入；精靈只問一次密碼；propose 後不必 validate；不複製 UUID；不等索引；不用泛用確認視窗代替 diff；衝突兩步合一。</p></div>
+</div>
+
+<h2 id="steps"><span class="n">09</span>實作順序（10 步）</h2>
+<div class="steps">
+  <div class="step"><div class="sid">S0</div><div><h4>前置修補</h4><p>0002 <code>IF NOT ok</code> 的 NULL 漏洞（PG18 實測成立）；授權函式改吃交易連線；集中 active 檢查；seed helper 移走；MCP 結構化錯誤。</p><div class="done">完成：回歸測試、既有 E4 與 D14 測試全綠</div></div></div>
+  <div class="step"><div class="sid">S1</div><div><h4>身分</h4><p>agent kind、密碼、session、CSRF、step-up、委派與憑證表、DB 防線；舊 key 唯讀。</p><div class="done">完成：T-A1…T-A10</div></div></div>
+  <div class="step"><div class="sid">S2</div><div><h4>SPA API 骨架</h4><p>路由、共通格式、錯誤碼、不透明 cursor、registry；search／get／resolve 上 REST。</p><div class="done">完成：OpenAPI 與 TS 型別產出；not_found 形狀、cursor 竄改測試</div></div></div>
+  <div class="step"><div class="sid">S3</div><div><h4>權限與 describe</h4><p>workflow 條件與欄位規則、assignable、組織設定；權限評估器、reducer、指派函式；兩種 describe。</p><div class="done">完成：T-P1、T-P3、T-P10</div></div></div>
+  <div class="step"><div class="sid">S4</div><div><h4>命令引擎 + 直接操作</h4><p>operation_requests、notes、duplicates、issue_events（ChangeSet FK 留到 S5）；<code>/commands</code>。</p><div class="done">完成：T-P2…T-P12、T-W1…T-W8、T-R4、T-R8、T-R9</div></div></div>
+  <div class="step"><div class="sid">S5</div><div><h4>ChangeSet</h4><p>七張表 + 補 issue_events FK；REST 端點；同步套用與交易 C。</p><div class="done">完成：冪等、崩潰注入 C-1…C-6、並行 T-R1…T-R13（相關項）、空庫跑全部 migration</div></div></div>
+  <div class="step"><div class="sid">S6</div><div><h4>agent 提案路徑</h4><p>security_epoch（含使用者、admin、匿名的全專案 bump）、受眾一致判定、工作脈絡與 R、版本來源快照、受眾集合包含、讀取限制、MCP 工具（key 輸入、get_many、投影、next_actions、分組）、配額。</p><div class="done">完成：T-Q1…T-Q8、T-X1…T-X24、I-1…I-5、T-M1…T-M8；9 個用法 E2E 跑通且往返不超過表列</div></div></div>
+  <div class="step"><div class="sid">S6b</div><div><h4>審閱便利</h4><p>佇列 <code>review_modes</code>、勾選核准、<code>revision-previews</code> + <code>revise-and-apply</code>。</p><div class="done">完成：T-U1…T-U12、T-M9…T-M20</div></div></div>
+  <div class="step"><div class="sid">S7</div><div><h4>D12 遮蔽</h4><p>note／事件／提案內容遮蔽，含衍生副本與 epoch。</p><div class="done">完成：T-S3…T-S9（相關項）</div></div></div>
+  <div class="step"><div class="sid">S8</div><div><h4>發布門檻</h4><p>E4w 全套、崩潰注入、搜尋一致性。</p><div class="done">完成：越權、未核准套用、重複效果 = 0</div></div></div>
+</div>
+
+<h2 id="pending"><span class="n">10</span>待你決定</h2>
+<p class="lead">2026-11-07 你已決定 U1（改成可同時委派多專案）、U2、U7、U11。U14、U15 是 U1 改變後新增的。其餘仍<b>依建議預設寫成</b>，md 裡標「〔依建議預設 Ux，待確認〕」。</p>
+<div class="grid">
+  <div class="card b"><div class="k">U1 · 影響產品 <span class="chip c-ok">已決定（2026-11-07）</span></div><h4>可同時委派多專案</h4><p>只開在受眾一致專案；權限一改委派失效。一個（使用者, agent 軟體）可委派多個專案，同屬一個工作脈絡，寫入受曾授予集合 R 的受眾包含限制。</p><div class="why">決定：可同時委派多專案，其餘照建議。</div></div>
+  <div class="card b"><div class="k">U14 · 影響產品 <span class="chip c-warn">依建議預設，待確認</span></div><h4>來源限制不因撤銷解除</h4><p>加了窄受眾專案，之後的提案就寫不回寬專案；撤銷／到期不解除。任一來源專案設定變，整個脈絡停用。重建脈絡要 step-up＋宣告，但 server 無法驗證 agent 已清除舊資料。</p><div class="why">建議：接受。</div></div>
+  <div class="card b"><div class="k">U15 <span class="chip c-warn">依建議預設，待確認</span></div><h4>來源用曾授予集合</h4><p>不採實際讀取集合；每個提案版本固定保存建立時的來源快照。後續新增來源不回溯限制舊版，但脈絡停用仍阻止套用。</p><div class="why">建議：採用。</div></div>
+  <div class="card b"><div class="k">U2 · 影響產品 <span class="chip c-ok">已決定（2026-11-07）</span></div><h4>和 Redmine 的差異</h4><p>duplicate 兩端可編輯、限同專案、不做 <code>close_duplicates</code>；讀不到的欄位不能寫；遮蔽 note 時整份遮蔽該專案所有提案內容與分組名稱（用時間篩選不可靠）。</p><div class="why">決定：接受。</div></div>
+  <div class="card"><div class="k">U3 <span class="chip c-warn">依建議預設，待確認</span></div><h4>priority 進第一切片？</h4><p>內建 <code>issue_priorities</code>，不用自訂欄位代替。</p><div class="why">建議：放。</div></div>
+  <div class="card"><div class="k">U4 <span class="chip c-warn">依建議預設，待確認</span></div><h4>本機密碼登入可以嗎？</h4><p>組織若規定 SSO，登入就變成阻擋項。</p><div class="why">建議：本機密碼。</div></div>
+  <div class="card"><div class="k">U5 <span class="chip c-warn">依建議預設，待確認</span></div><h4>session 預設</h4><p>閒置 12 小時、絕對 7 天、敏感操作 15 分鐘 step-up。</p><div class="why">建議：採用。</div></div>
+  <div class="card"><div class="k">U6 <span class="chip c-warn">依建議預設，待確認</span></div><h4>共同待審池</h4><p>同專案的人互相審 agent 提案、跨人核准。</p><div class="why">建議：第一版關閉。</div></div>
+  <div class="card"><div class="k">U7 <span class="chip c-ok">已決定（2026-11-07）</span></div><h4>lock_version 透露有變動</h4><p>包含只加了私有 note。</p><div class="why">決定：接受。</div></div>
+  <div class="card"><div class="k">U8 <span class="chip c-warn">依建議預設，待確認</span></div><h4>舊 api_keys</h4><p>用完整可見性讀取（含私有），和 agent 限制不一致。</p><div class="why">建議：保留唯讀、設淘汰日期。</div></div>
+  <div class="card"><div class="k">U9 <span class="chip c-warn">依建議預設，待確認</span></div><h4>agent 建私有 issue</h4><p>受眾更窄；後續操作只限同一份提案內。</p><div class="why">建議：允許。</div></div>
+  <div class="card"><div class="k">U10 <span class="chip c-warn">依建議預設，待確認</span></div><h4>拒絕後能否修訂再送</h4><p>終態可避免反覆糾纏，但小改要開新提案。</p><div class="why">建議：不能（終態）。</div></div>
+  <div class="card b"><div class="k">U11 · 影響產品 <span class="chip c-ok">已決定（2026-11-07）</span></div><h4>分流的批次審閱方式</h4><p>每張一份獨立提案＋佇列勾選多份、各自核准套用；勾選只限短欄位與單次 transition，長文、note、建立、duplicate 逐份打開。會部分成功。</p><div class="why">決定：接受。</div></div>
+  <div class="card"><div class="k">U12 <span class="chip c-warn">依建議預設，待確認</span></div><h4>版本模型與 fixed_version_id</h4><p>「改成下個版本」需要新的領域模型；「下個」怎麼定也要規則。</p><div class="why">建議：下個里程碑；第一切片 describe 明確回不支援。</div></div>
+  <div class="card"><div class="k">U13 <span class="chip c-warn">依建議預設，待確認</span></div><h4>一份提案改多張 issue</h4><p>要擴充目標範圍、diff、上限與交易契約。</p><div class="why">建議：第一切片不開。</div></div>
+</div>
+
+<h2 id="align"><span class="n">11</span>需要設計 03 配合修改</h2>
+<p class="lead">02 已對齊 03；以下是 03 那邊要改的地方（本線沒有改 03），完整理由見 md 附錄 C.3、C.5。待決問題對照沒有發現衝突；03 的 Q-S1（基本契約）、Q-S9（不就地改型別）已決定，不影響 02。#14–17 是 U1 改成多專案委派後新增的。</p>
+<div class="tw"><table><thead><tr><th>#</th><th>03 位置</th><th>建議修改</th></tr></thead><tbody><tr><td>1</td><td>§2.1、§2.5 用法 D、§7 第 6 步</td><td>agent 不能直接寫：改成 propose → 人核准 → <code>changeset_get</code> 拿 key 與 token → <code>get(citations)</code></td></tr><tr><td>2</td><td>§4.3 回執範例</td><td>外層改引用 02 §6.9（<code>status: succeeded</code>、<code>effects[]</code>）；拿掉〔假設介面〕</td></tr><tr><td>3</td><td>§4.3 <code>lock_version: 1</code></td><td>新建 issue 是 0</td></tr><tr><td>4</td><td>§3.7、§4.11 錯誤表</td><td><code>retry_after_ms</code> 放頂層；每個碼加 <code>next_actions</code></td></tr><tr><td>5</td><td>§3.6 <code>search.fields</code></td><td>加 <code>lock_version</code>、<code>priority</code>、<code>created_at</code></td></tr><tr><td>6</td><td>§3.6 <code>get.fields</code></td><td>加 <code>description</code>、<code>lock_version</code>、<code>status_since</code>、<code>last_activity_at</code>；和 <code>include</code> 並存；<code>get_many</code> 同參數</td></tr><tr><td>7</td><td>§3.6 citation <code>src.kind</code></td><td>明列 note 來源（<code>issue_note</code> + <code>note_id</code>）</td></tr><tr><td>8</td><td>§3.6、§3.8「呼叫者權限」</td><td>agent 憑證＝02 §3.5 的委派讀取範圍（排除私有 issue／note、visible=false 欄位）</td></tr><tr><td>9</td><td>§6 方便性表編號</td><td>U1–U12 改成 UX-1…，避免和 02 的待決 U 撞名</td></tr><tr><td>10</td><td>§8「02 §8 的結論」</td><td>寫明指 research/02-e9，不是設計 02</td></tr><tr><td>11</td><td>§4.3 token 持久化</td><td>交易內存完整 token（epoch＋xid），重播回原 token，不事後重組</td></tr><tr><td>12</td><td>§4.3 epoch 輪替流程</td><td>用 <code>UPDATE search_settings</code>（短交易、設 lock_timeout），提交後才切換索引；停寫入只是選項</td></tr><tr><td>13</td><td>§4.3／§4.4</td><td>寫明 <code>search_settings</code> 那一列是寫入與輪替的協調點</td></tr><tr><td>14</td><td>§3.6、§3.8「呼叫者權限」</td><td>agent 讀取範圍＝工作脈絡內所有有效委派專案的聯集（各自仍排除私有與受限欄位）</td></tr><tr><td>15</td><td>search／verify_citations／get_source 授權前置</td><td>先確認脈絡 active、R 的 epoch 全部相符，否則 <code>context_unavailable</code></td></tr><tr><td>16</td><td>錯誤碼表</td><td>加 <code>context_unavailable</code>（<code>quarantined</code>／<code>closed</code>）；訊息不暗示撤銷可解除</td></tr><tr><td>17</td><td>搜尋結果</td><td>可能跨多個專案；拿掉「agent 只有一個專案」的假設</td></tr></tbody></table></div>
+
+<h3>03 對 02 的回饋（F1–F6）：全部採用</h3>
+<div class="tw"><table><thead><tr><th>#</th><th>02 的處理</th></tr></thead><tbody><tr><td>F1</td><td><code>get_many</code> 補 <code>event_limit</code></td></tr><tr><td>F2</td><td>MCP 錯誤和 REST 同一個物件（含 <code>retry_after_ms</code>、<code>next_actions</code>、<code>message</code>）</td></tr><tr><td>F3</td><td><code>source_unverifiable</code> 是外層錯誤，逐筆狀態沿用 03 §3.7</td></tr><tr><td>F4</td><td>agent 讀提案／結果先驗委派，所有出口共用「agent 回應過濾」；owner 修訂版不回本文與衍生值</td></tr><tr><td>F5</td><td>agent 的 actions 只列能提案的動作</td></tr><tr><td>F6</td><td>授權狀態不跨請求快取；寫入交易 <code>FOR SHARE</code> 讀 <code>search_settings</code>，epoch 輪替自然等在途寫入結束</td></tr></tbody></table></div>
+<p class="lead" style="margin-top:10px">需要 03 再配合：#12 epoch 輪替用 <code>UPDATE search_settings</code>，提交後才切換索引、不以停寫入為正確性前提；#13 寫明這一列是寫入與輪替的協調點。</p>
+
+<h2 id="gpt"><span class="n">12</span>GPT 討論</h2>
+<div>
+  <div class="round"><h4>第 1 輪 · 獨立提案</h4><p>完整契約草案。採用：AuthContext、舊 key 唯讀、REST、proposal_contents 分離、0002 NULL 漏洞與 agent 當 user 欄位值的發現。不採用：全域 guard、human_direct 建 ChangeSet、自創 reducer、私有 note 另需 view 權限、worker／lease／fencing。</p></div>
+  <div class="round"><h4>第 2 輪 · 互相批判</h4><p>帶著 Redmine 原始碼與 PG 實測結果。GPT 撤回 guard、reducer、worker；補上「先鎖 ChangeSet 再鎖 execution」「期限在鎖後」「precondition 不能當 oracle」。主要分歧：單專案＋非私有不足以防受眾擴大（own 反例）。</p></div>
+  <div class="round"><h4>第 3 輪 · 收斂邊角</h4><p>受眾一致專案的可證明版本；GPT 提跨時間反例 → security_epoch。另定：owner 修訂、propose 可存的錯誤分類、冪等跨 transport、配額、事件分頁、202 的成因。</p></div>
+  <div class="round"><h4>第 4 輪 · 全文審查（fail，11 項）</h4><p>跨委派重用、收尾競爭、migration 依賴、舊 key 與 CSRF、CF 鎖與期限、多次 transition、D12 衍生副本、duplicate 事件、循環檢查洩漏隱藏路徑、前置條件必填、trigger 反向鎖——全部修正。</p></div>
+  <div class="round"><h4>第 5 輪 · 確認修正（fail，4 項 major）</h4><p>遮蔽後重提、交易 C 覆寫 canceled、建立 issue 的計數器鎖、duplicate 並行與版本檢查矛盾——全部修正，並在第 6 輪複審。</p></div>
+  <div class="round"><h4>第 6 輪 · MCP 用法與方便性（獨立提案）＋複審</h4><p>GPT 獨立寫用法序列並反推工具：key 輸入、describe 接受名稱、get 帶 actions、get_many、search 投影、resolve 指派用途、next_actions。複審：第 5 輪 4 項足夠，但 D12 不能用 <code>created_at</code> 篩選（交易開始時間不是因果順序）→ 改成整個專案的提案內容都遮蔽。</p></div>
+  <div class="round"><h4>第 7 輪 · 交換與收斂</h4><p>同意佇列勾選核准，但 server 要重驗 <code>review_modes</code>、限短欄位；分組只是導覽、不進 hash、受 D12 管；「建立修訂版並核准套用」反對只比三欄 hash，改成完整預覽＋短效 token。這兩輪的設計在第 8 輪送全文審查。</p></div>
+  <div class="round"><h4>第 8 輪 · 對齊 03 後全文審查（fail，6 項）</h4><p>先對齊設計 03：寫入回執帶 <code>search.consistent_after</code>、evidence 用 03 的 citation、search／get 參數照 03。GPT 找到：token 不能事後用新 epoch 重組、佇列資格要在交易 B 再驗、revise-and-apply 要重讀目前版本並能冪等恢復、核准留言遮蔽不到（拿掉）、no_effect 測試過強——全部修正。</p></div>
+  <div class="round"><h4>第 9 輪 · 確認修正（pass）</h4><p>6 項修法到位，沒有新的 major；確認交易 A 的共享鎖在提交時釋放，不構成鎖升級。</p></div>
+  <div class="round"><h4>第 10–13 輪 · 處理 03 的回饋 F1–F6（fail ×3 → pass）</h4><p>F1–F6 全部採用。複審找到 agent 能讀到 owner 修訂草稿的三條路（提案本文與列表、conflict 三欄的 proposed、前置值的 original），最後改成「依值的來源」：agent 只看得到依目前讀取範圍直接讀 DB 的值，和自己寫的版本本文。</p></div>
+  <div class="round"><h4>第 14–15 輪 · 多專案委派（獨立提案→收斂）</h4><p>U1 改成可同時委派多專案、Q4 仍關閉。雙方各自提案後收斂：來源用「曾授予集合」R（不用實際讀取）、撤銷不移除、版本存來源快照（GPT 撤回「和目前 R 聯集」）、owner 修訂不能洗掉來源、受眾比使用者集合＋匿名、私有目的地算實際讀者、principal 類管理交易先鎖 principal。</p></div>
+  <div class="round"><h4>第 16 輪 · 審查（fail，2 項 major）</h4><p>token 仍綁單一委派，無法用於多專案 → 改綁工作脈絡、提案依目標專案解析委派上限；D12 只遮蔽同專案提案 → 連同來源快照含該專案的所有版本與分組一起遮蔽。</p></div>
+  <div class="round"><h4>第 17 輪 · 確認修正（pass）</h4><p>兩項修正完整，沒有新的 critical／major；跨新脈絡的記憶殘留仍是 U14。</p></div>
+  <div class="round"><h4>第 18–21 輪 · 全文複審（fail ×4）</h4><p>每輪送全文。找到：owner 修訂版的 <code>proposal_hash</code> 與驗證碼仍能讓 agent 驗證低熵猜測 → 核准前對 agent 只回版本中繼資料，套用後只回成敗；<code>changeset_list</code> 改成脈絡內有效委派的聯集；T-A1 拆兩層；群組成員異動與群組加入專案並行漏 bump → 先鎖群組；全專案 bump 與建立專案並行 → <code>project_catalog</code> 協調鎖。</p></div>
+  <div class="round"><h4>第 22 輪 · 全文複審（pass）</h4><p>全文沒有新的 critical／major。這是設計層結論，DDL 未執行、並行測試未跑。</p></div>
+</div>
+
+<footer>oxledger · GPL-2.0-or-later · 本頁圖表為內嵌 SVG，未使用外部圖表庫 · 完整規格、DDL、錯誤碼與測試清單見 <code>docs/design/02-first-slice-contract.md</code></footer>
+</main>
+</body>
+</html>

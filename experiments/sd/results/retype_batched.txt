@@ -1,0 +1,5 @@
+Time: 7.344 ms
+NOTICE:  field 8 : 798071 rows in 80 batches, total 00:00:13.126052, slowest batch 00:00:00.430406
+Time: 13126.782 ms (00:13.127)
+Time: 9118.608 ms (00:09.119)
+Time: 32.602 ms

@@ -1,0 +1,17 @@
+Time: 5.272 ms
+Time: 1.218 ms
+ERROR:  function max(uuid) does not exist
+LINE 1: SELECT max(id)         FROM (SELECT id FROM issues WHERE id ...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+QUERY:  SELECT max(id)         FROM (SELECT id FROM issues WHERE id > lo ORDER BY id LIMIT step) s
+CONTEXT:  PL/pgSQL function retype_num_to_text(integer,integer) line 6 at SQL statement
+Time: 1944.005 ms (00:01.944)
+Time: 16.803 ms
+Time: 35316.289 ms (00:35.316)
+ n_dead_tup | n_tup_upd | n_tup_hot_upd 
+------------+-----------+---------------
+     949336 |    949336 |             0
+(1 row)
+
+Time: 4.676 ms

@@ -1,0 +1,1 @@
+SELECT i.id FROM issues i WHERE i.project_id = ANY (:VIS) AND (NOT i.is_private OR i.author_id = :ME) AND EXISTS (SELECT 1 FROM issue_cf c WHERE c.issue_id = i.id AND (CASE WHEN c.field_id = 8 THEN c.v_num END) BETWEEN 100 AND 300) AND EXISTS (SELECT 1 FROM issue_cf c WHERE c.issue_id = i.id AND c.field_id = 2 AND c.v_date >= '2025-01-01') ORDER BY i.id DESC LIMIT 50;

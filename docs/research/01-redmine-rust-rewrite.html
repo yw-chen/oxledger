@@ -67,6 +67,10 @@ ol.tl li::before{content:"";position:absolute;left:-7px;top:6px;width:12px;heigh
   <div class="card"><b>D13 · 名稱 oxledger</b>README 寫 derived from Redmine；scheme oxledger://</div>
   <div class="card"><b>D14 · 自訂欄位用型別化 EAV</b>每欄位 covering partial index，不加 JSONB 快取（E9：冷門篩選 1–5 ms vs 100–300 ms）<a href="02-e9-custom-fields.md">02 報告</a></div>
   <div class="card"><b>D15 · 中文檢索維持 unigram+bigram</b>查詢加 0.1–0.2 權重單字（nDCG 0.781→0.810）；別名展開待 E2 <a href="03-e1-zh-retrieval.md">03 報告</a></div>
+  <div class="card"><b>D16 · AI 原生前端</b>目標是意圖驅動的任務工作台，先做工作台 + AI 側欄；第一版由外部 agent 經 MCP 提 ChangeSet，人審閱套用 <a href="../design/01-ai-native-ux.md">設計 01</a></div>
+  <div class="card"><b>D17 · 中國來源判定</b>看開發者或公司所在地；直接依賴、模型、詞典、字型、託管服務；間接依賴只列清單</div>
+  <div class="card"><b>D18 · 自訂欄位支援內建角色</b>篩選和顯示用同一套「實際角色」規則（migration 0003）</div>
+  <div class="card"><b>D19 · 第一切片決定</b>agent 可多專案委派（受眾包含檢查防外洩）；接受 Redmine 差異；分流逐張提案批次核准；基本排名契約；不就地改型別 <a href="../design/00-open-decisions.md">待決總表</a></div>
 </div>
 <div class="warn"><b>D3 的背景：</b>rmcp 是 Apache-2.0 單一授權，FSF 認定它與 <code>GPL-2.0-only</code> 不相容、與 GPLv3 相容。Redmine 檔頭本來就是「v2 or any later」→ 建議用 <code>GPL-2.0-or-later</code>。ParadeDB 因 AGPL 網路義務會轉嫁給部署方而不採用。（非法律意見）</div>
 

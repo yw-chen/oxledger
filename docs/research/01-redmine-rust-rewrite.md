@@ -24,11 +24,15 @@
 | D8 | 只支援 PostgreSQL 18 以上，主鍵用內建 `uuidv7()`（原 Q13） | 2026-11-06 | 新專案不遷就舊環境；部署文件要寫明版本需求 |
 | D9 | issue 編號用專案前綴 `AUTH-123`（原 Q7） | 2026-11-06 | 一看就知道專案，AI 引用不易混淆。連帶：`issue_keys(key, issue_id, is_current)` 別名表，issue 換專案時發新號、舊號轉址；每專案一個計數器（同交易遞增，不用 sequence 以免跳號問題影響可讀性）；`fixes AUTH-123` 語法解析；MCP resource 改為 `…://issue/{key}`，內部仍以 UUID 為準 |
 | D10 | 可見範圍每個請求即時計算，不物化快取（原 Q10） | 2026-11-06 | 和 Redmine 一致、沒有快取失效風險；E6 若顯示瓶頸再重議，且快取必須同交易重算並帶版本號 |
-| D11 | outbox 用 xid8 快照排序：寫入時存 `pg_current_xact_id()`，消費端只讀 `xid8 < pg_snapshot_xmin(pg_current_snapshot())` 的列；at-least-once + 冪等（原 Q11） | 2026-11-06 | 只用一般 SQL 輪詢，好理解好測；延遲受輪詢間隔與長交易影響（要監控長交易） |
+| D11 | outbox 用 xid8 快照排序：寫入時存 `pg_current_xact_id()`，消費端只讀 `xid8 < pg_snapshot_xmin(pg_current_snapshot())` 的列；at-least-once + 冪等（原 Q11） | 2026-11-06 | 只用一般 SQL 輪詢，好理解好測；延遲受輪詢間隔與長交易影響（要監控長交易）。設計 03 實測補充：**已分配 xid 的未結束交易會擋住 frontier，跨 database 也會擋**，告警要看 `pg_stat_activity.backend_xid`；大量更新要分批 |
 | D12 | 事件紀錄「遮蔽後留痕」：誤貼機密或個資刪除時，payload 換成 `[已遮蔽]`，另記誰、何時、為什麼遮蔽；同步清除 tantivy 索引與快取（原 Q12） | 2026-11-06 | 稽核鏈不斷；已送出的 webhook 收不回來，文件要說明。保留期限預設永久、管理員可設定——此項為建議，使用者尚未明確確認 |
 | D13 | 專案名稱 **oxledger**（原 Q5）；README 寫「derived from Redmine (GPL-2.0-or-later)」，不用 Redmine logo；MCP resource scheme 用 `oxledger://` | 2026-11-06 | 查證：crates.io、npm、GitHub 帳號 `oxledger` 都沒人用；網路搜尋無同名產品；oxledger.com 已被他人註冊（2024-09-14），oxledger.dev、oxledger.org 查無註冊（rdap.org 404，未確認可購）；商標資料庫未查 |
 | D14 | 自訂欄位用**型別化 EAV**：`issue_cf(issue_id, field_id, v_num/v_date/v_text/v_ref/v_bool)`，每個欄位一個 covering partial index `(field_id, v_x, issue_id) WHERE field_id = …`；**不加** `issues.cf_cache JSONB`；Filter AST 每個條件必帶型別條件、一律用 `EXISTS`（原 Q9） | 2026-11-06 | E9（[02 報告](02-e9-custom-fields.md)）：冷門欄位篩選 1–5 ms vs JSONB 100–300 ms；寫入 8,313 vs 2,257 tps；刪熱門欄位 18 秒 vs 3.5 分鐘。代價是空間 2.7 GB vs 0.9 GB，planner 會低估列數 |
 | D15 | 中文檢索：索引維持 unigram + bigram（不換 ICU、lindera）；查詢端在 bigram 之外加權重 0.1–0.2 的 CJK 單字；別名展開做成資料（`concept_labels`），效果要用獨立查詢集的 E2 再量；E8（向量）排在別名之後 | 2026-11-06 | E1（[03 報告](03-e1-zh-retrieval.md)）：nDCG@10 基線 0.781 > ICU 0.732、lindera 0.746；加單字 0.810（CI [+0.007, +0.055]）；別名展開 0.857 只算上限（查詢集與別名同一人寫）。CC-CEDICT（CC BY-SA 4.0）與 GPL-2.0 不相容，只留在實驗 |
+| D16 | 前端走 AI 原生：產品目標是**意圖驅動的任務工作台**，工程先做「工作台 + AI 側欄」的底座；對話介面只當回報者的簡化入口。第一版的 AI 來源是**外部 agent 透過 MCP 提出 ChangeSet，人在 SPA 審閱、核准、套用**；給一般使用者試用前再補最小內建入口。外部模型出口（Q2）與受限資料發布（Q4）維持關閉（原設計 01 的 Q1、Q6） | 2026-11-06 | 設計 [01-ai-native-ux](../design/01-ai-native-ux.md) §12–§13；和 GPT 討論 9 輪 |
+| D17 | 「不用中國產品」的判定：看開發者或公司所在地；範圍是直接依賴、模型、詞典、字型、託管服務；間接依賴只列清單、不硬擋（原設計 01 的 Q13） | 2026-11-06 | 有可操作的判定標準，供 `cargo deny`、選模型與字型時使用 |
+| D18 | 受限自訂欄位可以開放給內建角色（Non member、Anonymous）；**篩選與顯示用同一套規則**：呼叫者在該專案的實際角色（同 `db::role_ids_for`）包含 `field_roles` 之一。刻意不照抄 Redmine「篩選只看成員角色」 | 2026-11-06 | migration 0003；避免「看得到欄位卻篩不到」；`custom_fields_pg` 的 Triage 欄位驗證兩條路徑一致 |
+| D19 | 第一切片設計的使用者決定：agent 可同時委派多個受眾一致專案，以「工作脈絡 + 曾授予專案集合 + 提案版本來源快照 + 受眾包含檢查」防止內容搬到更寬的受眾（U1）；接受和 Redmine 的刻意差異（U2）；分流用逐張提案 + 佇列勾選核准（U11）；搜尋採基本排名契約（Q-S1，含 U7）；自訂欄位不就地改型別、提供轉換工具（Q-S9）。其餘待決照建議預設 | 2026-11-07 | 設計 [00 待決總表](../design/00-open-decisions.md)、[02](../design/02-first-slice-contract.md)（GPT 22 輪）、[03](../design/03-search-consistency-explain.md) |
 
 > D3 的背景：rmcp（官方 MCP Rust SDK）是 **Apache-2.0 單一授權**，sqlx 是 MIT OR Apache-2.0。FSF 的立場是 Apache-2.0 與 **GPL-2.0-only 不相容**，與 GPLv3 相容。Redmine 原始檔檔頭本來就是「version 2 or any later version」，所以建議 SPDX 用 `GPL-2.0-or-later`（和上游一致），散布的二進位檔實際以 GPLv3 條款成立。若堅持 `GPL-2.0-only`，就不能連結 rmcp。（非法律意見）
 
@@ -109,6 +113,7 @@ axum ─┬─ REST (OpenAPI, schemars)
 - **表單也是資料**：`FormLayout {type_id, project_id?, sections[{fields, when: Condition}]}`（OpenProject form config + YouTrack 條件式欄位）。
 - **Server-driven，但只傳宣告式資料**：權限與驗證永遠在 server；layout 只管呈現。
 - **AI 和人改的是同一份定義**：MCP 的 `list_views`／`save_view`／`query(filter_ast)` 直接吃 ViewDef/FilterAST 的 JSON Schema；變更留版本可 diff，AI 改了什麼看得到。
+- **2026-11-06 補（設計 01 §14、§16）**：ViewDef 的 kind 擴充到 mindmap、ontology graph、BPMN 圖件，加上能力宣告與 view session（`view.*`、`diagram.*` 工具，`oxledger://view/{id}/render.png`）。**可持久化、使用者可編輯的 ViewDef 不是第一切片的前置條件**，第一切片用固定工作台。
 - **外掛 UI**：有限具名 slot（`issue.sidebar`、`project.tab`、`dashboard.widget`），iframe／Web Component 隔離；後端外掛可考慮 WASM（wasmtime）。
 - **主題**：CSS custom properties 做 design tokens。
 - **前端框架**（§9 Q3）：建議 Rust 後端 + SvelteKit 或 React SPA（board、Gantt、grid 元件成熟）；全 Rust 就選 Leptos，但要預留 JS interop。htmx 只適合 v1 原型。避開 Ant Design、ECharts、Element（中國來源）→ Radix/shadcn、Chart.js/uPlot/Vega-Lite。
@@ -130,6 +135,12 @@ axum ─┬─ REST (OpenAPI, schemars)
 | `add_note`、`log_time`、`link`／`unlink` | |
 | `list_views`／`save_view` | 操作 ViewDef（§5.2） |
 
+- **2026-11-06 更新：第一切片的實際工具契約以設計 02、03 為準**（上表是早期構想）。重點：
+  - **agent 不能直接寫入**：寫入只透過 `changeset_propose`／`changeset_revise`，人在 SPA「核准並套用」（D16）。`create_issue`、`update_issue`、`transition` 等成為 ChangeSet 裡的操作，同一個命令引擎也服務人直接操作（設計 02 §6、§8）。
+  - **新增工具**：`describe`（欄位 schema 與「現在能做什麼」）、`get_many`（一次最多 10 張）、`changeset_*`、`operation_get`、`verify_citations`、`get_source`（設計 02 §8.8、§14；設計 03 §2–§3）。
+  - **輸入**：直接接受 `AUTH-123`、專案 key、tracker 名稱；錯誤附封閉的 `next_actions`，讓 agent 能自己修正。
+  - **搜尋**：不回 BM25 分數，改回 `rank` 和 `match`；`explain` 片段從 SQL 原文產生；可驗證的 `citation_id`；寫入回執帶 `consistent_after` token，搜尋可等待或回 `search_lagging`（設計 03）。
+  - **Auth**：第一版不做 OAuth 2.1。人用本機密碼 + cookie session + CSRF；agent 用可撤銷、綁委派的 bearer 憑證；舊 `api_keys` 降為唯讀（設計 02 §3）。
 - **Resources**：`oxledger://issue/{key}`（D9：舊 key 轉址到新 key）、`oxledger://project/{id}`、`oxledger://wiki/{project}/{page}`、`oxledger://version/{id}`、`oxledger://changeset/{repo}/{rev}`。
 - **Prompts**：`/triage`、`/sprint-review`、`/release-notes`。
 - **控制長度**：預設 brief（一行約 30 token）、limit 20、cursor、超過 budget 截斷、journals 只給最後 n 筆。
@@ -218,10 +229,12 @@ axum ─┬─ REST (OpenAPI, schemars)
 |---|---|
 | E1 | ✅ 2026-11-06：繁中 issue 查詢，bigram vs ICU vs lindera(CC-CEDICT) 的 nDCG@10／recall@20 → D15，[03 報告](03-e1-zh-retrieval.md) |
 | E2 | 欄位權重與概念欄位消融；別名展開要用**另一人寫的獨立查詢集**量（E1 的 0.857 是上限） |
+| E4w | E4 延伸到寫入與衍生內容：每個命令 × 身分的權限矩陣、ChangeSet 套用、摘要／通知／快取不洩漏（設計 02 §9.7） |
+| I | 提示注入回歸：非法引用、越權、私有內容被搬到公開處（設計 02 §9.8） |
 | E3 | 1 跳圖擴展對重複單、被擋單的召回增益 |
 | E4 | 可見性性質測試：隨機角色／private／群組指派，對照 Ruby 版 Redmine 結果 |
-| E5 | LLM 工具使用：20 個 PM 問題的正確率、往返數、token；「少工具多參數」vs「一動作一工具」 |
-| E6 | 10 萬筆 issue 時 tantivy 近即時延遲、寫入後立即讀到（`min_seq`） |
+| E5 | LLM 工具使用：20 個 PM 問題的正確率、往返數、token；「少工具多參數」vs「一動作一工具」。分外部 agent 與內建 AI 兩條線；以設計 02 §14、03 §2 的呼叫序列當基準（常見用法 1–4 次往返） |
+| E6 | 10 萬筆 issue 時 tantivy 近即時延遲、寫入後立即讀到；範圍改依設計 03 §4.10（`consistent_after` token，取代原本的 `min_seq` 構想） |
 | E7 | rmcp OAuth + Claude／Cursor 的 Streamable HTTP 實連 |
 | E8 | 向量 RRF 值不值得（E1 之後） |
 | E9 | ✅ 2026-11-06：自訂欄位存法基準，100 萬 issue × 1000 欄位（稀疏），型別化 EAV vs JSONB → D14，[02 報告](02-e9-custom-fields.md) |
@@ -231,6 +244,10 @@ axum ─┬─ REST (OpenAPI, schemars)
 - **M0 骨架**：axum + Postgres + 權限核心 + Issue/Project/User/Tracker/Status/Workflow + 最小 tantivy 索引 + MCP `search/get/resolve`（唯讀）。先跑 E4、E1、E9。
   - **2026-11-06 進度**：骨架完成（未含 E1、E9）。ox-core（可見性 `Pred`、workflow）；PostgreSQL schema（migrations/0001_init.sql）；每請求可見範圍 → SQL 與 tantivy filter；tantivy 索引（索引存 unigram+bigram、查詢端兩字以上只用 bigram）跟 xid8 outbox；MCP `search`／`get`／`resolve`（HTTP bearer key 與 stdio）。E4 雛形：40 個隨機世界、240 次檢查，SQL／索引／記憶體／service 四者都與 Redmine 規則的獨立實作一致；故意放入 bug 時第一個世界就失敗。尚未做：OAuth、寫入工具、ontology 概念擴展、REST。
   - **2026-11-06 補**：E9、E1 完成並採用（D14、D15）；實驗程式與原始結果在 `experiments/e9`、`experiments/e1`。
+- **2026-11-06 補：第一切片**（回報 + 找相關紀錄 + 單筆分流）的實作順序已定稿：
+  - **後端契約**（設計 02 §10）：S0 前置修補 → S1 身分 → S2 SPA API 骨架 → S3 權限與 describe → S4 命令引擎 → S5 ChangeSet → S6 agent 提案路徑 → S6b 審閱便利 → S7 D12 遮蔽 → S8 發布門檻（越權、未核准套用、重複效果都要是 0）。
+  - **搜尋**（設計 03 §7）：第 1–3 步 search explain、第 4–6 步寫入後一致性屬於第一切片；第 7–11 步（指標、藍綠重建、D14 策略選擇等）排在下一個迭代。
+  - D14 自訂欄位、D15、內建角色（D18）已完成。
 - **M1 可日用**：自訂欄位（型別化 EAV，D14；schema 草案見 02 報告）、Filter AST、查詢端 CJK 單字低權重（D15）、別名展開、ViewDef（list/board）、issue_events、time tracking、MCP 寫入工具、完整 BM25F 欄位。
 - **M2 整合**：CommonMark（comrak）、Git webhook、`fixed_by`、wiki、CSV 匯入匯出。（D4：不做 Redmine 匯入器與 Textile）
 - **M3**：Gantt、dashboard、automation、sprint、外掛 slot。

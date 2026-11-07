@@ -1,0 +1,16 @@
+Aggregate  (cost=12804.85..12804.86 rows=1 width=8) (actual time=15.807..15.808 rows=1.00 loops=1)
+  Buffers: shared hit=9561
+  ->  Limit  (cost=3851.53..12773.75 rows=2488 width=4) (actual time=4.810..15.340 rows=10001.00 loops=1)
+        Buffers: shared hit=9561
+        ->  Bitmap Heap Scan on issue_cf  (cost=3851.53..12773.75 rows=2488 width=4) (actual time=4.808..14.747 rows=10001.00 loops=1)
+              Recheck Cond: ((v_date >= '2019-01-01'::date) AND (v_date <= '2019-03-31'::date) AND (field_id = 9))
+              Heap Blocks: exact=9459
+              Buffers: shared hit=9561
+              ->  Bitmap Index Scan on issue_cf_f9  (cost=0.00..3850.91 rows=2488 width=0) (actual time=2.836..2.836 rows=18504.00 loops=1)
+                    Index Cond: ((v_date >= '2019-01-01'::date) AND (v_date <= '2019-03-31'::date))
+                    Index Searches: 2
+                    Buffers: shared hit=101
+Planning:
+  Buffers: shared hit=287 read=40
+Planning Time: 1.187 ms
+Execution Time: 15.949 ms

@@ -1,0 +1,27 @@
+Limit  (cost=1.49..2273.39 rows=50 width=16) (actual time=0.076..0.938 rows=50.00 loops=1)
+  Buffers: shared hit=413
+  ->  Nested Loop  (cost=1.49..161806.38 rows=3561 width=16) (actual time=0.076..0.935 rows=50.00 loops=1)
+        Buffers: shared hit=413
+        ->  Merge Join  (cost=0.93..62861.12 rows=19240 width=32) (actual time=0.058..0.651 rows=66.00 loops=1)
+              Merge Cond: (i.id = c.issue_id)
+              Buffers: shared hit=86
+              ->  Index Scan Backward using issues_pkey on issues i  (cost=0.50..57914.50 rows=104894 width=16) (actual time=0.022..0.514 rows=301.00 loops=1)
+                    Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])))
+                    Rows Removed by Filter: 2597
+                    Index Searches: 1
+                    Buffers: shared hit=73
+              ->  Index Only Scan Backward using issue_cf_f3 on issue_cf c  (cost=0.42..4324.04 rows=183425 width=16) (actual time=0.035..0.082 rows=491.00 loops=1)
+                    Index Cond: (v_ref = '00000000-0002-7000-8003-000000000001'::uuid)
+                    Heap Fetches: 0
+                    Index Searches: 2
+                    Buffers: shared hit=13
+        ->  Index Scan using issue_cf_pkey on issue_cf c_1  (cost=0.56..5.14 rows=1 width=16) (actual time=0.004..0.004 rows=0.76 loops=66)
+              Index Cond: ((issue_id = c.issue_id) AND (field_id = 1))
+              Filter: (v_num >= '13'::numeric)
+              Rows Removed by Filter: 0
+              Index Searches: 66
+              Buffers: shared hit=327
+Planning:
+  Buffers: shared hit=510
+Planning Time: 1.755 ms
+Execution Time: 0.995 ms

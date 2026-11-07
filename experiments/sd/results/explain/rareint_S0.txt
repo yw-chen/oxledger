@@ -1,0 +1,40 @@
+Limit  (cost=25557.30..25560.38 rows=27 width=16) (actual time=240.605..244.938 rows=50.00 loops=1)
+  Buffers: shared hit=66837 read=34572
+  ->  Gather Merge  (cost=25557.30..25560.38 rows=27 width=16) (actual time=240.604..244.934 rows=50.00 loops=1)
+        Workers Planned: 1
+        Workers Launched: 1
+        Buffers: shared hit=66837 read=34572
+        ->  Sort  (cost=24557.29..24557.33 rows=16 width=16) (actual time=238.213..238.216 rows=38.00 loops=2)
+              Sort Key: i.id DESC
+              Sort Method: quicksort  Memory: 25kB
+              Buffers: shared hit=66837 read=34572
+              Worker 0:  Sort Method: quicksort  Memory: 25kB
+              ->  Nested Loop  (cost=3852.59..24556.97 rows=16 width=16) (actual time=13.340..238.117 rows=90.00 loops=2)
+                    Buffers: shared hit=66829 read=34572
+                    ->  Nested Loop  (cost=3852.03..23466.44 rows=154 width=32) (actual time=6.350..229.043 rows=989.50 loops=2)
+                          Buffers: shared hit=59340 read=32252
+                          ->  Parallel Bitmap Heap Scan on issue_cf c_1  (cost=3851.53..12755.82 rows=1464 width=16) (actual time=5.318..146.746 rows=9252.00 loops=2)
+                                Recheck Cond: ((v_date >= '2019-01-01'::date) AND (v_date <= '2019-03-31'::date) AND (field_id = 9))
+                                Heap Blocks: exact=8836
+                                Buffers: shared hit=24 read=17551
+                                Worker 0:  Heap Blocks: exact=8618
+                                ->  Bitmap Index Scan on issue_cf_f9  (cost=0.00..3850.91 rows=2488 width=0) (actual time=4.619..4.619 rows=18504.00 loops=1)
+                                      Index Cond: ((v_date >= '2019-01-01'::date) AND (v_date <= '2019-03-31'::date))
+                                      Index Searches: 2
+                                      Buffers: shared hit=4 read=97
+                          ->  Index Scan using issues_pkey on issues i  (cost=0.50..7.32 rows=1 width=16) (actual time=0.008..0.008 rows=0.11 loops=18504)
+                                Index Cond: (id = c_1.issue_id)
+                                Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])))
+                                Rows Removed by Filter: 1
+                                Index Searches: 18504
+                                Buffers: shared hit=59316 read=14701
+                    ->  Index Scan using issue_cf_pkey on issue_cf c  (cost=0.56..7.08 rows=1 width=16) (actual time=0.009..0.009 rows=0.09 loops=1979)
+                          Index Cond: ((issue_id = i.id) AND (field_id = 3))
+                          Filter: (v_ref = '00000000-0002-7000-8003-000000000004'::uuid)
+                          Rows Removed by Filter: 1
+                          Index Searches: 1979
+                          Buffers: shared hit=7489 read=2320
+Planning:
+  Buffers: shared hit=474 read=71
+Planning Time: 2.711 ms
+Execution Time: 245.022 ms

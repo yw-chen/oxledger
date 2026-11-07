@@ -1,0 +1,25 @@
+Limit  (cost=0.50..53030.00 rows=50 width=16) (actual time=0.127..7.545 rows=50.00 loops=1)
+  Buffers: shared hit=8896
+  ->  Index Scan Backward using issues_pkey on issues i  (cost=0.50..27812914.50 rows=26224 width=16) (actual time=0.126..7.539 rows=50.00 loops=1)
+        Filter: (((NOT is_private) OR (author_id = '00000000-0001-7000-8000-000000000007'::uuid)) AND (project_id = ANY ('{00000000-0000-7000-8000-000000000065,00000000-0000-7000-8000-000000000066,00000000-0000-7000-8000-000000000067,00000000-0000-7000-8000-000000000068,00000000-0000-7000-8000-000000000069,00000000-0000-7000-8000-00000000006a,00000000-0000-7000-8000-00000000006b,00000000-0000-7000-8000-00000000006c,00000000-0000-7000-8000-00000000006d,00000000-0000-7000-8000-00000000006e,00000000-0000-7000-8000-00000000006f,00000000-0000-7000-8000-000000000070,00000000-0000-7000-8000-000000000071,00000000-0000-7000-8000-000000000072,00000000-0000-7000-8000-000000000073,00000000-0000-7000-8000-000000000074,00000000-0000-7000-8000-000000000075,00000000-0000-7000-8000-000000000076,00000000-0000-7000-8000-000000000077,00000000-0000-7000-8000-000000000078,00000000-0000-7000-8000-000000000079,00000000-0000-7000-8000-00000000007a,00000000-0000-7000-8000-00000000007b,00000000-0000-7000-8000-00000000007c,00000000-0000-7000-8000-00000000007d,00000000-0000-7000-8000-00000000007e,00000000-0000-7000-8000-00000000007f,00000000-0000-7000-8000-000000000080,00000000-0000-7000-8000-000000000081,00000000-0000-7000-8000-000000000082}'::uuid[])) AND EXISTS(SubPlan 2) AND EXISTS(SubPlan 1))
+        Rows Removed by Filter: 13540
+        Index Searches: 1
+        Buffers: shared hit=8896
+        SubPlan 2
+          ->  Index Scan using issue_cf_pkey on issue_cf c_1  (cost=0.56..13.87 rows=1 width=4) (actual time=0.003..0.003 rows=0.21 loops=1448)
+                Index Cond: ((issue_id = i.id) AND (field_id = 2))
+                Filter: (v_date >= '2025-01-01'::date)
+                Rows Removed by Filter: 1
+                Index Searches: 1448
+                Buffers: shared hit=7088
+        SubPlan 1
+          ->  Index Scan using issue_cf_pkey on issue_cf c  (cost=0.56..13.88 rows=1 width=4) (actual time=0.002..0.002 rows=0.16 loops=306)
+                Index Cond: ((issue_id = i.id) AND (field_id = 8))
+                Filter: ((v_num >= '100'::numeric) AND (v_num <= '300'::numeric))
+                Rows Removed by Filter: 1
+                Index Searches: 306
+                Buffers: shared hit=1480
+Planning:
+  Buffers: shared hit=423
+Planning Time: 1.301 ms
+Execution Time: 7.579 ms

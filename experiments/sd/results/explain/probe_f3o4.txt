@@ -1,0 +1,13 @@
+Aggregate  (cost=2509.14..2509.15 rows=1 width=8) (actual time=10.318..10.319 rows=1.00 loops=1)
+  Buffers: shared hit=7577
+  ->  Limit  (cost=0.42..2384.13 rows=10001 width=4) (actual time=0.048..9.883 rows=10001.00 loops=1)
+        Buffers: shared hit=7577
+        ->  Index Only Scan using issue_cf_f3 on issue_cf  (cost=0.42..25949.20 rows=108870 width=4) (actual time=0.047..9.331 rows=10001.00 loops=1)
+              Index Cond: (v_ref = '00000000-0002-7000-8003-000000000004'::uuid)
+              Heap Fetches: 10001
+              Index Searches: 2
+              Buffers: shared hit=7577
+Planning:
+  Buffers: shared hit=357
+Planning Time: 0.987 ms
+Execution Time: 10.368 ms

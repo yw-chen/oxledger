@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oxledger 搜尋一致性與 explain</title>
+<style>
+:root{
+  --bg:#0B1220;--bg2:#0F1829;--card:#142033;--card2:#1A2840;--line:#24344F;--line2:#30466A;
+  --fg:#F1F5F9;--muted:#B6C2D3;--dim:#7D8BA1;
+  --act:#67E8F9;--prop:#C4B5FD;--ok:#6EE7B7;--warn:#FCD34D;--bad:#FDA4AF;
+  --act-a:rgba(103,232,249,.14);--prop-a:rgba(196,181,253,.14);--ok-a:rgba(110,231,183,.14);--warn-a:rgba(252,211,77,.12);--bad-a:rgba(253,164,175,.12);
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#F4F7FB;--bg2:#EAF0F7;--card:#FFFFFF;--card2:#F2F6FB;--line:#D5DFEC;--line2:#B9C8DC;
+  --fg:#0E1726;--muted:#3E4C63;--dim:#66748A;
+  --act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;
+  --act-a:rgba(14,116,144,.10);--prop-a:rgba(109,40,217,.09);--ok-a:rgba(4,120,87,.10);--warn-a:rgba(161,98,7,.10);--bad-a:rgba(190,18,60,.08);
+}}
+:root[data-theme="light"]{
+  --bg:#F4F7FB;--bg2:#EAF0F7;--card:#FFFFFF;--card2:#F2F6FB;--line:#D5DFEC;--line2:#B9C8DC;
+  --fg:#0E1726;--muted:#3E4C63;--dim:#66748A;
+  --act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;
+  --act-a:rgba(14,116,144,.10);--prop-a:rgba(109,40,217,.09);--ok-a:rgba(4,120,87,.10);--warn-a:rgba(161,98,7,.10);--bad-a:rgba(190,18,60,.08);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.7 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif;overflow-x:hidden}
+.mono,code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-variant-numeric:tabular-nums}
+code{background:var(--card2);border:1px solid var(--line);padding:0 5px;border-radius:4px;font-size:13px}
+main{max-width:1080px;margin:0 auto;padding:0 16px 80px}
+a{color:var(--act)}
+header.top{padding:56px 0 24px;border-bottom:1px solid var(--line)}
+header.top h1{font-size:30px;line-height:1.3;margin:0 0 8px}
+header.top p{color:var(--muted);margin:4px 0;max-width:820px}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0 0}
+nav.toc a{font-size:13px;text-decoration:none;border:1px solid var(--line2);border-radius:99px;padding:2px 10px;color:var(--muted)}
+nav.toc a:hover{color:var(--act);border-color:var(--act)}
+h2{font-size:20px;margin:56px 0 6px;display:flex;align-items:center;gap:10px}
+h2 .n{font:600 12px ui-monospace,Consolas,monospace;color:var(--act);border:1px solid var(--act);border-radius:4px;padding:1px 6px}
+h3{font-size:16px;margin:22px 0 8px}
+.lead{color:var(--muted);margin:0 0 18px}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.card h4{margin:0 0 4px;font-size:15px}
+.card p{margin:0;color:var(--muted);font-size:14px}
+.card.ok{border-left:3px solid var(--ok)}.card.no{border-left:3px solid var(--bad)}.card.act{border-left:3px solid var(--act)}
+.k{font:600 11px ui-monospace,Consolas,monospace;letter-spacing:.08em;color:var(--dim);text-transform:uppercase}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:8px 0}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{color:var(--dim);font-weight:600;font-size:12px;background:var(--card2)}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+.chip{display:inline-block;padding:0 8px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor;white-space:nowrap;line-height:20px}
+.c-act{color:var(--act)}.c-prop{color:var(--prop)}.c-ok{color:var(--ok)}.c-warn{color:var(--warn)}.c-bad{color:var(--bad)}.c-dim{color:var(--dim)}
+.fig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
+.fig svg{display:block;width:100%;height:auto}
+.fig figcaption{color:var(--dim);font-size:13px;margin-top:6px}
+svg text{font-family:system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
+.hl{background:var(--act-a);border-bottom:2px solid var(--act);padding:0 1px}
+.hlf{background:var(--warn-a);border-bottom:2px dotted var(--warn);padding:0 1px}
+.snip{font-size:16px;letter-spacing:.02em;margin:6px 0 2px}
+.seq{counter-reset:s;list-style:none;padding:0;margin:8px 0 0}
+.seq li{counter-increment:s;position:relative;padding:6px 0 6px 34px;border-top:1px dashed var(--line);font-size:14px}
+.seq li:first-child{border-top:0}
+.seq li::before{content:counter(s);position:absolute;left:0;top:7px;width:22px;height:22px;border-radius:50%;border:1px solid var(--act);color:var(--act);font:600 12px/20px ui-monospace,Consolas,monospace;text-align:center}
+.meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.note{border-left:3px solid var(--warn);background:var(--warn-a);padding:8px 12px;border-radius:0 8px 8px 0;font-size:14px;margin:10px 0}
+.pend{color:var(--warn);font-size:12px;font-weight:600}
+pre{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;font-size:12.5px;line-height:1.55}
+footer{color:var(--dim);font-size:13px;margin-top:60px;border-top:1px solid var(--line);padding-top:14px}
+@media (max-width:640px){header.top h1{font-size:24px}h2{font-size:18px}}
+</style>
+</head>
+<body>
+<main>
+<header class="top">
+  <div class="k">設計 03 · 2026-11-06 · 視覺版</div>
+  <h1>搜尋 explain、寫入後的搜尋一致性、D14 效能尾巴</h1>
+  <p>文字版規格：<a href="03-search-consistency-explain.md">03-search-consistency-explain.md</a>（以文字版為準）。實測程式：<code>experiments/sd/</code>。和 GPT 討論 4 輪，對齊 02 後再複審 1 輪。</p>
+  <p>寫入、ChangeSet、委派與錯誤外殼以<a href="02-first-slice-contract.md">設計 02</a>為準；2026-11-07 依 02 附錄 C.3 對齊 11 項（文字版 §8.1）。</p>
+  <p class="c-dim">標記：<span class="pend">〔依建議預設，待確認〕</span>代表這部分還要等使用者確認（§10）。</p>
+  <nav class="toc">
+    <a href="#g">三種保證</a><a href="#mcp">MCP 用法</a><a href="#explain">explain</a><a href="#hl">高亮</a>
+    <a href="#cons">一致性 token</a><a href="#long">長交易</a><a href="#bg">藍綠重建</a><a href="#d14">D14 尾巴</a>
+    <a href="#ux">方便性</a><a href="#plan">實作順序</a><a href="#q">待決</a>
+  </nav>
+</header>
+
+<h2 id="g"><span class="n">0</span>三種保證，分開講</h2>
+<p class="lead">這三件事常被當成同一件事。這份設計只提供前兩種。</p>
+<div class="grid">
+  <div class="card ok"><div class="k">提供</div><h4>引用可驗證</h4><p>這段文字<b>現在</b>確實在呼叫者讀得到的來源裡。不證明「伺服器曾經回傳過」，也不證明「歷史上存在過」。</p></div>
+  <div class="card ok"><div class="k">提供</div><h4>搜尋追上寫入</h4><p>對寫入交易 X，這次搜尋的 reader 已經套用所有 xid ≤ X、且有登記在 outbox 的事件。</p></div>
+  <div class="card no"><div class="k">不提供</div><h4>跨系統同一時間點</h4><p>tantivy 和 PostgreSQL 不在同一個快照裡。最後一律回 SQL 複驗，所以結果只會少、不會多。</p></div>
+</div>
+
+<h2 id="mcp"><span class="n">2</span>MCP 主要用法與呼叫序列</h2>
+<p class="lead">以外部 agent 為第一使用者，由這 5 個用法反推 API。token 數是粗估，還沒用實際的 tokenizer 量。</p>
+<div class="grid">
+  <div class="card act"><div class="k">A</div><h4>找跟登入有關、還沒修好的 bug</h4>
+    <ol class="seq"><li><code>search(q:"登入", tracker:"bug", status_category:"open", limit:5, fields:[key,subject,status], explain:"brief")</code></li></ol>
+    <div class="meta"><span class="chip c-act">1 次往返</span><span class="chip c-dim">≈0.6–1.2k token</span></div></div>
+  <div class="card act"><div class="k">B</div><h4>AUTH-123 有沒有重複的</h4>
+    <ol class="seq"><li><code>get(key, fields:[subject,project,tracker])</code></li><li><code>search(q:&lt;標題&gt;, project, tracker, limit:6, explain:"brief")</code></li><li>（選用）<code>get_source(citation_id, quote, context_chars:300)</code></li></ol>
+    <div class="meta"><span class="chip c-act">2–3 次</span><span class="chip c-dim">≈0.9–2.2k</span></div></div>
+  <div class="card act"><div class="k">C</div><h4>Severity = High 且估時 &gt; 8 小時</h4>
+    <ol class="seq"><li><code>resolve(kind:"custom_field", "Severity")</code>、<code>resolve(…,"估時")</code>（可並行）→ 型別、單位、<code>definition_version</code></li><li><code>search(filter:{and:[…]}, fields:[…,"cf:Severity","cf:估時"], explain:"none")</code>：純 SQL、<code>matched_filters</code></li></ol>
+    <div class="meta"><span class="chip c-act">2 次</span><span class="chip c-dim">≈0.7–1.6k</span></div></div>
+  <div class="card act"><div class="k">D</div><h4>剛建的單，馬上引用</h4>
+    <ol class="seq"><li><code>changeset_propose(…)</code> → 把 <code>review_url</code> 交給使用者</li><li>（人在 SPA 核准並套用，不經 MCP）</li><li><code>changeset_get(id)</code> → execution 的 <code>effects[].key</code>、<code>search.consistent_after</code></li><li><code>get(key, citations:[subject,description])</code>：<b>不經搜尋</b></li></ol>
+    <p>agent 沒有直接寫入工具。還沒核准時不重送提案、不請人重新核准。</p>
+    <div class="meta"><span class="chip c-act">3 次 + 人核准</span><span class="chip c-dim">≈0.7–1.6k</span></div></div>
+  <div class="card act"><div class="k">E</div><h4>用引用回答使用者</h4>
+    <ol class="seq"><li><code>search(q, project, limit:3, explain:"brief")</code></li><li><code>verify_citations(items:[{citation_id, quote}…], mode:"exact")</code></li></ol>
+    <div class="meta"><span class="chip c-act">2 次</span><span class="chip c-dim">≈0.7–1.6k</span></div></div>
+  <div class="card"><div class="k">通則</div><h4>從用法反推的設計</h4><p><code>brief</code> 是預設，每筆 1 段約 60 字並附 citation。<code>fields</code> 可選。錯誤格式同 02 §4.3：頂層 <code>retry_after_ms</code>、<code>next_actions</code>（6 種封閉列舉），<code>details</code> 帶 <code>path</code>、<code>suggested_tool</code>。agent 不碰 offset。<code>search_lagging</code> 不是寫入失敗；<code>complete:false</code> 時不能回答「不存在」。</p></div>
+  <div class="card"><div class="k">讀取範圍</div><h4>agent＝委派讀取範圍</h4><p>agent 憑證呼叫 <code>search</code>、<code>get</code>、<code>get(citations)</code>、<code>verify_citations</code>、<code>get_source</code> 時，範圍是 02 §3.5 的委派範圍：工作脈絡內所有有效委派專案的聯集（U1 已決定可多專案），每個專案都排除私有 issue、私有 note、<code>visible=false</code> 欄位；搜尋可能跨多個專案。手工構造的 citation 也只會得到 <code>not_found</code>；<code>issue_note</code> 一定同時比對 <code>note.issue_id</code>。委派失效時整批回 <code>delegation_unavailable</code>；脈絡停用（曾授予的任一專案改了權限設定）時整批回 <code>context_unavailable</code>；都不降成逐筆 <code>not_found</code>。</p></div>
+</div>
+
+<h2 id="explain"><span class="n">3</span>Search explain：證據從 SQL 原文產生</h2>
+<figure class="fig">
+<svg viewBox="0 0 1000 220" role="img" aria-label="explain 流程：tantivy 召回、SQL 授權與複驗、spanned lexer 產生證據、citation">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="var(--dim)"/></marker></defs>
+  <g font-size="14">
+    <rect x="10" y="40" width="200" height="110" rx="10" fill="var(--card2)" stroke="var(--line2)"/>
+    <text x="110" y="70" text-anchor="middle" fill="var(--fg)" font-weight="600">tantivy</text>
+    <text x="110" y="94" text-anchor="middle" fill="var(--muted)">只負責召回</text>
+    <text x="110" y="116" text-anchor="middle" fill="var(--muted)">可見性 filter + BM25</text>
+    <text x="110" y="138" text-anchor="middle" fill="var(--dim)" font-size="12">不回 score、不回 Explanation</text>
+    <rect x="260" y="40" width="220" height="110" rx="10" fill="var(--card2)" stroke="var(--act)"/>
+    <text x="370" y="70" text-anchor="middle" fill="var(--fg)" font-weight="600">PostgreSQL</text>
+    <text x="370" y="94" text-anchor="middle" fill="var(--muted)">同一個 Pred 再授權</text>
+    <text x="370" y="116" text-anchor="middle" fill="var(--muted)">分批延後讀原文</text>
+    <text x="370" y="138" text-anchor="middle" fill="var(--dim)" font-size="12">search_rev 比對</text>
+    <rect x="530" y="40" width="210" height="110" rx="10" fill="var(--card2)" stroke="var(--line2)"/>
+    <text x="635" y="70" text-anchor="middle" fill="var(--fg)" font-weight="600">spanned lexer</text>
+    <text x="635" y="94" text-anchor="middle" fill="var(--muted)">內部 byte offset</text>
+    <text x="635" y="116" text-anchor="middle" fill="var(--muted)">primary／fallback</text>
+    <text x="635" y="138" text-anchor="middle" fill="var(--dim)" font-size="12">和 tokenizer 同一份程式</text>
+    <rect x="790" y="40" width="200" height="110" rx="10" fill="var(--card2)" stroke="var(--ok)"/>
+    <text x="890" y="70" text-anchor="middle" fill="var(--fg)" font-weight="600">evidence</text>
+    <text x="890" y="94" text-anchor="middle" fill="var(--muted)">片段 + 高亮</text>
+    <text x="890" y="116" text-anchor="middle" fill="var(--muted)">code point 範圍</text>
+    <text x="890" y="138" text-anchor="middle" fill="var(--dim)" font-size="12">cit1.… citation_id</text>
+    <path d="M212,95H256" stroke="var(--dim)" stroke-width="1.5" marker-end="url(#ar)"/>
+    <path d="M482,95H526" stroke="var(--dim)" stroke-width="1.5" marker-end="url(#ar)"/>
+    <path d="M742,95H786" stroke="var(--dim)" stroke-width="1.5" marker-end="url(#ar)"/>
+    <text x="370" y="185" text-anchor="middle" fill="var(--warn)" font-size="12.5">原文已經不命中 → 丟掉候選，繼續擴充（不受 explain 開關影響）</text>
+    <text x="890" y="185" text-anchor="middle" fill="var(--dim)" font-size="12.5">verify_citations／get_source 會再授權</text>
+  </g>
+</svg>
+<figcaption>tantivy 只負責找出候選；片段、命中原因和引用，都從「目前、已授權的」SQL 原文重新算出來。</figcaption>
+</figure>
+<div class="tw"><table>
+<tr><th>tantivy API</th><th>實測（原始碼 + 探針程式）</th><th>採用</th></tr>
+<tr><td><code>SnippetGenerator</code></td><td>在現在的 tokenizer 下（offset 全是 0），片段是空的；補上 offset 後，<code>max_num_chars=150</code> 實際算的是 byte，中文只剩 50 字；忽略 boost，0.1 權重的「入」把「輸入」「載入」也亮起來</td><td><span class="chip c-bad">否</span></td></tr>
+<tr><td><code>Explanation</code></td><td>JSON 約 6 KB／3 個 term；裡面的 <code>N</code>、<code>n</code> 包含看不到的文件；20 筆約 0.6 ms</td><td><span class="chip c-bad">不對外</span></td></tr>
+<tr><td>commit payload</td><td><code>prepare_commit().set_payload()</code> 可以寫入，<code>load_metas().payload</code> 讀得回來</td><td><span class="chip c-ok">用來存 frontier</span></td></tr>
+</table></div>
+
+<h3 id="hl">高亮怎麼對齊原文</h3>
+<div class="grid">
+  <div class="card"><div class="k">查「登入」· primary</div>
+    <div class="snip">從公司入口<span class="hl">登入</span>後又被導回<span class="hl">登入</span>頁</div>
+    <p>「入口」的「入」<b>不亮</b>：欄位裡已經有 primary 命中時，0.1 權重的 unigram 不亮。</p></div>
+  <div class="card"><div class="k">查「付不了錢」· fallback</div>
+    <div class="snip">按下<span class="hlf">付</span>款後顯示錯誤，<span class="hlf">錢</span>沒有扣到</div>
+    <p>只有低權重的字元命中：用淡色，並標「部分字元相符」，不宣稱原文有「付不了錢」。</p></div>
+  <div class="card"><div class="k">查「登入失敗」· bigram 重疊</div>
+    <div class="snip"><span class="hl">登入失敗</span>時顯示 invalid_grant</div>
+    <p>「登入」「入失」「失敗」三個 bigram 的範圍取聯集，不重複輸出字元。識別碼整串命中時亮整串。</p></div>
+</div>
+<pre>{"citation_id": "cit1.&lt;base64url({v:1, src:{kind:"issue_field", issue_id, field}, rev:&lt;完整 sha256&gt;, start, end})&gt;"}
+src.kind ∈ { issue_field (subject|description) ,  issue_note (issue_id, note_id；只由 get 的 recent_notes 產生) }
+verify_citations({items:[{citation_id, quote}], mode:"exact"|"reanchor"})
+  → valid ｜ citation_mismatch ｜ source_changed ｜ moved(+新 citation) ｜ ambiguous ｜ not_found</pre>
+<div class="note">排名側通道：拿掉 score 只能防止有人反覆量同一個數值；看不到的文件仍會影響 BM25 的統計。第一版採「基本契約」：不洩漏內容、片段和來源，但不保證排名和看不到的文件無關。private notes 和受限欄位先不進共用索引。<span class="pend">〔依建議預設，待確認 Q-S1、Q-S2〕</span></div>
+
+<h2 id="cons"><span class="n">4</span>寫入後的搜尋一致性</h2>
+<p class="lead">token 只放寫入交易自己的 xid8。reader 帶一個排他 frontier F，<b>X &lt; F</b> 就代表追上了。</p>
+<figure class="fig">
+<svg viewBox="0 0 1000 250" role="img" aria-label="xid 時間軸：frontier F、H、token X 與長交易">
+  <g font-size="13">
+    <line x1="40" y1="120" x2="960" y2="120" stroke="var(--line2)" stroke-width="2"/>
+    <text x="960" y="145" text-anchor="end" fill="var(--dim)">xid →</text>
+    <rect x="40" y="96" width="470" height="48" fill="var(--ok-a)"/>
+    <text x="275" y="90" text-anchor="middle" fill="var(--ok)">xid &lt; F：事件已套用，reader 已發布</text>
+    <line x1="510" y1="60" x2="510" y2="180" stroke="var(--ok)" stroke-width="2"/>
+    <text x="510" y="52" text-anchor="middle" fill="var(--ok)" font-weight="600">F（complete_before_xid）</text>
+    <line x1="640" y1="70" x2="640" y2="170" stroke="var(--act)" stroke-width="2" stroke-dasharray="5 4"/>
+    <text x="640" y="190" text-anchor="middle" fill="var(--act)" font-weight="600">H = pg_snapshot_xmin</text>
+    <text x="640" y="208" text-anchor="middle" fill="var(--dim)" font-size="12">排空後 F 推進到 H</text>
+    <circle cx="420" cy="120" r="7" fill="var(--ok)"/><text x="420" y="160" text-anchor="middle" fill="var(--ok)">X₁ &lt; F：滿足</text>
+    <circle cx="580" cy="120" r="7" fill="var(--warn)"/><text x="580" y="160" text-anchor="middle" fill="var(--warn)">X₂：等待</text>
+    <rect x="650" y="108" width="260" height="24" rx="5" fill="var(--bad-a)" stroke="var(--bad)"/>
+    <text x="780" y="125" text-anchor="middle" fill="var(--bad)">已分配 xid 的長交易 → H 卡住</text>
+    <text x="40" y="236" fill="var(--muted)">每一批：讀事件和 H（同一個 statement）→ 套用 → commit(payload) → reload → 發布 SearchView → 喚醒等待者</text>
+  </g>
+</svg>
+<figcaption>滿 500 筆時 F 只推到最後一筆的 xid（同一個 xid 可能還有第 501 筆）；零事件時也要拿得到 H，所以 SQL 要用 <code>FILTER</code>（PG 18.6 實測：少了它會得到 <code>[{"id":null}]</code>）。</figcaption>
+</figure>
+<div class="grid">
+  <div class="card act"><div class="k">寫入回執（02 §6.9）</div><p><code>{status:"succeeded", effects:[{issue_id, key:"AUTH-124", lock_version:0, changed:true}], search:{consistent_after:"c1.&lt;epoch&gt;.&lt;xid8&gt;"}}</code>。人看 <code>/commands</code> 回應，agent 看 <code>changeset_get</code> 的 execution。epoch 和 xid 在寫入交易裡一起存成完整 token，重播回原 token。token 不簽章，也不能證明 commit。epoch 輪替以 <code>search_settings</code> 那一列為協調點：寫入交易加 <code>FOR SHARE</code>，輪替交易提交後才切換索引，不必停寫入。</p></div>
+  <div class="card act"><div class="k">search 參數</div><p><code>consistent_after</code>、<code>wait_ms</code>（0–2000，預設 1000）、<code>on_lag: return|error</code>。純 SQL 查詢回 <code>not_applicable</code>。<span class="pend">〔on_lag 預設待確認 Q-S4〕</span></p></div>
+  <div class="card"><div class="k">逾時</div><p><code>outcome:"search_lagging"</code>、<code>complete:false</code>、<code>items:[]</code>、沒有 cursor。不回舊結果，免得 agent 把它當成「不存在」。</p></div>
+</div>
+
+<h3 id="long">長交易會不會擋住 frontier（PG 18.6 實測）</h3>
+<div class="tw"><table>
+<tr><th>開啟中的交易</th><th>擋 frontier</th></tr>
+<tr><td>別的 database，唯讀快照（沒有 xid）</td><td><span class="chip c-ok">不擋</span></td></tr>
+<tr><td>別的 database，已分配 xid</td><td><span class="chip c-bad">擋</span></td></tr>
+<tr><td>同一個 database，唯讀快照</td><td><span class="chip c-ok">不擋</span></td></tr>
+<tr><td>同一個 database，已分配 xid</td><td><span class="chip c-bad">擋</span></td></tr>
+<tr><td>CREATE INDEX CONCURRENTLY，1,770 萬列，18 秒</td><td><span class="chip c-ok">不擋</span>（backend_xid 一直是空的）</td></tr>
+<tr><td>單一 UPDATE 改 95 萬列，35.3 秒</td><td><span class="chip c-bad">擋 35 秒</span></td></tr>
+</table></div>
+<p class="c-muted">告警看的是整個 instance 裡 <code>backend_xid IS NOT NULL</code> 的最老交易：超過 15 秒 warning、60 秒 critical。不自動 kill。大量更新一律分批。</p>
+
+<h3 id="bg">藍綠重建</h3>
+<figure class="fig">
+<svg viewBox="0 0 1000 170" role="img" aria-label="藍綠重建流程">
+  <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--dim)"/></marker></defs>
+  <g font-size="13" text-anchor="middle">
+    <rect x="10" y="40" width="150" height="70" rx="8" fill="var(--card2)" stroke="var(--line2)"/><text x="85" y="68" fill="var(--fg)" font-weight="600">① 登記租約</text><text x="85" y="90" fill="var(--dim)" font-size="12">開快照之前</text>
+    <rect x="200" y="40" width="150" height="70" rx="8" fill="var(--card2)" stroke="var(--line2)"/><text x="275" y="68" fill="var(--fg)" font-weight="600">② RR 唯讀快照</text><text x="275" y="90" fill="var(--dim)" font-size="12">F0 = xmin(S)</text>
+    <rect x="390" y="40" width="150" height="70" rx="8" fill="var(--card2)" stroke="var(--line2)"/><text x="465" y="68" fill="var(--fg)" font-weight="600">③ baseline</text><text x="465" y="90" fill="var(--dim)" font-size="12">cursor=(F0,0)</text>
+    <rect x="580" y="40" width="150" height="70" rx="8" fill="var(--card2)" stroke="var(--line2)"/><text x="655" y="68" fill="var(--fg)" font-weight="600">④ 追趕重播</text><text x="655" y="90" fill="var(--dim)" font-size="12">舊的照常服務</text>
+    <rect x="770" y="40" width="220" height="70" rx="8" fill="var(--card2)" stroke="var(--ok)"/><text x="880" y="68" fill="var(--fg)" font-weight="600">⑤ 切換</text><text x="880" y="90" fill="var(--dim)" font-size="12">F_new≥F_old 且 cursor 追過</text>
+    <path d="M162,75H196M352,75H386M542,75H576M732,75H766" stroke="var(--dim)" stroke-width="1.5" marker-end="url(#ar2)"/>
+    <text x="500" y="145" fill="var(--muted)">token 綁 data_epoch，不綁 generation，所以重建後仍然有效；舊 generation 保留 24 小時</text>
+  </g>
+</svg>
+<figcaption>取代現在的 <code>rebuild()</code>：它會讓搜尋整段空白，100 萬筆時還會一次寫入 100 萬列 outbox。切換保證<span class="pend">〔依建議預設，待確認 Q-S8〕</span>。</figcaption>
+</figure>
+
+<h2 id="d14"><span class="n">5</span>D14 效能尾巴（100 萬 issue、1,770 萬列 issue_cf）</h2>
+<h3>單一條件的估計誤差（低估倍數）</h3>
+<figure class="fig">
+<svg viewBox="0 0 1000 300" role="img" aria-label="低估倍數長條圖">
+  <g font-size="13">
+    <line x1="290" y1="20" x2="290" y2="270" stroke="var(--line2)"/>
+    <!-- scale: 1x = 0, 17x = 640px ; px per x = 40 -->
+    <g><text x="280" y="42" text-anchor="end" fill="var(--muted)">f8 num 熱門連續值 100..300</text><rect x="290" y="28" width="676" height="20" rx="3" fill="var(--bad)"/><text x="960" y="43" text-anchor="end" fill="var(--bg)" font-weight="600">16.9×</text></g>
+    <g><text x="280" y="72" text-anchor="end" fill="var(--muted)">f9 date 熱門，一整年</text><rect x="290" y="58" width="264" height="20" rx="3" fill="var(--warn)"/><text x="562" y="73" fill="var(--muted)">6.6×</text></g>
+    <g><text x="280" y="102" text-anchor="end" fill="var(--muted)">f2 date 熱門 ≥ 2025</text><rect x="290" y="88" width="256" height="20" rx="3" fill="var(--warn)"/><text x="554" y="103" fill="var(--muted)">6.4×</text></g>
+    <g><text x="280" y="132" text-anchor="end" fill="var(--muted)">f800 num 冷門範圍</text><rect x="290" y="118" width="188" height="20" rx="3" fill="var(--warn)"/><text x="486" y="133" fill="var(--muted)">4.7×</text></g>
+    <g><text x="280" y="162" text-anchor="end" fill="var(--muted)">f1 有值（IS NOT NULL）</text><rect x="290" y="148" width="176" height="20" rx="3" fill="var(--warn)"/><text x="474" y="163" fill="var(--muted)">4.4×</text></g>
+    <g><text x="280" y="192" text-anchor="end" fill="var(--muted)">f806 date 冷門 ≥ 2024</text><rect x="290" y="178" width="164" height="20" rx="3" fill="var(--warn)"/><text x="462" y="193" fill="var(--muted)">4.1×</text></g>
+    <g><text x="280" y="222" text-anchor="end" fill="var(--muted)">f1 num 熱門（21 種值）≥ 10</text><rect x="290" y="208" width="104" height="20" rx="3" fill="var(--act)"/><text x="402" y="223" fill="var(--muted)">2.6×</text></g>
+    <g><text x="280" y="252" text-anchor="end" fill="var(--muted)">f3 ref 等值（有 MCV）</text><rect x="290" y="238" width="43" height="20" rx="3" fill="var(--ok)"/><text x="341" y="253" fill="var(--muted)">1.07×</text></g>
+  </g>
+</svg>
+<figcaption>原本記的「3–5 倍」是 10 萬筆時量的。100 萬筆加上連續值時，最多低估到 17 倍。統計修正的嘗試：提高 statistics target 無效；CASE 運算式統計能把估計修準，但多條件查詢仍要 53 ms，而且每個欄位都要一個物件。結論是不全面做。</figcaption>
+</figure>
+
+<h3>多條件 + ORDER BY id DESC LIMIT 50：S0 現行 vs S2 逐列探測（ms，對數刻度）</h3>
+<figure class="fig">
+<svg viewBox="0 0 1000 330" role="img" aria-label="S0 與 S2 的耗時比較，對數刻度">
+  <g font-size="13">
+    <!-- log scale: x = 300 + 170*log10(ms) ; 1ms=300, 10=470, 100=640, 1000=810 -->
+    <g stroke="var(--line)" stroke-dasharray="3 4"><line x1="300" y1="20" x2="300" y2="290"/><line x1="470" y1="20" x2="470" y2="290"/><line x1="640" y1="20" x2="640" y2="290"/><line x1="810" y1="20" x2="810" y2="290"/></g>
+    <g fill="var(--dim)" font-size="12" text-anchor="middle"><text x="300" y="308">1</text><text x="470" y="308">10</text><text x="640" y="308">100</text><text x="810" y="308">1000 ms</text></g>
+    <g>
+      <text x="290" y="40" text-anchor="end" fill="var(--fg)">three（E9 案例）</text>
+      <rect x="300" y="28" width="291" height="12" fill="var(--muted)"/><text x="597" y="39" fill="var(--muted)" font-size="12">S0 51.5</text>
+      <rect x="300" y="43" width="168" height="12" fill="var(--act)"/><text x="474" y="54" fill="var(--act)" font-size="12">S2 9.8</text>
+    </g>
+    <g>
+      <text x="290" y="90" text-anchor="end" fill="var(--fg)">numdate</text>
+      <rect x="300" y="78" width="423" height="12" fill="var(--muted)"/><text x="729" y="89" fill="var(--muted)" font-size="12">S0 307</text>
+      <rect x="300" y="93" width="140" height="12" fill="var(--act)"/><text x="446" y="104" fill="var(--act)" font-size="12">S2 6.6</text>
+    </g>
+    <g>
+      <text x="290" y="140" text-anchor="end" fill="var(--fg)">num2</text>
+      <rect x="300" y="128" width="278" height="12" fill="var(--muted)"/><text x="584" y="139" fill="var(--muted)" font-size="12">S0 43.4</text>
+      <rect x="300" y="143" width="86" height="12" fill="var(--act)"/><text x="392" y="154" fill="var(--act)" font-size="12">S2 3.2</text>
+    </g>
+    <g>
+      <text x="290" y="190" text-anchor="end" fill="var(--fg)">hot2</text>
+      <rect x="300" y="178" width="35" height="12" fill="var(--muted)"/><text x="341" y="189" fill="var(--muted)" font-size="12">S0 1.6</text>
+      <rect x="300" y="193" width="43" height="12" fill="var(--act)"/><text x="349" y="204" fill="var(--act)" font-size="12">S2 1.8</text>
+    </g>
+    <g>
+      <text x="290" y="240" text-anchor="end" fill="var(--fg)">hotcold（稀有）</text>
+      <rect x="300" y="228" width="113" height="12" fill="var(--ok)"/><text x="419" y="239" fill="var(--ok)" font-size="12">S0 4.6 ← 選這個</text>
+      <rect x="300" y="243" width="487" height="12" fill="var(--bad)"/><text x="793" y="254" fill="var(--bad)" font-size="12">S2 732</text>
+    </g>
+    <g>
+      <text x="290" y="280" text-anchor="end" fill="var(--fg)">rareint（交集稀少）</text>
+      <rect x="300" y="268" width="404" height="9" fill="var(--muted)"/><text x="710" y="277" fill="var(--muted)" font-size="12">S0 238</text>
+      <rect x="300" y="279" width="409" height="9" fill="var(--warn)"/><text x="715" y="288" fill="var(--warn)" font-size="12">S2 255</text>
+    </g>
+  </g>
+</svg>
+<figcaption>S2 是在每個 EXISTS 加 <code>OFFSET 0</code>，PG 就不會把它簡化，變成逐列的 correlated probe，沿 <code>issues_pkey</code> 反向走。用 <code>IS TRUE</code> 包起來的版本會變成 hashed SubPlan，反而更慢（133–672 ms）。這是 PG 18 才確認過的寫法，升級大版本要重測。</figcaption>
+</figure>
+<div class="grid">
+  <div class="card act"><div class="k">策略</div><p>只用在「無 <code>q</code>、<code>id DESC</code>、LIMIT ≤ 100、≥ 2 個單值欄位正向條件的 AND」。每個條件做上限 10,001 的索引探測（0.5–11 ms）：任何一個 ≤ 10,000 就用 S0，全部 &gt; 10,000 就用 S2。</p></div>
+  <div class="card"><div class="k">deadline</div><p>預設 2 秒，涵蓋探測、初始策略和最多一次切換。用剩餘預算設 statement_timeout；用完回 <code>query_timeout</code>，不回部分頁。</p></div>
+  <div class="card"><div class="k">總數</div><p>count(*) 要 197–497 ms：第一版不回總數，只顯示「還有更多」。<span class="pend">〔Q-S6〕</span></p></div>
+</div>
+
+<h3>改型別（就地分批，數字 → 文字）</h3>
+<div class="tw"><table>
+<tr><th>動作</th><th class="r">數量</th><th class="r">耗時</th></tr>
+<tr><td>分批轉換（每批約 1 萬個值，各自 COMMIT）</td><td class="r">798,071 值 / 80 批</td><td class="r"><b>13.1 s</b>（最慢一批 0.43 s）</td></tr>
+<tr><td>CREATE INDEX CONCURRENTLY 新的 per-field index</td><td class="r">—</td><td class="r">9.1 s</td></tr>
+<tr><td>對照：單一 UPDATE</td><td class="r">949,336 值</td><td class="r">35.3 s（整段擋住 frontier）</td></tr>
+</table></div>
+<p class="c-dim">不含觸發器成本，是本次環境的參考值。維護期間這個欄位不能讀、寫、篩選，<code>get</code> 回 <code>value_available:false</code>，不回 null。要不要支援就地改型別：<span class="pend">〔Q-S9，建議預設：不支援，改用「建新欄位 + 複製轉換」〕</span></p>
+
+<h2 id="ux"><span class="n">6</span>使用者方便性檢查表</h2>
+<div class="grid">
+  <div class="card"><div class="k">UX-1</div><h4>為什麼命中</h4><p>顯示命中的欄位名稱和約 60 字的片段，命中的詞高亮（不只靠顏色）。部分字元命中標「部分字元相符」。純欄位篩選列出欄位值。</p></div>
+  <div class="card"><div class="k">UX-4</div><h4>剛建立的單</h4><p>回執一回來就顯示「已建立 AUTH-124」；搜尋清單上方另外放「剛建立・搜尋同步中」卡片，可以開啟、引用。<b>不能只因為搜尋延遲就顯示失敗。</b></p></div>
+  <div class="card"><div class="k">UX-6</div><h4>欄位篩選慢</h4><p>400 ms 後顯示「正在套用欄位條件…」和「取消」。到 deadline 時給一鍵縮小範圍的建議，不偷偷改條件。</p></div>
+  <div class="card"><div class="k">UX-8</div><h4>結果不完整</h4><p><code>truncated</code> 或 <code>complete:false</code> 時要說「結果可能不完整」，不能只顯示一個空列表。不顯示會誤導的總數。</p></div>
+  <div class="card"><div class="k">UX-9</div><h4>引用失效</h4><p>回 <code>source_changed</code> 時顯示「原文已修改」和「查看目前內容」，不靜默刪掉引用。</p></div>
+  <div class="card"><div class="k">UX-10</div><h4>欄位維護中</h4><p>篩選器上標「維護中」，值顯示「暫時無法顯示」，不顯示空白。</p></div>
+</div>
+
+<h2 id="plan"><span class="n">7</span>實作順序</h2>
+<div class="tw"><table>
+<tr><th>步</th><th>內容</th><th>完成標準（摘要）</th></tr>
+<tr><td>1</td><td>spanned lexer，tokenizer 補 offset（索引格式不變）</td><td>E1 語料全文的 term 序列和舊版相同；offset 屬性測試通過</td></tr>
+<tr><td>2</td><td>evidence、<code>explain</code>、<code>fields</code>、拿掉 score、原文比對淘汰</td><td>CJK、識別碼、Unicode、預算測試；E1 的 nDCG 不變</td></tr>
+<tr><td>3</td><td><code>citation_id</code>（含 <code>issue_note</code>）、<code>verify_citations</code>、<code>get_source</code>、<code>get(citations)</code>；委派讀取範圍；<code>next_actions</code></td><td>「找不到」和「沒權限」的回應位元組相同；agent 對私有內容一律 <code>not_found</code></td></tr>
+<tr><td>4</td><td>同步迴圈：H 和事件同一個 statement、SearchView + F、payload</td><td>frontier、重啟、kill -9 測試</td></tr>
+<tr><td>5–6</td><td><code>consistent_after</code>／<code>wait_ms</code>／<code>on_lag</code>；回執帶完整 token（02 §6.9）</td><td>用法 D 的 E2E（提案 → 核准 → <code>changeset_get</code> → <code>get</code>）；epoch 輪替後回原 token；agent 不重送提案</td></tr>
+<tr><td>7–9</td><td>指標與告警、藍綠重建、<code>search_rev</code></td><td>重建期間搜尋不中斷；跨 database 的長交易會觸發告警</td></tr>
+<tr><td>10–11</td><td>D14 策略選擇；<code>resolve(custom_field)</code></td><td>選對策略、相對改善；毫秒數只當參考</td></tr>
+<tr><td>12</td><td>E6</td><td>依結果調整 <code>wait_ms</code> 和告警閾值</td></tr>
+<tr><td>13–14</td><td>改型別；受限內容進索引</td><td>Q-S1、Q-S9 已定；受限內容進索引等 Q-S2</td></tr>
+</table></div>
+
+<h2 id="q"><span class="n">10</span>待使用者決定（都先照建議預設寫）</h2>
+<div class="tw"><table>
+<tr><th>#</th><th>問題</th><th>建議預設</th></tr>
+<tr><td>Q-S1</td><td>排名契約：基本還是嚴格</td><td><b>已決定（2026-11-07）</b>：基本契約，拿掉 score</td></tr>
+<tr><td>Q-S2</td><td>private notes、受限欄位的全文搜尋能不能延後</td><td>延後，先用 SQL 讀取和篩選</td></tr>
+<tr><td>Q-S3</td><td>引用要證明「目前存在」還是「歷史存在」</td><td>只證明目前存在（cit1 不簽章）</td></tr>
+<tr><td>Q-S4</td><td>搜尋等不到寫入時，回狀態還是回錯誤</td><td>預設 <code>return</code>（search_lagging）</td></tr>
+<tr><td>Q-S5</td><td>搜尋同步的 SLO</td><td>等 E6；暫定 wait 1 秒、上限 2 秒</td></tr>
+<tr><td>Q-S6</td><td>要不要精確總數</td><td>不提供</td></tr>
+<tr><td>Q-S7</td><td>欄位篩選太慢時，可以要求縮小範圍嗎</td><td>可以，deadline 2 秒</td></tr>
+<tr><td>Q-S8</td><td>重建切換時，要不要求不倒退已套用的事件</td><td>要求 cursor 追過</td></tr>
+<tr><td>Q-S9</td><td>要不要支援改型別</td><td><b>已決定（2026-11-07）</b>：不支援就地改，提供「建新欄位 + 複製轉換」</td></tr>
+<tr><td>Q-S10</td><td>剛建立的單要不要出現在搜尋頁</td><td>顯示獨立卡片，不冒充命中</td></tr>
+</table></div>
+
+<footer>oxledger · GPL-2.0-or-later · 設計 03。數字來自 <code>experiments/sd/results/</code>：PG 18.6 預設設定的 Docker 容器、桌機、每個查詢暖機後跑 15 次取中位數，沒有並行負載，也沒有冷快取。GPT 討論 call：20261106-224930-5016a5、20261106-230226-cb7c5b、20261106-231339-769d13、20261106-232715-02c6eb；對齊設計 02 後複審：20261107-000516-6d8293（附錄 A 第 5 輪；回饋 02 見文字版 §8.2）。</footer>
+</main>
+</body>
+</html>

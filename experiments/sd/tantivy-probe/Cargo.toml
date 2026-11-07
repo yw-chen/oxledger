@@ -1,0 +1,15 @@
+# Probe: how tantivy 0.27 SnippetGenerator / Explanation / commit payload behave with an
+# oxledger-style CJK unigram+bigram tokenizer. Standalone, not a workspace member.
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "sd-tantivy-probe"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+tantivy = "0.27.0"
+serde_json = "1.0.154"

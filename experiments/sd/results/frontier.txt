@@ -1,0 +1,5 @@
+none (baseline)                              write_xid=645400 frontier=645401 visible_during=true visible_after=t
+other db, read-only snapshot (no xid)        write_xid=645401 frontier=645402 visible_during=true visible_after=t
+other db, xid assigned                       write_xid=645403 frontier=645402 visible_during=false visible_after=t
+same db, read-only snapshot (no xid)         write_xid=645404 frontier=645405 visible_during=true visible_after=t
+same db, xid assigned                        write_xid=645406 frontier=645405 visible_during=false visible_after=t
