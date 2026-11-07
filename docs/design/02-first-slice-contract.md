@@ -21,6 +21,8 @@
 | K9 | MCP 工具從主要用法反推（§14）：輸入直接用 `AUTH-123`、describe 接受專案 key／tracker 名稱、`get` 可帶 actions 與有限歷史、`get_many`、propose 自帶驗證並回精簡交接資訊、錯誤附封閉的 `next_actions` | 常見用法 1–3 次往返；agent 能依錯誤碼自己修正；安全邊界（agent 只提案）不變 |
 | K10 | 人的審閱以待審佇列為中心（§15）：可勾選多份、各自核准套用（只限短欄位與單次 transition）；衝突頁一次「建立修訂版並核准套用」 | 一次處理多個待審項，又不讓長文、note、關係操作被快速略過 |
 
+〔D20（2026-11-07）：agent 改為可依委派政策直接寫入，預設 direct，見 §16；本摘要中「agent 只能提案」的敘述以 §16 為準。〕
+
 實作預計拆成 **10 步**（§10，S0–S8 加 S6b）。**待使用者決定**的有 13 項（§11），其中 U1（agent 只開在受眾一致專案）、U2（和 Redmine 的差異）、U11（分流的批次審閱方式）會影響產品。
 
 ---
@@ -34,11 +36,11 @@
 | 命令 | `create_issue`、`update_fields`、`transition`、`add_note`、`duplicate_of`；其他回 `unsupported_operation` |
 | 目標範圍 | 一張既有 issue；或建立一張再接著操作它；或單獨一個 `duplicate_of`（兩端既有、**同專案**） |
 | 執行模式 | 只有 `atomic`；`per_item` 回 `unsupported_execution_mode` |
-| 入口 | `human_direct`（SPA 直接操作）、`external_agent`（MCP 提案）。`human`（人在 SPA 從零建提案）、`builtin_ai` 是保留值，收到就拒絕 |
+| 入口 | 〔D20 修訂：加 `agent_direct`，見 §16〕`human_direct`（SPA 直接操作）、`external_agent`（MCP 提案）。`human`（人在 SPA 從零建提案）、`builtin_ai` 是保留值，收到就拒絕 |
 | 誰能核准、套用 | 只有該提案的委派者本人，用瀏覽器 session。核准者＝執行者＝委派者〔依建議預設 U6，待確認〕 |
 | 誰看得到提案 | 委派者本人；提案的 agent（委派仍有效時）。同專案其他人看不到〔依建議預設 U6，待確認〕 |
-| 自動套用 | 零（`auto_apply_ops` 必須是空的，DB CHECK 擋） |
-| 可改的欄位 | `subject`、`description`、`assigned_to_id`、`start_date`、`due_date`、可讀且可編輯的自訂欄位、`priority_id`〔依建議預設 U3（放進第一切片），待確認〕。`status_id` 只能透過 `transition`。`project_id`、`tracker_id`、`author_id`、`parent_id`、既有 issue 的 `is_private` 第一版不開放修改 |
+| 自動套用 | ~~零（`auto_apply_ops` 必須是空的，DB CHECK 擋）~~〔D20 修訂：依委派政策，預設直接寫入，§16〕 |
+| 可改的欄位 | `subject`、`description`、`assigned_to_id`、`start_date`、`due_date`、`fixed_version_id`〔U39，§17〕、可讀且可編輯的自訂欄位、`priority_id`〔依建議預設 U3（放進第一切片），待確認〕。`status_id` 只能透過 `transition`。`project_id`、`tracker_id`、`author_id`、`parent_id`、既有 issue 的 `is_private` 第一版不開放修改 |
 | 不支援 | 刪除 issue、改或刪既有 note、搬專案、解除 duplicate、`close_duplicates`、通知寄送、補償產生器 |
 | 部分成功 | 沒有 |
 
@@ -68,7 +70,7 @@
 |---|---|---|---|---|
 | user | `principals(kind='user')` | 瀏覽器 session；舊 API key（唯讀） | 能 | 能（只限瀏覽器 session） |
 | group | `principals(kind='group')` | 不能 | 能（指派受設定限制，§6.3） | 不能 |
-| agent | `principals(kind='agent')`，新增 | 只能用 agent 憑證 | **不能**（DB 防線，§3.6） | **不能** |
+| agent | `principals(kind='agent')`，新增 | 只能用 agent 憑證 | **不能**（DB 防線，§3.6） | 不能核准；〔D20 修訂〕可依委派政策直接寫入（§16） |
 | anonymous | 沒有列 | — | — | 不能 |
 
 agent principal 由 server 建立：**每個（委派者, agent client）一個**，名稱顯示成「alice 的 Claude Code」。agent 本身不是任何專案的成員，也沒有角色；它的讀取與提案資格全部來自委派（§3.5）。
@@ -150,7 +152,7 @@ agent 的提案資格 = 委派者目前的 Redmine 權限 ∩ 委派的操作與
 | 專案必須是受眾一致專案 | §3.8；建立委派時、agent 每次讀取、每次套用都檢查 |
 | 讀取固定排除私有內容 | 第一版沒有 `read_private_*` 開關，固定為 false |
 | 不可轉委派、不可公開發布 | — |
-| `auto_apply_ops` 必須是空的 | DB CHECK |
+| ~~`auto_apply_ops` 必須是空的~~ | 〔D20 修訂：改由 §16.3 的政策表決定，預設 direct〕 |
 | 期限 | 預設 7 天，上限 30 天；提案期限不超過委派期限 |
 | 放寬範圍 | 建新委派，不原地擴大；舊提案仍受它建立時的上限 |
 | 憑證 | 憑證綁**工作脈絡**（第 16 輪），一個脈絡可以有多把 token；加入第二個專案不用換 token；**輪替 token 不影響既有提案**（提案綁委派與脈絡，不綁 token） |
@@ -225,7 +227,7 @@ CREATE TABLE delegations (
     proposal_ops       text[] NOT NULL CHECK (proposal_ops <@ ARRAY['create_issue','update_fields','transition','add_note','duplicate_of']),
     writable_fields    text[] NOT NULL,        -- 'subject'、'cf:7' 這類 field key
     max_ops            integer NOT NULL DEFAULT 10 CHECK (max_ops BETWEEN 1 AND 10),
-    auto_apply_ops     text[] NOT NULL DEFAULT '{}' CHECK (cardinality(auto_apply_ops) = 0),
+    auto_apply_ops     text[] NOT NULL DEFAULT '{}' CHECK (cardinality(auto_apply_ops) = 0),  -- 〔D20 修訂：此欄刪除，改用 §16.3 政策表〕
     created_at         timestamptz NOT NULL DEFAULT now(),
     expires_at         timestamptz NOT NULL,
     revoked_at         timestamptz,
@@ -298,7 +300,7 @@ changesets → changeset_executions → agent_work_contexts（propose／revise�
 → principals（id 排序）→ browser_sessions → delegations（id 排序）→ agent_clients
 → project_catalog（單列；只有「全部專案」的 epoch 更新拿 FOR UPDATE、建立專案拿 FOR SHARE，§3.8）
 → projects（id 排序；FOR SHARE，建立 issue 時 FOR UPDATE）
-→ issues（id 排序）→ field_defs（id 排序，FOR SHARE）→ field_options（FOR KEY SHARE）
+→ issues（id 排序）→ versions（id 排序，FOR SHARE；〔U39〕§17.6）→ field_defs（id 排序，FOR SHARE）→ field_options（FOR KEY SHARE）
 → search_settings（單列，FOR SHARE；只有領域寫入交易拿，§6.9）
 ```
 
@@ -468,6 +470,10 @@ INSERT INTO project_catalog VALUES (true);
 | POST | `/agent-contexts/{id}/close` | 人 | 停用這個 agent：關閉脈絡、撤銷所有委派與 token |
 | POST | `/agent-contexts/{id}/credentials` | 人（step-up） | 發新 token（原文只顯示一次） |
 | POST | `/agent-credentials/{id}/revoke` | 人 | 撤銷 token |
+| GET | `/projects/{id}/versions`、`/versions/{id}`、`/versions/{id}/events`、`/versions/{id}/impact` | 人 | 〔U39〕里程碑清單、詳情、歷史、改日期前的影響預覽（§17.8） |
+| POST／PATCH／DELETE | `/projects/{id}/versions`、`/versions/{id}` | 人（`manage_versions`） | 〔U39〕建立、修改、軟刪除里程碑（§17.3 R5、§17.8） |
+| GET | `/projects/{id}/timeline` | 人 | 〔U39〕時程視圖（§17.12） |
+| GET／PUT | `/projects/{id}/schedule-settings`、`/org/schedule-settings` | 人（PUT：`manage_versions`／系統管理員） | 〔U43〕健康度門檻（§17.12） |
 
 沒有「建立 ChangeSet」的 SPA 端點（origin `human` 第一版不開）。帶 bearer 呼叫 `/api/v1` 一律 `unauthenticated`；即使將來某條路徑接受了其他憑證，approve／apply／revise／commands 的 application service 仍自己檢查 `kind == User && method == BrowserSession`，不符就 `human_session_required`。
 
@@ -542,6 +548,9 @@ INSERT INTO project_catalog VALUES (true);
 | 429 | `rate_limited` | 帶 `Retry-After` | 是 |
 | 429 | `quota_exceeded` | 提案配額用完（§8.9） | 否（等額度） |
 | 503 | `temporarily_unavailable` | DB 等暫時不可用；**用同一個 operation_id 重送** | 是 |
+| 422 | `version_not_open` | 〔U39〕新指定的里程碑已鎖定或關閉（§17.7） | 否 |
+| 409 | `version_in_use` | 〔U39〕刪除仍被呼叫者看得到的 issue 引用的里程碑；只列看得到的 key（§17.3 R5） | 否 |
+| 409 | `version_name_taken` | 〔U39〕同專案已有同名（NFC＋casefold）未刪除里程碑 | 否 |
 
 `truncated` 不是錯誤，是查詢結果的 `coverage` 欄位。
 
@@ -617,6 +626,8 @@ pub struct ToolDescriptor {
       "options_source": "/api/v1/projects/0199…0201/assignees", "ops": ["create", "update"] },
     { "key": "status_id", "type": "status_ref", "ops": ["transition"] },
     { "key": "start_date", "type": "date", "ops": ["create", "update"] },
+    { "key": "fixed_version_id", "type": "version_ref", "required": false,
+      "options_source": "/api/v1/projects/0199…0201/versions?status=open", "ops": ["create", "update"] },
     { "key": "cf:7", "name": "瀏覽器", "type": "list", "required": false,
       "options": [ { "id": "0199…0207", "label": "Safari", "active": true } ],
       "ops": ["create", "update"] }
@@ -637,7 +648,7 @@ pub struct ToolDescriptor {
 - agent 呼叫時再扣掉 `visible = false` 的欄位、扣掉委派 `writable_fields` 以外的 `ops`、`creation.is_private.allowed_values` 依委派者權限。
 - 「靜態」是相對於 issue 狀態而言，仍依呼叫者過濾。
 - `required` 只表示欄位定義本身必填（`field_defs.is_required`、subject）；workflow 的 required 依狀態而定，放在動態那一種。
-- 另回 `"unsupported": ["fixed_version_id", "multi_issue_changeset", "per_item", "delete_issue", …]`，讓 agent 一次知道第一版做不到什麼（§14.1 用法 5），不用試錯。
+- 另回 `"unsupported": ["multi_issue_changeset", "per_item", "delete_issue", "version_write", "relative_date", …]`，讓 agent 一次知道第一版做不到什麼，不用試錯。〔U39 修訂：`fixed_version_id` 已支援，從清單拿掉，見 §17.9〕
 - MCP 的 `project`、`tracker` 可以寫專案 key 和 tracker 名稱（§8.8），名稱歧義回 `ambiguous_reference`；解析也經過可見性檢查。
 
 ### 5.2 動態：這個人對這張 issue 現在能做什麼
@@ -877,6 +888,7 @@ CREATE TABLE issue_notes (
 CREATE INDEX issue_notes_issue_idx ON issue_notes (issue_id, created_at, id);
 
 -- duplicate：from 一律是「重複的那張」（Redmine 也這樣正規化）
+-- 〔D20 修訂：加實例 id 與 created_by_execution_id，見 §16.7〕
 CREATE TABLE issue_duplicates (
     source_issue_id uuid NOT NULL REFERENCES issues(id),
     target_issue_id uuid NOT NULL REFERENCES issues(id),
@@ -936,6 +948,7 @@ duplicate **不做循環檢查**，和 Redmine 一致。原本（設計 01 §15.
 | 5 | 硬撤銷列：principals（執行者、委派者、agent；id 排序）、browser_session、delegation、agent_client `FOR SHARE` 並重驗 active／未撤銷／未到期 |
 | 6 | 鎖專案列（依 UUID 順序）：目的地專案有 `create_issue` 時用 `FOR UPDATE`（之後要遞增 `issue_counter` 配發 key，D9；先拿到更新鎖，免得寫入時才從共享鎖升級而等待）；否則 `FOR SHARE`。agent 提案另外 `FOR SHARE` 目前 R 的其他專案，並比對**全部** epoch（§3.8 M7），不符 → `context_unavailable` |
 | 7 | 依 id 排序 `SELECT … FROM issues WHERE id = ANY($ids) ORDER BY id FOR UPDATE` |
+| 7b | 〔U39〕新指定的版本依 id 排序 `FOR SHARE`，讀 status、deleted_at（§17.6） |
 | 8 | 預先鎖住會寫到的自訂欄位定義：`SELECT … FROM field_defs WHERE id = ANY($fids) ORDER BY id FOR SHARE`，list 選項 `FOR KEY SHARE`（和 `issue_cf_check()` trigger 拿的鎖相同；trigger 之後再拿不會再等）；並確認不是 `dropping` |
 | 8b | `SELECT data_epoch FROM search_settings FOR SHARE`（單列）：之後組 token 用；放在期限檢查之前，免得 epoch 輪替時在期限後才等到鎖；照 §3.7 鎖順序排在欄位定義之後（§6.9） |
 | 9 | **期限**：`clock_timestamp()` 和提案、委派、session 期限比。這時本契約列出的列鎖（含專案計數器、issue、欄位定義、`search_settings`）都已取得；`now()` 是交易開始時間，不能用。之後新增的寫入若要等其他鎖，必須在這一步之前先取得，不然要在拿到之後再檢查一次期限。保證的說法是：「取得本契約列出的協調鎖與資料鎖之後、開始領域寫入之前，用 server 時鐘檢查期限；通過之後，atomic 交易不因執行中跨過期限而取消」。**不**宣稱之後完全不等任何鎖（FK、唯一索引等資料庫內部同步仍可能等待） |
@@ -1064,9 +1077,11 @@ CREATE TABLE issue_event_redactions (
 );
 ```
 
-`actor_kind = 'agent'` 保留給之後的自動套用（Q3），第一版 service 不會寫出；測試要確認。研究文件 §5.5 的型別化投影 `issue_field_changes`（「曾經是某值」查詢）不是第一切片需要，延後到 M1，屆時要和 D12 一起設計（遮蔽時投影也要清）。
+~~`actor_kind = 'agent'` 保留給之後的自動套用（Q3），第一版 service 不會寫出；測試要確認。~~〔D20 修訂：agent 直接寫入與送審套用都寫 `actor_kind = 'agent'`，CHECK 見 §16.5〕研究文件 §5.5 的型別化投影 `issue_field_changes`（「曾經是某值」查詢）不是第一切片需要，延後到 M1，屆時要和 D12 一起設計（遮蔽時投影也要清）。
 
 ### 7.2 身分欄位怎麼填
+
+〔D20 修訂：核准套用時 actor 改為 agent、approver 為人；新增 `agent_direct`。以 §16.2 的表為準。〕
 
 | 情境 | actor | actor_kind | proposer | approver | on_behalf_of | delegation |
 |---|---|---|---|---|---|---|
@@ -1087,6 +1102,8 @@ CREATE TABLE issue_event_redactions (
 | `status_changed` | `{"old": status_id, "new": status_id}` | 狀態名稱照常顯示 |
 | `note_added` | `{"is_private": bool}`；本文在 `issue_notes` | 照私有 note 規則（§6.2），讀不到就整筆省略 |
 | `duplicate_added` | `{"role": "source" \| "target", "other_issue_id": uuid}` | **對端目前可見才顯示**（key、標題都用對端目前的值）；看不到就整筆省略，不留「隱藏關係」佔位或數量 |
+
+〔U39〕`created`／`fields_changed` 的欄位 key 另有 `fixed_version_id`（uuid，顯示時用里程碑目前名稱，已刪除加註）、`start_date`、`due_date`（`"YYYY-MM-DD"`）；里程碑本身的變更在 `version_events`（§17.2、§17.13）。
 
 ```json
 { "kind": "fields_changed", "schema_ver": 1,
@@ -1111,7 +1128,7 @@ note 本文**不**複製進事件 payload，只存在 `issue_notes`；事件的�
 
 ### 7.5 和 D12「遮蔽後留痕」的關係
 
-（下表「整份遮蔽該專案所有提案內容」這種保守做法：U2 已決定（2026-11-07）。）先定一條規則，讓遮蔽只需要處理有限的地方：**`changeset_versions.validation`、`changeset_executions.item_results`、`operation_requests.result_ref` 只存錯誤碼、op 狀態與 id，不存欄位值或文字**。conflict 的三欄比對、validate 的細節都在讀取時即時計算。這樣敏感文字只會出現在：issue 本身、`issue_notes`、`issue_events.payload`、`proposal_contents.body`、`changeset_groups.label`。核准與拒絕第一版**不收自由文字留言**（第 8 輪：append-only 的 `changeset_decisions` 若存留言，owner 貼進來源原文後就無法遮蔽）；之後要加留言，必須像 `proposal_contents` 一樣分開存、納入 D12。
+（下表「整份遮蔽該專案所有提案內容」這種保守做法：U2 已決定（2026-11-07）。）先定一條規則，讓遮蔽只需要處理有限的地方：**`changeset_versions.validation`、`changeset_executions.item_results`、`operation_requests.result_ref` 只存錯誤碼、op 狀態與 id，不存欄位值或文字**。conflict 的三欄比對、validate 的細節都在讀取時即時計算。這樣敏感文字只會出現在：issue 本身、`issue_notes`、`issue_events.payload`、`proposal_contents.body`、`changeset_groups.label`，以及〔D20〕`execution_field_changes` 的前後值（遮蔽規則見 §16.7）；〔U39〕`versions.name`、`versions.description`、`version_events.payload`、`execution_version_changes` 的前後值（§17.13）。核准與拒絕第一版**不收自由文字留言**（第 8 輪：append-only 的 `changeset_decisions` 若存留言，owner 貼進來源原文後就無法遮蔽）；之後要加留言，必須像 `proposal_contents` 一樣分開存、納入 D12。
 
 | 操作 | 交易內要做的事 |
 |---|---|
@@ -1517,7 +1534,8 @@ fingerprint：`action`、委派 id 或固定授權來源、正規化後的完整
 | `get`（改） | Read | 03 的 `fields`（真的只讀這些）、`citations`；本契約再加 `include?: ["actions","recent_notes","recent_events"]`、`note_limit?: 0–10`、`event_limit?: 0–20` | `fields` 可要 `description`、`lock_version`、`status_since`、`last_activity_at`（§14.1 用法 4）；`actions` 等於 §5.2；最近的 note 每則附 03 格式的 `citation_id`（來源單位是那一則 note），有截斷就 `truncated: true`。不給 `fields` 時回現行內容，不含大段正文與歷史 |
 | `get_many`（新） | Read | `{"keys":[…最多 10]}` 加上和 `get` 相同的 `fields`、`citations`、`include`、`note_limit`、`event_limit`（限制套用在每一張） | 每把 key 一筆獨立結果；看不到和不存在一樣回 `not_found`；總大小有上限，超過就該筆標 `truncated` |
 | `resolve`（改） | Read | 加 `project`、`purpose: "assignee"` | `purpose = assignee` 時只回可指派的對象（和 §6.5 驗證共用函式）；多個符合回 `ambiguous_reference` + 可見候選 |
-| `describe`（改） | Read | `{"scope":"project_tracker","project":"AUTH" 或 uuid,"tracker":"Bug" 或 uuid}` 或 `{"scope":"issue_actions","issue_key"}` 或 `{"scope":"context"}`（discriminated union，不能混用） | §5.1／§5.2／§5.3；`unsupported` 列出第一版不能做的事（例如 `fixed_version_id`、多 issue 提案），讓 agent 一次知道做不到 |
+| `describe`（改） | Read | `{"scope":"project_tracker","project":"AUTH" 或 uuid,"tracker":"Bug" 或 uuid}` 或 `{"scope":"issue_actions","issue_key"}` 或 `{"scope":"context"}`（discriminated union，不能混用） | §5.1／§5.2／§5.3；`unsupported` 列出第一版不能做的事（例如多 issue 提案、版本寫入），讓 agent 一次知道做不到〔U39 修訂：`fixed_version_id` 已支援〕 |
+| `version_list`（新，U39） | Read | 見 §17.9 | 版本清單、`today`、「下個版本」解析（§17.10） |
 | `changeset_propose` | Propose | `{"operation_id","proposal":<命令文件，目標可用 key>,"group_label"? 或 "group_id"?,"response"?,"include_handoff_text"?}` | §8.4 compact |
 | `changeset_revise` | Propose | `{"operation_id","changeset_id","expected_current_version","proposal":<完整新文件，不做 deep merge>}` | 同 §8.4 |
 | `changeset_validate` | Read | `{"changeset_id","version"}` | §8.5；agent 呼叫時先驗委派，結果經下方「agent 回應過濾」 |
@@ -1538,7 +1556,7 @@ fingerprint：`action`、委派 id 或固定授權來源、正規化後的完整
 
 owner 修訂過之後 agent 還要再改：用 `changeset_revise` 帶 `expected_current_version` 和**完整**新文件（不做 deep merge，§8.8），以它自己最後看得到的版本為基礎；server 照一般規則驗證，不把 owner 版本的本文透露給它。
 
-沒有 `changeset_approve`、`changeset_apply` 或任何直接寫入工具。參數裡出現 `approved`、`actor`、`origin`、`on_behalf_of`、`author_id` 一律因未知欄位被拒。工具描述要寫明「提案需要人在 SPA 核准，agent 無法套用」。server `instructions` 從「read-only」改成「可提案、不能套用」。
+〔D20 修訂：新增 `command_submit`，依委派政策直接寫入或送審，見 §16.4；下面這段改以 §16.9 為準〕沒有 `changeset_approve`、`changeset_apply` 或任何直接寫入工具。參數裡出現 `approved`、`actor`、`origin`、`on_behalf_of`、`author_id` 一律因未知欄位被拒。工具描述要寫明「提案需要人在 SPA 核准，agent 無法套用」。server `instructions` 從「read-only」改成「可提案、不能套用」。
 
 ### 8.9 配額（可部署調整的初始值）
 
@@ -1606,7 +1624,7 @@ owner 修訂過之後 agent 還要再改：用 `changeset_revise` 帶 `expected_
 | T-W5 | duplicate 成功 | 兩端各 +1、各一筆事件，同交易 |
 | T-W6 | create + add_note（temp ref） | 新 issue `lock_version = 0`；暫時引用的生成測試（重複 bind、前向引用、未知引用、循環）全部確定性拒絕 |
 | T-W7 | `is_private` 沒給、tracker 預設私有；之後 tracker 預設改了 | 套用時用提案正規化時固定的值，並重驗權限 |
-| T-W8 | 事件身分欄位 | human_direct／external_agent／seed 三種組合符合 CHECK；`actor_kind = 'agent'` 從不出現 |
+| T-W8 | 事件身分欄位 | 〔D20 修訂〕human_direct／agent_direct／external_agent／seed 四種組合符合 §16.2 的表與 §16.5 的 CHECK；`agent_direct` 一定有 `command_execution_id`、沒有 `changeset_id` |
 
 ### 9.4 冪等與崩潰注入
 
@@ -1706,7 +1724,7 @@ owner 修訂過之後 agent 還要再改：用 `changeset_revise` 帶 `expected_
 | # | 必須成立 |
 |---|---|
 | I-1 | 身分、origin、proposer 不變 |
-| I-2 | agent 沒有任何能核准或套用的路徑（工具清單、REST、參數） |
+| I-2 | 〔D20 修訂〕agent 沒有任何能**核准 ChangeSet**或套用別份提案的路徑（工具清單、REST、參數）；`review`／`off` 政策不能被繞過；沒有符合 direct 政策的授權就不產生效果 |
 | I-3 | 自己編的 `citation_id`、指向私有 note 的 citation、quote 和原文不符 → `source_unverifiable`（逐筆狀態照 03） |
 | I-4 | 寫進更大受眾的提案 → 被擋 |
 | I-5 | 新加的工具預設不對 agent 開放（registry 的 `entrypoints` 預設 rest-only） |
@@ -1774,19 +1792,19 @@ owner 修訂過之後 agent 還要再改：用 `changeset_revise` 帶 `expected_
 | **S0** 前置修補 | P1（0002 NULL 漏洞，新 migration + 既有資料掃描）、P3（授權函式改吃連線）、P4（集中 active 檢查）、P5（seed helper 移走）、P9（MCP 結構化錯誤） | 新增的 P1 回歸測試通過；`visibility_e4`、`custom_fields_pg` 全綠；`load_scope` 能在交易內呼叫 |
 | **S1** 身分 | migration：principals agent、user_passwords、browser_sessions、login_challenges、agent_clients、agent_principals、agent_work_contexts、delegations、agent_context_source_projects、agent_credentials、DB 防線；`AuthContext`／`EffectiveAuthority`；登入、session、CSRF、step-up；舊 key 唯讀 | T-A1…T-A10 通過（T-A7 的提案部分在 S5 補） |
 | **S2** SPA API 骨架 | `/api/v1` 路由、共通格式、錯誤碼、cursor、registry；把 search／get／resolve 掛上 REST | OpenAPI 產出、TS 型別產出；`not_found` 形狀測試；cursor 竄改測試 |
-| **S3** 權限與 describe | migration：org_settings、roles.assignable、workflow_transitions.condition、workflow_field_rules；權限評估器（per-permission tracker）、workflow reducer、指派函式；describe 兩種 | T-P1、T-P3（reducer 單元層）、T-P10；describe 的 E4w-1 部分 |
-| **S4** 命令引擎 + human_direct | migration：operation_requests、issue_notes、issue_duplicates、issues.last_event_seq、issue_events（不含指向 ChangeSet 表的 FK）、issue_event_redactions；`evaluate()`；`/commands` | T-P2…T-P12、T-W1…T-W8、T-I1（commands 部分）、T-R4、T-R8、T-R9 |
+| **S3** 權限與 describe | migration：org_settings、roles.assignable、workflow_transitions.condition、workflow_field_rules；權限評估器（per-permission tracker）、workflow reducer、指派函式；describe 兩種；〔U39〕`versions`、`issues.fixed_version_id` 與日期 CHECK（含既有資料修復）、`manage_versions`、`org_settings.timezone` 與門檻、`project_schedule_settings` | T-P1、T-P3（reducer 單元層）、T-P10；describe 的 E4w-1 部分 |
+| **S4** 命令引擎 + human_direct | migration：operation_requests、issue_notes、issue_duplicates、issues.last_event_seq、issue_events（不含指向 ChangeSet 表的 FK）、issue_event_redactions、〔D20〕command_executions、issue_field_origins、execution_field_changes、issues／issue_notes.created_on_behalf_of_id；`evaluate()`；`/commands`；own 判斷函式（§16.2）；〔U39〕步驟 7b、里程碑 REST、`version_events`、`version_event_redactions`、`version_field_origins`、`execution_version_changes` | T-P2…T-P12、T-W1…T-W8、T-I1（commands 部分）、T-R4、T-R8、T-R9 |
 | **S5** ChangeSet | migration：proposal_contents、changesets、changeset_versions、changeset_version_ops、changeset_decisions、changeset_executions、changeset_applications，**再 ALTER issue_events 補 FK**；REST 端點；同步套用 | T-I1…T-I6、C-1…C-6、T-R1…T-R3、T-R5、T-R7、T-R10、T-R12、T-R13、T-S7、T-S10、T-S11、T-S12、T-R14、T-R15 |
-| **S6** agent 提案路徑 | projects.security_epoch + trigger（含使用者、admin、匿名的全專案 bump；principal 類管理交易先鎖 principal、群組類先鎖群組、全專案 bump 與建立專案經 `project_catalog` 協調）；受眾一致判定；工作脈絡、R、版本來源快照（`changeset_version_source_projects`）、受眾集合包含檢查；`describe` scope context；agent 讀取限制；MCP 工具（§8.8：`get` include、`get_many`、`resolve` purpose、`describe` 接受 key／名稱、`changeset_*`、`operation_get`）；IssueRef 接受 key；`next_actions`；changeset_groups；配額 | T-Q1…T-Q8、T-X1…T-X24、T-R6、T-R11、I-1…I-5、T-M1…T-M8；§14 的 9 個用法序列在 E2E 跑通，往返次數不超過 §14 表列 |
-| **S6b** 審閱便利 | 待審佇列 `review_modes`、佇列勾選核准、`revision-previews` + `revise-and-apply` | T-U1…T-U12、T-M9…T-M20 |
+| **S6** agent 提案路徑 | projects.security_epoch + trigger（含使用者、admin、匿名的全專案 bump；principal 類管理交易先鎖 principal、群組類先鎖群組、全專案 bump 與建立專案經 `project_catalog` 協調）；受眾一致判定；工作脈絡、R、版本來源快照（`changeset_version_source_projects`）、受眾集合包含檢查；`describe` scope context；agent 讀取限制；MCP 工具（§8.8：`get` include、`get_many`、`resolve` purpose、`describe` 接受 key／名稱、`changeset_*`、`operation_get`）；IssueRef 接受 key；`next_actions`；changeset_groups；配額；〔D20〕delegation 政策表與 policy_version、`command_submit`、agent_direct 路徑、§16.6 配額與熔斷（`agent_context_write_controls`）；〔U39〕`version_list`、`command_submit` 的 `create_version`／`update_version`、委派「新操作可加入」 | T-Q1…T-Q8、T-X1…T-X24、T-R6、T-R11、I-1…I-5、T-M1…T-M8；§14 的 9 個用法序列在 E2E 跑通，往返次數不超過 §14 表列 |
+| **S6b** 審閱便利 | 待審佇列 `review_modes`、佇列勾選核准、`revision-previews` + `revise-and-apply`；〔D20〕Agent 活動頁、單筆 undo、事故回復、暫停與摘要卡（§16.7、§16.10）；〔U39〕時程視圖、健康度門檻設定、里程碑的 undo | T-U1…T-U12、T-M9…T-M20 |
 | **S7** D12 遮蔽 | note／事件／提案內容的遮蔽交易（含衍生副本規則）；讀取出口擋舊片段 | T-S3…T-S6、T-S8、T-S9 |
-| **S8** 發布門檻 | E4w 全套、崩潰注入、搜尋一致性 | E4w-1…8、T-S1、T-S2 全綠；**越權、未核准套用、重複效果 = 0**（設計 01 §16.8） |
+| **S8** 發布門檻 | E4w 全套、崩潰注入、搜尋一致性 | E4w-1…8、T-S1、T-S2、T-D1…T-D14、〔U39〕T-V1…T-V35 全綠；**越權、繞過政策的寫入（review／off 卻產生效果）、重複效果 = 0**（設計 01 §16.8；〔D20 修訂〕原本的「未核准套用 = 0」改成這一條） |
 
 S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程緊可以排到 S8 之後，但正式給一般使用者前一定要完成。
 
 ## 11. 待使用者決定
 
-後面各節都**先依下表的建議預設寫成**，相關段落標了「〔依建議預設 Ux，待確認〕」。改成別的選項時，搜尋這個標記就能找到要改的地方。使用者 2026-11-07 已決定 U1（改成可同時委派多專案）、U2、U7、U11，這幾項的段落改標「已決定（2026-11-07）」。U14、U15 是 U1 改變後新增的待決問題。
+後面各節都**先依下表的建議預設寫成**，相關段落標了「〔依建議預設 Ux，待確認〕」。改成別的選項時，搜尋這個標記就能找到要改的地方。使用者 2026-11-07 已決定 U1（改成可同時委派多專案）、U2、U7、U11，這幾項的段落改標「已決定（2026-11-07）」。U14、U15 是 U1 改變後新增的待決問題。〔D20：U16–U20 見 §16.11〕
 
 | # | 問題 | 建議預設 | 為什麼要你決定 |
 |---|---|---|---|
@@ -1800,10 +1818,10 @@ S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程
 | U6 | 共同待審池（同專案的人互相審 agent 提案、跨人核准） | 第一版關閉 | 要另定提案的可見性與責任 |
 | U7 已決定（2026-11-07） | 公開的 `lock_version` 會透露「這張 issue 有變動」（包含只加了私有 note） | **決定：接受** | — |
 | U8 | 舊 `api_keys` 目前用使用者完整可見性讀取（含私有內容），和 agent 讀取限制不一致 | 保留唯讀、設淘汰日期，新 agent 一律用委派憑證 | 涉及 Q4 的讀取面 |
-| U9 | agent 能否提議建立**私有** issue（受眾更窄），並在同一提案裡接著操作它 | 允許建立；後續操作只限同一份提案內 | 擴大 agent 能碰的範圍 |
+| U9 | agent 能否提議建立**私有** issue（受眾更窄），並在同一提案裡接著操作它〔D20：也適用直接寫入，見 §16.2〕 | 允許建立；後續操作只限同一份提案（direct 時為同一份命令文件）內 | 擴大 agent 能碰的範圍 |
 | U10 | 被拒絕的提案能不能修訂後再送 | 不能（終態） | 避免 agent 反覆糾纏；但會讓「小改再送」要開新提案 |
 | **U11** 已決定（2026-11-07） | 「把這週分流完」用「每張一份獨立提案＋待審佇列勾選多份、各自核准套用」是否足夠（§14.1 用法 3、§15.3）；佇列勾選第一版只限短欄位更新和單次 transition，長文、note、建立、duplicate 走單筆審閱 | **決定：接受** | — |
-| U12 | `fixed_version_id`／正式版本模型（「把這幾張改成下個版本」） | 下一個里程碑做；第一切片 describe 明確回不支援，不拿 CF 或 due_date 代替 | 新的領域模型（版本、狀態、排序、「下個」怎麼定），不只是多一個欄位 |
+| U12 | `fixed_version_id`／正式版本模型（「把這幾張改成下個版本」） | ~~下一個里程碑做~~〔**被 U39 推翻，2026-11-07：放進第一切片，見 §17**〕；第一切片 describe 明確回不支援，不拿 CF 或 due_date 代替 | 新的領域模型（版本、狀態、排序、「下個」怎麼定），不只是多一個欄位 |
 | U13 | 一份 ChangeSet 改多張 issue（多目標 atomic） | 第一切片不開 | 要擴充目標範圍、diff 呈現、上限與交易契約 |
 
 ## 12. 和 Redmine 的差異（刻意的）
@@ -1819,6 +1837,7 @@ S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程
 | D-5 | 不可讀自訂欄位 | 透過 workflow readonly，只在有 workflow 欄位規則時生效 | 一律不能寫 | 獨立的安全規則 |
 | D-6 | 封閉狀態的進出限制 | `closable`／`reopenable` | 未實作 | 沒讀到相關原始碼、schema 沒有對應欄位 |
 | D-7 | 子專案 `inherit_members` | 有 | schema 沒有，不支援 | 受眾一致判定不必考慮繼承 |
+| D-8…D-11 | 版本相關 | — | 見 §17.14 | U39 |
 
 ## 13. 不在本契約、但要排進後續的事
 
@@ -1894,16 +1913,17 @@ S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程
 - 指派給群組時明說「指派給群組」，不猜是哪位成員。
 - 可以說「在『處理中』停留 3 天；最新可見活動是昨天 Bob 的 note，內容是等 QA 重現」；**不能**只因久未更新就說「被 QA 卡住」。第一版只有 duplicate 關係，沒有 blocks。
 
-#### 用法 5：「把這幾張改成下個版本」〔依建議預設 U12、U13，待確認〕
+#### 用法 5：「把這幾張改成下個版本」〔U39 改寫，2026-11-07〕
 
-第一切片做不到，原因有兩個：沒有 `fixed_version_id` 與版本模型（U12）；一份 ChangeSet 不能改多張（U13）。
+版本模型已進第一切片。完整序列、往返次數與回報方式見 **§17.11**；摘要：
 
 | # | 呼叫 | 回傳重點 |
 |---|---|---|
-| 1 | `describe {"scope":"project_tracker",…}` | `unsupported` 含 `fixed_version_id` |
+| 1 | `version_list {"project":"AUTH","next":true}` | `next.outcome`：`resolved` 才繼續；`ambiguous`／`none` 問人 |
+| 2 | `get_many {"keys":[…],"fields":["lock_version","fixed_version"]}` | 每張的 `lock_version`、目前版本 |
+| 3 | 每張一次 `command_submit` | `applied`／`review_required`／`no_effect`，逐張回報 |
 
-- **0–1 次往返**；agent 回「目前不支援指定版本」，不建假提案，不拿 due_date、priority、自訂欄位代替。
-- U12 做了之後的預期序列：`describe` → `version_list`（「下個」有歧義就請人選）→ `get_many` → 每張一次 propose。
+- **2 + N 次往返**（U13 不變，一份文件一張）；不拿 due_date、priority、自訂欄位代替版本。
 
 #### 用法 6：「把 AUTH-123 指派給 Bob，改成處理中」
 
@@ -1979,6 +1999,8 @@ S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程
 | `quota_exceeded` | `ask_human`、`stop` | 回報額度用完 |
 | `source_unverifiable`（外層；逐筆狀態見 §4.4 與 03 §3.7） | `fix_input` | 只用工具回的 `citation_id`；逐筆 `source_changed` 時照 03 用 `get_source(mode: "reanchor")` 換新的，`not_found` 就拿掉那筆 evidence |
 | `changeset_expired`、`changeset_not_executable`、`already_applied` | `stop` | 回報狀態 |
+| 〔U39〕`version_not_open` | `fix_input`、`ask_human` | 回報「里程碑已鎖定或關閉，要改排哪一個？」；不自動換別的里程碑 |
+| 〔U39〕`version_name_taken` | `fix_input`、`ask_human` | 改用既有那個或問人；不自動加尾碼另建 |
 | `unauthenticated` | `ask_human` | token 失效，請人重發 |
 | 設計 03 的讀取錯誤：`invalid_argument`、`invalid_filter`、`invalid_query`、`invalid_citation`、`citation_mismatch` | `fix_input` | 依 `details.path`／`allowed`／`suggested_tool` 修正 |
 | 03：`field_definition_changed` | `fix_input` | 重新 `resolve(kind: "custom_field")` |
@@ -2111,6 +2133,867 @@ S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程
 | 成功後等索引才能開 issue | `get` 讀 DB |
 | 用泛用確認視窗代替清楚的 diff | 確認視窗會被習慣性按掉，diff 才是真正的確認 |
 | 衝突時「建修訂版」「核准」分兩步 | 合成一步，靠完整預覽綁定保證不變 |
+
+---
+
+## 16. agent 直接寫入（D20，2026-11-07 修訂）
+
+> **這一節優先於本文其他段落。** 使用者 2026-11-07 看過原型後決定：agent 可以自行變更；**預設直接寫，使用者可以在委派上逐項改成要核准**；agent 用專屬 token，歷史與畫面上**當成獨立使用者**顯示。和 GPT 討論 2 輪後收斂（附錄 A 第 23–24 輪）。本文前面寫「agent 只能提案」「零自動套用」「沒有直接寫入工具」的地方都標了〔D20 修訂〕，以本節為準。
+
+### 16.1 不變與改變
+
+| 項目 | D20 之後 |
+|---|---|
+| agent 能不能直接寫 | 能。五種命令都真正支援直接寫入 |
+| 預設 | 新委派：ceiling 內的五種命令與可委派欄位全部 `direct` |
+| 逐項設定 | 每種命令 `direct`／`review`／`off`；`update_fields` 再細到每個欄位 |
+| 讀取限制（非私有、非受限欄位） | 不變 |
+| 受眾一致專案、工作脈絡、R、`security_epoch`（§3.8） | 不變；direct 與 review 一樣檢查，review 核准也不豁免 |
+| 權限來源 | 不變：委派者**目前**權限 ∩ 委派 ∩ 政策 ∩ 值白名單 ∩ ceiling。agent 沒有自己的角色 |
+| 核准者 | 不變：只有委派者本人、只用瀏覽器 session；agent 永遠不能核准 |
+| ChangeSet、待審佇列、衝突頁 | 保留，只服務「送審文件」（政策 review 或 agent 主動要求 review） |
+| 命令引擎 | 不變：direct、review 套用、human_direct 共用同一個 `evaluate()` |
+| 保證範圍 | 受眾檢查只保證**寫入或套用當下**。之後管理員放寬目的地專案的讀者，既有內容會跟著被更多人看到；這和人手動複製相同，不做資訊流追蹤、不阻擋管理員改權限 |
+
+### 16.2 身分與顯示
+
+- agent principal 沿用 §3.1：每個（委派者, agent client）一個，穩定 `handle`，例如 `claude-code@alice`；換 token、建新工作脈絡都不換 principal。
+- **顯示成獨立使用者**：歷史、活動、作者欄主要顯示 `claude-code@alice` 加〔agent〕標記，和人並列；「代表 Alice」放在 tooltip 與詳情。篩選可選「只看人」「只看 agent」「某個 agent」。
+- 仍然**不能**：當專案成員、被指派、核准、被 @、當 watcher、用密碼或 cookie 登入。「並列」只限作者、活動與篩選，不進成員、指派、核准選單。
+
+```sql
+ALTER TABLE agent_principals                     -- §3.6 的表
+  ADD COLUMN handle text NOT NULL UNIQUE,        -- claude-code@alice；建立後不隨顯示名稱改
+  ADD COLUMN status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired'));
+```
+
+**歸屬**（取代 §7.2 的表）：
+
+| 情境 | actor | actor_kind | on_behalf_of | approver | origin |
+|---|---|---|---|---|---|
+| 人直接操作 | 人 | user | — | — | `human_direct` |
+| agent 直接寫入 | agent | agent | 委派者 | — | `agent_direct` |
+| agent 送審、人核准套用 | agent | agent | 委派者 | 核准的人 | `external_agent` |
+| 人執行 undo（§16.7） | 人 | user | — | — | `human_direct`，另記 `reverts_execution_id` |
+| seed／匯入 | 系統 | system | — | — | `seed`／`import` |
+
+D20 之前「核准後 actor＝核准的人」改成「actor＝agent，approver＝人」：真正寫出內容的是 agent，核准者另外記錄。
+
+**作者與 own**：agent 建立的 issue、note，`author_id = agent`，另存建立當時的委派者 `created_on_behalf_of_id`（不可變、server 填、agent 不能指定）。Redmine 的 `edit_own_issues` 判斷「作者是自己」時，對人 P：`author_id = P` **或**（作者是 agent 且 `created_on_behalf_of_id = P`）；agent 自己判斷時先換成它的委派者。只適用 issue 的 own 判斷（`edit_own_issues`、`set_own_issues_private`、`delete_own_issues` 若之後開放），不延伸到其他 `own_*`；受眾一致專案的資格規則不因此放寬。人的頁面、API、命令引擎共用同一個 own 函式。
+
+**私有寫入**（第 25 輪修正，和 U9 一致）：agent 可以依委派者權限與委派政策建立私有 issue、私有 note（受眾變窄，不違反 Q4）；寫入後 agent 一樣**讀不到**它們。同一份命令文件內的後續 op 仍可操作剛建立的私有 issue（direct 時以同一份文件為界，送審時以同一份提案為界）。Redmine「私有 note 作者本人看得到」的例外：作者是 agent 時，對人 P 以 `created_on_behalf_of_id = P` 判斷；agent 自己不適用這個例外。`describe` 的 `creation.is_private.allowed_values`、`notes.can_set_private` 照委派者權限 ∩ 政策回傳（§5.1、§5.2 不變）。
+
+```sql
+ALTER TABLE issues      ADD COLUMN created_on_behalf_of_id uuid REFERENCES principals(id);
+ALTER TABLE issue_notes ADD COLUMN created_on_behalf_of_id uuid REFERENCES principals(id);
+-- CHECK（以 trigger 實作）：author 是 agent ⇔ created_on_behalf_of_id 非空，且等於該 agent 的委派者
+```
+
+### 16.3 政策資料模型
+
+```sql
+CREATE TYPE agent_policy_mode AS ENUM ('direct', 'review', 'off');
+
+CREATE TABLE delegation_command_policies (
+  delegation_id uuid NOT NULL REFERENCES delegations(id),
+  command_kind  text NOT NULL CHECK (command_kind IN
+                  ('create_issue','update_fields','transition','add_note','duplicate_of')),
+  mode          agent_policy_mode NOT NULL DEFAULT 'direct',
+  PRIMARY KEY (delegation_id, command_kind)
+);
+
+CREATE TABLE delegation_field_policies (
+  delegation_id uuid NOT NULL REFERENCES delegations(id),
+  field_key     text NOT NULL,          -- subject、description、assigned_to_id、priority_id、start_date、due_date、fixed_version_id（U39）、cf:<uuid>
+  mode          agent_policy_mode NOT NULL DEFAULT 'direct',
+  PRIMARY KEY (delegation_id, field_key)
+);
+
+ALTER TABLE delegations
+  DROP COLUMN auto_apply_ops,                     -- 取代 §3.6 的 CHECK；不保留兩套來源
+  ADD COLUMN policy_version bigint NOT NULL DEFAULT 1;
+```
+
+規則：
+
+1. 建立委派時，為 ceiling 內的每種命令、每個可委派欄位各寫一列 `direct`。列不存在＝不在委派內＝拒絕（不是預設 direct）。之後版本新增的命令或欄位**不會**自動加進既有委派。
+2. 合成：`off` > `review` > `direct`。命令 `review`、欄位 `direct` → review；命令 `direct`、欄位 `review` → review；任一 `off` → 拒絕。
+3. **欄位政策也適用建立時的初始欄位**：`create_issue.fields.description` 套 `description` 的政策，避免用建單繞過「改描述要核准」。系統自動帶的預設值（初始狀態、tracker 預設）不算 agent 要求的欄位。
+4. 改政策：鎖 delegation 父列 `FOR UPDATE`、`policy_version + 1`；子表只能經父列修改（應用層規則＋測試）。執行時對 delegation 父列 `FOR SHARE`，涵蓋「政策列剛被新增」的競態。
+5. 值白名單（例如可指派對象、priority 範圍）照 §3.5 的 ceiling，direct 與 review 都套用。
+
+### 16.4 MCP 工具：`command_submit`
+
+```text
+command_submit {operation_id, command: <§6.1 命令文件，目標可用 key>, require_review?: false,
+                group_label? | group_id?, response?}
+```
+
+- 輸入就是 §6.1 的命令文件，**多 op 規則不變**（同一 issue 的 update_fields＋一個 transition＋add_note atomic；create_issue＋bind；duplicate_of 單獨）。
+- 決策（整份文件，不拆）：任一 op／欄位是 `off` 或違反硬性限制 → 拒絕整份；否則任一有效政策是 `review` 或 `require_review = true` → **整份送審**（建 ChangeSet，等同 §8.4）；否則 → **整份直接執行**。
+- `require_review = false` 只表示「不主動要求送審」，不能蓋過委派政策。
+- `changeset_propose` 保留，等同 `command_submit(require_review = true)`；不把它改成可能直接寫入，避免舊用法升級後出現意外副作用。
+
+回應（discriminated union）：
+
+```json
+{ "outcome": "applied", "execution_id": "…", "effects": [ { "key": "AUTH-124", "kind": "created", "lock_version": 0 } ],
+  "search": { "consistent_after": "c1.…" }, "next_actions": [] }
+
+{ "outcome": "review_required", "reason": "policy", "changeset_id": "…", "version": 1, "proposal_hash": "…",
+  "review_url": "https://…", "expires_at": "…", "next_actions": ["ask_human"] }
+```
+
+`reason` 第一切片只有 `policy`、`requested`。錯誤時照 §4.3 的錯誤格式。
+
+### 16.5 冪等、鎖順序與交易
+
+- 冪等鍵 `(agent_principal_id, operation_id)`（不綁 token，輪替後重試不會重複執行）；fingerprint＝工作脈絡＋正規化命令文件＋前置條件＋`require_review`。同鍵同內容回原結果（重播前仍驗目前認證與可見性，不原樣回已不可見的內容）；同鍵不同內容 `idempotency_key_reused`。**已回 `review_required` 的鍵，之後政策改 direct 再送也只回原提案**，不會突然執行。
+- 鎖順序（沿用 §3.7，不加全域鎖）：`operation_requests` → 工作脈絡 `FOR SHARE` → principals／credential／delegation（含政策父列）`FOR SHARE` → projects（R ∪ 目的地 ∪ 既有規則要求的參照專案，UUID 序）並比對 epoch：**有 `create_issue` 的目的地專案直接 `FOR UPDATE`**（要遞增 `issue_counter`，沿用 §6.7 步驟 6，避免兩個脈絡各持共享鎖再互等升級），其餘 `FOR SHARE` → issues（UUID 序）`FOR UPDATE` → 自訂欄位定義與 `search_settings`（同 §6.7 步驟 8、8b）→ 配額與熔斷控制列（穩定鍵序）→ **最後才做期限檢查**（`clock_timestamp()` 比委派、token、工作脈絡期限，同 §6.7 步驟 9），之後不得再等新的鎖。（第 25 輪修正）送審路徑建立的是**新的** ChangeSet，不在持有後段鎖時去鎖既有 ChangeSet；既有提案的修訂、核准仍走 §3.7 的 ChangeSet → 脈絡 → … 順序。
+- 直接寫入成功時，同一交易提交：領域變更、`command_executions`、`issue_events`、冪等結果、成功配額、undo 資料（§16.7）、搜尋 outbox。交易內不呼叫外部服務。
+- 衝突：`lock_version` 不符回既有 `conflict`（`refresh_and_revise`）；**不建隱形提案**。agent 要重讀、重新決定，用新的 operation_id。
+- 直接寫入沒有 ChangeSet，但一定有 execution。兩種 execution 共用一個身分表，讓 undo、欄位來源、活動、事故回復都能用同一種參照（第 25 輪修正：原本 `reverts_execution_id` 只能指向 `command_executions`，回復不了送審套用的變更）：
+
+```sql
+CREATE TABLE execution_refs (
+  id   uuid PRIMARY KEY DEFAULT uuidv7(),
+  kind text NOT NULL CHECK (kind IN ('command','changeset')),
+  UNIQUE (id, kind)
+);
+-- changeset_executions（§8.1）加：execution_ref_id uuid NOT NULL UNIQUE，(execution_ref_id, 'changeset') FK 到 execution_refs(id, kind)
+
+CREATE TABLE command_executions (
+  id               uuid PRIMARY KEY,                 -- = execution_refs.id，kind = 'command'
+  ref_kind         text NOT NULL DEFAULT 'command' CHECK (ref_kind = 'command'),
+  FOREIGN KEY (id, ref_kind) REFERENCES execution_refs(id, kind),
+  operation_request_id uuid NOT NULL REFERENCES operation_requests(id),
+  actor_id         uuid NOT NULL REFERENCES principals(id),
+  on_behalf_of_id  uuid REFERENCES principals(id),
+  origin           text NOT NULL CHECK (origin IN ('agent_direct','human_direct')),
+  delegation_id    uuid REFERENCES delegations(id),
+  context_id       uuid REFERENCES agent_work_contexts(id),
+  policy_version   bigint,
+  command_hash     bytea NOT NULL,
+  reverts_execution_id uuid REFERENCES execution_refs(id),   -- direct 或送審套用的 execution 都可以
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  CHECK (origin <> 'agent_direct' OR (on_behalf_of_id IS NOT NULL AND delegation_id IS NOT NULL
+                                      AND context_id IS NOT NULL AND policy_version IS NOT NULL))
+);
+```
+
+`issue_events` 的 `origin` 加 `agent_direct`，加 `command_execution_id`；§7.1 的 CHECK 改成：`agent_direct` 要有 `actor_kind = 'agent'`、`on_behalf_of_id`、`delegation_id`、`command_execution_id`，且 `changeset_id`、`approver_id` 為空；`external_agent` 的 `actor_id` 改為 agent（不再是核准者），`approver_id` 必填。
+
+### 16.6 配額與熔斷（確定性，不做內容啟發式）
+
+| 項目 | 初始值（可部署調整，委派只能往下縮） |
+|---|---:|
+| 同一工作脈絡同時進行的寫入 | 1 |
+| 每個 agent 每分鐘成功直接寫入（文件數） | 10 |
+| 每個 agent 每小時成功直接寫入 | 100 |
+| 同一 issue 每 10 分鐘被 agent 寫入 | 10 |
+| 每個 agent 每小時建立 issue | 20 |
+| 每個 agent 未結案提案 | 100（取代 §8.9 的每委派 100） |
+
+- 一份多 op 文件算一次寫入；建立 issue 另計建立配額；冪等重播不重扣。agent 層配額跨 token、跨委派、跨工作脈絡累計，不能靠換 token 或新脈絡繞過。
+- 三層分開：短期速率 → `rate_limited`（`wait_and_retry`）；正常時段配額用完 → `quota_exceeded`（`ask_human`、`stop`）；**事故熔斷門檻**（預設：1 小時內被擋 `audience_expansion_forbidden` ≥ 3 次，或同一 issue 10 分鐘內被 agent 寫入超過上限）→ 提交暫停狀態後回 `agent_suspended`（`ask_human`、`stop`，`details.scope = "context"`）。正常配額用完**不會**停用 agent。
+- 暫停狀態放在配額控制層，避免持有脈絡 `FOR SHARE` 的請求互相升級成 `FOR UPDATE` 死結：
+
+```sql
+CREATE TABLE agent_context_write_controls (
+  context_id        uuid PRIMARY KEY REFERENCES agent_work_contexts(id),
+  suspended_at      timestamptz,
+  suspension_reason text,
+  inflight_lease_until timestamptz       -- 「同時 1 筆」用有期限的租約，程序崩潰後自動釋放
+);
+```
+
+  暫停是**拒絕但提交**：不寫任何領域變更，但暫停狀態與拒絕結果要 commit，不能隨錯誤 rollback。只有委派者能在 SPA 解除（解除前重驗 epoch、委派、配額）。
+- 第一切片**不做**：秘密格式偵測、描述替換比例、語意風險分類、配額用完自動轉送審（`quota_guard`）。
+
+### 16.7 最小 undo（人在 SPA 執行）
+
+沒有人工閘門之後，事後回復是主要防線。第一切片做**命令限定、可證明不覆蓋後續決定**的 undo，不做通用補償產生器。
+
+| 原變更 | undo |
+|---|---|
+| `update_fields` | 逐欄還原，條件見下 |
+| `add_note` | 撤回：一般讀者看到「已由 alice 撤回」，本文隱藏，事件保留（和 D12 遮蔽分開；undo 資料同樣受 D12 遮蔽約束） |
+| `duplicate_of` | 移除**該次建立的那個關係實例**（之後被刪又被別人重建的不動）。`issue_duplicates` 加不可重用的 `id` 與 `created_by_execution_id`（DDL 見下）；undo 在鎖住兩端 issue 後比對關係 `id`。no_effect 的 duplicate（關係早已存在）不記錄，也不能 undo |
+| `transition` | 不是逆運算：若目前有合法轉移回原狀態，提供「轉回 X」；沒有唯一目標就讓人選；走一般 workflow 與必填檢查 |
+| `create_issue` | 不刪除；若有合法轉移，提供「關閉為誤建」 |
+
+**欄位還原條件**（每欄）：目前值 ＝ 該次 agent 寫入值 **且** 該欄位目前的有效來源仍是那次 execution **且** 人目前有權修改 **且** 舊值現在仍合法。只比對值不夠：agent 改高 → Bob 改中 → Carol 改回高，此時「高」是 Carol 的決定，不能被 undo 改掉。
+
+```sql
+CREATE TABLE issue_field_origins (            -- 每次任何人寫入欄位都更新；undo 時把來源指回原先的
+  issue_id  uuid NOT NULL REFERENCES issues(id),
+  field_key text NOT NULL,
+  origin_execution_id uuid REFERENCES execution_refs(id),   -- 人直接修改也是 command execution
+  origin_event_id     uuid NOT NULL REFERENCES issue_events(id),
+  PRIMARY KEY (issue_id, field_key)
+);
+CREATE TABLE execution_field_changes (        -- undo 用的前後值，保留 30 天，D12 衍生副本（見下）
+  execution_id uuid NOT NULL REFERENCES execution_refs(id), issue_id uuid NOT NULL, field_key text NOT NULL,
+  before_value jsonb, after_value jsonb, reverted_by uuid,
+  PRIMARY KEY (execution_id, issue_id, field_key)
+);
+```
+
+```sql
+-- §6.6 issue_duplicates 修訂（第 25 輪）：每次建立都是新實例
+ALTER TABLE issue_duplicates
+  DROP CONSTRAINT issue_duplicates_pkey,
+  ADD COLUMN id uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,
+  ADD COLUMN created_by_execution_id uuid REFERENCES execution_refs(id),
+  ADD CONSTRAINT issue_duplicates_pair UNIQUE (source_issue_id, target_issue_id);
+CREATE TABLE execution_relation_changes (
+  execution_id uuid NOT NULL REFERENCES execution_refs(id),
+  relation_id  uuid NOT NULL,                 -- 被建立或移除的 issue_duplicates.id（移除後列已不在，不設 FK）
+  action       text NOT NULL CHECK (action IN ('created','removed')),
+  reverted_by  uuid REFERENCES execution_refs(id),
+  PRIMARY KEY (execution_id, relation_id)
+);
+```
+
+**D12 衍生副本**（第 25 輪修正）：`execution_field_changes.before_value／after_value` 會保存欄位明文，正式列入 §7.5 的敏感位置清單。為了知道某次直接寫入的內容可能來自哪些專案，direct execution 也保存不可變的來源快照 `command_execution_source_projects(execution_id, project_id, epoch)`（建立時的 R，同 §3.8 的 `changeset_version_source_projects`）。遮蔽專案 P 的 note 或事件時，同一交易內把「來源快照含 P」**或**「目標 issue 在 P」的所有 execution 的 `before_value／after_value` 換成遮蔽標記；之後這些欄位的 undo 預覽回 `redacted`、活動頁 diff 只顯示「內容已遮蔽」。送審套用的 execution 用該版本的來源快照判斷。
+
+**undo 的來源與鎖**（第 26 輪修正）：
+- undo execution 的來源快照＝被回復 execution 的來源快照（遞移：回復一筆 undo，再繼承它的快照），寫進 `command_execution_source_projects`。因此 undo 把敏感原值寫回欄位、在自己的 `execution_field_changes` 留下副本時，遮蔽來源專案仍掃得到它。
+- undo 交易的鎖順序：被回復 execution 的來源快照專案 ∪ 目標 issue 的專案，依 UUID `FOR SHARE` 並比對 epoch → 目標 issues `FOR UPDATE` → **之後才讀** `execution_field_changes` 與 `issue_field_origins`。遮蔽交易對來源專案拿 `FOR UPDATE`（§7.5），所以兩者一定有先後：遮蔽先提交，undo 拿到鎖後讀到遮蔽標記，該欄位回 `undo_not_applicable`（`redacted`）；undo 先拿到鎖，遮蔽等它提交後再掃描，掃得到 undo 新產生的副本。不在持有 issue 鎖時反向去鎖專案。
+- 事故回復的每一筆都照這個順序。
+
+- 流程：先**預覽**（哪些欄位可還原、哪些已被後續修改而跳過）→ 人確認 → 交易內重新檢查 → 只提交可還原的子集合（子集合本身要通過完整領域驗證；跨欄位相依不滿足就整筆回 `undo_not_applicable`，交人處理）。undo 是新的 human_direct execution，`reverts_execution_id` 指回原 execution；原事件保留 agent 作者，不改成「沒發生過」。
+- **事故回復**：「回復 claude-code@alice 自 HH:MM 起的變更」——預設先提示暫停該 agent；凍結 execution 清單；每張 issue 由新到舊；每筆各自交易、各自冪等、各自結果，可部分成功；「轉回」「關閉為誤建」需要選擇的項目不批次執行，列出來讓人逐筆處理。這是 SPA 功能，不是 agent 工具。
+- 新增錯誤碼 `undo_not_applicable`（只給 SPA；`details.reasons` 逐欄列出：`changed_since`、`value_no_longer_valid`、`permission`、`redacted`、`expired`）。
+
+### 16.7b 測試（第 25 輪補）
+
+| # | 情境 | 預期 |
+|---|---|---|
+| T-D1 | 五種命令各自 direct／review／off | direct 回 `applied` 且有 execution；review 回 `review_required`；off 回 `forbidden_op`，皆無多餘效果 |
+| T-D2 | 欄位政策：`description = review`，用 `create_issue` 帶描述 | 整份 `review_required` |
+| T-D3 | 政策從 review 改 direct 後，用同一個 operation_id 重送 | 回原 `review_required`，不執行 |
+| T-D4 | 兩個不同 agent 脈絡同時在同一專案 direct 建單 | 不死結；key 連號不重複；等待計數器鎖跨過期限時回錯誤、不寫入 |
+| T-D5 | 熔斷門檻觸發 | 回 `agent_suspended`；暫停狀態已提交；同脈絡其他並行寫入不死結 |
+| T-D6 | undo 欄位：agent 改高 → Bob 改中 → Carol 改回高 | 該欄位不回復（來源不是那次 execution） |
+| T-D7 | undo 一筆 direct、一筆送審套用 | 兩者都能建立 undo execution，`reverts_execution_id` 指得到 |
+| T-D8 | agent 建 duplicate → 人移除 → Bob 重建同兩端 → undo 原 execution | 新關係不被移除 |
+| T-D9 | WEB note 內容經 agent 直接寫入 AUTH.description，之後遮蔽該 note | AUTH 那筆 execution 的前後值與 undo 預覽讀不到原文 |
+| T-D10 | agent 直接建立私有 issue／私有 note | 成功；agent 之後讀不到；委派者依 `created_on_behalf_of_id` 看得到自己 agent 寫的私有 note |
+| T-D11 | agent 參數帶 `actor`、`on_behalf_of`、`author_id`、`approved` | 一律拒絕 |
+| T-D12 | 事故回復：清單固定後 agent 又寫入（未暫停時） | 新寫入不在清單內；逐筆結果可部分成功 |
+| T-D13 | 來源含 WEB 的 E 把 AUTH.description 從 X 改成 Y；人 undo E；之後遮蔽 WEB 的來源 note | undo execution 的前後值、活動 diff、再 undo 的預覽都讀不到 X |
+| T-D14 | undo 讀前後值與遮蔽交錯（兩種先後各一） | 遮蔽先：undo 回 `redacted`、不寫入；undo 先：遮蔽等待後清掉 undo 新副本 |
+
+### 16.8 錯誤碼與 next_actions
+
+沿用 §4.4、§14.2，只新增：
+
+| code／outcome | 性質 | next_actions |
+|---|---|---|
+| `review_required` | `command_submit` 的成功 outcome，不是錯誤 | `ask_human` |
+| `agent_suspended` | 錯誤；`details.scope`、`details.reason` | `ask_human`、`stop` |
+| `undo_not_applicable` | SPA 錯誤 | （人看的畫面，見 §16.10） |
+
+direct 時 agent 遇到 `conflict`、`invalid_transition`、`audience_expansion_forbidden` 等，處理方式和 §14.2 相同；差別只在成功時直接回 `applied`。
+
+### 16.9 對既有章節的影響
+
+| 章節 | 修訂 |
+|---|---|
+| §0 K1、K6、K10；§1「入口」「自動套用」列 | 入口加 `agent_direct`；「自動套用：零」改為「依委派政策，預設 direct」 |
+| §3.1 agent 列「能核准、套用嗎」 | 能直接寫入（依政策）；仍不能核准別人的提案 |
+| §3.5 `auto_apply_ops` 列、§3.6 DDL | 由 §16.3 的政策表取代 |
+| §7.1 CHECK、§7.2 身分表 | 依 §16.2、§16.5 |
+| §8.8 結尾「沒有任何直接寫入工具」 | 新增 `command_submit`；server instructions 改成「可依委派政策直接寫入，或送審」；仍沒有 approve／apply 工具；參數出現 `actor`、`origin`、`on_behalf_of`、`author_id`、`approved` 仍一律拒絕 |
+| §8.9 配額 | 加上 §16.6 |
+| §14 用法 | 委派是 direct 時，用法 1、3、6、8、9 的 `changeset_propose` 改成 `command_submit`，回 `applied` 就直接完成，往返次數相同或更少；交接文字改成「已建立 AUTH-124」「已分流 8 張」。用法 3 的「仍待核准時不能說已分流完」只適用 review |
+| §15 方便性 | 加 §16.10 |
+| §10 實作順序 | S6 加 `command_submit`、政策表、`command_executions`、配額與熔斷；S6b 加 agent 活動頁與 undo（`issue_field_origins` 在 S4 就要建，因為 human_direct 也要更新它） |
+
+### 16.10 使用者方便性
+
+| 檢查 | 目標 |
+|---|---|
+| 委派精靈 | 原本 4 步不變；「範本」那一步改成**操作表**：五種命令一列一列，預設全部「直接寫入」，可改「需要核准」或「不允許」；`update_fields` 可展開到每個欄位。快捷：「全部直接寫入（預設）」「全部需要核准」。確認頁明寫：「agent 可以不經你逐筆核准就修改。讀不到私有內容、不能擴大權限；直接寫入不保證內容正確，可在活動頁回復。」 |
+| 事後檢視 | Agent 委派頁每個 agent 有「活動」分頁：直接寫入、送審、被擋、undo，每筆可展開 diff、可 undo；可篩選時間與 issue |
+| 首頁 | 不逐筆列直接寫入。只放：agent 被自動暫停（需要處理）、「今天 claude-code@alice 改了 N 張」摘要卡（N 依目前可見 issue 去重，可停用） |
+| 歷史 | 每筆事件顯示 `claude-code@alice〔agent〕`；送審套用的另標「alice 核准」 |
+| 停止 | 「暫停寫入」（可恢復）、「撤銷 token」、「停用這個 agent」三個按鈕；暫停只擋寫入，讀取照常 |
+| 回復 | 單筆 undo 1 下＋預覽；事故回復：選起始時間 → 預覽 → 1 下執行，逐筆結果 |
+
+### 16.11 待使用者確認（D20 衍生）
+
+| # | 問題 | 建議預設 |
+|---|---|---|
+| U16 | 欄位政策同時適用「建立時」與「修改時」 | 是（避免用建單繞過） |
+| U17 | 事故熔斷門檻 | 1 小時內被受眾規則擋 ≥ 3 次，或單張 issue 超過 10 分鐘寫入上限 → 自動暫停 |
+| U18 | undo 資料保留 | 30 天；更舊的只能人手動改 |
+| U19 | agent 能不能被指派、被 @ | 第一切片不能；之後另訂「指派給 agent」的契約 |
+| U20 | 正常配額用完要不要自動轉送審 | 不要；回 `quota_exceeded` |
+
+---
+
+## 17. 里程碑與時程（U39，2026-11-07 使用者決定放進第一切片）〔完整契約；U40–U43 已決定（2026-11-07）；GPT 第 28–32 輪，pass〕
+
+使用者：「時序的部分太不明顯，且專案下應該要可以設定 milestone 等」，並決定放進第一切片，推翻 §11 U12 的「下一個里程碑做」。原型見 F25、F26。**本節優先於前面寫「不支援 `fixed_version_id`」的段落**（§5.1、§8.8、§14 用法 5），那些地方都標了〔U39 修訂〕。
+
+名稱：介面叫「里程碑」，資料模型與 API 叫 `version`，對應 Redmine 的 Version，方便匯入與對照。
+
+### 17.1 範圍
+
+| 做 | 不做（第一切片） |
+|---|---|
+| 版本的建立、修改、關閉、刪除（人，SPA）；agent 建立、修改、關閉版本（U41，依委派政策，預設直接寫入，§17.9a） | agent 刪除版本 |
+| issue 的 `fixed_version_id`、`start_date`、`due_date` 可以讀、可以改、進歷史、可 undo | 版本共用（Redmine `sharing` 只支援 `none`） |
+| 時程視圖（唯讀投影）、版本健康度（日期規則＋可調門檻，U43） | 拖拉改日期、甘特相依、`blocks`／`precedes` 關係、自動排程 |
+| 「下個版本」的確定性解析 | 依工時加權的完成度（沒有 `estimated_hours`） |
+| 搜尋篩選：版本、日期範圍、逾期 | 版本的自訂欄位、wiki 頁；Redmine 共用版本的匯入（U40，使用說明註明不支援） |
+
+不變：U13（一份命令文件只改一張 issue，duplicate 兩端除外）。「把這幾張改成下個版本」是每張一份文件（§17.11）。
+
+### 17.2 資料模型
+
+```sql
+-- 組織時區：「今天」只在這裡定義（U42）
+ALTER TABLE org_settings ADD COLUMN timezone text NOT NULL DEFAULT 'Asia/Taipei';  -- IANA 名稱；應用層驗證（U42 已決定）
+
+-- 健康度門檻（U43 已決定可調）：組織預設＋專案覆寫；NULL＝停用該條規則
+ALTER TABLE org_settings
+    ADD COLUMN health_at_risk_days     integer DEFAULT 7  CHECK (health_at_risk_days BETWEEN 0 AND 90),
+    ADD COLUMN health_at_risk_open_pct integer DEFAULT 50 CHECK (health_at_risk_open_pct BETWEEN 0 AND 100);
+CREATE TABLE project_schedule_settings (
+    project_id              uuid PRIMARY KEY REFERENCES projects(id),
+    inherit_org             boolean NOT NULL DEFAULT true,     -- true：用組織預設，下面兩欄忽略
+    health_at_risk_days     integer CHECK (health_at_risk_days BETWEEN 0 AND 90),
+    health_at_risk_open_pct integer CHECK (health_at_risk_open_pct BETWEEN 0 AND 100),
+    lock_version            integer NOT NULL DEFAULT 0,
+    updated_by              uuid REFERENCES principals(id),   -- NULL＝建立專案時的預設列，沒人改過
+    updated_at              timestamptz NOT NULL DEFAULT now()
+);
+-- 每個專案一定有一列：migration 為既有專案補 (inherit_org = true)；建立專案的交易同時 INSERT。
+-- 所以「第一次覆寫」也是 UPDATE 既有列，靠 lock_version 判斷並行，不會撞唯一鍵或靜默覆蓋。
+ALTER TABLE org_settings ADD COLUMN schedule_lock_version integer NOT NULL DEFAULT 0;
+
+CREATE TABLE versions (
+    id             uuid PRIMARY KEY DEFAULT uuidv7(),
+    project_id     uuid NOT NULL REFERENCES projects(id),
+    name           text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 60),
+    name_key       text NOT NULL,                 -- NFC 後 casefold、去頭尾空白；應用層算，比對與唯一用
+    description    text NOT NULL DEFAULT '' CHECK (char_length(description) <= 255),
+    effective_date date,                          -- 版本日期；可空（「未定」）
+    status         text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'locked', 'closed')),
+    sharing        text NOT NULL DEFAULT 'none' CHECK (sharing = 'none'),
+    lock_version   integer NOT NULL DEFAULT 0,
+    last_event_seq bigint NOT NULL DEFAULT 0,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    deleted_at     timestamptz,                   -- 軟刪除：歷史仍能顯示名稱
+    created_by     uuid NOT NULL REFERENCES principals(id),          -- 人或 agent（U41）
+    created_on_behalf_of_id uuid REFERENCES principals(id),          -- agent 建立時＝委派者（同 §16.2 規則）
+    UNIQUE (id, project_id),
+    CHECK (effective_date IS NULL OR effective_date BETWEEN '1900-01-01' AND '2199-12-31')
+);
+CREATE UNIQUE INDEX versions_name_uq ON versions (project_id, name_key) WHERE deleted_at IS NULL;
+CREATE INDEX versions_project_idx ON versions (project_id, effective_date) WHERE deleted_at IS NULL;
+
+-- start_date、due_date 在 0001 就有（§1、§5.1、§16.3 早已列為可改欄位）；這裡只新增 fixed_version_id 與約束
+ALTER TABLE issues
+    ADD COLUMN fixed_version_id uuid,
+    -- 版本必須屬於 issue 自己的專案（sharing 只有 none）；issue 第一版不能換專案（§1）
+    ADD CONSTRAINT issues_version_same_project
+        FOREIGN KEY (fixed_version_id, project_id) REFERENCES versions (id, project_id),   -- ON DELETE 預設 NO ACTION
+    ADD CONSTRAINT issues_date_order CHECK (start_date IS NULL OR due_date IS NULL OR start_date <= due_date) NOT VALID,
+    ADD CONSTRAINT issues_date_range CHECK (
+        (start_date IS NULL OR start_date BETWEEN '1900-01-01' AND '2199-12-31') AND
+        (due_date   IS NULL OR due_date   BETWEEN '1900-01-01' AND '2199-12-31')) NOT VALID;
+-- 既有資料：migration 先掃出違反兩個 CHECK 的 issue 列成報告（不自動改值），人處理完再
+-- ALTER TABLE issues VALIDATE CONSTRAINT issues_date_order;（range 同）
+-- NOT VALID 期間：PostgreSQL 對 UPDATE 仍檢查 CHECK，所以舊的違規列在修好日期之前，任何 UPDATE 都會被 DB 擋。
+-- 因此 migration 報告必須在開放寫入前處理完；處理不完的列由 migration 依固定規則修（見下方「既有日期的修復」）
+CREATE INDEX issues_version_idx ON issues (project_id, fixed_version_id);
+CREATE INDEX issues_due_idx     ON issues (project_id, due_date) WHERE due_date IS NOT NULL;
+
+-- workflow 欄位規則可以管這三個欄位（§6.6 的 CHECK 改寫）
+ALTER TABLE workflow_field_rules DROP CONSTRAINT workflow_field_rules_field_key_check,
+    ADD CONSTRAINT workflow_field_rules_field_key_check CHECK (field_key ~
+      '^(subject|description|assigned_to_id|priority_id|fixed_version_id|start_date|due_date|cf:[0-9]+)$');
+
+-- 版本本身的歷史（issue 的歷史仍在 issue_events）
+CREATE TABLE version_events (
+    id                   uuid PRIMARY KEY DEFAULT uuidv7(),
+    version_id           uuid NOT NULL REFERENCES versions(id),
+    seq                  bigint NOT NULL CHECK (seq >= 1),
+    at                   timestamptz NOT NULL DEFAULT now(),
+    kind                 text NOT NULL CHECK (kind IN ('created', 'updated', 'deleted')),
+    origin               text NOT NULL CHECK (origin IN ('human_direct', 'agent_direct', 'external_agent', 'seed', 'import')),
+    actor_id             uuid NOT NULL REFERENCES principals(id),
+    actor_kind           text NOT NULL CHECK (actor_kind IN ('user', 'agent', 'system')),
+    on_behalf_of_id      uuid REFERENCES principals(id),
+    approver_id          uuid REFERENCES principals(id),
+    delegation_id        uuid REFERENCES delegations(id),
+    execution_id         uuid REFERENCES execution_refs(id),       -- §16.5；人、agent 的寫入都有
+    operation_request_id uuid REFERENCES operation_requests(id),
+    system_operation     text,
+    payload              jsonb NOT NULL,          -- {"changes": {name|description|effective_date|status: {"old","new"}}}；D12 遮蔽時整個換掉
+    redaction_id         uuid,                    -- FK 見下方 version_event_redactions
+    UNIQUE (version_id, seq),
+    -- 身分組合和 issue_events（§7.1、§16.5）相同
+    CHECK ((origin = 'human_direct' AND actor_kind = 'user' AND operation_request_id IS NOT NULL
+              AND execution_id IS NOT NULL AND on_behalf_of_id IS NULL AND approver_id IS NULL AND delegation_id IS NULL)
+        OR (origin = 'agent_direct' AND actor_kind = 'agent' AND operation_request_id IS NOT NULL AND execution_id IS NOT NULL
+              AND on_behalf_of_id IS NOT NULL AND delegation_id IS NOT NULL AND approver_id IS NULL)
+        OR (origin = 'external_agent' AND actor_kind = 'agent' AND operation_request_id IS NOT NULL AND execution_id IS NOT NULL
+              AND on_behalf_of_id IS NOT NULL AND delegation_id IS NOT NULL AND approver_id IS NOT NULL)
+        OR (origin IN ('seed','import') AND actor_kind = 'system' AND system_operation IS NOT NULL AND operation_request_id IS NULL))
+);
+
+-- 版本事件的遮蔽留痕（同 §7.1 issue_event_redactions，不存原文）
+CREATE TABLE version_event_redactions (
+    id          uuid PRIMARY KEY DEFAULT uuidv7(),
+    event_id    uuid NOT NULL UNIQUE REFERENCES version_events(id),
+    redacted_by uuid NOT NULL REFERENCES principals(id),
+    redacted_at timestamptz NOT NULL DEFAULT now(),
+    reason_code text NOT NULL,
+    reason      text NOT NULL
+);
+ALTER TABLE version_events ADD FOREIGN KEY (redaction_id) REFERENCES version_event_redactions(id);
+
+-- agent 寫版本的 undo 與遮蔽用（U41；同 §16.7 的 issue 版本）
+CREATE TABLE version_field_origins (
+    version_id          uuid NOT NULL REFERENCES versions(id),
+    field_key           text NOT NULL CHECK (field_key IN ('name','description','effective_date','status')),
+    origin_execution_id uuid REFERENCES execution_refs(id),
+    PRIMARY KEY (version_id, field_key)
+);
+CREATE TABLE execution_version_changes (      -- 前後值，保留 30 天；D12 衍生副本
+    execution_id uuid NOT NULL REFERENCES execution_refs(id),
+    version_id   uuid NOT NULL REFERENCES versions(id),
+    field_key    text NOT NULL,               -- name、description、effective_date、status，或 '_created'
+    before_value jsonb, after_value jsonb,
+    reverted_by  uuid REFERENCES execution_refs(id),
+    PRIMARY KEY (execution_id, version_id, field_key)
+);
+```
+
+說明：
+
+- **既有日期的修復**（migration 在 `VALIDATE` 之前跑，人沒處理完的列才套用；可重現、不猜業務意圖）：
+  1. 超出範圍（R9）的日期各自清成 NULL；
+  2. 清完之後兩端都有值且 `start_date > due_date` 的，**兩端都清成 NULL**（無法判斷哪一端才對，不替人選）；
+  3. 每張 issue 一個 UPDATE 寫入最終值（同時滿足兩個 CHECK），照一般規則 `lock_version + 1`、`last_event_seq + 1`、觸發 outbox；寫一筆 `fields_changed` 事件（`origin = 'import'`、`system_operation = 'u39_date_fix'`），payload 逐欄記原值；報告逐欄列 key、原值、理由（`out_of_range`／`date_order`）。
+- 日期欄位不是新欄位：0001 的 `issues` 已有 `start_date`、`due_date`，§5.1、§16.3 也早就列為可改。§17 對日期新增的只有約束（R4、R9）與讀取規則（逾期、時程）。
+- `fixed_version_id` 用複合 FK `(fixed_version_id, project_id)`：DB 本身保證版本和 issue 同專案，不靠應用層。`project_id` 不可改（§1），所以不需要 `ON UPDATE`。
+- 軟刪除的版本列仍在，FK 仍成立。所有回版本物件的地方（`get`、`get_many`、§17.8、時程、事件序列化）都帶 `deleted` 布林值；**版本清單、`version_list`、名稱解析、「下個版本」、`options_source` 一律排除已刪除的版本**（刪除後再建同名版本，不會出現兩筆候選）。刪除只檢查呼叫者看得到的引用（§17.3 R5，避免透露看不到的 issue 是否存在），所以軟刪除的版本**可能仍被看不到的 issue 引用**；這些 issue 照 R2 保留，讀者看到「（已刪除的版本）」。歷史事件裡的舊 id 也這樣顯示。
+- `name_key` 讓「v2.0」和「V2.0」不能並存，避免名稱解析出現只差大小寫的歧義（和 Redmine 不同，見 §17.14 D-8）。
+- `version_events` 的身分組合和 issue 事件相同：agent 直接寫是 `agent_direct`，送審核准後套用是 `external_agent`（U41）。`version_events` 加進 §7.5 的可遮蔽位置。
+
+### 17.3 規則
+
+| # | 規則 | 違反時 |
+|---|---|---|
+| R1 | issue **新指定**的版本必須：存在、未刪除、屬於同專案、`status = open` | 不存在／已刪除／別的專案 → `invalid_value`（三者同形狀，不透露別的專案有沒有這個 id）；同專案但 locked／closed → `version_not_open` |
+| R2 | issue **原本**就在 locked／closed 的版本，改其他欄位、轉狀態、加 note 都照常；`set fixed_version_id` 成原值算 no_effect，不觸發 R1（和 Redmine `assignable_versions` 含原值一致） | — |
+| R3 | 清除版本（`null`）一律允許（欄位可編輯的前提下） | — |
+| R4 | `start_date ≤ due_date`（兩者都有值時），在**最終狀態**檢查：同一份文件先改 due 再改 start，看的是兩個都套用後的值 | `invalid_value`，`details.kind = "date_order"`，`details.fields = ["start_date","due_date"]` |
+| R5 | 刪除版本（軟刪除）：只看**呼叫者看得到**的引用。有看得到的 issue 在這個版本 → 拒絕，回這些 issue 讓人先移走；看不到的引用**不影響結果**（成功或失敗只取決於呼叫者看得到的資料，不形成存在性訊號）。刪除後，仍指向它的 issue（只可能是呼叫者看不到的）照 R2 保留原值，顯示「（已刪除的版本）」，可清除、不能再被新指定 | `version_in_use`，`details.issues` 只列看得到的 key |
+| R6 | 改版本日期、狀態**不會**自動改任何 issue | — |
+| R7 | 關閉有未結案 issue 的版本：允許（和 Redmine 一致）；回應附可見的未結案數，SPA 提示「移到別的版本」（§17.13） | — |
+| R8 | 版本名稱在同專案未刪除的版本中唯一（`name_key`） | `version_name_taken` |
+| R9 | 版本日期、issue 日期範圍 `1900-01-01`～`2199-12-31` | `invalid_value` |
+| R10 | 「今天」＝`org_settings.timezone` 的當地日期，在**交易或查詢開始時**算一次，同一個回應內一致；回應附 `today`，讓 agent 不用自己猜時區 | — |
+
+`is_closed`（下面的逾期、健康度用）＝ issue 目前狀態的 `issue_statuses.is_closed`。
+
+### 17.4 權限
+
+| 動作 | 必要條件 | 誰能呼叫 |
+|---|---|---|
+| 讀版本清單、版本詳情、版本歷史 | 專案可見且有 `perm(view_issues)`（任一 tracker）；專案 `active` 或 `closed` | 人（SPA）；agent 經 `version_list`，另受讀取範圍（§3.5、§3.8：專案要在目前 R 且 readable） |
+| 建立、修改、關閉、刪除版本（人） | 專案 `active`；`manage_versions`（專案層級權限，不分 tracker） | 人，只用瀏覽器 session；非 GET 要 CSRF。REST 帶 bearer → `unauthenticated`（§4.2） |
+| 建立、修改、關閉版本（agent，U41） | 委派者目前有 `manage_versions` ∩ 委派範圍含該專案 ∩ 委派政策（§17.9a）∩ 受眾檢查 | agent 經 `command_submit`／`changeset_propose`，命令 `create_version`、`update_version`；**不能刪除** |
+| issue 指定／清除版本 | `update_fields`／`create_issue` 的一般條件（§6.2）＋欄位 `fixed_version_id` 非 workflow readonly＋R1 | 人、agent（依委派政策，§17.9） |
+| issue 改 `start_date`、`due_date` | 同上，欄位各自判斷 | 人、agent |
+
+- `manage_versions` 加進角色權限清單。
+- 版本是專案層級的資料：能讀專案 issue 的人都能看到版本名稱、日期、狀態、描述（和 Redmine 的 roadmap 一致）。所以版本名稱**不算**受限欄位，`describe`、事件序列化都直接顯示。
+- **版本清單的統計數字只算呼叫者看得到的 issue**（§17.8）。不同的人看到的「未結案 5 張」可能不同，這是刻意的，不顯示「另有 N 張你看不到」。
+
+### 17.5 命令文件的值規則（補 §6.1）
+
+| 欄位 | 值 | 說明 |
+|---|---|---|
+| `fixed_version_id` | 版本 uuid 或 `null` | **只收 uuid**，不收名稱：名稱解析由 `version_list`／`resolve` 先做（§17.10），命令文件存檔、算 hash 都是 id |
+| `start_date`、`due_date` | `"YYYY-MM-DD"` 或 `null` | 只收絕對日期，不收「下週五」「+3d」：相對日期由 agent 依回應的 `today` 自己算，讓提案內容在審閱時是確定的 |
+| `preconditions.field_values` | 可以含這三個欄位 | 比較正規化後的值 |
+| `create_issue.fields` | 可以帶這三個欄位 | 沒帶 → `null`（第一版沒有 tracker 預設版本、預設日期） |
+
+這三個欄位都是 issue 核心欄位，不是自訂欄位，所以不用 `{"date": …}` 的型別包裝（和 §6.1 的 `start_date` 一致）。
+
+### 17.6 驗證順序與鎖（補 §6.7、§16.5）
+
+**新增一步 7b**（apply、human_direct、direct、undo 都有；propose 不鎖，只讀）：
+
+| # | 步驟 |
+|---|---|
+| 7b | 依 id 排序 `SELECT id, project_id, status, deleted_at FROM versions WHERE id = ANY($vids) ORDER BY id FOR SHARE`。`$vids`＝這份文件**新指定**的版本 id（R1 要檢查的），不含原值、不含 `null` |
+
+- 位置：issues `FOR UPDATE`（步驟 7）之後、欄位定義（步驟 8）之前；仍在期限檢查（步驟 9）之前，所以「拿到鎖之後才查期限」的保證不變。§3.7 的鎖順序改成：`… → projects → issues → versions → field_defs → search_settings → …`。
+- 版本管理交易的鎖順序：operation_requests → principals／browser_session `FOR SHARE` → 專案列 `FOR SHARE`（確認 active、讀權限）→ 版本列 `FOR UPDATE`（建立時改成：專案列 `FOR SHARE` 後直接 INSERT，靠唯一索引）。**版本交易從不鎖 issue**，issue 寫入交易拿 versions 是在 issues 之後，所以兩者沒有環。
+- 關閉版本 vs 同時把 issue 排進該版本：issue 交易對版本列 `FOR SHARE`、關閉交易 `FOR UPDATE`，必定有先後。排入先提交 → 關閉照常成功（那張 issue 留在已關閉的版本，R2）；關閉先提交 → 排入在步驟 13 看到 `closed` → `version_not_open`，零效果。不會出現「關閉之後才被排入」。
+- 刪除版本 vs 同時排入：同上，刪除交易 `FOR UPDATE` 版本列後，用呼叫者的 `load_scope` 查看得到的引用；排入先提交且那張呼叫者看得到 → 刪除回 `version_in_use`；那張呼叫者看不到 → 刪除照常成功，那張照 R2 留在已刪除的版本；刪除先提交 → 排入看到 `deleted_at` → `invalid_value`。軟刪除不刪列，FK 不會在這裡報錯。
+- 送審路徑：propose（步驟 9 模擬）不鎖版本，只讀已提交的狀態；核准套用時步驟 7b、13 重驗。核准前版本被關閉 → 該 execution `failed`、`error_code = version_not_open`、零效果。
+- 交易內「今天」：用 `clock_timestamp()` 在步驟 9 之後換算（R10）；第一版的寫入規則不依賴「今天」（R1–R9 都不看今天），只有讀取（逾期、健康度、下個版本）用到。
+
+### 17.7 錯誤碼（補 §4.4、§14.2）
+
+| HTTP | code | 何時 | retryable | next_actions |
+|---:|---|---|---|---|
+| 422 | `version_not_open` | 新指定的版本是 locked 或 closed（R1）；`details = {version_id, status}`（版本和 issue 同專案、呼叫者已通過 issue 可見性，可以揭露） | 否 | `fix_input`、`ask_human` |
+| 409 | `version_in_use` | 刪除仍被**呼叫者看得到**的 issue 引用的版本（R5）；`details.issues` 只列看得到的 key | 否 | （SPA） |
+| 409 | `version_name_taken` | 同專案已有同名（`name_key`）未刪除版本（R8）；`details.version_id`（版本是專案層級資料，可揭露） | 否 | `fix_input`、`ask_human` |
+| 422 | `invalid_value` | 沿用；新增 `details.kind`：`date_order`（R4）、`date_out_of_range`（R9）；版本不存在／已刪除／別的專案時**不帶** kind，形狀和一般不合法值相同 | 否 | `fix_input` |
+| 422 | `ambiguous_reference` | 沿用；版本名稱或「下個版本」對到多個候選（§17.10） | 否 | `fix_input`、`ask_human` |
+| 409 | `conflict` | 沿用；版本修改帶的 `lock_version` 不符 | 否 | （SPA） |
+
+`version_in_use` 只會出現在人的 SPA（agent 不能刪版本），不進 §14.2；`version_name_taken` 進表：agent 應改用既有的那個版本或問人，**不**自動加尾碼另建；`version_not_open` 進表：agent 應回報「v2.0 已鎖定，要改排哪一個？」，**不**自動換成別的版本。
+
+### 17.8 REST 端點（補 §4.2）
+
+| 方法 | 路徑 | 誰能呼叫 | 用途 |
+|---|---|---|---|
+| GET | `/projects/{id}/versions?status=&include=stats,next` | 人 | 版本清單；`status` 可多選，預設 `open,locked`；`include=next` 時附「下個版本」解析（§17.10） |
+| POST | `/projects/{id}/versions` | 人（`manage_versions`） | 建立；body `{name, effective_date?, description?, status?}`，`Idempotency-Key` |
+| GET | `/versions/{id}` | 人 | 單筆＋統計 |
+| PATCH | `/versions/{id}` | 人（`manage_versions`） | `{lock_version, set: {name?, effective_date?, status?, description?}}`，`Idempotency-Key`；回新版本與 `impact`（見下） |
+| GET | `/versions/{id}/impact?effective_date=&status=` | 人（`manage_versions`） | 改之前的預覽：不寫入，回同一個 `impact` |
+| DELETE | `/versions/{id}?lock_version=` | 人（`manage_versions`） | 軟刪除（R5） |
+| GET | `/versions/{id}/events?cursor=&limit=` | 人 | 版本歷史 |
+| GET | `/projects/{id}/timeline?from=&to=&versions=&include_closed=&cursor=` | 人 | 時程視圖（§17.12） |
+| GET | `/projects/{id}/schedule-settings` | 人（專案可見） | 健康度門檻：有效值、組織值、是否繼承、`lock_version` |
+| PUT | `/projects/{id}/schedule-settings` | 人（`manage_versions`） | `{lock_version, inherit_org, health_at_risk_days?, health_at_risk_open_pct?}`；`Idempotency-Key` |
+| GET／PUT | `/org/schedule-settings` | 人（GET 任何登入者；PUT 系統管理員） | 組織預設門檻；PUT 帶 `lock_version`（`org_settings` 加 `schedule_lock_version`） |
+
+版本物件：
+
+```json
+{ "id": "0199…0a01", "project_id": "0199…0201", "name": "v2.0", "description": "SSO 第二版",
+  "effective_date": "2026-11-20", "status": "open", "lock_version": 3,
+  "stats": { "total": 12, "closed": 7, "open": 5, "overdue": 1, "late_for_version": 1, "no_dates": 2 },
+  "health": "at_risk", "health_reasons": ["issue_overdue", "issue_late_for_version"] }
+```
+
+`impact`（改日期或狀態時，只算呼叫者看得到的 issue）：
+
+```json
+{ "impact": { "open_issues": 5, "due_after_new_date": 2, "becomes_overdue_version": false } }
+```
+
+人的版本寫入共用 §6.8 的 `operation_requests`（冪等、`request_id`、失敗結果）；寫 `version_events` 與 `versions.lock_version + 1`。
+
+### 17.9 MCP 與 D20 政策（補 §8.8、§16）
+
+| 工具 | effect | 輸入 | 輸出 |
+|---|---|---|---|
+| `version_list`（新） | Read | `{"project": "AUTH" 或 uuid, "status"?: ["open","locked","closed"], "name"?: "v2.0", "next"?: true}` | `{today, versions[…同 §17.8 版本物件…], next?}`；`name` 有值時只回 `name_key` 相符的那一筆，沒有 → 空陣列（不是 `not_found`，因為專案本身可見） |
+| `describe`（改） | Read | 不變 | §5.1 的 `fields` 加 `fixed_version_id`（`type: "version_ref"`、`options_source: "/api/v1/projects/{id}/versions?status=open"`）；`start_date`、`due_date`（`type: "date"`）原本就有；`unsupported` 拿掉 `fixed_version_id`，加 `version_delete`、`relative_date` |
+| `get`／`get_many`（改） | Read | `fields` 可要 `fixed_version`、`start_date`、`due_date` | `fixed_version` 回 `{id, name, status, effective_date, deleted}`；`name` 是實際名稱，顯示端依 `deleted` 加註「（已刪除）」 |
+| `search`（改） | Read | 03 的 Filter AST 加欄位（§17.15） | 不變 |
+| `command_submit`、`changeset_propose` | 不變 | `update_fields.set`、`create_issue.fields` 接受三個欄位；另接受版本命令（§17.9a） | 不變 |
+
+沒有獨立的 `version_create`／`version_update` 工具：版本寫入和 issue 寫入走同一個 `command_submit`，共用冪等、政策、配額、送審與 undo。
+
+D20 政策：
+
+- `delegation_field_policies.field_key` 可用 `fixed_version_id`、`start_date`、`due_date`（§16.3 的註解跟著改）。
+- `start_date`、`due_date` **不是新欄位**：既有委派原本的政策列（direct／review／off，或沒有列＝不在委派內）全部保留，migration 不新增、不刪除、不改寫。
+- `fixed_version_id` 是**新欄位**：
+  - 新委派：在 ceiling 內就照 §16.3 規則 1 寫一列 `direct`。
+  - 既有委派：照 §16.3 規則 1 不自動加；`describe` 不列為可改，agent 用了回 `forbidden_op`。委派頁顯示「有 1 個新欄位可以加入這份委派」，一鍵加入（預設 `direct`，可改）。這一步要人做，不靠 migration 自動放寬。
+- 欄位政策同樣適用 `create_issue.fields`（§16.3 規則 3）。
+
+### 17.9a agent 的版本寫入（U41 已決定：現在開放，預設直接寫入）
+
+**命令**（`command_schema_version` 仍是 1，新增兩種 op）：
+
+```json
+{ "command_schema_version": 1, "exec_mode": "atomic", "title": "建立 v2.1",
+  "ops": [ { "op_id": "…", "kind": "create_version", "bind": "v_new",
+             "project_id": "…", "fields": { "name": "v2.1", "effective_date": "2026-12-18", "description": "…" } } ] }
+
+{ "command_schema_version": 1, "exec_mode": "atomic", "title": "v2.0 延到 11/27 並鎖定",
+  "ops": [ { "op_id": "…", "kind": "update_version", "target": { "type": "version", "id": "…" },
+             "set": { "effective_date": "2026-11-27", "status": "locked" } } ],
+  "preconditions": [ { "target": { "type": "version", "id": "…" }, "lock_version": 3 } ] }
+```
+
+| 規則 | 內容 |
+|---|---|
+| 文件組成 | 版本命令**單獨成一份文件、只有一個 op**（同 `duplicate_of`），不和 issue op 混用。「建 v2.1 再把 5 張排進去」＝1 份版本文件＋5 份 issue 文件（U13 不變）。`create_version` 的 `bind` 只供同文件內引用，第一版同文件沒有後續 op，所以實際上回應的 `effects` 帶新 id 即可，`bind` 可省略 |
+| 可設定的欄位 | `name`、`effective_date`、`description`；`update_version` 另可設 `status`（open／locked／closed 任意轉換）。`sharing`、`deleted_at` 不能設 |
+| preconditions | `update_version` 恰好一筆，必含版本的 `lock_version`；`create_version` 不能有 |
+| 刪除 | agent **不能**刪除版本；沒有 `delete_version` op（`describe` 的 `unsupported` 列 `version_delete`） |
+| 權限 | 委派者**目前**在該專案有 `manage_versions` ∩ 委派範圍含該專案 ∩ 政策 ∩ ceiling；版本必須屬於委派專案 |
+| 受眾（Q4、§3.8 M8） | 版本名稱、描述是專案層級的公開內容，讀者＝A(專案)。照「公開目的地」檢查：A(版本的專案) ⊆ ∩A(來源快照的每個專案)；不符 → `audience_expansion_forbidden`（`cross_project`）。`describe {"scope":"context"}` 的 `publish.public_content` 同樣適用 |
+| 名稱 | R8；撞名 → `version_name_taken`，agent 不自動加尾碼 |
+
+**D20 政策**：
+
+- `delegation_command_policies.command_kind` 加 `create_version`、`update_version`（§16.3 的 CHECK 跟著改）；欄位層級不另外細分。
+- **新委派**：委派者有 `manage_versions` 且在 ceiling 內時，兩種命令各寫一列 `direct`（使用者決定的預設）。委派精靈的操作表多兩列「建立里程碑」「修改／關閉里程碑」，可改「需要核准」或「不允許」。
+- **既有委派**：照 §16.3 規則 1 不自動加；委派頁提示「有 2 個新操作可以加入」，一鍵加入（預設 direct，可改）。
+- 送審路徑：政策是 review 時整份建 ChangeSet；ChangeSet 的目標型別加 `version`（§8.1 `changeset_version_ops` 的 target 存 `{type, id}`）；核准套用時照下方鎖順序，`version_not_open` 以外的錯誤照 §8.6。
+
+**鎖順序**：三個入口的**前段各自沿用既有規則**，只共用後段的領域鎖「projects → versions」。版本文件**從不鎖 issue**；issue 文件是 projects → issues → versions（§17.6），兩者沒有環。
+
+| 入口 | 前段（沿用） | 後段 |
+|---|---|---|
+| agent direct | §16.5：`operation_requests` → 工作脈絡 `FOR SHARE` → principals／credential／delegation（含政策父列）`FOR SHARE` → projects（R ∪ 版本的專案，UUID 序；`FOR SHARE`，比對 epoch） | versions `FOR UPDATE`（`update_version`；`create_version` 不鎖既有版本，靠唯一索引）→ 配額與熔斷控制列 → 期限檢查（`clock_timestamp()`） |
+| 送審核准套用 | §6.7 apply 步驟 1–6：changesets → changeset_executions → 工作脈絡 → principals／session／delegation／agent_client → projects（含版本的專案；比對全部 epoch） | versions `FOR UPDATE` → 期限檢查 → 該版本來源快照的受眾檢查（§6.7 步驟 14） |
+| 人工 undo | §16.7「undo 的來源與鎖」：人的 browser session 與 principal `FOR SHARE` → 被回復 execution 的來源快照專案 ∪ 版本的專案（UUID 序，`FOR SHARE`，比對 epoch） | versions `FOR UPDATE` → 之後才讀 `execution_version_changes`、`version_field_origins` |
+
+人工 undo **不要求**原 agent 的 credential、委派、工作脈絡仍有效，也**不套** agent 配額與熔斷：判斷的是執行 undo 的人目前有沒有 `manage_versions`、專案是否 active。所以 agent 被暫停、委派撤銷或到期之後，事故回復照常能做。
+
+**配額**（加進 §16.6，可部署調整）：每個 agent 每小時建立版本 10 個；同一版本每 10 分鐘被 agent 修改 5 次（超過算進事故熔斷門檻，和「同一 issue」那條同樣處理）。版本文件也算進「每分鐘／每小時直接寫入」的文件數。
+
+**歸屬與顯示**：`versions.created_by = agent`、`created_on_behalf_of_id = 委派者`（server 填，agent 不能指定）；`version_events` 照 §16.2 的歸屬表填 `origin`、`actor_kind`、`on_behalf_of_id`、`approver_id`。版本頁的歷史顯示 `claude-code@alice〔agent〕`；Agent 活動頁一併列出版本寫入，可 undo。
+
+**undo**（人在 SPA 執行，同 §16.7 的流程、預覽、事故回復）：
+
+| 原變更 | undo |
+|---|---|
+| `update_version` | 逐欄還原，條件：目前值＝該次寫入值 **且** `version_field_origins` 仍指向那次 execution **且** 人目前有 `manage_versions` **且** 舊值現在仍合法（名稱不撞名、日期在範圍內）。`status` 還原成 open 也允許（重新開放）；跨欄位不滿足就整筆 `undo_not_applicable` |
+| `create_version` | 軟刪除，條件：四個欄位的來源仍全是那次 execution（沒有人改過）**且**照 R5 沒有執行 undo 的人看得到的 issue 在這個版本；否則 `undo_not_applicable`（`changed_since`／`in_use`）。看不到的引用照 R5 不影響結果 |
+
+`execution_version_changes` 的前後值是 D12 衍生副本：遮蔽規則和 §16.7 的 `execution_field_changes` 相同（來源快照含被遮蔽專案、或版本在該專案 → 換成遮蔽標記）；undo execution 的來源快照照 §16.7 遞移繼承，鎖順序見上表。
+
+### 17.10 「下個版本」的解析
+
+agent 或 SPA 把「下個版本」「v2.0」轉成版本 id 的唯一規則。server 端實作一次，`version_list(next: true)` 與 SPA 的「移到下個版本」共用。
+
+```text
+today = org 時區的今天（R10）
+open  = 同專案、未刪除、status = open 的版本
+overdue_open = open 中 effective_date < today
+upcoming     = open 中 effective_date ≥ today，依 (effective_date, name_key) 排序
+undated      = open 中 effective_date 為 null
+
+若 overdue_open 非空：
+    → ambiguous：candidates = overdue_open ∪ upcoming 中日期最早的那幾個
+      （逾期但還開著的版本，使用者可能說的就是它；不替人選）
+否則若 upcoming 為空：
+    → none：next = null，附 undated（讓 agent 問人要不要用沒有日期的版本）
+否則令 d = upcoming[0].effective_date：
+    若 upcoming 中日期 = d 的只有一個 → resolved
+    否則 → ambiguous：candidates = 日期 = d 的那幾個
+```
+
+回應：
+
+```json
+{ "today": "2026-11-07",
+  "next": { "outcome": "resolved", "version": { "id": "0199…0a01", "name": "v2.0", "effective_date": "2026-11-20" } } }
+
+{ "today": "2026-11-07",
+  "next": { "outcome": "ambiguous", "reason": "overdue_open_exists",
+            "candidates": [ { "id": "…", "name": "v1.9", "effective_date": "2026-10-30", "overdue": true },
+                            { "id": "…", "name": "v2.0", "effective_date": "2026-11-20" } ] } }
+
+{ "today": "2026-11-07", "next": { "outcome": "none", "undated": [ { "id": "…", "name": "Backlog" } ] } }
+```
+
+- `version_list` 的 `next` 是**回應的一部分**，不是錯誤；`ambiguous` 時 agent 照 §14.2 `ambiguous_reference` 的做法（從 candidates 選不出來就問人），不自己挑日期最近的。
+- 名稱解析（`name: "v2.0"`）照 `name_key` 完全相符；不做模糊比對。因為 R8 保證唯一，名稱解析不會歧義；歧義只出現在「下個」。
+- locked 的版本不是「下個」的候選（不能排入）。
+
+### 17.11 「把這幾張改成下個版本」（§14 用法 5，改寫）
+
+| # | 呼叫 | 回傳重點 |
+|---|---|---|
+| 1 | `version_list {"project":"AUTH","next":true}` | `next.outcome`；`resolved` 才繼續，`ambiguous`／`none` 問人 |
+| 2 | `get_many {"keys":[…],"fields":["lock_version","fixed_version","status"]}` | 每張的 `lock_version`、目前版本；看不到的 key 回 `not_found`，照實回報 |
+| 3 | 每張一次 `command_submit`（`update_fields.set.fixed_version_id`＋`preconditions.lock_version`） | 委派 direct → `applied`；review → `review_required`；已在該版本 → `no_effect` |
+
+- 往返：`2 + N` 次（N 張）。U13 不變，所以沒有「一次改 N 張」的工具；多張送審時帶同一個 `group_label`，人在待審佇列一次勾選核准（§15.3）。
+- 回報：「已把 AUTH-12、AUTH-15 排進 v2.0（11/20）；AUTH-18 本來就在 v2.0；AUTH-21 我看不到」。部分成功照實列出，不說「全部完成」。
+- 遇到 `version_not_open`（步驟 1 之後版本被鎖）：停下來問人，不改排別的版本。
+- agent 不拿 `due_date`、priority、自訂欄位代替版本（原用法 5 的規則保留）。
+
+### 17.12 時程視圖（唯讀投影）
+
+`GET /api/v1/projects/{id}/timeline?from=2026-10-01&to=2026-12-31&versions=<id,…|none>&include_closed=false&cursor=`
+
+```json
+{ "today": "2026-11-07", "range": { "from": "2026-10-01", "to": "2026-12-31" },
+  "lanes": [
+    { "version": { "id": "…", "name": "v2.0", "effective_date": "2026-11-20", "status": "open",
+                   "health": "at_risk", "health_reasons": ["issue_overdue"] },
+      "items": [ { "key": "AUTH-140", "subject": "…", "status": {"id": "…", "name": "處理中", "is_closed": false},
+                   "assigned_to": { "id": "…", "name": "Bob", "kind": "user" },
+                   "start_date": "2026-11-03", "due_date": "2026-11-06",
+                   "flags": ["overdue"] } ],
+      "undated_count": 2, "next_cursor": null },
+    { "version": null, "items": [ … ], "undated_count": 0, "next_cursor": null } ] }
+```
+
+規則：
+
+- **只回呼叫者看得到的 issue**（`load_scope`），讀 DB、不經搜尋索引（日期與狀態要和 issue 頁一致）。私有 issue 看不到就不在泳道、不算進任何數字、不留空位。
+- 進入範圍：`[start_date, due_date]` 和 `[from, to]` 有交集；只有一端的照那一天算；兩端都沒有的不畫，只算進 `undated_count`（數字只算看得到的）。`from`～`to` 最長 400 天且 `from ≤ to`，違反回 `invalid_argument`。
+- **沒帶 `from`／`to` 時的預設**（server 算，回應的 `range` 寫出實際值，SPA 首次開啟不必自己算）：
+  ```text
+  from = today − 14
+  d    = 日期 ≥ today 的 open 版本中最晚的 effective_date（沒有 → null）
+  to   = (d 為 null) ? today + 90 : d + 14
+  to   = min(to, from + 399)            -- 保證 ≤ 400 天且 from ≤ to
+  ```
+  被截斷時回應附 `range.truncated_by_version = {id, name, effective_date}`，SPA 顯示「v3.0（2027-08-01）在範圍外，跳過去」。逾期很久、沒有日期、沒有 open 版本都落在 `today + 90` 這一支。只帶其中一端時，另一端照上面算再套同樣上限。
+- 泳道：每個版本一條（依 `effective_date`，null 排最後），加一條「未排版本」（`version: null`）。已刪除的版本只在呼叫者看得到其中的 issue 時才出現一條，標 `deleted: true`。`include_closed=false` 時不回已結案 issue 與已關閉版本。
+- 每條泳道最多 200 筆，超過用該泳道的 `next_cursor`（server 端 handle，§4.5）；排序 `(coalesce(start_date, due_date), key)`。
+- `flags`（全部確定性、讀取時算，不存）：
+
+| flag | 條件 |
+|---|---|
+| `overdue` | 未結案且 `due_date < today` |
+| `late_for_version` | 有版本、版本有日期、`due_date > version.effective_date` |
+| `no_dates` | 兩個日期都沒有（只出現在 issue 頁、清單；時程視圖不畫） |
+| `in_closed_version` | 未結案但版本已 closed 或已刪除 |
+
+- **版本健康度**（讀取時算，只用呼叫者看得到的 issue）：
+
+| health | 條件（由上往下，第一個成立的） |
+|---|---|
+| `closed` | 版本 `status = closed` |
+| `no_date` | 版本沒有日期 |
+| `overdue` | 版本日期 < today 且還有看得到的未結案 issue |
+| `at_risk` | 看得到的未結案 issue 中有 `overdue` 或 `late_for_version`；**或**（門檻都啟用時）`effective_date − today ≤ at_risk_days` 且 看得到的未結案數 ÷ 看得到的總數 × 100 > `at_risk_open_pct`（總數 0 時這條不成立） |
+| `on_track` | 其他 |
+
+  `health_reasons` 列出成立的條件（`version_overdue`、`issue_overdue`、`issue_late_for_version`、`deadline_near_incomplete`），讓畫面說得出「為什麼是黃色」。
+
+  **門檻（U43 已決定可調）**：端點見 §17.8。GET 回 `{effective: {at_risk_days, at_risk_open_pct}, source: "org"|"project", org: {…}, project: {inherit_org, …}, lock_version}`；PUT 照 §6.8 的 `operation_requests` 冪等、要 CSRF，`lock_version` 不符回 `conflict`；`inherit_org = true` 時另外兩欄必須省略；要停用某條規則就送 `null`。組織預設 `org_settings.health_at_risk_days = 7`、`health_at_risk_open_pct = 50`（管理員改）；專案可覆寫（`project_schedule_settings`，需要 `manage_versions`，只有人能改，經 `human_direct` 的 `operation_requests`，`lock_version` 防並行覆蓋）。兩個值任一為 NULL＝停用 `deadline_near_incomplete` 這條；`at_risk_days = 0` 表示只在版本當天才看。回應附實際使用的門檻 `health_thresholds: {at_risk_days, at_risk_open_pct, source: "org"|"project"}`，畫面說得出「離日期 5 天、還有 60% 未完成（門檻 7 天／50%）」。門檻只影響顯示與首頁提醒，不影響任何寫入規則。完成度＝看得到的已結案數 ÷ 看得到的總數（依張數，不依工時，§17.14 D-9）。**不用 AI 判斷健康度**；首頁 AI 摘要要引用健康度時，引用的是這裡算出的值。
+- 時程視圖沒有 MCP 工具：agent 要回答「v2.0 有沒有風險」用 `version_list`（含 `health`、`stats`）就夠，不需要逐筆位置。
+
+### 17.13 歷史、undo 與遮蔽
+
+- issue 的版本、日期變更寫在 `issue_events` 的 `created`／`fields_changed`（§7.3），key 是 `fixed_version_id`、`start_date`、`due_date`，值是 uuid 或 `"YYYY-MM-DD"`。對外序列化：版本顯示**目前**名稱，已刪除的加「（已刪除）」；版本名稱不算受限欄位（§17.4），只要 issue 可見就顯示。
+- 版本本身的變更寫在 `version_events`；版本頁、專案活動顯示。
+- `issue_field_origins`、`execution_field_changes`（§16.7）照常記這三個欄位。
+- **undo**（§16.7 的欄位還原條件之外再加）：
+  - 還原 `fixed_version_id` 到舊版本＝**新指定**，所以舊版本要 open 且未刪除（R1）；否則該欄位回 `undo_not_applicable`，`details.reasons[f] = "value_no_longer_valid"`、`details.subreason = "version_not_open"`。
+  - 還原日期要在最終狀態滿足 R4；只還原其中一個會違反 → 照 §16.7「跨欄位相依不滿足就整筆回 `undo_not_applicable`」。
+  - undo 交易同樣走 §17.6 的步驟 7b。
+- **D12**：`versions.name`、`versions.description`、`version_events.payload`、`execution_version_changes` 的前後值是可遮蔽位置，加進 §7.5 的清單。遮蔽版本描述或名稱＝人用一般修改換掉現值，再遮蔽舊值的事件（同 §7.5 對 issue 欄位的做法）。「遮蔽版本事件」照「遮蔽事件」那一列，**同一交易**：先 `FOR UPDATE` 專案列、bump `security_epoch` → `FOR UPDATE` 版本列與事件 → 驗證管理權限 → `payload = '"[已遮蔽]"'` → 新增 `version_event_redactions`（遮蔽者、時間、理由碼、理由，不存原文）並填 `redaction_id` → 衍生副本規則（來源快照含該專案的提案、`execution_field_changes`、`execution_version_changes` 的前後值）。任一步失敗全部 rollback。理由：agent 能讀版本描述（§17.4），可能把它抄進別處。
+
+### 17.14 和 Redmine 的差異（補 §12）
+
+| # | 項目 | Redmine | oxledger 第一版 | 理由 |
+|---|---|---|---|---|
+| D-8 | 版本名稱唯一 | 同專案唯一（大小寫規則未查證） | 同專案、NFC＋casefold 後唯一 | 名稱解析不出現只差大小寫的歧義 |
+| D-9 | 版本完成度 | 依預估工時加權、含 done_ratio | 依張數 | 第一切片沒有工時欄位 |
+| D-10 | 版本共用 | none／descendants／hierarchy／tree／system | 只有 none | 跨專案共用會讓版本的讀者和 issue 的受眾不同，牽動 §3.8 |
+| D-11 | 刪除版本 | 有 issue 引用就不能刪（硬刪除） | 軟刪除；只有**看得到的**引用會擋，看不到的 issue 保留指向已刪除的版本 | 歷史事件要能顯示舊名稱；「有沒有看不到的引用」不能變成成功／失敗的差異 |
+
+匯入（U40 已決定）：**第一切片不處理** Redmine 共用版本（sharing ≠ none）的匯入規則。使用說明（管理員文件與里程碑頁的說明）明寫：「里程碑只屬於一個專案，不能跨專案共用；從 Redmine 搬資料時，共用版本需要自行在各專案建立。」匯入工具之後另訂契約。
+
+〔已查證，`app/models/issue.rb`〕`assignable_versions`（第 1042 行起）＝`project.shared_versions.open`，`fixed_version_id` 沒變時再加入原值，和 R1、R2 一致；日期順序（第 777 行）只在 `start_date` 或 `due_date` 有變時檢查，和 R4 一致；不合法版本回 `:inclusion`（第 787 行）。〔查證待辦〕`Version` 名稱唯一性的大小寫、`manage_versions` 權限名稱，實作前讀 `version.rb`、`lib/redmine.rb`，記到附錄 B。
+
+### 17.15 搜尋（和設計 03 的一致性）
+
+- 索引文件新增 fast field：`fixed_version_id`、`start_date`、`due_date`（以「自 1970-01-01 起的日數」存整數）。三者跟 issue 其他欄位一樣，靠 `lock_version` bump → outbox → reindex，一致性 token 規則不變（03）。
+- Filter AST 新增：`fixed_version_id`（`eq`、`in`、`is_null`）、`start_date`／`due_date`（`lt`、`lte`、`gt`、`gte`、`between`、`is_null`），值是 `"YYYY-MM-DD"`。
+- `overdue`：**不存進索引**（會隨日期過期），查詢時展開成 `due_date < today AND status.is_closed = false`，`today` 在查詢開始時依 R10 算一次並放進回應的 `meta.today`。換日不需要 reindex。
+- 查詢語言 `version:"v2.0"`、`version:next`：名稱唯一性與「下個」都只在**單一專案**內成立（R8、§17.10），所以查詢必須已限縮成恰好一個可讀專案（`project:AUTH` 或 Filter AST 的 `project_id eq`），否則回 03 的 `invalid_filter`，`details = {path, reason: "project_scope_required"}`。限縮之後：名稱找不到 → `invalid_filter`（`details.path`）；`next` 照 §17.10，歧義 → `ambiguous_reference`。Filter AST 直接用版本 uuid（`fixed_version_id eq/in`）時可以跨專案，照一般可見性過濾。
+- 版本改名不需要 reindex（索引存 id）；版本刪除不影響已存的 id（軟刪除）。
+- 需要 03 配合：Filter AST 的欄位表、`meta.today`、`version:` 語法。列入附錄 C.3。
+
+### 17.16 使用者方便性（補 §15）
+
+| 檢查 | 目標 |
+|---|---|
+| 建版本 | 專案「里程碑」分頁 1 個對話框：名稱必填、日期選填；建立後清單立刻出現，不用重新整理 |
+| 改日期 | 存檔前顯示 `impact`：「2 張單的到期日晚於新日期」；不自動改單（R6），提供「看這 2 張」連結 |
+| 關閉版本 | 有未結案單時對話框列數量與「移到下個版本」：SPA 對每張各送一份 `/commands`（U13），逐張結果顯示，部分失敗可重試失敗的那幾張 |
+| 下個版本有歧義 | 不猜；列出候選讓人點，逾期的版本標紅 |
+| 時程視圖 | 預設範圍見 §17.12（server 算好）；今天線、版本菱形、逾期紅、晚於版本黃框；點色條開 issue |
+| issue 頁 | 屬性列直接顯示版本、開始、到期，逾期與「晚於版本」用同一組 flag 顏色；可直接改（`/commands`） |
+| agent | 「把這幾張改成下個版本」2+N 次往返；回報逐張結果；版本有歧義時一次問完。「建 v2.1 並把這幾張排進去」1+1+N 次（建版本、`get_many`、每張一份），回報「已建立 v2.1（12/18）」 |
+| agent 改了里程碑 | 版本頁歷史與 Agent 活動頁都看得到 `claude-code@alice〔agent〕` 改了什麼，可 undo；首頁摘要卡把「改了 N 個里程碑」和 issue 分開列 |
+| 健康度門檻 | 專案設定頁一個區塊：「離里程碑日期 ≤ __ 天，且未完成超過 __% 時標為有風險」，預設顯示組織值，可改回「跟組織一樣」 |
+| 新欄位與舊委派 | 委派頁提示 `fixed_version_id`、`create_version`、`update_version` 可加入，一鍵加入；日期欄位原設定不動（§17.9、§17.9a） |
+
+### 17.17 測試
+
+| # | 情境 | 預期 |
+|---|---|---|
+| T-V1 | 指定 open／locked／closed 版本 | open 成功；locked、closed 回 `version_not_open`、零效果 |
+| T-V2 | issue 已在 closed 版本，改 subject、轉狀態、加 note；`set fixed_version_id` 成原值 | 都成功；原值那個 op 是 `no_effect` |
+| T-V3 | 指定別的專案的版本 id、不存在的 id、已刪除的版本 | 三者回同形狀的 `invalid_value`（無 `details.kind`）；呼叫者看不到的專案也一樣 |
+| T-V4 | 並行：關閉版本 vs 排入該版本（兩種先後各一） | 排入先：關閉成功、issue 留在版本；關閉先：排入 `version_not_open`。不出現關閉後被排入 |
+| T-V5 | 並行：刪除版本 vs 排入（兩種先後各一）；另測：唯一引用是呼叫者看不到的私有 issue，和完全沒有引用 | 不死結；後兩者回應完全相同（都成功）；私有 issue 之後 `get` 的 `fixed_version.deleted = true`、仍可改其他欄位、`set` 成原值是 `no_effect`、可清除版本；其他 issue 新指定該 id → `invalid_value`；刪除後建同名版本，名稱解析只得到新的 |
+| T-V6 | 同一份文件 `set {start_date: 11-10}`，目前 due 是 11-05；同文件再 `set due_date: 11-20` | 前者 `invalid_value`／`date_order`；後者（最終狀態合法）成功 |
+| T-V7 | DB 層：繞過應用層寫入違反 date_order、跨專案版本 | CHECK／複合 FK 擋下 |
+| T-V8 | 下個版本：有逾期 open 版本；兩個 open 版本同日；只有無日期版本；只有 locked 版本；時區邊界（UTC 15:59 vs 16:00，Asia/Taipei 換日） | 分別回 `ambiguous`（含逾期）、`ambiguous`、`none`＋undated、`none`、`today` 正確換日 |
+| T-V9 | 時程視圖：兩張可見 issue 之間有一張看不到的私有 issue | 泳道項目、`undated_count`、stats、health 都和沒有那張時相同 |
+| T-V10 | 健康度表格驅動：五種 health 各一組；`health_reasons` 正確 | 照 §17.12 的表 |
+| T-V11 | undo：agent 把版本從 v1.9 改成 v2.0，之後 v1.9 被關閉，人 undo | 該欄位 `undo_not_applicable`，`value_no_longer_valid`／`version_not_open` |
+| T-V12 | undo：agent 改 start 與 due，之後人只改 due；undo 只能還原 start 且會違反 date_order | 整筆 `undo_not_applicable`，不部分寫入 |
+| T-V13 | 舊委派（migration 前建立）的 agent 改 `fixed_version_id` | `describe` 不列為可改；`command_submit` 回 `forbidden_op`；人在委派頁加入欄位後成功 |
+| T-V13b | migration 前三份委派的 `due_date` 政策分別是 direct、review、off，另一份沒有 `due_date` 列 | migration 後四份完全不變；`fixed_version_id` 四份都沒有列 |
+| T-V13c | migration 前的違規：單端越界、雙端越界、純順序錯誤、越界清掉後就不再違反順序、越界清掉後仍違反順序 | 分別清該端、清兩端、清兩端、只清越界端、清兩端；每張一個 UPDATE、`lock_version` +1、一筆 `u39_date_fix` 事件；`VALIDATE CONSTRAINT` 成功 |
+| T-V14 | 新委派，`fixed_version_id` 政策 review；`create_issue` 帶版本 | 整份 `review_required` |
+| T-V15 | agent 帶 bearer 呼叫 `POST /projects/{id}/versions` | `unauthenticated`（agent 只能經 `command_submit`） |
+| T-V16 | 版本改名、刪除後讀 issue 歷史 | 顯示目前名稱；已刪除的加「（已刪除）」 |
+| T-V17 | 搜尋 `overdue`：issue 到期日是今天，換日前後各查一次，中間沒有任何寫入 | 換日前不在結果、換日後在結果；沒有 reindex |
+| T-V18 | `version:"V2.0"`（大小寫不同）、`version:"不存在"`、`version:next` 歧義 | 相符；`invalid_filter`；`ambiguous_reference` |
+| T-V18b | AUTH、WEB 各有 v2.0，下個版本不同；看不到的專案 OPS 也有 v2.0 | 沒限縮專案的 `version:"v2.0"`／`version:next` → `invalid_filter`（`project_scope_required`）；限縮 AUTH 只得到 AUTH 的；用 uuid 跨專案查不會帶出 OPS 的 issue |
+| T-V19 | 遮蔽 AUTH 的一筆 version_events（描述含敏感字）；之前 agent 有一份來源含 AUTH 的提案與一筆 direct execution；另測在衍生副本那一步注入失敗 | epoch bump；payload、`version_event_redactions`、提案內容與 execution 前後值同一交易完成；注入失敗時全部沒有留下 |
+| T-V9b | 時程預設範圍：沒有版本；全部沒有日期；全部 open 版本日期在過去；有一個 2199 年的 open 版本 | 四種都回合法範圍（`from ≤ to`、≤ 400 天）；最後一種附 `truncated_by_version` |
+| T-V22 | agent `create_version`／`update_version` 各在 direct／review／off | direct `applied`、`version_events` 是 `agent_direct`；review `review_required`，核准後 `external_agent` 且 `approver_id` 是人；off `forbidden_op` |
+| T-V23 | 委派者沒有 `manage_versions`；委派建立後委派者被拿掉 `manage_versions` | `forbidden_op`；後者在下一次寫入就擋 |
+| T-V24 | 版本命令和 issue op 放在同一份文件；`update_version` 缺 precondition；設 `sharing`、`deleted_at` | 結構驗證拒絕（`invalid_request`） |
+| T-V25 | 工作脈絡 R＝{WEB, AUTH}，WEB 受眾較小；agent 在 AUTH 建版本 | `audience_expansion_forbidden`（`cross_project`） |
+| T-V26 | agent 建 v2.1 撞名 | `version_name_taken`，不自動改名 |
+| T-V27 | 並行：agent `update_version` 關閉 v2.0 vs 人把 issue 排進 v2.0 | 不死結；結果同 T-V4 |
+| T-V28 | undo `update_version`：agent 改日期 → Bob 改日期 → Carol 改回 agent 的值；undo | 該欄位不回復（來源不是那次 execution） |
+| T-V29 | undo `create_version`：沒人改過且沒有引用；有人改過名稱；有看得到的 issue 在版本；只有看不到的 issue 在版本 | 軟刪除；`changed_since`；`in_use`；軟刪除（同 R5） |
+| T-V30 | 遮蔽來源專案的 note，之前 agent 把該 note 的內容寫進版本描述 | `execution_version_changes` 前後值、undo 預覽讀不到原文 |
+| T-V31 | 既有委派（migration 前）用 `create_version` | `forbidden_op`；委派頁一鍵加入後成功 |
+| T-V32 | agent 1 小時內建第 11 個版本；同一版本 10 分鐘內第 6 次修改 | `quota_exceeded`；後者算進熔斷門檻 |
+| T-V33 | 健康度門檻：組織 7 天／50%；專案覆寫 3 天／80%；專案停用（NULL）；總數 0；剛好等於門檻 | `deadline_near_incomplete` 依專案值判斷；停用時不出現；總數 0 不成立；等於 pct 不成立（要大於） |
+| T-V34 | 兩個人同時改同一專案的門檻：(a) 已有人改過的專案；(b) 新建、從沒改過的專案（第一次覆寫）；(c) 組織預設 | 三種都是後送的 `conflict`，不會撞唯一鍵、不會靜默覆蓋；新建專案一定已有設定列 |
+| T-V35 | agent 改了 v2.0 日期；之後 agent 被暫停、委派撤銷（另測：委派到期、R 擴大加入新專案）；人 undo | undo 照常成功：用原 execution 的來源快照與人目前的 `manage_versions` 判斷，不看 agent 憑證、委派、配額 |
+| T-V21 | 版本管理與 issue 寫入混合壓力測試（隨機關閉、刪除、排入、改日期） | 不死結；最終狀態滿足 R1、R4、R5 |
+
+### 17.18 對既有章節的影響
+
+| 章節 | 修訂 |
+|---|---|
+| §1 可改的欄位 | 加 `fixed_version_id` |
+| §3.7 鎖順序 | issues 之後加 versions（§17.6） |
+| §4.2、§4.4、§14.2 | 加 §17.8 端點、§17.7 錯誤碼 |
+| §5.1 | fields 加 `fixed_version_id`；`unsupported` 拿掉 `fixed_version_id`，加 `version_write`、`relative_date` |
+| §6.1、§6.2、§6.6、§6.7 | 值規則（§17.5）、權限（§17.4）、DDL（§17.2）、步驟 7b（§17.6） |
+| §7.3、§7.5 | payload 欄位；可遮蔽位置加 `versions.description`、`version_events.payload` |
+| §8.8 | 加 `version_list`；拿掉「`unsupported` 例如 `fixed_version_id`」 |
+| §10 | S3 加 `versions`、issue 三欄、`manage_versions`、`org_settings.timezone`；S4 加步驟 7b、版本 REST 與 `version_events`；S6 加 `version_list`、委派新欄位提示；S6b 加時程視圖；S8 加 T-V1…T-V21 |
+| §11 U12 | 已標被 U39 推翻 |
+| §12 | 加 D-8…D-11 |
+| §14 用法 5 | 換成 §17.11 |
+| §16.3 | `delegation_field_policies.field_key` 註解加 `fixed_version_id`；`delegation_command_policies.command_kind` 加 `create_version`、`update_version` |
+| §16.6 | 加版本配額（§17.9a） |
+| §16.7、§16.10 | undo 與 Agent 活動頁涵蓋版本寫入；委派精靈操作表加兩列 |
+| §8.1 | `changeset_version_ops` 的目標可以是 `version` |
+| 設計 03 | Filter AST 欄位、`meta.today`、`version:` 語法與「必須限縮單一專案」（附錄 C.3） |
+
+### 17.19 使用者決定（U39 衍生，2026-11-07）
+
+| # | 問題 | 決定 |
+|---|---|---|
+| U40 | Redmine 匯入時共用版本（sharing ≠ none） | **不處理匯入**，在使用說明註明里程碑不能跨專案共用（§17.14） |
+| U41 | agent 能不能建立、修改版本 | **現在開放，預設直接寫入**（§17.9a）；刪除仍只限人 |
+| U42 | 「今天」用組織時區還是個人時區 | **組織時區**（`org_settings.timezone`，預設 Asia/Taipei） |
+| U43 | 健康度門檻 | **加可調門檻**：組織預設 7 天／50%，專案可覆寫或停用（§17.12） |
 
 ---
 
@@ -2307,7 +3190,66 @@ S0–S2 可以和前端並行；S3 之後前端才能接真資料。S7 若時程
 
 第 22 輪是設計層審查，不代表 DDL 已執行或並行測試已通過。
 
+### 第 23–24 輪：D20 agent 直接寫入（2026-11-07）
+
+使用者看過原型後決定：agent 可自行變更；預設直接寫、可逐項改要核准；agent 用專屬 token、當成獨立使用者顯示。不能改的部分（Q4 關閉、受眾一致、5 種命令）照舊，請 GPT 從資安、資料模型、MCP 介面、undo、配額五方面提案。
+
+| 輪 | 主題 | 收斂結果 |
+|---|---|---|
+| 23 | 獨立提案 | 身分＝（委派者, client）principal＋handle；歸屬改成 actor＝agent、on_behalf_of、approver 分欄；政策表三態 off > review > direct，欄位政策也套建立；`command_submit` 單一入口、整份文件決策不拆；undo 是主要防線；配額跨 token 累計 |
+| 24 | 交叉批判與邊角 | 欄位還原只比對值不夠（A→B→A 問題），加 `issue_field_origins`；`review_required` 是確定結果、冪等不會事後執行；direct 衝突不建隱形提案；熔斷暫停是「拒絕但提交」並放在獨立控制列避免死結；agent 建單的 own 只限 issue 權限；不做內容啟發式與 quota_guard |
+
+結果寫成 §16，並在被推翻的段落加〔D20 修訂〕。
+
+### 第 25 輪：§16 全文複審（2026-11-07）
+
+結論 **fail**，6 項（5 major、1 minor），全部修正：
+
+| # | 發現 | 修正 |
+|---|---|---|
+| 1 | direct 建單對目的地專案只拿 `FOR SHARE`，重新引入第 5 輪修過的計數器鎖升級與期限問題 | §16.5 沿用 §6.7 步驟 6 的 `FOR UPDATE` 例外，期限檢查移到所有鎖之後（T-D4） |
+| 2 | undo 的前後值是新的明文副本，§7.5 沒納入；direct 沒有來源快照，跨專案內容遮蔽清不到 | 列入 §7.5；新增 `command_execution_source_projects`，遮蔽時依來源快照或目標專案清除（T-D9） |
+| 3 | `reverts_execution_id` 只能指向 `command_executions`，送審套用的變更回復不了 | 新增 `execution_refs` 統一身分表（T-D7） |
+| 4 | `issue_duplicates` 沒有實例 id，無法辨認「該次建立的關係」 | 加 `id`、`created_by_execution_id` 與 `execution_relation_changes`（T-D8） |
+| 5 | §16.2 寫「agent 不能設私有」，和 §5.1、§5.2、§6.2、U9、T-M12、T-M15 相反 | 改成和 U9 一致：可寫入私有、永遠讀不到；補作者讀取例外（T-D10） |
+| 6 | I-2 與 S8 門檻仍要求「沒有套用路徑」「未核准套用 = 0」 | 改成「不能核准、不能繞過 review／off、沒有授權不產生效果」 |
+
+### 第 26 輪：確認第 25 輪修正
+
+結論 fail：#1、#3、#4、#5、#6 已解決；#2 還缺「undo 自己產生的副本沒有來源快照」與「undo 和遮蔽沒有協調鎖」。修正：undo 遞移繼承來源快照；undo 先鎖來源專案 `FOR SHARE` 再讀前後值，和遮蔽的 `FOR UPDATE` 序列化（§16.7，T-D13、T-D14）。
+
+### 第 27 輪：確認第 26 輪修正
+
+結論 **pass**（限該項範圍）：undo 遞移繼承來源快照；先依 UUID 鎖來源與目標專案、再鎖 issue、再讀前後值，和遮蔽的專案 `FOR UPDATE` 互斥，沒有反向鎖依賴。這是設計層審查，不代表並行測試已執行。
+
 第 5 輪沒有再提 critical。**第 5 輪的 4 項修正沒有再送 GPT 複審**；剩下的設計取捨都已列在 §11。
+
+### 第 28–30 輪：§17 里程碑與時程（2026-11-07，thread `oxledger-02-s17-versions`）
+
+附 §17 全文與 02 相關章節（§3.7、§4.4、§5.1、§6、§7.3–7.5、§14.2、§16.3–16.7）。
+
+| 輪 | 結論 | 發現 | 處理 |
+|---|---|---|---|
+| 28 | fail | major：刪除版本依「所有引用」判斷，`version_in_use` 透露看不到的 issue 是否存在 | R5 改成只看呼叫者看得到的引用；看不到的 issue 保留指向已刪除版本（R2），顯示「（已刪除的版本）」；T-V5、D-11 |
+| 28 | | major：`version:"v2.0"`、`version:next` 沒有專案範圍，跨專案同名無法解析 | 必須限縮單一專案，否則 `invalid_filter`（`project_scope_required`）；uuid 可跨專案；T-V18b |
+| 28 | | major：日期欄位 0001 就有、§16.3 早已列入政策，卻被當新欄位 | 只有 `fixed_version_id` 是新欄位；既有日期政策不動；日期 CHECK 用 `NOT VALID` 加 migration 處理舊資料；T-V13b、T-V13c |
+| 28 | | minor：時程預設範圍可能超過 400 天或無定義 | server 端固定算法、上限、`truncated_by_version`；T-V9b |
+| 29 | pass_with_issues | minor：`get` 的版本物件沒有刪除標記；清單與解析沒說排除已刪除版本 | 版本物件一律帶 `deleted`；清單、解析、下個版本、`options_source` 排除已刪除 |
+| 29 | | minor：migration「清掉違規的那個日期」不確定 | 越界各自清 → 仍違反順序則兩端都清 → 每張一個 UPDATE、`u39_date_fix` 事件、報告 |
+| 30 | **pass** | 兩項都解決，沒有新問題 | — |
+
+### 第 31–32 輪：依 U40–U43 的決定改寫 §17（2026-11-07，同一 thread）
+
+使用者逐項決定：U40 不處理 Redmine 共用版本匯入、在使用說明註明；U41 agent 現在就能建立、修改版本，預設直接寫入；U42 組織時區；U43 健康度加可調門檻。改寫：新增 §17.9a（`create_version`／`update_version` 單 op 文件、權限、受眾、政策、配額、歸屬、undo、D12）、`version_events` 改成和 issue 事件相同的身分組合、`version_field_origins`、`execution_version_changes`、門檻資料表；agent 刪除版本使用者沒要求，仍只限人。
+
+| 輪 | 結論 | 發現 | 處理 |
+|---|---|---|---|
+| 31 | fail | major：版本的 direct、送審套用、人工 undo 被寫成同一套鎖前段，人工 undo 會被已撤銷的委派擋住 | 拆成三個入口的前段表，只共用 projects → versions；人工 undo 不看 agent 憑證、委派、配額；T-V35 |
+| 31 | | major：版本事件可遮蔽，但沒有對應的 redaction 紀錄表 | 新增 `version_event_redactions` 與 FK；遮蔽同一交易完成；T-V19 |
+| 31 | | minor：可調門檻沒有讀寫端點，首次覆寫的並行沒定義 | 專案、組織的 GET／PUT；每個專案預建設定列，首次覆寫也是 UPDATE＋`lock_version`；T-V34 |
+| 32 | **pass** | 三項都解決，沒有新問題 | — |
+
+另外讀了 Redmine `app/models/issue.rb` 查證 `assignable_versions`（含原值）與日期順序只在日期有變時檢查，和 R1、R2、R4 一致（§17.14）。審查不涵蓋 DDL 實際執行；§17.18 列的章節修訂已全部補進正文（§4.2、§4.4、§7.3、§7.5、§10、§14.2 於 2026-11-07 第 32 輪之後補上，內容只是指向 §17，不改規則）。
 
 ## 附錄 B · 查證紀錄
 

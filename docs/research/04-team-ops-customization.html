@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>團隊運作與客製化研究</title>
+<style>
+:root{--bg:#0B1220;--card:#142033;--line:#24344F;--fg:#F1F5F9;--muted:#B6C2D3;--dim:#8391A7;--act:#67E8F9;--prop:#C4B5FD;--ok:#6EE7B7;--warn:#FCD34D;--bad:#FDA4AF}
+@media (prefers-color-scheme:light){:root{--bg:#F4F7FB;--card:#FFFFFF;--line:#D5DFEC;--fg:#0E1726;--muted:#3E4C63;--dim:#5F6D83;--act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.65 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:26px;margin:0 0 4px}h2{font-size:19px;margin:34px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.lead{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0}
+.k{font:600 11px ui-monospace,Consolas,monospace;letter-spacing:.06em;color:var(--dim);text-transform:uppercase}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.chip{display:inline-block;border:1px solid currentColor;border-radius:99px;padding:0 8px;font-size:12px;font-weight:600}
+.c-act{color:var(--act)}.c-prop{color:var(--prop)}.c-ok{color:var(--ok)}.c-warn{color:var(--warn)}.c-bad{color:var(--bad)}.c-dim{color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--dim);font-weight:600}
+.tw{overflow-x:auto}
+.tl{border-left:2px solid var(--line);margin-left:6px;padding-left:16px}
+.tl .it{position:relative;margin:0 0 14px}.tl .it:before{content:"";position:absolute;left:-23px;top:6px;width:12px;height:12px;border-radius:50%;background:var(--act)}
+.tl .it.f:before{background:var(--bad)}.tl .it.p:before{background:var(--ok)}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--fg);font-size:13px;font-family:inherit}
+svg .bx{fill:var(--card);stroke:var(--line)}svg .a{fill:none;stroke:var(--dim);stroke-width:1.5}
+svg .bp{fill:none;stroke:var(--prop);stroke-dasharray:5 4}
+.small{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body><main>
+<div class="k">oxledger · 研究 04 · 2026-11-07</div>
+<h1>團隊運作模式、高度客製化、AI 團隊</h1>
+<p class="lead">使用者要求：從整個團隊（PM、設計師、工程師、類 Grok Bot 的 AI 團隊）的運作模式設計介面；主副色、logo、主標題要能客製；頁面與表單要能客製；先多輪研究再改介面。文字版：<a href="04-team-ops-customization.md" style="color:var(--act)">04-team-ops-customization.md</a>。</p>
+
+<h2>結論</h2>
+<div class="grid">
+  <div class="card"><div class="k">BPMN／心智圖在哪</div><p>都還在目標設計，第一切片沒有。心智圖＝PM 探索期拆需求（投影視圖）；BPMN＝團隊流程規範文件（獨立圖件），例如發布流程、AI 角色交接說明。<b>U27 已決定：依日常頻率排（b）。</b></p></div>
+  <div class="card"><div class="k">角色</div><p>介面角色只決定<b>預設</b>（首頁、捷徑），不決定權限或入口；可複選、可重套、可「以某角色預覽」。</p></div>
+  <div class="card"><div class="k">品牌</div><p>站台層級；兩個顏色生成淺深兩套、依實際配對驗 WCAG 2.2；logo 消毒；草稿 → 預覽 → 發布。<b>不開放自訂 CSS／JS。</b></p></div>
+  <div class="card"><div class="k">表單</div><p>資料規則（必填、唯讀、條件）由 server 對畫面、REST、MCP、匯入一體強制；版面只管呈現。MCP 加 <code>describe_form</code>、<code>validate</code>。</p></div>
+  <div class="card"><div class="k">AI 團隊</div><p>每個角色一個 agent principal，綁一位 sponsor；同一台電腦的 bot 共用安全脈絡；只有 sponsor 能交辦與核准；agent 事件預設不觸發 agent。</p></div>
+</div>
+
+<h2>研究過程</h2>
+<div class="tl">
+  <div class="it"><b>第 1 輪 · 三路平行研究</b> <span class="small">A 團隊運作（26 查詢）· B 客製化（35 查詢）· C AI 團隊（13 查詢＋直接讀頁）</span><div class="small">死路：Height 已停服；PM 用心智圖的調查找不到；Grok Bot 電腦共用與否來源矛盾；Asana help 正文被截斷。</div></div>
+  <div class="it f"><b>第 2 輪 · GPT 獨立審查：fail，13 條</b><div class="small">Grok Bot 與 Claude Tag 事實過時（自行讀 docs.x.ai、claude.com 查證後改寫；GPT 說的 Audit Logs 查無來源，不採用）；角色 principal 沒處理共用 runtime；觸發與核准權限未定；防迴圈不可執行；範本以全 direct 為底；L0／L1 強制力矛盾；規則發布與 undo 生命週期；版面保護清單；時間線會藏寫入；URL 偵測不到變更；對比驗收單位；高度客製沒變成可驗收流程。</div></div>
+  <div class="it f"><b>第 3 輪 · fail，3 條</b><div class="small">換 sponsor 會清掉來源歷史；查看權過廣；PM 助理範本缺建單必要欄位。</div></div>
+  <div class="it f"><b>第 4 輪 · fail，1 條</b><div class="small">專案管理員查看完整設定沒有跨專案範圍限制。</div></div>
+  <div class="it p"><b>第 5 輪 · pass</b><div class="small">設計層審查通過；不代表已實作或外部產品資料重新查證。U24–U37 待使用者確認。</div></div>
+</div>
+
+<h2>團隊流程與交接點</h2>
+<div class="card"><svg viewBox="0 0 980 230" role="img" aria-label="外部回報進 Triage，PM 分流與寫 spec，交給設計師，設計交接給工程師，工程交給 QA，再由設計 QA 簽核；AI 角色在旁協助">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor" style="color:var(--dim)"/></marker></defs>
+  <rect class="bx" x="10" y="40" width="130" height="50" rx="8"/><text x="22" y="62">外部回報</text><text x="22" y="80" style="font-size:11.5px;fill:var(--dim)">客戶、表單、email</text>
+  <rect class="bx" x="180" y="40" width="140" height="50" rx="8"/><text x="192" y="62">PM · Triage</text><text x="192" y="80" style="font-size:11.5px;fill:var(--dim)">接受／拒絕／重複</text>
+  <rect class="bx" x="360" y="40" width="140" height="50" rx="8"/><text x="372" y="62">設計師</text><text x="372" y="80" style="font-size:11.5px;fill:var(--dim)">探索 → 定稿</text>
+  <rect class="bx" x="540" y="40" width="140" height="50" rx="8"/><text x="552" y="62">工程師</text><text x="552" y="80" style="font-size:11.5px;fill:var(--dim)">實作 → PR</text>
+  <rect class="bx" x="720" y="40" width="110" height="50" rx="8"/><text x="732" y="62">QA</text><text x="732" y="80" style="font-size:11.5px;fill:var(--dim)">驗證</text>
+  <rect class="bx" x="860" y="40" width="110" height="50" rx="8"/><text x="872" y="62">設計 QA</text><text x="872" y="80" style="font-size:11.5px;fill:var(--dim)">設計師簽核</text>
+  <path class="a" d="M140 65H178" marker-end="url(#ar)"/><path class="a" d="M320 65H358" marker-end="url(#ar)"/><path class="a" d="M500 65H538" marker-end="url(#ar)"/><path class="a" d="M680 65H718" marker-end="url(#ar)"/><path class="a" d="M830 65H858" marker-end="url(#ar)"/>
+  <text x="372" y="26" style="font-size:11.5px;fill:var(--act)">交接卡：產物＋基準＋驗收條件</text>
+  <rect x="180" y="150" width="140" height="44" rx="8" class="bp"/><text x="192" y="177" style="fill:var(--prop)">triage@carol</text>
+  <rect x="360" y="150" width="140" height="44" rx="8" class="bp"/><text x="368" y="177" style="fill:var(--prop)">design-review@erin</text>
+  <rect x="720" y="150" width="110" height="44" rx="8" class="bp"/><text x="732" y="177" style="fill:var(--prop)">qa@alice</text>
+  <rect x="540" y="150" width="140" height="44" rx="8" class="bp"/><text x="548" y="177" style="fill:var(--prop)">pm-assist@carol</text>
+  <path class="bp" d="M250 150V92"/><path class="bp" d="M430 150V92"/><path class="bp" d="M775 150V92"/><path class="bp" d="M610 150C610 120 280 120 260 92"/>
+  <text x="10" y="220" style="font-size:12px;fill:var(--dim)">紫色虛線＝AI 角色（agent principal），協助但不做決定：指派、通過設計、退回狀態都交給人或送 sponsor 核准</text>
+</svg></div>
+
+<h2>視圖：誰在什麼時候用</h2>
+<div class="card tw"><table>
+<tr><th>視圖</th><th>主要使用者</th><th>頻率</th><th>證據強度</th></tr>
+<tr><td>收件匣／列表／看板</td><td>所有人</td><td>每天</td><td><span class="chip c-ok">產品文件</span></td></tr>
+<tr><td>roadmap＋健康度</td><td>PM</td><td>每週</td><td><span class="chip c-ok">產品文件</span></td></tr>
+<tr><td>Gantt</td><td>跨團隊計畫經理</td><td>有依賴或合約日期時</td><td><span class="chip c-ok">產品定位</span></td></tr>
+<tr><td>心智圖</td><td>PM 探索期</td><td>低（推論）</td><td><span class="chip c-warn">沒有調查</span></td></tr>
+<tr><td>BPMN</td><td>營運、流程規範</td><td>很少進 sprint</td><td><span class="chip c-warn">學術、偏舊</span></td></tr>
+<tr><td>ontology graph</td><td>找關聯、阻擋鏈</td><td>分析時</td><td><span class="chip c-dim">推論，差異化</span></td></tr>
+</table></div>
+
+<h2>客製化的層級</h2>
+<div class="card tw"><table>
+<tr><th>層</th><th>內容</th><th>誰能改</th><th>強制力</th></tr>
+<tr><td>L0 欄位定義</td><td>型別、合法值、可見性</td><td>站台管理員</td><td><span class="chip c-act">server 強制</span></td></tr>
+<tr><td>L1 資料規則</td><td>必填、唯讀、條件必填</td><td>站台；專案只能收緊</td><td><span class="chip c-act">server 強制、全通道</span></td></tr>
+<tr><td>L2 表單版面</td><td>分組、順序、頁籤、顯示條件</td><td>站台；專案整份覆寫</td><td><span class="chip c-dim">呈現</span></td></tr>
+<tr><td>L3 頁面版面</td><td>區塊、專案總覽、角色範本</td><td>站台、專案管理員</td><td><span class="chip c-dim">呈現；保護清單不可移除</span></td></tr>
+<tr><td>L4 個人</td><td>首頁、釘選、密度、明暗</td><td>本人</td><td><span class="chip c-dim">只有自己</span></td></tr>
+<tr><td>品牌</td><td>主副色、logo、標題、登入頁</td><td>站台管理員</td><td><span class="chip c-dim">呈現；草稿→預覽→發布</span></td></tr>
+</table>
+<p class="small">保護清單：「需要你決定」、agent 身分標示、核准 diff、權限與失敗提示、待審與暫停狀態、提案標記。</p></div>
+
+<h2>待你決定（U24–U37）</h2>
+<div class="card tw"><table>
+<tr><th>#</th><th>決定</th><th>建議預設</th></tr>
+<tr><td>U24</td><td>介面角色</td><td>只決定預設，可複選、可重套、可預覽</td></tr>
+<tr><td>U25</td><td>設計師與交接</td><td>交接卡分「有版本基準」「僅有連結」</td></tr>
+<tr><td>U26</td><td>Triage 收件匣</td><td>一級畫面</td></tr>
+<tr><td><b>U27</b></td><td><b>視圖先後</b></td><td><b>已決定 (b)：list／board／triage → roadmap＋健康度 → Gantt → mindmap → BPMN</b></td></tr>
+<tr><td>U28–U30</td><td>品牌</td><td>站台層級、兩色生成、logo 消毒、不開 CSS／JS</td></tr>
+<tr><td>U31–U32</td><td>表單</td><td>資料規則與版面分層；describe_form、validate</td></tr>
+<tr><td>U33–U35</td><td>AI 團隊</td><td>每角色一 principal＋sponsor；防迴圈；AI 團隊頁</td></tr>
+<tr><td>U36–U37</td><td>延後項</td><td>delegate 欄位、內建 AI 角色化</td></tr>
+</table></div>
+</main></body></html>

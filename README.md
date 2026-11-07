@@ -27,12 +27,13 @@ See [docs/playbook.md](docs/playbook.md) for MCP client setup, the demo permissi
 
 ## Design docs
 
-- [docs/research/01-redmine-rust-rewrite.md](docs/research/01-redmine-rust-rewrite.md) — research, decisions D1–D19, architecture, experiments (Traditional Chinese)
+- [docs/research/01-redmine-rust-rewrite.md](docs/research/01-redmine-rust-rewrite.md) — research, decisions D1–D20, architecture, experiments (Traditional Chinese)
 - [docs/research/02-e9-custom-fields.md](docs/research/02-e9-custom-fields.md) — E9: custom field storage benchmark (typed EAV vs JSONB)
 - [docs/research/03-e1-zh-retrieval.md](docs/research/03-e1-zh-retrieval.md) — E1: Traditional Chinese retrieval evaluation
 - [docs/design/01-ai-native-ux.md](docs/design/01-ai-native-ux.md) — AI-native frontend usage flows (decided direction: D16)
 - [docs/design/02-first-slice-contract.md](docs/design/02-first-slice-contract.md) — first slice backend contract: auth, REST API, commands, ChangeSet, MCP flows
 - [docs/design/03-search-consistency-explain.md](docs/design/03-search-consistency-explain.md) — search explain, read-after-write consistency, custom field performance
+- [docs/design/04-prototype.md](docs/design/04-prototype.md) — clickable prototype of the first slice (SPA + simulated MCP agent)
 - [docs/playbook.md](docs/playbook.md) — dev setup and symptom → cause → fix notes (Traditional Chinese)
 
 ## Relationship to Redmine

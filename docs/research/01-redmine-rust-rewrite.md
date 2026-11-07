@@ -33,6 +33,7 @@
 | D17 | 「不用中國產品」的判定：看開發者或公司所在地；範圍是直接依賴、模型、詞典、字型、託管服務；間接依賴只列清單、不硬擋（原設計 01 的 Q13） | 2026-11-06 | 有可操作的判定標準，供 `cargo deny`、選模型與字型時使用 |
 | D18 | 受限自訂欄位可以開放給內建角色（Non member、Anonymous）；**篩選與顯示用同一套規則**：呼叫者在該專案的實際角色（同 `db::role_ids_for`）包含 `field_roles` 之一。刻意不照抄 Redmine「篩選只看成員角色」 | 2026-11-06 | migration 0003；避免「看得到欄位卻篩不到」；`custom_fields_pg` 的 Triage 欄位驗證兩條路徑一致 |
 | D19 | 第一切片設計的使用者決定：agent 可同時委派多個受眾一致專案，以「工作脈絡 + 曾授予專案集合 + 提案版本來源快照 + 受眾包含檢查」防止內容搬到更寬的受眾（U1）；接受和 Redmine 的刻意差異（U2）；分流用逐張提案 + 佇列勾選核准（U11）；搜尋採基本排名契約（Q-S1，含 U7）；自訂欄位不就地改型別、提供轉換工具（Q-S9）。其餘待決照建議預設 | 2026-11-07 | 設計 [00 待決總表](../design/00-open-decisions.md)、[02](../design/02-first-slice-contract.md)（GPT 22 輪）、[03](../design/03-search-consistency-explain.md) |
+| D20 | 使用者看過原型後決定：agent 可以自行變更。新委派預設全部直接寫入，可逐項改成需要核准或不允許；agent 用專屬 token，歷史與畫面上當成獨立使用者（`claude-code@alice`〔agent〕），紀錄分 actor／on_behalf_of／approver。防線改成：受眾一致與 R 照舊、配額與事故熔斷、Agent 活動頁與最小 undo。取代前端 Q3「零自動套用」 | 2026-11-07 | 設計 [02 §16](../design/02-first-slice-contract.md)（GPT 第 23–24 輪）、[00](../design/00-open-decisions.md)、[04 原型](../design/04-prototype.md) |
 
 > D3 的背景：rmcp（官方 MCP Rust SDK）是 **Apache-2.0 單一授權**，sqlx 是 MIT OR Apache-2.0。FSF 的立場是 Apache-2.0 與 **GPL-2.0-only 不相容**，與 GPLv3 相容。Redmine 原始檔檔頭本來就是「version 2 or any later version」，所以建議 SPDX 用 `GPL-2.0-or-later`（和上游一致），散布的二進位檔實際以 GPLv3 條款成立。若堅持 `GPL-2.0-only`，就不能連結 rmcp。（非法律意見）
 

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oxledger 原型</title>
+<script>document.write('<link rel="stylesheet" href="style.css?t=' + Date.now() + '">');</script>
+</head>
+<body>
+<div class="pbar">
+  <span class="tag">PROTOTYPE</span>
+  <span class="muted">第一切片的可點擊原型 · 假資料 · 不連後端</span>
+  <button data-drawer="guide" class="on">流程導覽</button>
+  <button data-drawer="ctl">情境控制</button>
+  <button data-drawer="agent">Agent 主控台（MCP）</button>
+  <span class="sp"></span>
+  <span class="clk">點擊 <span id="clk">0</span></span><button id="clk-reset">歸零</button>
+  <button id="theme">深色／淺色</button>
+</div>
+<div class="shell">
+  <aside id="guide" class="drawer on"></aside>
+  <aside id="ctl" class="drawer"></aside>
+  <div class="main"><div class="app"></div></div>
+  <aside id="agent" class="drawer r"></aside>
+</div>
+<div id="modal"></div><div id="pal"></div><div class="toasts" id="toasts"></div>
+<script>
+// 依序載入（加時間戳避免瀏覽器快取舊版）
+(function load(list){ if (!list.length){ renderCtl(); render(); renderGuide(); return; }
+  const s = document.createElement('script'); s.src = list[0] + '?t=' + Date.now(); s.onload = () => load(list.slice(1)); document.body.appendChild(s);
+})(['data.js','app.js','agent.js','d20.js','layout.js','team.js','timeline.js','schedule.js']);
+</script>
+</body>
+</html>

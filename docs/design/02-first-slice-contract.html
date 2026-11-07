@@ -114,12 +114,13 @@ footer{margin-top:60px;color:var(--dim);font-size:13px;border-top:1px solid var(
   <nav class="toc">
     <a href="#decisions">關鍵決定</a><a href="#identity">身分模型</a><a href="#cs">ChangeSet 狀態機</a>
     <a href="#seq">核准並套用時序</a><a href="#locks">鎖順序</a><a href="#audience">受眾一致與 epoch</a>
-    <a href="#perm">權限對照</a><a href="#mcp">MCP 主要用法</a><a href="#ux">使用者方便性</a><a href="#steps">實作順序</a><a href="#pending">待你決定</a><a href="#align">對齊 03</a><a href="#gpt">GPT 討論</a>
+    <a href="#perm">權限對照</a><a href="#mcp">MCP 主要用法</a><a href="#ux">使用者方便性</a><a href="#steps">實作順序</a><a href="#pending">待你決定</a><a href="#align">對齊 03</a><a href="#schedule">里程碑與時程</a><a href="#gpt">GPT 討論</a>
   </nav>
 </header>
 
 <h2 id="decisions"><span class="n">00</span>關鍵決定</h2>
 <p class="lead">每張卡：決定，加上理由。</p>
+<div class="card w" style="margin-bottom:14px"><div class="k">D20 · 2026-11-07 修訂（優先於下方各卡）</div><h4>agent 可以直接寫入，預設 direct</h4><p>使用者看過原型後決定：每個委派逐項設定命令與欄位為「直接寫入／需要核准／不允許」，預設全部直接寫入；agent 用專屬 token，當成獨立使用者 <code>claude-code@alice</code>〔agent〕顯示，紀錄分 actor、on_behalf_of、approver。新增 MCP <code>command_submit</code>（回 <code>applied</code> 或 <code>review_required</code>）。受眾一致、R、epoch 照舊；防線改為配額與熔斷、Agent 活動頁、最小 undo。下方 K1、K6、K10 與身分圖中「只能提案」「auto_apply_ops = ∅」的敘述以 md §16 為準。</p><div class="why">GPT 第 23–24 輪收斂；§16 尚未送全文複審。</div></div>
 <div class="grid">
   <div class="card"><div class="k">K1 · 身分</div><h4>核准只接受瀏覽器 session 裡的人</h4><p>本機密碼 + <code>__Host-</code> cookie + 綁 session 的 CSRF token。agent 用新的、綁委派的 bearer；舊 <code>api_keys</code> 降為 MCP 唯讀。</p><div class="why">從身分模型上堵住「agent 拿人的 key 去按核准」。</div></div>
   <div class="card"><div class="k">K2 · API</div><h4>REST + 動作端點</h4><p><code>/api/v1</code>，資源清楚（issue、ChangeSet、execution）；MCP 和 REST 都是 adapter，共用 application service。</p><div class="why">OpenAPI → TS 型別（D6）；HTTP 語意可用。</div></div>
@@ -448,7 +449,7 @@ footer{margin-top:60px;color:var(--dim);font-size:13px;border-top:1px solid var(
   <div class="card"><div class="k">U9 <span class="chip c-warn">依建議預設，待確認</span></div><h4>agent 建私有 issue</h4><p>受眾更窄；後續操作只限同一份提案內。</p><div class="why">建議：允許。</div></div>
   <div class="card"><div class="k">U10 <span class="chip c-warn">依建議預設，待確認</span></div><h4>拒絕後能否修訂再送</h4><p>終態可避免反覆糾纏，但小改要開新提案。</p><div class="why">建議：不能（終態）。</div></div>
   <div class="card b"><div class="k">U11 · 影響產品 <span class="chip c-ok">已決定（2026-11-07）</span></div><h4>分流的批次審閱方式</h4><p>每張一份獨立提案＋佇列勾選多份、各自核准套用；勾選只限短欄位與單次 transition，長文、note、建立、duplicate 逐份打開。會部分成功。</p><div class="why">決定：接受。</div></div>
-  <div class="card"><div class="k">U12 <span class="chip c-warn">依建議預設，待確認</span></div><h4>版本模型與 fixed_version_id</h4><p>「改成下個版本」需要新的領域模型；「下個」怎麼定也要規則。</p><div class="why">建議：下個里程碑；第一切片 describe 明確回不支援。</div></div>
+  <div class="card"><div class="k">U12 <span class="chip c-ok">被 U39 推翻（2026-11-07）</span></div><h4>版本模型與 fixed_version_id</h4><p>你決定把里程碑放進第一切片，完整契約在 §17（下方「里程碑與時程」）。</p><div class="why">決定：第一切片就做。</div></div>
   <div class="card"><div class="k">U13 <span class="chip c-warn">依建議預設，待確認</span></div><h4>一份提案改多張 issue</h4><p>要擴充目標範圍、diff、上限與交易契約。</p><div class="why">建議：第一切片不開。</div></div>
 </div>
 
@@ -460,7 +461,61 @@ footer{margin-top:60px;color:var(--dim);font-size:13px;border-top:1px solid var(
 <div class="tw"><table><thead><tr><th>#</th><th>02 的處理</th></tr></thead><tbody><tr><td>F1</td><td><code>get_many</code> 補 <code>event_limit</code></td></tr><tr><td>F2</td><td>MCP 錯誤和 REST 同一個物件（含 <code>retry_after_ms</code>、<code>next_actions</code>、<code>message</code>）</td></tr><tr><td>F3</td><td><code>source_unverifiable</code> 是外層錯誤，逐筆狀態沿用 03 §3.7</td></tr><tr><td>F4</td><td>agent 讀提案／結果先驗委派，所有出口共用「agent 回應過濾」；owner 修訂版不回本文與衍生值</td></tr><tr><td>F5</td><td>agent 的 actions 只列能提案的動作</td></tr><tr><td>F6</td><td>授權狀態不跨請求快取；寫入交易 <code>FOR SHARE</code> 讀 <code>search_settings</code>，epoch 輪替自然等在途寫入結束</td></tr></tbody></table></div>
 <p class="lead" style="margin-top:10px">需要 03 再配合：#12 epoch 輪替用 <code>UPDATE search_settings</code>，提交後才切換索引、不以停寫入為正確性前提；#13 寫明這一列是寫入與輪替的協調點。</p>
 
-<h2 id="gpt"><span class="n">12</span>GPT 討論</h2>
+<h2 id="schedule"><span class="n">12</span>里程碑與時程（§17）</h2>
+<p class="lead">2026-11-07 你決定把里程碑放進第一切片（U39，推翻 U12），並逐項決定了 U40–U43。介面叫「里程碑」，資料模型與 API 叫 <code>version</code>（對應 Redmine Version）。GPT 第 28–32 輪審查，最後一輪 pass。</p>
+<div class="grid">
+  <div class="card b"><div class="k">U39 <span class="chip c-ok">已決定</span></div><h4>里程碑進第一切片</h4><p>專案可設里程碑（名稱、日期、進行中／鎖定／關閉）；issue 有目標里程碑、開始日、到期日；專案預設看「時程」。</p></div>
+  <div class="card b"><div class="k">U40 <span class="chip c-ok">已決定</span></div><h4>不處理 Redmine 共用版本匯入</h4><p>使用說明註明：里程碑只屬於一個專案，不能跨專案共用；從 Redmine 搬資料時要自行在各專案建立。</p></div>
+  <div class="card b"><div class="k">U41 <span class="chip c-ok">已決定</span></div><h4>agent 可建立、修改里程碑</h4><p>預設直接寫入，可改成需要核准或不允許；刪除只限人。既有委派不自動加入新操作，委派頁一鍵加入。</p></div>
+  <div class="card b"><div class="k">U42 <span class="chip c-ok">已決定</span></div><h4>「今天」用組織時區</h4><p>預設 Asia/Taipei；逾期、健康度、下個版本都用它，每個人看到一樣的結果。</p></div>
+  <div class="card b"><div class="k">U43 <span class="chip c-ok">已決定</span></div><h4>健康度可調門檻</h4><p>組織預設「離日期 ≤ 7 天且未完成 &gt; 50%」也算有風險；專案可覆寫或停用。</p></div>
+</div>
+
+<h3>規則</h3>
+<div class="tw"><table><thead><tr><th>#</th><th>規則</th><th>違反時</th></tr></thead><tbody>
+<tr><td>R1</td><td>新指定的里程碑要存在、同專案、進行中</td><td>不存在／別的專案／已刪除：同形狀 <code>invalid_value</code>；鎖定或關閉：<code>version_not_open</code></td></tr>
+<tr><td>R2</td><td>原本就在鎖定／關閉里程碑的單，改其他欄位照常；設成原值是 no_effect</td><td>—</td></tr>
+<tr><td>R4</td><td>開始日 ≤ 到期日，看整份修改套用後的結果</td><td><code>invalid_value</code>（<code>date_order</code>）</td></tr>
+<tr><td>R5</td><td>刪除（軟刪除）只看<b>你看得到</b>的單：看不到的單不影響結果，保留指向已刪除的里程碑</td><td><code>version_in_use</code>，只列看得到的 key</td></tr>
+<tr><td>R6</td><td>改里程碑日期、狀態不會自動改任何單；改之前可預覽影響</td><td>—</td></tr>
+<tr><td>R8</td><td>同專案名稱唯一（不分大小寫）</td><td><code>version_name_taken</code></td></tr>
+<tr><td>R10</td><td>「今天」＝組織時區的日期，回應附 <code>today</code></td><td>—</td></tr>
+</tbody></table></div>
+
+<h3>「下個版本」怎麼解析</h3>
+<svg viewBox="0 0 760 170" width="100%" role="img" aria-label="下個版本解析流程" style="max-width:760px">
+  <style>.bx{fill:var(--card2);stroke:var(--line2)}.tx{fill:var(--fg);font-size:13px}.dm{fill:var(--dim);font-size:12px}.ok{fill:var(--ok-a);stroke:var(--ok)}.wn{fill:var(--warn-a);stroke:var(--warn)}.ar{stroke:var(--line2);fill:none;marker-end:url(#ah)}</style>
+  <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--line2)"/></marker></defs>
+  <rect class="bx" x="10" y="60" width="150" height="44" rx="8"/><text class="tx" x="85" y="87" text-anchor="middle">同專案、進行中</text>
+  <rect class="wn" x="220" y="8" width="230" height="40" rx="8"/><text class="tx" x="335" y="33" text-anchor="middle">有逾期但還開著的 → 歧義，問人</text>
+  <rect class="wn" x="220" y="64" width="230" height="40" rx="8"/><text class="tx" x="335" y="89" text-anchor="middle">沒有今天以後的日期 → none</text>
+  <rect class="bx" x="220" y="120" width="230" height="40" rx="8"/><text class="tx" x="335" y="145" text-anchor="middle">取日期最近的</text>
+  <rect class="ok" x="510" y="96" width="230" height="30" rx="8"/><text class="tx" x="625" y="116" text-anchor="middle">只有一個 → resolved</text>
+  <rect class="wn" x="510" y="134" width="230" height="30" rx="8"/><text class="tx" x="625" y="154" text-anchor="middle">同一天有多個 → 歧義，問人</text>
+  <path class="ar" d="M160 74 L218 30"/><path class="ar" d="M160 82 L218 84"/><path class="ar" d="M160 92 L218 138"/>
+  <path class="ar" d="M450 136 L508 112"/><path class="ar" d="M450 144 L508 148"/>
+  <text class="dm" x="10" y="160">鎖定的不算候選；不做模糊比對</text>
+</svg>
+
+<h3>agent 寫里程碑（§17.9a）</h3>
+<div class="grid">
+  <div class="card"><div class="k">命令</div><h4><code>create_version</code>／<code>update_version</code></h4><p>經 <code>command_submit</code>，單獨一份文件、一個 op；修改要帶里程碑的 <code>lock_version</code>。不能設 sharing、不能刪除。</p></div>
+  <div class="card"><div class="k">權限與受眾</div><h4>委派者要有 manage_versions</h4><p>名稱、描述是專案的公開內容，照「公開目的地」受眾規則檢查；來源受眾比較窄就擋。</p></div>
+  <div class="card"><div class="k">鎖</div><h4>只共用 projects → versions</h4><p>直接寫入、送審套用、人工回復各自沿用原本的前段；里程碑文件從不鎖 issue，所以和排入 issue 沒有環。人工回復不看 agent 的委派與配額。</p></div>
+  <div class="card"><div class="k">配額與回復</div><h4>每小時建 10 個</h4><p>同一里程碑 10 分鐘改超過 5 次觸發熔斷。逐欄回復只動「目前仍是那次寫的」欄位；回復建立＝軟刪除，有你看得到的單在裡面就不行。</p></div>
+</div>
+
+<h3>健康度（讀取時算、只用你看得到的單）</h3>
+<div class="tw"><table><thead><tr><th>狀態</th><th>條件（由上往下第一個成立）</th></tr></thead><tbody>
+<tr><td>closed</td><td>里程碑已關閉</td></tr>
+<tr><td>no_date</td><td>沒有日期</td></tr>
+<tr><td>overdue</td><td>日期已過、還有未結案的單</td></tr>
+<tr><td>at_risk</td><td>有單逾期或晚於里程碑；<b>或</b>離日期 ≤ 門檻天數且未完成比例 &gt; 門檻（U43，可調、可停用）</td></tr>
+<tr><td>on_track</td><td>其他</td></tr>
+</tbody></table></div>
+<p class="lead">搜尋：<code>overdue</code> 不存進索引，查詢時用今天展開，換日不用重建；<code>version:"v2.0"</code> 與 <code>version:next</code> 要先限定單一專案。測試 T-V1…T-V35。</p>
+
+<h2 id="gpt"><span class="n">13</span>GPT 討論</h2>
 <div>
   <div class="round"><h4>第 1 輪 · 獨立提案</h4><p>完整契約草案。採用：AuthContext、舊 key 唯讀、REST、proposal_contents 分離、0002 NULL 漏洞與 agent 當 user 欄位值的發現。不採用：全域 guard、human_direct 建 ChangeSet、自創 reducer、私有 note 另需 view 權限、worker／lease／fencing。</p></div>
   <div class="round"><h4>第 2 輪 · 互相批判</h4><p>帶著 Redmine 原始碼與 PG 實測結果。GPT 撤回 guard、reducer、worker；補上「先鎖 ChangeSet 再鎖 execution」「期限在鎖後」「precondition 不能當 oracle」。主要分歧：單專案＋非私有不足以防受眾擴大（own 反例）。</p></div>
@@ -477,6 +532,9 @@ footer{margin-top:60px;color:var(--dim);font-size:13px;border-top:1px solid var(
   <div class="round"><h4>第 17 輪 · 確認修正（pass）</h4><p>兩項修正完整，沒有新的 critical／major；跨新脈絡的記憶殘留仍是 U14。</p></div>
   <div class="round"><h4>第 18–21 輪 · 全文複審（fail ×4）</h4><p>每輪送全文。找到：owner 修訂版的 <code>proposal_hash</code> 與驗證碼仍能讓 agent 驗證低熵猜測 → 核准前對 agent 只回版本中繼資料，套用後只回成敗；<code>changeset_list</code> 改成脈絡內有效委派的聯集；T-A1 拆兩層；群組成員異動與群組加入專案並行漏 bump → 先鎖群組；全專案 bump 與建立專案並行 → <code>project_catalog</code> 協調鎖。</p></div>
   <div class="round"><h4>第 22 輪 · 全文複審（pass）</h4><p>全文沒有新的 critical／major。這是設計層結論，DDL 未執行、並行測試未跑。</p></div>
+  <div class="round"><h4>第 23–27 輪 · D20 agent 直接寫入（fail → pass）</h4><p>預設直接寫入、逐項政策、agent 是獨立使用者；undo 的來源快照與鎖、事故回復、配額與熔斷。詳見 md 附錄 A。</p></div>
+  <div class="round"><h4>第 28–30 輪 · §17 里程碑與時程（fail → pass）</h4><p>修正：刪除依「所有引用」會透露看不到的單 → 只看看得到的；跨專案同名搜尋要限定專案；日期欄位本來就有、不當新欄位；時程預設範圍上限；已刪除標記；舊日期資料的確定性修復。</p></div>
+  <div class="round"><h4>第 31–32 輪 · 依 U40–U43 改寫（fail → pass）</h4><p>人工回復不能被已撤銷的委派擋住（三種入口的鎖前段分開）；里程碑事件的遮蔽紀錄表；門檻設定的 API 與首次覆寫的並行。</p></div>
 </div>
 
 <footer>oxledger · GPL-2.0-or-later · 本頁圖表為內嵌 SVG，未使用外部圖表庫 · 完整規格、DDL、錯誤碼與測試清單見 <code>docs/design/02-first-slice-contract.md</code></footer>
