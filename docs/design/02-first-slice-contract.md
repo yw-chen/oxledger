@@ -474,6 +474,9 @@ INSERT INTO project_catalog VALUES (true);
 | POST／PATCH／DELETE | `/projects/{id}/versions`、`/versions/{id}` | 人（`manage_versions`） | 〔U39〕建立、修改、軟刪除里程碑（§17.3 R5、§17.8） |
 | GET | `/projects/{id}/timeline` | 人 | 〔U39〕時程視圖（§17.12） |
 | GET／PUT | `/projects/{id}/schedule-settings`、`/org/schedule-settings` | 人（PUT：`manage_versions`／系統管理員） | 〔U43〕健康度門檻（§17.12） |
+| GET／PUT／POST | `/projects/{id}/tabs`、`/projects/{id}/tabs/reset`、`/projects/{id}/setting-events` | 人（寫入：`manage_project`） | 〔U44〕專案分頁（§18.5） |
+| GET／POST／DELETE | `/projects/{id}/repos…`、`/projects/{id}/dev…`、`/issues/{key}/dev`、`/admin/github` | 人 | 〔§19〕GitHub 連動與開發資訊（§19.7） |
+| POST | `/integrations/github/webhook` | GitHub（只靠簽章） | 〔§19〕webhook 接收（§19.5） |
 
 沒有「建立 ChangeSet」的 SPA 端點（origin `human` 第一版不開）。帶 bearer 呼叫 `/api/v1` 一律 `unauthenticated`；即使將來某條路徑接受了其他憑證，approve／apply／revise／commands 的 application service 仍自己檢查 `kind == User && method == BrowserSession`，不符就 `human_session_required`。
 
@@ -551,6 +554,9 @@ INSERT INTO project_catalog VALUES (true);
 | 422 | `version_not_open` | 〔U39〕新指定的里程碑已鎖定或關閉（§17.7） | 否 |
 | 409 | `version_in_use` | 〔U39〕刪除仍被呼叫者看得到的 issue 引用的里程碑；只列看得到的 key（§17.3 R5） | 否 |
 | 409 | `version_name_taken` | 〔U39〕同專案已有同名（NFC＋casefold）未刪除里程碑 | 否 |
+| 422 | `repo_not_linkable` | 〔§19〕repo 不存在、未開放或 App 不可存取（同形狀） | 否 |
+| 409 | `repo_already_linked` | 〔§19〕已連動 | 否 |
+| 422 | `repo_link_limit` | 〔§19〕專案已連 20 個 repo | 否 |
 
 `truncated` 不是錯誤，是查詢結果的 `coverage` 欄位。
 
@@ -1796,7 +1802,7 @@ owner 修訂過之後 agent 還要再改：用 `changeset_revise` 帶 `expected_
 | **S4** 命令引擎 + human_direct | migration：operation_requests、issue_notes、issue_duplicates、issues.last_event_seq、issue_events（不含指向 ChangeSet 表的 FK）、issue_event_redactions、〔D20〕command_executions、issue_field_origins、execution_field_changes、issues／issue_notes.created_on_behalf_of_id；`evaluate()`；`/commands`；own 判斷函式（§16.2）；〔U39〕步驟 7b、里程碑 REST、`version_events`、`version_event_redactions`、`version_field_origins`、`execution_version_changes` | T-P2…T-P12、T-W1…T-W8、T-I1（commands 部分）、T-R4、T-R8、T-R9 |
 | **S5** ChangeSet | migration：proposal_contents、changesets、changeset_versions、changeset_version_ops、changeset_decisions、changeset_executions、changeset_applications，**再 ALTER issue_events 補 FK**；REST 端點；同步套用 | T-I1…T-I6、C-1…C-6、T-R1…T-R3、T-R5、T-R7、T-R10、T-R12、T-R13、T-S7、T-S10、T-S11、T-S12、T-R14、T-R15 |
 | **S6** agent 提案路徑 | projects.security_epoch + trigger（含使用者、admin、匿名的全專案 bump；principal 類管理交易先鎖 principal、群組類先鎖群組、全專案 bump 與建立專案經 `project_catalog` 協調）；受眾一致判定；工作脈絡、R、版本來源快照（`changeset_version_source_projects`）、受眾集合包含檢查；`describe` scope context；agent 讀取限制；MCP 工具（§8.8：`get` include、`get_many`、`resolve` purpose、`describe` 接受 key／名稱、`changeset_*`、`operation_get`）；IssueRef 接受 key；`next_actions`；changeset_groups；配額；〔D20〕delegation 政策表與 policy_version、`command_submit`、agent_direct 路徑、§16.6 配額與熔斷（`agent_context_write_controls`）；〔U39〕`version_list`、`command_submit` 的 `create_version`／`update_version`、委派「新操作可加入」 | T-Q1…T-Q8、T-X1…T-X24、T-R6、T-R11、I-1…I-5、T-M1…T-M8；§14 的 9 個用法序列在 E2E 跑通，往返次數不超過 §14 表列 |
-| **S6b** 審閱便利 | 待審佇列 `review_modes`、佇列勾選核准、`revision-previews` + `revise-and-apply`；〔D20〕Agent 活動頁、單筆 undo、事故回復、暫停與摘要卡（§16.7、§16.10）；〔U39〕時程視圖、健康度門檻設定、里程碑的 undo | T-U1…T-U12、T-M9…T-M20 |
+| **S6b** 審閱便利 | 待審佇列 `review_modes`、佇列勾選核准、`revision-previews` + `revise-and-apply`；〔D20〕Agent 活動頁、單筆 undo、事故回復、暫停與摘要卡（§16.7、§16.10）；〔U39〕時程視圖、健康度門檻設定、里程碑的 undo；〔U44〕專案分頁（§18，T-PT1…T-PT17）；〔§19〕GitHub 連動（T-G1…T-G36） | T-U1…T-U12、T-M9…T-M20 |
 | **S7** D12 遮蔽 | note／事件／提案內容的遮蔽交易（含衍生副本規則）；讀取出口擋舊片段 | T-S3…T-S6、T-S8、T-S9 |
 | **S8** 發布門檻 | E4w 全套、崩潰注入、搜尋一致性 | E4w-1…8、T-S1、T-S2、T-D1…T-D14、〔U39〕T-V1…T-V35 全綠；**越權、繞過政策的寫入（review／off 卻產生效果）、重複效果 = 0**（設計 01 §16.8；〔D20 修訂〕原本的「未核准套用 = 0」改成這一條） |
 
@@ -2997,6 +3003,370 @@ undated      = open 中 effective_date 為 null
 
 ---
 
+## 18. 專案框架與專案分頁（U44，2026-11-07 使用者決定：專案共用）〔完整契約；GPT 第 33–38 輪，pass〕
+
+使用者：「點議題會跳出專案，然後專案的 tab 可新增與管理」，U44 決定「專案共用」。原型見 F29（`prototype/ptabs.js`）。
+
+### 18.1 範圍
+
+| 做 | 不做（第一切片） |
+|---|---|
+| 議題頁顯示在所屬專案的框架裡（專案名、分頁列、回到剛才分頁的連結）；網址仍是 `/issue/{key}` | 個人分頁（U44 決定專案共用；之後若要個人覆寫另議） |
+| 專案分頁設定：內建視圖改名、排序、隱藏、設預設；新增「儲存的篩選」「外部連結」；刪除、還原預設 | 嵌入外部網頁（iframe）、自訂 HTML、外掛分頁 |
+| 分頁設定的並行控制、歷史 | agent 改分頁（不在 D20 命令清單；之後要開放比照 §17.9a） |
+
+### 18.2 資料模型
+
+```sql
+-- 每個專案一列（同 §17.2 project_schedule_settings 的做法：migration 補既有專案、建立專案時同交易 INSERT）
+CREATE TABLE project_tab_settings (
+    project_id    uuid PRIMARY KEY REFERENCES projects(id),
+    tabs          jsonb NOT NULL,          -- 有序陣列，格式見下；NULL 不允許，預設值由應用層寫入
+    default_tab   text  NOT NULL,          -- tabs 裡某個 id
+    is_default    boolean NOT NULL DEFAULT true,   -- true＝從沒人改過（還原預設也設回 true）
+    lock_version  integer NOT NULL DEFAULT 0,
+    updated_by    uuid REFERENCES principals(id),  -- NULL＝建立時的預設
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    CHECK (jsonb_typeof(tabs) = 'array' AND jsonb_array_length(tabs) BETWEEN 5 AND 15)
+);
+
+-- 分頁設定的歷史（專案設定稽核；不是 issue 事件）
+CREATE TABLE project_setting_events (
+    id           uuid PRIMARY KEY DEFAULT uuidv7(),
+    project_id   uuid NOT NULL REFERENCES projects(id),
+    at           timestamptz NOT NULL DEFAULT now(),
+    kind         text NOT NULL CHECK (kind IN ('tabs_updated', 'tabs_reset', 'repo_linked', 'repo_unlinked',
+                                               'pr_hidden', 'pr_unhidden', 'github_content_revoked')),
+    actor_id     uuid NOT NULL REFERENCES principals(id),
+    operation_request_id uuid NOT NULL REFERENCES operation_requests(id),
+    payload      jsonb NOT NULL,          -- tabs：{"before": 完整設定, "after": 完整設定}，完整設定＝{tabs, default_tab, is_default}
+                                          -- repo：{"link_id", "repo_id", "full_name"}；pr：{"pr_id", "repo_id", "number"}（不存標題）
+    redaction_id uuid                     -- 同 §7.5：管理員可遮蔽（分頁名稱、篩選條件、網址也是使用者輸入）
+);
+CREATE INDEX project_setting_events_idx ON project_setting_events (project_id, at DESC);
+```
+
+`tabs` 陣列每一項：
+
+| 欄位 | 內建（`kind = builtin`） | 儲存的篩選（`kind = query`） | 外部連結（`kind = link`） |
+|---|---|---|---|
+| `id` | 固定：`timeline`、`milestones`、`issues`、`dev`、`plan` | server 產生 `q_` + 10 碼 base32，建立後不變 | server 產生 `l_` + 10 碼 |
+| `title` | 可改；空字串不行 | 必填 | 必填 |
+| `hidden` | 可 | 可 | 可 |
+| `query` | — | 正規化後的搜尋字串（§18.3 R-T3） | — |
+| `url` | — | — | 正規化後的 https 網址（R-T4） |
+
+### 18.3 規則
+
+| # | 規則 | 違反時 |
+|---|---|---|
+| R-T1 | 五個內建分頁**每個剛好出現一次**（可隱藏、可改名、可排序，不能刪）；新版本增加內建分頁時，migration 把它加在最後、`hidden = false` | `invalid_value`，`details.kind = "builtin_missing"` |
+| R-T2 | 自訂分頁（query＋link）最多 10 個。`title` 依序：去頭尾空白（Unicode White_Space）→ NFC，存這個值；長度 1–20 字（以存的值算）、不能含控制字元；唯一性用存的值再 casefold 比較（內建分頁的名稱也一起比） | `invalid_value`（`tab_limit`／`tab_title_taken`／`tab_title_invalid`） |
+| R-T3 | `query` 用設計 03 的搜尋語法解析，存正規化後的字串；**必須**解析出唯一的 `project:` 條件且等於本專案，沒寫就由 server 補上；寫別的專案或多個專案 → 拒絕。執行時照一般搜尋，用**開啟者**的可見性（不存結果、不存數字） | `invalid_value`（`tab_query_scope`／`tab_query_syntax`，後者帶 03 的錯誤位置） |
+| R-T4 | `url`：只收 `https`；不能帶 userinfo（`user:pass@`）；長度 ≤ 2048；用 WHATWG URL 正規化後存；不能指向 oxledger 自己的 origin（避免做出看起來像內部頁的連結）。SPA 用 `<a target="_blank" rel="noopener noreferrer">` 開新視窗，旁邊顯示主機名；server **不**抓取、不嵌入、不代理 | `invalid_value`（`tab_url_invalid`） |
+| R-T5 | `default_tab` 必須存在、未隱藏、`kind ≠ link` | `invalid_value`（`tab_default_invalid`） |
+| R-T6 | 分頁只決定「看什麼」，**不**改任何 issue、版本、權限；看不到的內容照樣看不到（篩選分頁只是預存條件） | — |
+| R-T7 | 分頁名稱、篩選條件、網址算**專案公開內容**：專案裡能看 issue 的人都看得到（同 §17.4 版本名稱）。設定頁提示「所有成員都看得到，不要放私有資訊」 | — |
+| R-T8 | 內建分頁 `dev` 在專案沒有連動 repo 時仍可顯示（空狀態說明怎麼連動）；預設不隱藏 | — |
+
+### 18.4 權限
+
+| 動作 | 必要條件 | 誰 |
+|---|---|---|
+| 讀分頁設定 | 專案可見（任一 `view_issues`），`active` 或 `closed` | 人（SPA） |
+| 改分頁設定、還原預設 | 專案 `active`；**`manage_project`**（新增的專案層級權限，預設給 Manager 角色；也管 §19 的 repo 連動） | 人，只用瀏覽器 session；非 GET 要 CSRF |
+| agent | 第一切片**不能**讀寫分頁設定（不進 `describe`、不進 MCP）；agent 用搜尋語法本身就能做同樣的篩選 | — |
+
+### 18.5 API（補 §4.2）
+
+| 方法 | 路徑 | 誰 | 用途 |
+|---|---|---|---|
+| GET | `/projects/{id}/tabs` | 人（專案可見） | `{tabs, default_tab, is_default, lock_version, can_manage}` |
+| PUT | `/projects/{id}/tabs` | 人（`manage_project`） | 整份取代：`{lock_version, tabs, default_tab}`；新增的自訂分頁 `id` 省略由 server 產生；`Idempotency-Key`；回新設定 |
+| POST | `/projects/{id}/tabs/reset` | 人（`manage_project`） | `{lock_version}`；回預設設定，`is_default = true` |
+| GET | `/projects/{id}/setting-events?cursor=` | 人（`manage_project`） | 設定歷史。`pr_hidden`、`pr_unhidden`、以 `pr_ids` 執行的 `github_content_revoked` **只有系統管理員看得到**；專案管理者的回應直接不含這幾種事件（不是遮掉內容、也不回「有 N 筆被隱藏」），因為事件本身就透露「某 PR 對到本專案某張單」。分頁與連動事件（`tabs_*`、`repo_*`、以 `link_id` 執行的撤除）照常顯示 |
+
+- 整份取代而不是逐項 PATCH：排序、改名、預設常一起改，整份送一次就能在一個 `lock_version` 下判斷；SPA 的每個小動作（↑↓、隱藏）都送整份。
+- PUT 的交易：`operation_requests`（§6.8 冪等）→ principal／browser session `FOR SHARE` → 專案列 `FOR SHARE`（確認 active）→ `project_tab_settings` `FOR UPDATE` → 比對 `lock_version`（不符 → `conflict`，回最新設定）→ 驗證 R-T1–R-T5 → UPDATE、`lock_version + 1` → 寫 `project_setting_events`。
+- 送來的內建分頁 `id` 以外的未知 `id` → `invalid_value`（不能自己指定自訂分頁 id，避免撞號或冒用已刪除分頁的 id）；保留既有自訂分頁時要原樣帶回它的 `id`。
+
+### 18.6 議題頁的專案框架（SPA）
+
+- `/issue/{key}` 是永久網址，不改。SPA 讀 issue 後用 `project` 顯示框架：專案名＋分頁列（`GET /projects/{id}/tabs`，同專案快取到 `lock_version` 改變）。
+- 選取中的分頁：若使用者是從同專案某個分頁點進來的（SPA 只存在 `sessionStorage`，不送 server）→ 那個分頁，並顯示「← 回到〈分頁名〉」；否則選「議題」。左側導覽標在該專案。
+- 看不到 issue（不存在或沒權限）時**不**顯示專案框架（否則會透露 issue 屬於哪個專案）：照 §4.4 回同一個 `not_found` 頁。
+- 專案內「議題」分頁的搜尋：SPA 把查詢放在 `/project/{key}/issues?q=`，查詢字串沒有 `project:` 時自動補本專案；有別的 `project:` 時跳到全域搜尋頁（不在專案框架裡顯示別的專案結果）。
+
+### 18.7 測試
+
+| # | 情境 | 預期 |
+|---|---|---|
+| T-PT1 | 新建專案 | 同交易建出 `project_tab_settings`，五個內建分頁、預設 `timeline`、`is_default = true` |
+| T-PT2 | PUT 少一個內建分頁／同一內建出現兩次 | `builtin_missing`／`invalid_value`，設定不變 |
+| T-PT3 | 新增 11 個自訂分頁 | `tab_limit` |
+| T-PT4 | 兩個分頁名稱「本週」「本週 」（尾空白）、「Bugs」「bugs」 | `tab_title_taken` |
+| T-PT5 | query 寫 `project:WEB status:open`（在 AUTH）；寫 `project:AUTH project:WEB`；沒寫 project | 前兩者 `tab_query_scope`；第三個存成 `project:AUTH …` |
+| T-PT6 | Bob（AUTH 角色 `own`）開 Alice 建的篩選分頁 | 只看到 Bob 自己看得到的單；回應沒有總數 |
+| T-PT7 | url：`http://…`、`https://u:p@x.com`、`javascript:…`、oxledger 自己的 origin、3000 字 | 全部 `tab_url_invalid` |
+| T-PT8 | 預設分頁設成隱藏的、或 link | `tab_default_invalid` |
+| T-PT9 | 兩個管理者同時改：(a) 已改過的專案；(b) 從沒改過的專案；(c) 一個改、一個還原 | 後送的都 `conflict`，回最新設定；不會撞唯一鍵、不會靜默覆蓋 |
+| T-PT10 | 沒有 `manage_project` 的成員 PUT | `forbidden_op`；GET 回 `can_manage = false` |
+| T-PT11 | 帶 bearer token（agent）呼叫 `/projects/{id}/tabs` | `human_session_required`（這組端點只收瀏覽器 session） |
+| T-PT12 | 送未知 id 的自訂分頁、或把已刪除分頁的 id 帶回 | `invalid_value` |
+| T-PT13 | 開 `/issue/AUTH-999`（不存在）與 `/issue/AUTH-50`（私有、看不到） | 兩者畫面相同，都不顯示 AUTH 框架 |
+| T-PT14 | 同一 `Idempotency-Key` 重送 PUT | 回第一次的結果，`lock_version` 只加一次 |
+| T-PT17 | Alice（看得到私有 AUTH-50）隱藏只對到 AUTH-50 的 PR；Bob（AUTH `manage_project`、看不到 AUTH-50）讀設定歷史 | Bob 的回應沒有這筆事件；cursor 與筆數不因它而改變形狀；系統管理員看得到 |
+| T-PT16 | 只改 `default_tab`（tabs 不變） | 事件的 before／after 有不同的 `default_tab` |
+| T-PT15 | 專案 `closed` | GET 可、PUT `forbidden_op`（專案非 active，同 §6.2 對 closed 專案的處理） |
+
+## 19. GitHub 連動（使用者 2026-11-07：「專案要能夠與多 github 連動，可以透過卡號追蹤是否 PR 或 cicd 狀態」）〔完整契約；U45 使用者 2026-11-07 照建議定案；GPT 第 33–38 輪，pass〕
+
+原型見 F30（`prototype/ptabs.js` 的「開發（GitHub）」分頁與議題頁「開發」卡）。
+
+### 19.1 範圍
+
+| 做 | 不做（第一切片） |
+|---|---|
+| 一個專案連多個 GitHub repo；一個 repo 可以連多個專案 | GitHub Enterprise Server、GitLab、Bitbucket（U45c 已決定：不做） |
+| 從 PR 標題、head 分支名、PR 的 commit 訊息比對卡號，對到 issue | 從 PR 內文、留言比對（雜訊太多：「related to AUTH-1」不代表在做） |
+| 顯示 PR 狀態（open／draft／merged／closed）、review 狀態、CI 彙總與各 check | 寫回 GitHub（留言、改 PR、建分支）；從 oxledger 觸發 CI |
+| 專案「開發」分頁：依卡號列 PR，可篩 CI 失敗、等 review、PR 已合併但單未推進 | 依 PR 狀態**自動**改 issue 狀態（U45b 已決定：第一切片不做，只提示） |
+| 議題頁「開發」卡；MCP `get` 可選擇帶開發狀態 | 搜尋語法 `pr:`、`ci:`（之後再加，要先想索引一致性）；通知 |
+
+### 19.2 連動方式（U45 已決定：照建議，2026-11-07）
+
+- **GitHub App**（不是個人 token）：組織的系統管理員在 GitHub 安裝 oxledger 的 App，選擇授權哪些 repo。權限只要讀：`Pull requests: read`、`Checks: read`、`Commit statuses: read`、`Contents: read`（讀 PR 的 commit 訊息）、`Metadata: read`。訂閱事件：`pull_request`、`pull_request_review`、`check_run`、`check_suite`、`status`、`installation`、`installation_repositories`、`repository`。
+- **兩層把關**：系統管理員在 oxledger 的「GitHub 設定」把 App 安裝到的 repo 標成「可連動」（預設全部不可）；專案管理者（`manage_project`）只能從「可連動」清單挑 repo 連到自己的專案。理由：PR 標題、分支名、check 名稱會顯示給**看得到該 issue 的所有人**，私有 repo 的這些內容等於被分享出去，由系統管理員決定哪些 repo 可以這樣分享（U45d）。
+- 機密：App 私鑰與 webhook secret 放在設定檔／環境變數（和 DB 連線字串同一層），**不進 DB**、不進日誌；installation token 只放記憶體，到期前更新。
+
+### 19.3 資料模型
+
+```sql
+CREATE TABLE github_installations (
+    id                 uuid PRIMARY KEY DEFAULT uuidv7(),
+    gh_installation_id bigint NOT NULL UNIQUE,
+    account_login      text NOT NULL,
+    state              text NOT NULL CHECK (state IN ('active', 'suspended', 'deleted')),
+    updated_at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE github_repos (
+    id              uuid PRIMARY KEY DEFAULT uuidv7(),
+    gh_repo_id      bigint NOT NULL UNIQUE,         -- 以 GitHub 數字 id 為準；改名、轉移不會斷
+    installation_id uuid REFERENCES github_installations(id),   -- NULL＝App 已不能存取
+    full_name       text NOT NULL,                  -- 顯示用，repository 事件更新
+    is_private      boolean NOT NULL,
+    linkable        boolean NOT NULL DEFAULT false, -- 系統管理員開放
+    state           text NOT NULL CHECK (state IN ('accessible', 'inaccessible')),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE project_repo_links (
+    id          uuid PRIMARY KEY DEFAULT uuidv7(),
+    project_id  uuid NOT NULL REFERENCES projects(id),
+    repo_id     uuid NOT NULL REFERENCES github_repos(id),
+    linked_by   uuid NOT NULL REFERENCES principals(id),
+    linked_at   timestamptz NOT NULL DEFAULT now(),
+    unlinked_at timestamptz,
+    unlinked_by uuid REFERENCES principals(id),
+    sync_state  text NOT NULL DEFAULT 'backfilling' CHECK (sync_state IN ('backfilling', 'ok', 'paused')),
+    synced_through timestamptz,                  -- 對帳水位：這個時間以前更新的 PR 都已確認；NULL＝回填未完成
+    CHECK ((unlinked_at IS NULL) = (unlinked_by IS NULL))
+);
+CREATE UNIQUE INDEX project_repo_links_active_uq ON project_repo_links (project_id, repo_id) WHERE unlinked_at IS NULL;
+
+CREATE TABLE github_pull_requests (
+    id            uuid PRIMARY KEY DEFAULT uuidv7(),
+    repo_id       uuid NOT NULL REFERENCES github_repos(id),
+    number        integer NOT NULL,
+    title         text NOT NULL,                  -- 截到 256 字
+    head_ref      text NOT NULL,
+    head_sha      text NOT NULL,
+    state         text NOT NULL CHECK (state IN ('open', 'draft', 'merged', 'closed')),
+    review_state  text NOT NULL CHECK (review_state IN ('none', 'pending', 'approved', 'changes_requested')),
+    ci_state      text CHECK (ci_state IN ('pending', 'success', 'failure')),   -- NULL＝沒有任何 check
+    html_url      text NOT NULL,
+    gh_updated_at timestamptz NOT NULL,          -- 亂序保護用（見 R-G8）
+    content_hash  bytea NOT NULL,                -- 存下欄位的 hash；同時間戳不同內容時觸發重抓
+    row_version   bigint NOT NULL DEFAULT 0,     -- 本地每次寫入 +1；重抓提交前比對
+    UNIQUE (repo_id, number)
+);
+CREATE TABLE github_check_runs (              -- 每個 check_run 一列，以 GitHub 的 run id 為鍵
+    gh_run_id    bigint PRIMARY KEY,
+    repo_id      uuid NOT NULL REFERENCES github_repos(id),
+    head_sha     text NOT NULL,
+    app_id       bigint NOT NULL,                -- 產生這個 check 的 GitHub App
+    check_suite_id bigint,                       -- GitHub 的 check suite（Actions：一個 workflow run 一個 suite）；缺值＝不能判斷屬於哪個序列
+    name         text NOT NULL,
+    status       text NOT NULL CHECK (status IN ('pending', 'completed')),   -- GitHub 的 queued／in_progress／waiting／requested／pending 一律正規化成 pending；未知的非 completed 值也當 pending
+    gh_status    text NOT NULL,                  -- GitHub 原值，顯示用
+    conclusion   text,                           -- completed 時才有
+    started_at   timestamptz, completed_at timestamptz
+);
+CREATE INDEX github_check_runs_sha_idx ON github_check_runs (repo_id, head_sha);
+CREATE TABLE github_check_suites (            -- GitHub 自己算的 suite 結論（含重跑後的更新）
+    gh_suite_id bigint PRIMARY KEY,
+    repo_id     uuid NOT NULL REFERENCES github_repos(id),
+    head_sha    text NOT NULL,
+    app_id      bigint NOT NULL,
+    status      text NOT NULL CHECK (status IN ('pending', 'completed')),   -- 非 completed 一律 pending
+    conclusion  text,
+    gh_updated_at timestamptz NOT NULL,
+    content_hash  bytea NOT NULL,
+    row_version   bigint NOT NULL DEFAULT 0
+);
+CREATE INDEX github_check_suites_sha_idx ON github_check_suites (repo_id, head_sha);
+CREATE TABLE github_commit_statuses (         -- 舊式 status API：每個 context 取 id 最大的那筆
+    repo_id      uuid NOT NULL REFERENCES github_repos(id),
+    head_sha     text NOT NULL,
+    context      text NOT NULL,
+    gh_status_id bigint NOT NULL,                -- GitHub 對同一 sha＋context 的 id 遞增
+    state        text NOT NULL CHECK (state IN ('pending', 'success', 'failure', 'error')),
+    PRIMARY KEY (repo_id, head_sha, context)
+);
+CREATE TABLE project_pr_hidden (              -- 在某個專案隱藏某個 PR（只影響該專案）
+    project_id uuid NOT NULL REFERENCES projects(id),
+    pr_id      uuid NOT NULL REFERENCES github_pull_requests(id) ON DELETE CASCADE,
+    hidden_by  uuid NOT NULL REFERENCES principals(id),
+    hidden_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, pr_id)
+);
+CREATE TABLE pr_issue_refs (                  -- 卡號比對結果
+    pr_id      uuid NOT NULL REFERENCES github_pull_requests(id) ON DELETE CASCADE,
+    issue_id   uuid NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    project_id uuid NOT NULL,                   -- = issue 的專案（不可改，§1）
+    link_id    uuid NOT NULL REFERENCES project_repo_links(id),   -- 建這筆 ref 時依據的連動；讀取時 join 確認仍有效
+    sources    text[] NOT NULL,                 -- {title, branch, commit}
+    first_seen timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (pr_id, issue_id)
+);
+CREATE INDEX pr_issue_refs_issue_idx ON pr_issue_refs (issue_id);
+CREATE TABLE github_deliveries (              -- 去重與重放保護，保留 7 天
+    delivery_id  uuid PRIMARY KEY,              -- X-GitHub-Delivery
+    event        text NOT NULL,
+    received_at  timestamptz NOT NULL DEFAULT now(),
+    processed_at timestamptz,
+    result       text                           -- ok／ignored／error 碼；不存 payload 原文
+);
+CREATE TABLE github_event_jobs (              -- 待處理事件；和 delivery 同交易寫入
+    delivery_id  uuid PRIMARY KEY REFERENCES github_deliveries(delivery_id),
+    payload      jsonb,                         -- 處理成功或最終失敗後設 NULL
+    attempts     smallint NOT NULL DEFAULT 0,
+    next_at      timestamptz NOT NULL DEFAULT now()
+);
+```
+
+### 19.4 規則
+
+| # | 規則 |
+|---|---|
+| R-G1 | **卡號比對**：正則 `\b([A-Z][A-Z0-9_]{1,9})-([1-9][0-9]{0,8})\b`（大小寫敏感，和 issue key 格式一致）掃 PR 標題、head 分支名（`/`、`_` 視為分隔）、PR 的 commit 訊息（最多前 250 個 commit）。對到的 key 要：issue 存在、issue 的專案**目前有連動**這個 repo。其他 key 忽略、不存 |
+| R-G2 | **只認連動的 repo**：同一張單的 key 出現在沒連動的 repo，不建 ref。解除連動後，那個連動的 refs 立即刪除（§19.5 的鎖）。**讀取端再擋一次**：所有讀開發資訊的查詢都 join `project_repo_links`（`id = ref.link_id AND unlinked_at IS NULL`），殘留的 ref 也不會顯示 |
+| R-G3 | **讀取可見性**：開發資訊附屬於 issue，能看 issue 才看得到它的 PR；看不到的 issue 不出現在「開發」分頁，也不透露「有 N 張你看不到的單有 PR」。PR 標題裡若寫了別的卡號，照原文顯示（那是 GitHub 上的文字，不是 oxledger 的資料）。`project_pr_hidden` 依 **issue 所屬專案**套用：AUTH 隱藏的 PR，WEB 的單照常顯示；人與 MCP 讀取都套用 |
+| R-G4 | **不寫 issue**：PR、CI 的變化**不**改 issue、不寫 `issue_events`、不 bump `lock_version`、不觸發搜尋重建（第一切片）。開發資訊是讀取時 join 的投影 |
+| R-G5 | **狀態不一致提示**：PR 已合併且 issue 狀態 `is_closed = false` 且在「新建」「處理中」這類起始狀態（以 workflow 設定的「開發中」狀態集合為準，第一版取非 closed 的全部）→ 顯示提示與「轉換狀態」入口；**不自動轉換**（U45b） |
+| R-G6 | **review 彙總**：每位 reviewer 取最新一筆；有任何 `CHANGES_REQUESTED` → `changes_requested`；否則有 `APPROVED` → `approved`；否則有待回覆的 review request → `pending`；否則 `none` |
+| R-G7 | **CI 彙總**（只看目前 `head_sha`）：**oxledger 不自己推定「哪個 run 是哪個的重跑」**（名稱、App、suite 都不足以證明）。彙總單位：有 `check_suite_id` 的 run，用它所屬 **suite 的 status／conclusion**（GitHub 依 suite 內各 job 的最新結果計算，重跑後 GitHub 會更新 suite 結論）；沒有 suite 的 run 每個各自算一個；status API 每個 context 一筆。各個 run 只用來顯示明細。status 每個 context 一筆。對這些單位：任何結論為 `failure`／`timed_out`／`cancelled`／`action_required`／`startup_failure`、status `failure`／`error` → `failure`；否則任何 suite 或 run 為 `pending`（含 waiting、requested 等）或 status `pending` → `pending`；否則至少一個 success → `success`；沒有任何結果 → NULL。`neutral`、`skipped` 不影響 |
+| R-G8 | **亂序**：webhook 內容視為 GitHub 狀態的快照；**不**用 delivery id 或到達順序判斷先後。**PR 與 check suite 用同一套「快照列」規則**（下面以 PR 說明；suite 用 `github_check_suites` 的同名欄位，重抓用 `GET /check-suites/{id}`）。suite 可以合法地從 completed 回到 pending（重跑），所以 suite 只比時間、**不**套「completed 不回頭」。PR：`gh_updated_at` 晚於已存的 → 採用；早於 → 忽略；**相同但 `content_hash` 不同** → 不採用 payload，排一次「用 API 重抓這個 PR」。**重抓也要過並行檢查**：開始時記下 `row_version`，抓完在交易裡 `FOR UPDATE` 該 PR 列：`row_version` 沒變 → 採用；變了（期間有別的寫入）→ 依上面的時間規則判斷，若仍無法分出先後就再重抓，最多 3 次，之後留目前值並記 `result = refetch_gave_up`（下一輪對帳會再處理）。所有 PR、suite 寫入都先 `FOR UPDATE` 該列再比較時間（webhook、回填、對帳、重抓共用這段程式），worker 之間對同一列互斥。check_run：每個 run 一列（`gh_run_id`），`completed` 不會被任何非 completed 狀態蓋回去；同一 run 出現兩個不同的 completed 結論 → 重抓。status：同 sha＋context 取 `gh_status_id` 大的。`head_sha` 改變不刪舊列，彙總只看目前 `head_sha` |
+| R-G9 | 一個專案最多連 20 個 repo；一張 issue 的開發卡最多列 20 個 PR（依 `open` → `draft` → 其他、再依 `gh_updated_at` 新到舊），超過顯示「還有更多」並連到 GitHub 搜尋 |
+
+### 19.5 webhook 與同步
+
+- 端點 `POST /integrations/github/webhook`（不經 SPA session、不要 CSRF；只靠簽章）：
+  1. 讀原始 body（上限 25 MB，超過 413），用 webhook secret 算 HMAC-SHA256，和 `X-Hub-Signature-256` **常數時間**比較；不符 → 401，不寫任何資料、不記 payload。
+  2. **同一個 DB 交易**：`INSERT github_deliveries … ON CONFLICT DO NOTHING` 與 `INSERT github_event_jobs (delivery_id, payload)`；提交成功才回 202。delivery 已存在 → 代表工作已可靠入列或處理完 → 回 200。交易失敗 → 回 500。**GitHub 不會自動重送失敗的 delivery**，所以另有下面兩個補救機制。
+  3. worker（沿用 D11 的 worker 程序，新增 job 類型）用 `FOR UPDATE SKIP LOCKED` 取 `github_event_jobs`，一個事件一個交易；失敗 `attempts + 1`、指數退避，最多 5 次；成功或最終失敗都把 `payload` 設 NULL、寫 `github_deliveries.result`。
+- **依事件類型分派**：
+  - `installation`、`installation_repositories`、`repository`：只更新 `github_installations`、`github_repos`（新增、`state`、`full_name`、`installation_id`）；**不**要求有專案連動。`repositories_removed`、installation `suspend`／`deleted` → 相關 repo `inaccessible`。
+  - `pull_request`、`pull_request_review`、`check_run`、`check_suite`、`status`：先確認 installation `active` 且 repo `accessible`，否則 `ignored`（撤權後延遲到達的事件不會更新資料）。再取這個 repo 的有效連動 `SELECT … FROM project_repo_links WHERE repo_id = $1 AND unlinked_at IS NULL ORDER BY id FOR SHARE`；沒有 → `ignored`，不存 PR。→ upsert PR／checks（R-G8）→ 重算 refs：只為上一步鎖住的連動所屬專案的 issue 建 ref，`link_id` 填那個連動 → 重算彙總（R-G6、R-G7）。
+- **和解除連動的鎖**：解除連動的交易 `SELECT … FROM project_repo_links WHERE id = $1 FOR UPDATE` → 設 `unlinked_at` → `DELETE FROM pr_issue_refs WHERE link_id = $1`。worker 對同一列拿 `FOR SHARE`，兩者必有先後：worker 先拿到 → 解除連動等它提交後，再刪掉它剛建的 ref；解除連動先提交 → worker 的查詢重新讀到 `unlinked_at` 已設的列而被條件排除，不建 ref。回填、15 分鐘對帳、重抓都走同一段程式與同一個鎖。
+- **回填**：連動 repo 時，背景用 installation token 抓 open／draft PR 全部＋最近 30 天關閉的 PR，以及它們的 checks；完成後 `sync_state = ok`。之後每 15 分鐘對連動 repo 的 open PR 做一次對帳（補漏掉的 webhook）。遇到 GitHub rate limit 依回應的 reset 時間暫停，`sync_state = paused`，畫面顯示「同步暫停，最後更新 HH:MM」。
+- **補送失敗的 delivery**：每 10 分鐘用 App 的 API 列出最近 3 天的 delivery（`GET /app/hook/deliveries`），找出回應不是 2xx、且 `guid` 不在 `github_deliveries` 的，呼叫 redeliver（`POST /app/hook/deliveries/{id}/attempts`）。這段只讀寫 GitHub 自己的 delivery 紀錄，不需要 payload。
+- **全量對帳**：每小時一次，用 API 重建「權威狀態」：installation 清單與狀態、每個 installation 授權的 repo（更新 `github_repos`）、每個有效連動 repo：(a) 列出 `updated` 晚於 `synced_through − 10 分鐘` 的**所有** PR（不分 open／closed，依 `updated` 排序完整分頁），(b) 本地仍標 open／draft、但不在 (a) 也不在遠端 open 清單裡的 PR 逐筆重抓，(c) 這些 PR 目前 head 的 suites、checks、statuses；(d) **CI 對帳和 PR 水位分開**：不分 PR 狀態，凡是本地 CI 彙總為 `pending` 的 PR（30 天內），以及最近 7 天內合併或關閉的 PR，每次都重抓目前 head 的 suites、checks、statuses；比對後修正差異（同樣走 R-G8 與 §19.5 的鎖）。**全部分頁都處理成功**才把 `synced_through` 推進到這次對帳開始的時間；中途失敗或遇到 rate limit 就不推進，下次從原水位重來。因此即使 webhook 與補送都失敗，open／draft PR、7 天內關閉的 PR、30 天內 CI 未完成的 PR 最遲一小時內回到正確狀態；超出這個範圍的舊 PR 之後再在 GitHub 上重跑 CI，oxledger 只靠 webhook 更新，畫面一律顯示「最後同步時間」。
+- installation 被 suspend／刪除、repo 被移出授權 → 該 repo `inaccessible`，連動保留但畫面標「GitHub App 已無法存取」，資料停在最後狀態並顯示時間；不自動解除連動。
+- issue 被刪除或搬移（第一版不能搬，§1）：`pr_issue_refs` 隨 issue 刪除；事件不回寫。
+
+### 19.6 權限
+
+| 動作 | 必要條件 | 誰 |
+|---|---|---|
+| 設定 App、標「可連動」repo | 系統管理員 | 人（SPA） |
+| **新增**連動 | 專案 `active`；`manage_project`；repo 是 `linkable` 且 `accessible` | 人（SPA）；agent 不能 |
+| 解除連動、隱藏 PR、撤除 | 專案不是 archived；`manage_project`（系統管理員也可）；**不**看 repo 目前是否 `linkable`／`accessible`，撤權之後仍要能清理 | 人（SPA）；agent 不能 |
+| 讀開發資訊（議題卡、開發分頁） | 能看該 issue（R-G3） | 人；agent 經 MCP `get`（`include: ["dev"]`）與 `search` 結果的 key 再 `get`，受讀取範圍與受眾規則（§3.8：開發資訊的來源專案＝issue 的專案） |
+
+### 19.7 API（補 §4.2）
+
+| 方法 | 路徑 | 誰 | 用途 |
+|---|---|---|---|
+| GET | `/projects/{id}/repos` | 人（專案可見） | 連動清單：`full_name`、`is_private`、`state`、`sync_state`、最後同步時間 |
+| GET | `/projects/{id}/repos/linkable` | 人（`manage_project`） | 可以連的 repo（系統管理員開放、App 可存取、還沒連） |
+| POST | `/projects/{id}/repos` | 人（`manage_project`） | `{repo_id}`；`Idempotency-Key`；交易：`operation_requests` → principal／session `FOR SHARE` → 專案列 `FOR SHARE`（active）→ **`project_tab_settings` 該專案列 `FOR UPDATE`**（當作專案設定鎖，同專案的新增連動與分頁設定互斥）→ `github_repos` 該列 `FOR SHARE`（重驗 `linkable`、`accessible`）→ 計數有效連動（R-G9）→ INSERT → 寫 `project_setting_events`（`repo_linked`）；回 `sync_state = backfilling` |
+| DELETE | `/projects/{id}/repos/{link_id}` | 人（`manage_project`） | 解除連動；同交易刪掉該 repo 對**本專案 issue** 的 refs；別的專案的連動不受影響；寫事件 |
+| GET | `/issues/{key}/dev` | 人（能看 issue） | 該單的 PR 清單（R-G9） |
+| GET | `/projects/{id}/dev?filter=all\|ci_failure\|review\|merged_open&cursor=` | 人（專案可見） | 開發分頁：依 issue 分組，只含呼叫者看得到的 issue；**不回總數**（§4 一致：Q-S6） |
+| POST／DELETE | `/projects/{id}/dev/prs/{pr_id}/hide` | 人（`manage_project`） | 在本專案隱藏／取消隱藏某個 PR：PR 必須有至少一筆對到**本專案中呼叫者看得到的 issue** 的 ref（經有效連動），否則 `not_found`（和 PR 不存在同形狀，不透露看不到的 issue 有沒有 PR）；`project_pr_hidden` 與 `pr_hidden`／`pr_unhidden` 事件同交易；`Idempotency-Key`（§6.8）；已是目標狀態 → 成功、不寫事件 |
+| POST | `/projects/{id}/dev/revoke` | 人（`manage_project` 或系統管理員） | 撤除（§19.9）：`{link_id}` 或 `{pr_ids}`；`pr_ids` 的每一個都照 hide 的可見性規則（系統管理員看得到全部）；要 step-up（§3，和發 agent 憑證同一套）。要撤除看不到的 issue 上的 PR，用 `{link_id}` 撤整個連動 |
+| GET／PUT | `/admin/github` | 系統管理員 | installation 清單、repo 的 `linkable` 開關 |
+
+MCP：`get` 新增可選 `include: ["dev"]`，回 `dev: {prs: [{repo, number, title, url, state, review_state, ci_state, updated_at}], truncated}`；`describe` 說明這是唯讀投影、可能落後 GitHub 數分鐘（回 `synced_at`）。agent 不能連動 repo、不能隱藏 PR。
+
+### 19.8 錯誤碼（補 §4.4）
+
+| HTTP | code | 何時 |
+|---:|---|---|
+| 422 | `repo_not_linkable` | repo 不存在、未開放、App 不可存取（三者同形狀） |
+| 409 | `repo_already_linked` | 已連動 |
+| 422 | `repo_link_limit` | 超過 20 個（R-G9） |
+| 401 | （webhook）簽章不符 | 不回 JSON 細節 |
+
+### 19.9 和既有規則的關係
+
+- **隱藏 PR 不是 D12 遮蔽**：「隱藏」只是不在本專案顯示（例如誤寫卡號），不會讓已讀到內容的 agent 失效。
+- **撤除 GitHub 內容（D12 等級）**：PR 標題、分支名可能含不該分享的文字（例如私有 repo 裡的客戶名）。專案管理者或系統管理員執行「撤除」，同一交易：該專案列 `FOR UPDATE`、bump `security_epoch`（§3.8：讀過這個專案的工作脈絡全部隔離）→ 解除連動或隱藏指定 PR（同 §19.5 的鎖）→ 衍生副本照 §7.5「遮蔽事件」那一列（該專案所有提案內容、`execution_field_changes` 前後值）→ 寫 `project_setting_events`（`github_content_revoked`，不存原文）。已經被寫進 issue 欄位、note 的文字，照 §7.5 另外處理。端點見 §19.7。
+- **受眾**：agent 從 issue A 的開發資訊讀到 PR 標題，再寫進 issue B → 視同讀了 A 的專案內容（§3.8 照常）。
+- **搜尋**：第一切片不進索引（R-G4），所以和設計 03 的一致性無關。
+- **保存**：解除連動後，若某 repo 已沒有任何專案連動，它的 PR、checks 在 30 天後清除；`github_deliveries` 保留 7 天。
+
+### 19.10 測試
+
+| # | 情境 | 預期 |
+|---|---|---|
+| T-G1 | webhook 簽章錯、缺 header、body 被改一個 byte | 401；`github_deliveries` 沒有新列 |
+| T-G2 | 同一 delivery id 送兩次 | 第二次 200、不重複處理 |
+| T-G3 | PR 標題「修 AUTH-123」、分支 `fix/AUTH-91-x`、commit「WEB-7 refactor」；repo 只連 AUTH | refs：AUTH-123、AUTH-91；WEB-7 忽略 |
+| T-G4 | 標題 `auth-123`、`XAUTH-123`、`AUTH-0123`、`AUTH-123a` | 都不對到 |
+| T-G5 | 同一 repo 連 AUTH 與 WEB，PR 同時寫 AUTH-1 與 WEB-2 | 兩邊各自看到；解除 WEB 的連動只刪 WEB-2 的 ref |
+| T-G6 | check 事件亂序：先到 success（較新）再到 in_progress（較舊） | 結果 success |
+| T-G7 | PR 推了新 commit（head_sha 改） | 舊 sha 的 checks 仍保留、不參與彙總；新 head 還沒有結果 → CI NULL，有未完成的 → pending |
+| T-G8 | review：A approve、B request changes、B 再 approve | `approved` |
+| T-G9 | Bob 看不到 AUTH-50（私有），AUTH-50 有 PR | Bob 的開發分頁與 `/issues/AUTH-50/dev` 都沒有；分頁不透露數量 |
+| T-G10 | 專案管理者連動一個未開放的私有 repo id、一個不存在的 id | 兩者都是 `repo_not_linkable`，形狀相同 |
+| T-G11 | App 被移出某 repo | 連動保留，畫面標無法存取與最後時間；新 webhook `ignored` |
+| T-G12 | PR 合併、issue 仍「處理中」 | 開發卡提示；issue 狀態、`lock_version`、`issue_events` 都沒變 |
+| T-G13 | 回填中遇到 rate limit | `sync_state = paused`，reset 後自動繼續；畫面顯示最後更新時間 |
+| T-G14 | agent `get` 帶 `include: ["dev"]`，issue 在委派範圍外 | 照一般 `get`：`not_found` 形狀，不回 dev |
+| T-G15 | repo 在 GitHub 改名 | 用數字 id 對到同一列，`full_name` 更新，連動不斷 |
+| T-G16 | 日誌與錯誤訊息 | 不含 webhook secret、installation token、payload 原文 |
+| T-G17 | worker 已鎖住連動並在建 ref 時，管理者解除連動；反過來的順序也測 | 兩種順序最後都沒有該連動的 ref；讀取端不顯示 |
+| T-G18 | 同一 PR 對到 AUTH-1 與 WEB-2，AUTH 隱藏它 | AUTH-1 不顯示、WEB-2 照常；MCP `get` 同 |
+| T-G19 | 兩個不同 App 都有叫 `test` 的 check，一個 failure、一個（較新）success；同一 workflow 重跑失敗的 job 後成功（GitHub 把 suite 結論更新為 success） | 前者 CI `failure`；後者 `success` |
+| T-G35 | 同一 suite：重跑後的 success（較新）先到，舊的 failure 後到；另測對帳重抓到舊 suite 狀態的同時較新的 webhook 先提交 | 兩者最後都是 success；舊快照不覆寫 |
+| T-G36 | suite 從 completed（failure）因重跑變 in_progress，且時間較新 | 採用，CI 回到 `pending` |
+| T-G33 | 同一 workflow 兩個不同 job 都顯示成 `test`，一個 failure、另一個較晚的 success | suite 結論 failure → CI `failure`（oxledger 不拿名稱推定重跑） |
+| T-G20 | PR 兩個快照 `updated_at` 相同、內容不同，較新的先到 | 第二個不覆寫、排重抓；重抓後是 GitHub 目前狀態 |
+| T-G21 | delivery 與 job 的交易提交前程序中斷，GitHub **不再**送來 | 10 分鐘內的補送找到這個失敗的 delivery 並要求 redeliver，重送後正常處理；補送也失敗時，每小時對帳修正 PR 與 repo 狀態；不會有「有 delivery、沒 job」 |
+| T-G30 | 兩次對帳之間有 PR 建立並合併，webhook 與補送都失敗 | 下次對帳因 `updated` 晚於水位而抓到它，refs 與合併提示出現 |
+| T-G32 | 一個 check_run 是 `waiting`（等 environment 核准），其他都 success | 寫入成功（存成 pending），CI `pending`；webhook 與對帳結果相同 |
+| T-G31 | 對帳分頁到一半遇到 rate limit | `synced_through` 不推進；恢復後從原水位重跑，不漏 |
+| T-G25 | 重抓到舊狀態 A 的同時，較新的 webhook 寫入 B 並提交 | 重抓發現 `row_version` 變了，不覆寫 B |
+| T-G26 | 同一 App（GitHub Actions）兩個 workflow 都有 `test`，一個 failure、另一個較晚的 success | 兩個不同 suite，各自算，CI `failure` |
+| T-G34 | 已合併 PR 的 CI 仍 pending，PR `updated` 已落在水位之前；之後 CI 完成，webhook 與補送都失敗 | 下一次對帳因 (d)「CI 未完成」抓到它，CI 更新 |
+| T-G27 | 已有 19 個連動，兩個管理者同時新增不同 repo | 一個成功、一個 `repo_link_limit` |
+| T-G28 | 刪除有 PR ref 的 issue | 刪除成功，refs 一起刪除 |
+| T-G29 | 有 AUTH `manage_project` 但看不到私有 AUTH-50 的人，對只對到 AUTH-50 的 PR 呼叫 hide／revoke；對同時對到 WEB-2（看得到）與 AUTH-50 的 PR 呼叫 AUTH 的 hide | 前者 `not_found`，和不存在的 PR 相同；後者也 `not_found`（AUTH 裡沒有他看得到的 ref） |
+| T-G22 | 首次安裝 App（含 3 個 repo）、`repositories_removed`、suspend 後延遲到達的 `check_run` | 前兩者更新 repo 清單（不需專案連動）；最後一個 `ignored` |
+| T-G23 | repo 已 `inaccessible`、或系統管理員把 `linkable` 關掉 | 專案管理者仍能解除連動、隱藏 PR、撤除 |
+| T-G24 | 撤除某 PR | 專案 epoch bump，讀過該專案的 agent 工作脈絡 `context_unavailable`；該專案提案內容照 §7.5 遮蔽；事件不含標題 |
+
 ## 附錄 A · GPT 討論紀錄
 
 討論用同一個 thread（`slice1-contract`），模型 gpt-6.1-sol，effort high。
@@ -3250,6 +3620,38 @@ undated      = open 中 effective_date 為 null
 | 32 | **pass** | 三項都解決，沒有新問題 | — |
 
 另外讀了 Redmine `app/models/issue.rb` 查證 `assignable_versions`（含原值）與日期順序只在日期有變時檢查，和 R1、R2、R4 一致（§17.14）。審查不涵蓋 DDL 實際執行；§17.18 列的章節修訂已全部補進正文（§4.2、§4.4、§7.3、§7.5、§10、§14.2 於 2026-11-07 第 32 輪之後補上，內容只是指向 §17，不改規則）。
+
+### 第 33–38 輪：§18 專案分頁、§19 GitHub 連動（2026-11-07，thread `oxledger-02-s18-19`）
+
+使用者要求「點議題不跳出專案、專案分頁可新增與管理」（U44 決定專案共用）與「專案與多個 GitHub repo 連動，用卡號追 PR、CI」（U45 先用建議值，審查通過後使用者照建議定案）。
+
+| 輪 | 結論 | 發現 | 處理 |
+|---|---|---|---|
+| 33 | fail | major：解除連動與背景同步沒有共同鎖，解除後可能重建 refs | refs 加 `link_id`；worker 對連動列 `FOR SHARE`、解除連動 `FOR UPDATE`；讀取 join 有效連動；T-G17 |
+| 33 | | major：「在本專案隱藏 PR」卻用全域欄位 | `project_pr_hidden(project_id, pr_id)`；T-G18 |
+| 33 | | major：隱藏、解除連動被當成 D12，但不讓已讀內容的 agent 失效 | 新增「撤除」：bump `security_epoch`＋§7.5 衍生副本；明說隱藏不是 D12；T-G24 |
+| 33 | | major：checks 以名稱為鍵，同名不同 check 互相覆蓋 | `github_check_runs` 以 run id 為鍵（後續再改，見 36） |
+| 33 | | major：同時間戳不同內容的亂序快照會覆寫 | `content_hash`，同時間不同內容改重抓 |
+| 33 | | major：delivery 去重與入列不同交易，中斷會永久漏事件 | `github_event_jobs` 與 delivery 同交易 |
+| 33 | | major：安裝事件被「要有專案連動」擋住；撤權後事件沒擋 | 依事件類型分派；PR 類事件先檢查 installation／repo 狀態；T-G22 |
+| 33 | | major：撤權後不能解除連動或隱藏 | 只有新增連動看 `linkable`／`accessible`；T-G23 |
+| 33 | | major：隱藏 PR 的事件 kind 不存在 | 補 `pr_hidden`、`pr_unhidden`、`github_content_revoked` |
+| 33 | | minor：分頁歷史看不到預設分頁變更；名稱正規化和測試不一致 | 事件存完整設定；title 先 trim → NFC；T-PT16 |
+| 34 | fail | major：同 App 同名 check 不一定是重跑 | 改 `(app_id, check_suite_id, name)`（後續再改，見 36） |
+| 34 | | major：重抓結果無條件採用，會蓋掉較新的 webhook | `row_version` 並行檢查、PR 列 `FOR UPDATE`；T-G25 |
+| 34 | | major：誤以為 GitHub 會自動重送失敗的 webhook | 每 10 分鐘補送失敗 delivery、每小時全量對帳；T-G21 |
+| 34 | | major：hide 端點透露看不到的 issue 有 PR | 要有本專案「看得到的」issue ref，否則 `not_found`；T-G29 |
+| 34 | | major：`issue_id` FK 沒有 CASCADE；連動上限沒有序列化 | `ON DELETE CASCADE`；新增連動鎖專案設定列；T-G27、T-G28 |
+| 35 | fail | major：對帳只抓 open PR，漏掉兩次對帳間建立並合併的 PR | `synced_through` 水位、全部分頁成功才推進；T-G30、T-G31 |
+| 35 | | major：設定歷史會透露私有 issue 的 PR 關聯 | PR 相關事件只給系統管理員；T-PT17 |
+| 35 | | major：check_run 狀態不接受 waiting 等值 | 正規化為 pending／completed；T-G32 |
+| 35 | | minor：T-G7 和保留舊 sha 的規則矛盾 | 改測試 |
+| 36 | fail | major：同 suite 同名也不一定是重跑 | 不自己推定重跑，改用 GitHub 的 suite 結論；T-G33 |
+| 36 | | major：已合併 PR 的 CI 更新可能永遠補不回 | CI 對帳和 PR 水位分開，並寫清楚恢復範圍；T-G34 |
+| 37 | fail | major：suite 沒有亂序與並行規則 | suite 和 PR 共用快照列規則；T-G35、T-G36 |
+| 38 | **pass** | 沒有新問題 | — |
+
+GPT 註明：結論只針對契約的一致性，沒有驗證實作，也沒有驗證 GitHub 的實際整合行為。
 
 ## 附錄 B · 查證紀錄
 

@@ -28,7 +28,7 @@
 // 依序載入（加時間戳避免瀏覽器快取舊版）
 (function load(list){ if (!list.length){ renderCtl(); render(); renderGuide(); return; }
   const s = document.createElement('script'); s.src = list[0] + '?t=' + Date.now(); s.onload = () => load(list.slice(1)); document.body.appendChild(s);
-})(['data.js','app.js','agent.js','d20.js','layout.js','team.js','timeline.js','schedule.js']);
+})(['data.js','app.js','agent.js','d20.js','layout.js','team.js','timeline.js','schedule.js','ptabs.js']);
 </script>
 </body>
 </html>
