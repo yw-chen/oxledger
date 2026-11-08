@@ -19,7 +19,7 @@
 //! * [`reconcile_indexes`] is the background job: it finishes whatever a crash
 //!   interrupted. `oxledger serve` runs it at startup and periodically.
 
-use crate::db::Caller;
+use crate::auth::AuthContext;
 use anyhow::{Context, Result, bail};
 use ox_core::filter::{FieldType, Value, ValueKind};
 use sqlx::{PgExecutor, PgPool};
@@ -327,10 +327,10 @@ pub async fn list_fields(pool: &PgPool) -> Result<Vec<FieldRow>> {
 /// (Redmine differs here: it filters by member roles only).
 pub async fn readable_projects(
     conn: &mut sqlx::PgConnection,
-    caller: Caller,
+    caller: AuthContext,
     principals: &[Uuid],
 ) -> Result<std::collections::HashMap<i32, Vec<Uuid>>> {
-    let builtin = if caller.0.is_some() {
+    let builtin = if caller.principal_id().is_some() {
         "non_member"
     } else {
         "anonymous"

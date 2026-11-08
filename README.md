@@ -20,8 +20,11 @@ Rust (axum, sqlx) · PostgreSQL 18+ · tantivy · rmcp · SvelteKit SPA
 docker run -d --name oxledger-pg -e POSTGRES_USER=oxledger -e POSTGRES_PASSWORD=oxledger_dev   -e POSTGRES_DB=oxledger -p 127.0.0.1:55432:5432 -v oxledger-pgdata:/var/lib/postgresql postgres:18
 export DATABASE_URL=postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger
 cargo run -p oxledger --features test-support -- seed-demo   # prints demo API keys
-cargo run -p oxledger -- serve       # MCP at http://127.0.0.1:8080/mcp (Authorization: Bearer <key>)
+cargo run -p oxledger -- serve       # SPA API at /api/v1 (session cookie), MCP at /mcp (Authorization: Bearer <key>)
+printf '%s' 'a long password' | cargo run -p oxledger -- user set-password alice   # sign-in for /api/v1
 ```
+
+Agents get their own `oxa_` tokens, issued by a signed-in user per delegated project (contract 02 §3).
 
 See [docs/playbook.md](docs/playbook.md) for MCP client setup, the demo permission matrix, and known pitfalls.
 

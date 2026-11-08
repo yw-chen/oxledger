@@ -23,8 +23,9 @@ use chrono::NaiveDate;
 use common::test_pool;
 use ox_core::filter::{Cmp, Field, FieldType, Filter, Test, Value};
 use ox_core::{IssueFacts, Pred, Scope};
+use oxledger::auth::AuthContext;
 use oxledger::custom_fields::{self, NewField, set_value};
-use oxledger::db::{self, Caller, push_pred};
+use oxledger::db::{self, push_pred};
 use oxledger::filter::{self as cf_filter, push_filter};
 use oxledger::search::SearchIndex;
 use oxledger::service::{self, App, SearchParams};
@@ -483,7 +484,7 @@ async fn server_ids(
     scope: &Scope,
     json: &Json,
 ) -> Result<BTreeSet<Uuid>, String> {
-    let caller = Caller(viewer);
+    let caller = AuthContext::test_viewer(viewer);
     let input = cf_filter::parse_input(json).map_err(|e| e.to_string())?;
     let f = cf_filter::resolve(app, caller, scope, &input)
         .await
@@ -596,7 +597,7 @@ async fn search_all(
     loop {
         let page = service::search(
             app,
-            Caller(Some(viewer)),
+            AuthContext::test_user(viewer),
             SearchParams {
                 q: q.map(str::to_string),
                 filter: Some(filter.clone()),
@@ -643,9 +644,12 @@ async fn custom_field_filters_match_reference_on_pg() {
     let mut scopes = Vec::new();
     for v in viewers {
         scopes.push(
-            db::load_scope(&mut pool.acquire().await.unwrap(), Caller(v))
-                .await
-                .unwrap(),
+            db::load_scope(
+                &mut pool.acquire().await.unwrap(),
+                AuthContext::test_viewer(v),
+            )
+            .await
+            .unwrap(),
         );
     }
     let idx = |name: &str| w.defs.iter().position(|d| d.name == name).unwrap();
@@ -868,7 +872,7 @@ async fn custom_field_filters_match_reference_on_pg() {
             .fetch_one(&pool)
             .await
             .unwrap();
-        service::get(&app, Caller(Some(viewer)), &key)
+        service::get(&app, AuthContext::test_user(viewer), &key)
             .await
             .unwrap()
             .custom_fields
@@ -924,7 +928,7 @@ async fn custom_field_filters_match_reference_on_pg() {
     let user_error = async |v: Json| {
         let e = service::search(
             &app,
-            Caller(Some(w.member)),
+            AuthContext::test_user(w.member),
             SearchParams {
                 filter: Some(v),
                 ..Default::default()

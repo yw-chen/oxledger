@@ -1,27 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! oxledger command line.
 //!
-//!   oxledger serve        HTTP server: /mcp (Streamable HTTP, bearer API key), /healthz
-//!   oxledger stdio        MCP over stdio as the user owning OXLEDGER_API_KEY
+//!   oxledger serve        HTTP server: /api/v1 (SPA, session cookie), /mcp (Streamable HTTP,
+//!                         bearer agent token or legacy API key), /healthz
+//!   oxledger stdio        MCP over stdio with the token in OXLEDGER_API_KEY (agent token or
+//!                         legacy key); every tool call re-checks it
+//!   oxledger user add <login> <name> [--admin]   password from stdin
+//!   oxledger user set-password <login>           password from stdin; ends all sessions
+//!   oxledger user lock|unlock <login>
+//!   oxledger user revoke-sessions <login>        end all of the user's browser sessions
+//!   oxledger agent-client add <name> <egress-policy-ref>   created disabled
+//!   oxledger agent-client enable|disable <name>
 //!   oxledger seed-demo    fill an empty database with demo data, print API keys
 //!                         (only with --features test-support)
 //!   oxledger reindex      rebuild the search index from PostgreSQL
 //!
 //! Configuration (environment): DATABASE_URL, OXLEDGER_INDEX_DIR (default ./data/index),
-//! OXLEDGER_BIND (default 127.0.0.1:8080), OXLEDGER_API_KEY (stdio).
+//! OXLEDGER_BIND (default 127.0.0.1:8080), OXLEDGER_API_KEY (stdio),
+//! OXLEDGER_SPA_ORIGIN (default http://<OXLEDGER_BIND>; non-GET /api/v1 requests must come from it).
 
 use anyhow::{Context, Result, bail};
-use axum::extract::{Request, State};
-use axum::http::StatusCode;
-use axum::middleware::{self, Next};
-use axum::response::Response;
-use oxledger::db::{self, Caller};
+use oxledger::api::{self, ApiConfig};
+use oxledger::auth::{self, SessionPolicy};
+use oxledger::db;
 use oxledger::mcp::OxServer;
 use oxledger::search::SearchIndex;
 use oxledger::service::App;
 use rmcp::ServiceExt;
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use std::io::Read as _;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,45 +79,39 @@ fn spawn_field_indexer(app: Arc<App>) {
     });
 }
 
-async fn auth(
-    State(app): State<Arc<App>>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let key = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .to_string();
-    let user = db::caller_for_key(&app.pool, &key).await.map_err(|e| {
-        tracing::error!("auth lookup failed: {e:#}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let user = user.ok_or(StatusCode::UNAUTHORIZED)?;
-    req.extensions_mut().insert(Caller(Some(user)));
-    Ok(next.run(req).await)
+/// Deletes expired login challenges.
+fn spawn_sweeper(app: Arc<App>) {
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = sqlx::query("DELETE FROM login_challenges WHERE expires_at < now()")
+                .execute(&app.pool)
+                .await
+            {
+                tracing::warn!("login challenge sweep failed: {e:#}");
+            }
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
 }
 
 async fn serve() -> Result<()> {
     let app = open_app().await?;
     spawn_indexer(app.clone());
     spawn_field_indexer(app.clone());
+    spawn_sweeper(app.clone());
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
-    let mcp_app = app.clone();
-    let mcp = StreamableHttpService::new(
-        move || Ok(OxServer::new(mcp_app.clone(), None)),
-        LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default(),
-    );
-    let router = axum::Router::new()
-        .nest_service("/mcp", mcp)
-        .layer(middleware::from_fn_with_state(app.clone(), auth))
-        .route("/healthz", axum::routing::get(|| async { "ok" }));
+    let cfg = ApiConfig {
+        spa_origin: env("OXLEDGER_SPA_ORIGIN", Some(&format!("http://{bind}")))?,
+        session: SessionPolicy::default(),
+    };
+    let router = api::router(app, cfg);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    tracing::info!("listening on http://{bind} (MCP at /mcp)");
-    axum::serve(listener, router).await?;
+    tracing::info!("listening on http://{bind} (SPA API at /api/v1, MCP at /mcp)");
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -118,12 +119,61 @@ async fn stdio() -> Result<()> {
     let app = open_app().await?;
     spawn_indexer(app.clone());
     let key = env("OXLEDGER_API_KEY", None)?;
-    let Some(user) = db::caller_for_key(&app.pool, &key).await? else {
-        bail!("OXLEDGER_API_KEY is not a valid key")
+    let Some(ctx) = auth::authenticate_bearer(&app.pool, key.trim()).await? else {
+        bail!("OXLEDGER_API_KEY is not a valid agent token or API key")
     };
-    let server = OxServer::new(app, Some(Caller(Some(user))));
+    // Fixed for the process; `db::effective` re-checks it on every tool call.
+    let server = OxServer::new(app, Some(ctx));
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
+    Ok(())
+}
+
+fn read_password() -> Result<String> {
+    let mut s = String::new();
+    std::io::stdin().read_to_string(&mut s)?;
+    let p = s.trim_end_matches(['\r', '\n']).to_string();
+    auth::check_password_policy(&p)?;
+    Ok(p)
+}
+
+async fn admin(args: &[String]) -> Result<()> {
+    let pool = db::connect(&env("DATABASE_URL", None)?).await?;
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    match a.as_slice() {
+        ["user", "add", login, name, rest @ ..] => {
+            let is_admin = rest == ["--admin"];
+            if !rest.is_empty() && !is_admin {
+                bail!("usage: oxledger user add <login> <name> [--admin]");
+            }
+            let id = auth::create_user(&pool, login, name, &read_password()?, is_admin).await?;
+            println!("{id}");
+        }
+        ["user", "set-password", login] => {
+            let id = auth::user_id_by_login(&pool, login).await?;
+            auth::set_password(&pool, id, &read_password()?).await?;
+            eprintln!("password set; all sessions of {login} ended");
+        }
+        ["user", verb @ ("lock" | "unlock"), login] => {
+            let id = auth::user_id_by_login(&pool, login).await?;
+            auth::set_user_status(&pool, id, *verb == "unlock").await?;
+        }
+        ["user", "revoke-sessions", login] => {
+            let id = auth::user_id_by_login(&pool, login).await?;
+            let n = auth::admin_revoke_sessions(&pool, id).await?;
+            eprintln!("{n} session(s) of {login} ended");
+        }
+        ["agent-client", "add", name, egress] => {
+            println!(
+                "{}",
+                oxledger::agents::create_agent_client(&pool, name, egress).await?
+            );
+        }
+        ["agent-client", verb @ ("enable" | "disable"), name] => {
+            oxledger::agents::set_agent_client_enabled(&pool, name, *verb == "enable").await?;
+        }
+        _ => bail!("unknown command; see `oxledger` with no arguments"),
+    }
     Ok(())
 }
 
@@ -148,6 +198,10 @@ async fn main() -> Result<()> {
             eprintln!("Demo data created. Keys above are shown once; only hashes are stored.");
             Ok(())
         }
+        Some("user" | "agent-client") => {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            admin(&args).await
+        }
         Some("reindex") => {
             let app = open_app().await?;
             let n = app.index.rebuild(&app.pool).await?;
@@ -161,7 +215,7 @@ async fn main() -> Result<()> {
             )
         }
         _ => {
-            eprintln!("usage: oxledger <serve|stdio|seed-demo|reindex>");
+            eprintln!("usage: oxledger <serve|stdio|seed-demo|reindex|user|agent-client>");
             std::process::exit(2);
         }
     }

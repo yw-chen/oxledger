@@ -7,3 +7,10 @@ edition = "2024"
 license = "GPL-2.0-or-later"
 repository = "https://github.com/yw-chen/oxledger"
 version = "0.1.0"
+
+# Argon2 is unusably slow unoptimized (each login verifies a 19 MiB hash); optimize it in dev/test too.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

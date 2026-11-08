@@ -15,15 +15,29 @@ use serde_json::Value;
 use uuid::Uuid;
 
 /// Stable error codes. Programs depend on these, never on `message`.
-/// Only the codes the current read-only tools can produce are listed; the rest
-/// of the §4.4 table arrives with the code that produces them.
+/// Codes of the §4.4 table arrive with the code that produces them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// Malformed request: bad JSON, unknown or missing fields, both a cookie
+    /// and a bearer token (`details.kind = "ambiguous_credentials"`).
+    InvalidRequest,
     /// No valid credentials, or the principal behind them is no longer active.
     Unauthenticated,
+    /// Login failed. Unknown login and wrong password look the same.
+    InvalidCredentials,
+    /// The action needs a recent step-up (password re-entry within 15 minutes).
+    ReauthenticationRequired,
+    /// Origin, CSRF token or Content-Type check failed.
+    CsrfFailed,
+    /// Only a person in a browser session may do this (not an agent or a legacy key).
+    HumanSessionRequired,
+    /// The target is visible but the caller may not do this to it.
+    ForbiddenOp,
     /// Missing, or the caller may not know it exists (same shape for both).
     NotFound,
+    /// A value in a write request is not allowed; `details.allowed`.
+    InvalidValue,
     /// A read tool parameter has a bad value; `details.path`, `details.allowed`.
     InvalidArgument,
     /// The custom field `filter` cannot be used (design 03 §3.7).
@@ -32,6 +46,13 @@ pub enum ErrorCode {
     InvalidCursor,
     /// A name matches several visible objects; `details.candidates`.
     AmbiguousReference,
+    /// The agent's work context cannot be used: `details.kind` is
+    /// `"quarantined"` or `"closed"` (§4.4).
+    ContextUnavailable,
+    /// No usable delegation for this project.
+    DelegationUnavailable,
+    /// Too many attempts; `retry_after_ms`.
+    RateLimited,
     /// Database or another dependency is down for a moment.
     TemporarilyUnavailable,
 }
@@ -50,14 +71,44 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
+    pub const ALL: [ErrorCode; 17] = [
+        Self::InvalidRequest,
+        Self::Unauthenticated,
+        Self::InvalidCredentials,
+        Self::ReauthenticationRequired,
+        Self::CsrfFailed,
+        Self::HumanSessionRequired,
+        Self::ForbiddenOp,
+        Self::NotFound,
+        Self::InvalidValue,
+        Self::InvalidArgument,
+        Self::InvalidFilter,
+        Self::InvalidCursor,
+        Self::AmbiguousReference,
+        Self::ContextUnavailable,
+        Self::DelegationUnavailable,
+        Self::RateLimited,
+        Self::TemporarilyUnavailable,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::InvalidRequest => "invalid_request",
             Self::Unauthenticated => "unauthenticated",
+            Self::InvalidCredentials => "invalid_credentials",
+            Self::ReauthenticationRequired => "reauthentication_required",
+            Self::CsrfFailed => "csrf_failed",
+            Self::HumanSessionRequired => "human_session_required",
+            Self::ForbiddenOp => "forbidden_op",
             Self::NotFound => "not_found",
+            Self::InvalidValue => "invalid_value",
             Self::InvalidArgument => "invalid_argument",
             Self::InvalidFilter => "invalid_filter",
             Self::InvalidCursor => "invalid_cursor",
             Self::AmbiguousReference => "ambiguous_reference",
+            Self::ContextUnavailable => "context_unavailable",
+            Self::DelegationUnavailable => "delegation_unavailable",
+            Self::RateLimited => "rate_limited",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
         }
     }
@@ -65,26 +116,48 @@ impl ErrorCode {
     /// HTTP status for the REST API (§4.4).
     pub fn http_status(self) -> u16 {
         match self {
-            Self::Unauthenticated => 401,
+            Self::InvalidRequest
+            | Self::InvalidArgument
+            | Self::InvalidFilter
+            | Self::InvalidCursor => 400,
+            Self::Unauthenticated | Self::InvalidCredentials | Self::ReauthenticationRequired => {
+                401
+            }
+            Self::CsrfFailed | Self::HumanSessionRequired | Self::ForbiddenOp => 403,
             Self::NotFound => 404,
-            Self::InvalidArgument | Self::InvalidFilter | Self::InvalidCursor => 400,
-            Self::AmbiguousReference => 422,
+            Self::ContextUnavailable | Self::DelegationUnavailable => 409,
+            Self::InvalidValue | Self::AmbiguousReference => 422,
+            Self::RateLimited => 429,
             Self::TemporarilyUnavailable => 503,
         }
     }
 
     pub fn retryable(self) -> bool {
-        matches!(self, Self::TemporarilyUnavailable)
+        matches!(self, Self::TemporarilyUnavailable | Self::RateLimited)
     }
 
-    /// §14.2 table.
+    /// §14.2 table. Codes the table does not name: `invalid_credentials` →
+    /// fix_input (try again), `reauthentication_required` and `csrf_failed` →
+    /// ask_human (only the person in the browser can resolve them).
     pub fn next_actions(self) -> &'static [NextAction] {
         use NextAction::*;
         match self {
-            Self::Unauthenticated => &[AskHuman],
+            Self::InvalidRequest
+            | Self::InvalidValue
+            | Self::InvalidArgument
+            | Self::InvalidFilter
+            | Self::InvalidCursor
+            | Self::InvalidCredentials => &[FixInput],
+            Self::Unauthenticated | Self::ReauthenticationRequired | Self::CsrfFailed => {
+                &[AskHuman]
+            }
+            Self::HumanSessionRequired
+            | Self::ForbiddenOp
+            | Self::ContextUnavailable
+            | Self::DelegationUnavailable => &[AskHuman, Stop],
             Self::NotFound => &[FixInput, Stop],
-            Self::InvalidArgument | Self::InvalidFilter | Self::InvalidCursor => &[FixInput],
             Self::AmbiguousReference => &[FixInput, AskHuman],
+            Self::RateLimited => &[WaitAndRetry],
             Self::TemporarilyUnavailable => &[RetrySameRequest],
         }
     }
@@ -129,6 +202,11 @@ impl ApiError {
             details: None,
             retry_after_ms: None,
         }
+    }
+
+    pub fn with_retry_after(mut self, ms: u64) -> Self {
+        self.retry_after_ms = Some(ms);
+        self
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
@@ -210,15 +288,7 @@ mod tests {
 
     #[test]
     fn codes_serialize_as_their_names() {
-        for c in [
-            ErrorCode::Unauthenticated,
-            ErrorCode::NotFound,
-            ErrorCode::InvalidArgument,
-            ErrorCode::InvalidFilter,
-            ErrorCode::InvalidCursor,
-            ErrorCode::AmbiguousReference,
-            ErrorCode::TemporarilyUnavailable,
-        ] {
+        for c in ErrorCode::ALL {
             assert_eq!(serde_json::to_value(c).unwrap(), json!(c.as_str()));
             // §14.2: never both stop and retry_same_request.
             let a = c.next_actions();

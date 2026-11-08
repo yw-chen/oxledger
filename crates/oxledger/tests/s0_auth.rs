@@ -8,8 +8,9 @@
 mod common;
 
 use common::test_pool;
+use oxledger::auth::AuthContext;
 use oxledger::custom_fields;
-use oxledger::db::{self, Caller};
+use oxledger::db;
 use oxledger::error::{ErrorCode, as_api_error};
 use oxledger::search::SearchIndex;
 use oxledger::service::{self, App, SearchParams};
@@ -127,36 +128,46 @@ async fn s0_scope_in_transaction_active_check_and_error_codes() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    let scope = db::load_scope(&mut tx, Caller(Some(admin))).await.unwrap();
+    let scope = db::load_scope(&mut tx, AuthContext::test_user(admin))
+        .await
+        .unwrap();
     assert!(
         scope.project_ids().any(|p| p == p2),
         "scope sees the transaction's project"
     );
-    let roles = db::role_ids_for(&mut tx, Caller(Some(mia)), p2)
+    let roles = db::role_ids_for(&mut tx, AuthContext::test_user(mia), p2)
         .await
         .unwrap();
     assert!(roles.is_empty(), "no non_member role is defined");
-    assert!(db::is_admin(&mut tx, Caller(Some(admin))).await.unwrap());
+    assert!(
+        db::is_admin(&mut tx, AuthContext::test_user(admin))
+            .await
+            .unwrap()
+    );
     tx.rollback().await.unwrap();
 
     // P4: anonymous is fine; a group, an unknown id and a locked user are all
     // `unauthenticated`, in every authorization function.
     let mut conn = pool.acquire().await.unwrap();
     assert!(
-        db::effective(&mut conn, Caller(None))
+        db::effective(&mut conn, AuthContext::anonymous())
             .await
             .unwrap()
             .user_id
             .is_none()
     );
-    assert!(!db::is_admin(&mut conn, Caller(None)).await.unwrap());
+    assert!(
+        !db::is_admin(&mut conn, AuthContext::anonymous())
+            .await
+            .unwrap()
+    );
     sqlx::query("UPDATE principals SET status = 'locked' WHERE id = $1")
         .bind(admin)
         .execute(&pool)
         .await
         .unwrap();
     for who in [group, Uuid::now_v7(), admin] {
-        let c = Caller(Some(who));
+        let c = AuthContext::test_user(who);
         let unauth = ErrorCode::Unauthenticated;
         assert_eq!(
             code(&db::effective(&mut conn, c).await.unwrap_err()),
@@ -186,15 +197,15 @@ async fn s0_scope_in_transaction_active_check_and_error_codes() {
         index: SearchIndex::open(None).unwrap(),
     };
     app.index.sync(&pool).await.unwrap();
-    let root = Caller(Some(admin));
+    let root = AuthContext::test_user(admin);
     assert!(service::get(&app, root, &key).await.is_ok());
     let missing = service::get(&app, root, "AUTH-999").await.unwrap_err();
     assert_eq!(code(&missing), ErrorCode::NotFound);
     // Invisible looks exactly like missing.
-    let hidden = service::get(&app, Caller(Some(mia)), &key)
+    let hidden = service::get(&app, AuthContext::test_user(mia), &key)
         .await
         .unwrap_err();
-    let absent = service::get(&app, Caller(Some(mia)), "AUTH-999")
+    let absent = service::get(&app, AuthContext::test_user(mia), "AUTH-999")
         .await
         .unwrap_err();
     assert_eq!(code(&hidden), ErrorCode::NotFound);

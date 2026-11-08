@@ -20,8 +20,9 @@
 //! are still several times too low (doc 02 §8); list/user equality is fixed by
 //! the `issue_cf_field_ref` statistics object.
 
+use crate::auth::AuthContext;
 use crate::custom_fields::{self, FieldRow, value_column};
-use crate::db::{self, Caller, push_pred};
+use crate::db::{self, push_pred};
 use crate::error::{ErrorCode, api};
 use crate::service::{App, resolve_one};
 use anyhow::Result;
@@ -168,7 +169,7 @@ fn filter_err(msg: impl Into<String>) -> anyhow::Error {
 
 struct Ctx<'a> {
     app: &'a App,
-    caller: Caller,
+    caller: AuthContext,
     /// Fields the caller may read somewhere, by lowercase name, with their gate E.
     fields: HashMap<String, (FieldRow, Pred)>,
 }
@@ -210,17 +211,24 @@ fn applies(row: &FieldRow, admin: bool, readable: &HashMap<i32, Vec<Uuid>>) -> O
 /// each condition's applicability gate.
 pub async fn resolve(
     app: &App,
-    caller: Caller,
+    caller: AuthContext,
     scope: &Scope,
     input: &FilterInput,
 ) -> Result<Filter> {
-    let admin = db::is_admin(&mut *app.pool.acquire().await?, caller).await?;
-    let readable = custom_fields::readable_projects(
-        &mut *app.pool.acquire().await?,
-        caller,
-        &scope.principal_ids,
-    )
-    .await?;
+    let me = db::effective(&mut *app.pool.acquire().await?, caller).await?;
+    let admin = me.is_admin;
+    // Agents read only fields with visible = true (contract 02 §3.5), so no
+    // role-based readability at all.
+    let readable = if me.agent.is_some() {
+        Default::default()
+    } else {
+        custom_fields::readable_projects(
+            &mut *app.pool.acquire().await?,
+            caller,
+            &scope.principal_ids,
+        )
+        .await?
+    };
     let fields = custom_fields::list_fields(&app.pool)
         .await?
         .into_iter()
@@ -391,7 +399,7 @@ async fn value(ctx: &Ctx<'_>, field: Field, name: &str, x: &Json) -> Result<Valu
                         labels.join(", ")
                     )))
                 }
-                _ if s.eq_ignore_ascii_case("me") => match ctx.caller.0 {
+                _ if s.eq_ignore_ascii_case("me") => match ctx.caller.user_id() {
                     Some(me) => Ok(Value::Ref(me)),
                     None => Err(filter_err("\"me\" needs an authenticated caller")),
                 },

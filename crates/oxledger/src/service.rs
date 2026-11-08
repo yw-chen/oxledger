@@ -2,7 +2,8 @@
 //! Read-side use cases shared by MCP (and REST in M1): search, get, resolve.
 //! Every query goes through the caller's per-request scope.
 
-use crate::db::{self, Caller, push_pred};
+use crate::auth::AuthContext;
+use crate::db::{self, push_pred};
 use crate::error::{ApiError, ErrorCode, api};
 use crate::filter::{self, FilterInput};
 use crate::search::SearchIndex;
@@ -36,6 +37,7 @@ const MAX_SEARCH_CANDIDATES: usize = 8000;
 // ---------------------------------------------------------------- types
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchParams {
     /// Free text (BM25 over subject and description; Chinese works without word segmentation).
     pub q: Option<String>,
@@ -155,7 +157,7 @@ const KINDS: [&str; 4] = ["project", "tracker", "status", "principal"];
 /// Name/alias lookup. `kind` = project | tracker | status | principal (user or group).
 pub async fn resolve(
     app: &App,
-    caller: Caller,
+    caller: AuthContext,
     text: &str,
     kind: Option<&str>,
 ) -> Result<ResolveResult> {
@@ -188,13 +190,13 @@ pub async fn resolve(
                UNION ALL SELECT 'status', id, name, name FROM issue_statuses
                UNION ALL SELECT 'principal', p.id, p.name, l.label FROM principals p
                  CROSS JOIN LATERAL (VALUES (p.name), (p.login)) AS l(label)
-                 WHERE p.status = 'active' AND l.label IS NOT NULL
+                 WHERE p.status = 'active' AND p.kind IN ('user', 'group') AND l.label IS NOT NULL
                UNION ALL SELECT a.entity_kind, a.entity_id, COALESCE(pr.name, t.name, s.name, pp.name), a.label
                  FROM aliases a
                  LEFT JOIN projects pr ON a.entity_kind = 'project' AND pr.id = a.entity_id AND pr.id = ANY($2)
                  LEFT JOIN trackers t ON a.entity_kind = 'tracker' AND t.id = a.entity_id
                  LEFT JOIN issue_statuses s ON a.entity_kind = 'status' AND s.id = a.entity_id
-                 LEFT JOIN principals pp ON a.entity_kind = 'principal' AND pp.id = a.entity_id
+                 LEFT JOIN principals pp ON a.entity_kind = 'principal' AND pp.id = a.entity_id AND pp.kind IN ('user', 'group')
                  WHERE COALESCE(pr.name, t.name, s.name, pp.name) IS NOT NULL
              ) AS x(kind, id, name, label)
              WHERE {cmp} AND ($3::text IS NULL OR x.kind = $3)
@@ -241,7 +243,12 @@ pub async fn resolve(
 }
 
 /// Resolves a filter value to exactly one id of `kind`, or explains why not.
-pub(crate) async fn resolve_one(app: &App, caller: Caller, kind: &str, text: &str) -> Result<Uuid> {
+pub(crate) async fn resolve_one(
+    app: &App,
+    caller: AuthContext,
+    kind: &str,
+    text: &str,
+) -> Result<Uuid> {
     let r = resolve(app, caller, text, Some(kind)).await?;
     let mut ids: Vec<Uuid> = r.candidates.iter().map(|c| c.id).collect();
     ids.sort();
@@ -312,7 +319,7 @@ fn rows_to_briefs(rows: Vec<BriefRow>) -> Vec<IssueBrief> {
         .collect()
 }
 
-pub async fn search(app: &App, caller: Caller, p: SearchParams) -> Result<SearchResult> {
+pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<SearchResult> {
     let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
     let visible = scope.predicate();
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as i64;
@@ -358,7 +365,7 @@ pub async fn search(app: &App, caller: Caller, p: SearchParams) -> Result<Search
     match p.assignee.as_deref() {
         None => {}
         Some("none") => assignee_none = true,
-        Some("me") => match caller.0 {
+        Some("me") => match caller.user_id() {
             Some(me) => filters.push(Pred::AssigneeIn(vec![me])),
             None => return Err(user_err("assignee=me needs an authenticated caller")),
         },
@@ -495,7 +502,7 @@ struct DetailRow {
     lock_version: i32,
 }
 
-pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
+pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetail> {
     let key = key.trim().to_uppercase();
     let not_found = || api(ErrorCode::NotFound, format!("no issue {key}"));
     let row: Option<DetailRow> = sqlx::query_as(
@@ -639,11 +646,15 @@ struct CfRow {
 /// (`custom_fields::readable_projects`).
 async fn custom_field_values(
     app: &App,
-    caller: Caller,
+    caller: AuthContext,
     roles: &[Uuid],
     row: &DetailRow,
 ) -> Result<Vec<CustomFieldValue>> {
-    let admin = db::is_admin(&mut *app.pool.acquire().await?, caller).await?;
+    let me = db::effective(&mut *app.pool.acquire().await?, caller).await?;
+    let admin = me.is_admin;
+    // Agents: visible = true fields only (contract 02 §3.5); the delegator's
+    // roles decide workflow, not what the agent may read.
+    let roles: &[Uuid] = if me.agent.is_some() { &[] } else { roles };
     let rows: Vec<CfRow> = sqlx::query_as(
         "SELECT d.name, d.ftype, cf.v_num::float8 AS v_num, cf.v_date, cf.v_text, cf.v_ref, cf.v_bool,
                 o.label AS option_label, o.active AS option_active, pr.name AS principal_name

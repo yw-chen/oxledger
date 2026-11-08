@@ -3,9 +3,9 @@
 //!
 //! Identity: over stdio the caller is fixed at startup (API key from the
 //! environment); over HTTP the axum layer authenticates the bearer key and
-//! puts a [`Caller`] into the request extensions.
+//! puts an [`AuthContext`] into the request extensions.
 
-use crate::db::Caller;
+use crate::auth::AuthContext;
 use crate::error::{self, ApiError, ErrorCode};
 use crate::service::{self, App, IssueDetail, ResolveResult, SearchParams, SearchResult};
 use rmcp::RoleServer;
@@ -24,17 +24,19 @@ use uuid::Uuid;
 pub struct OxServer {
     app: Arc<App>,
     /// Set for stdio; `None` means "take the caller from the HTTP request".
-    fixed_caller: Option<Caller>,
+    fixed_caller: Option<AuthContext>,
     tool_router: ToolRouter<Self>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetParams {
     /// Issue key such as "AUTH-12". Old keys of moved issues still work.
     pub key: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResolveParams {
     /// Name, login, project key or alias to look up (e.g. "缺陷", "alice", "AUTH").
     pub text: String,
@@ -84,7 +86,7 @@ fn to_error(e: anyhow::Error) -> ToolError {
 }
 
 impl OxServer {
-    pub fn new(app: Arc<App>, fixed_caller: Option<Caller>) -> Self {
+    pub fn new(app: Arc<App>, fixed_caller: Option<AuthContext>) -> Self {
         Self {
             app,
             fixed_caller,
@@ -92,13 +94,13 @@ impl OxServer {
         }
     }
 
-    fn caller(&self, ctx: &RequestContext<RoleServer>) -> Result<Caller, ToolError> {
+    fn caller(&self, ctx: &RequestContext<RoleServer>) -> Result<AuthContext, ToolError> {
         if let Some(c) = self.fixed_caller {
             return Ok(c);
         }
         ctx.extensions
             .get::<axum::http::request::Parts>()
-            .and_then(|p| p.extensions.get::<Caller>().copied())
+            .and_then(|p| p.extensions.get::<AuthContext>().copied())
             .ok_or_else(|| {
                 ToolError::Domain(ApiError::new(
                     ErrorCode::Unauthenticated,

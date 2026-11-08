@@ -1,0 +1,20 @@
+date	stage	decision	why	alternatives	source
+2026-11-08	S0	issue_cf_check 用 IS DISTINCT FROM TRUE；0004 先掃既有資料	NULL 檢查結果曾放行錯型別值（P1）	直接改 0002（已套用，checksum 會壞）	契約 02 §2 P1
+2026-11-08	S0	build.rs rerun-if-changed=../../migrations	只新增 migration 檔時 crate 不重編	每次手動 touch	playbook
+2026-11-08	S1	AuthContext 欄位私有、無 serde、只能由 auth/api 建立	避免任何呼叫端自稱身分（§3.1）	公開 struct	契約 02 §3.1
+2026-11-08	S1	每個請求由 db::effective 重查 session/key/token/脈絡/委派	T-A10 撤銷要在下一次呼叫生效；不快取授權	短期快取（違反 §3.7）	契約 02 §3.7
+2026-11-08	S1	Argon2id 用 argon2 crate 0.5 預設（19MiB,t=2,p=1）；未知 login 驗證 dummy hash	OWASP 建議值；避免時間差洩漏帳號存在	bcrypt；scrypt	契約 02 §3.2
+2026-11-08	S1	dev profile 對 argon2、blake2 開 opt-level 3	debug 建置下雜湊太慢，測試變慢	測試用較弱參數（測試和正式行為不同）	playbook
+2026-11-08	S1	登入速率限制放記憶體（login 10/15min、IP 50）	第一版單一 process；DB 版要額外表與清理	DB 表；外部 Redis（多一個依賴）	契約 02 §3.2
+2026-11-08	S1	security_epoch 欄位先加，epoch 觸發器延到 S6	S6 才有 project_catalog 與隔離流程；S1 只用來偵測 R 內專案變動	S1 一起做	契約 02 §10
+2026-11-08	S1	T-A1(b)/T-A2/T-A7 的 proposal 部分延到 S5/S6	提案與命令端點在 S5 才存在；S1 驗證 bearer 全路徑 401、service 層 human_session_required、讀取範圍	先寫假端點	契約 02 §9.1、§10
+2026-11-08	S1	agent principal 名稱「{使用者} 的 {client}」，第一次委派時建立	每個 (agent client, 委派人) 一個 principal（§3.4）	每個 token 一個 principal	契約 02 §3.4
+2026-11-08	S1	CLI 不提供建立委派與 token	委派與 token 必須來自真人 session + step-up（T-A1、T-A8）	CLI 管理員代發	契約 02 §3.3
+2026-11-08	S1	step-up 錯誤密碼每 session 5 次就結束該 session（記憶體計數）	獨立驗證發現 step-up 可被無限猜密碼	只回 429（被偷的 session 仍可等時間窗再試）	驗證報告 S1
+2026-11-08	S1	agent 讀取每次比對 R 的 epoch（變了就 context_unavailable/quarantined），並對委派專案重驗受眾一致	§3.5 每請求比對 epoch；觸發器 S6 才加但讀取端比對不依賴它	等 S6 一起做	驗證報告 S1；契約 02 §3.5
+2026-11-08	S1	own 角色剔除保留，但因受眾一致重驗而成為多餘防線	委派人有 own 角色時專案必不一致，重驗先擋下；剔除留作第二道	拿掉剔除	驗證報告 S1
+2026-11-08	S1	同一 (user, client) 的委派建立以 pg_advisory_xact_lock 序列化	並行首次委派會撞 unique 回 500；advisory lock 在任何列鎖之前取得，不改 §3.7 順序	principals FOR UPDATE（會擋其他同使用者操作）	驗證報告 S1
+2026-11-08	S1	writable_fields 的 cf 必須 visible = true	agent 讀不到的欄位不能授予寫入	S5/S6 再檢查	驗證報告 S1；契約 02 §6.4 D-5
+2026-11-08	S1	延後到 S2：search/get 的授權與可見性在同一連線同一 snapshot（REPEATABLE READ）	目前各步各取連線，每步都只會收縮、不越權；S2 重整讀取路徑時一併改	S1 就改	驗證報告 S1；契約 02 §3.7、§3.8
+2026-11-08	S1	待決：登入限流 map 無上限、反向代理後 IP 相同	單機第一版；部署在 proxy 後要信任 X-Forwarded-For 或改用 DB 限流，屬部署設定	現在就做 DB 版	驗證報告 S1
+2026-11-08	S1	部署注意：應用程式不可用 superuser 連線	superuser 可設 session_replication_role 停用防線觸發器；docker 預設 POSTGRES_USER 是 superuser	—	驗證報告 S1

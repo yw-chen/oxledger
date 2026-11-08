@@ -19,7 +19,8 @@
 mod common;
 
 use ox_core::IssueFacts;
-use oxledger::db::{self, Caller, push_pred};
+use oxledger::auth::AuthContext;
+use oxledger::db::{self, push_pred};
 use oxledger::search::SearchIndex;
 use oxledger::service::{self, App, SearchParams};
 use sqlx::{PgPool, Postgres, QueryBuilder};
@@ -401,7 +402,7 @@ async fn e4_visibility_sql_index_memory_agree_with_reference() {
             .chain(w.users.iter().map(Some))
             .collect();
         for viewer in viewers {
-            let caller = Caller(viewer.map(|u| u.id));
+            let caller = AuthContext::test_viewer(viewer.map(|u| u.id));
             let expected: BTreeSet<Uuid> = w
                 .issues
                 .iter()

@@ -1,0 +1,776 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//! HTTP: the SPA API under `/api/v1` (contract 02 §4), MCP at `/mcp`, and
+//! `/healthz`.
+//!
+//! Credentials (§3.2): `/api/v1` accepts only the session cookie, `/mcp` only
+//! a bearer token. A request with both is `invalid_request`
+//! (`ambiguous_credentials`); a bearer on `/api/v1` is `unauthenticated`.
+//!
+//! Every non-GET request to `/api/v1` needs `Content-Type: application/json`
+//! and `Origin` equal to the configured SPA origin; with a session it also
+//! needs `X-CSRF-Token` equal to the session's token (login uses the login
+//! challenge instead). Every `/api/v1` response is `Cache-Control: no-store`.
+
+use crate::agents::{self, DelegationInput};
+use crate::auth::{self, AuthContext, LoginInput, SessionPolicy};
+use crate::error::{self, ApiError, ErrorCode, api};
+use crate::mcp::OxServer;
+use crate::service::App;
+use axum::extract::{ConnectInfo, FromRequest, Path, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
+use axum::{Extension, Json, Router};
+use chrono::Utc;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use uuid::Uuid;
+
+pub const SESSION_COOKIE: &str = "__Host-ox_session";
+pub const LOGIN_COOKIE: &str = "__Host-ox_login";
+pub const CSRF_HEADER: &str = "x-csrf-token";
+
+#[derive(Debug, Clone)]
+pub struct ApiConfig {
+    /// The SPA's origin, e.g. `https://ledger.example.com`; non-GET requests
+    /// must carry exactly this `Origin`.
+    pub spa_origin: String,
+    pub session: SessionPolicy,
+}
+
+pub struct ApiState {
+    pub app: Arc<App>,
+    pub cfg: ApiConfig,
+    limiter: LoginLimiter,
+}
+
+/// Builds the whole HTTP router.
+pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
+    let state = Arc::new(ApiState {
+        app: app.clone(),
+        cfg,
+        limiter: LoginLimiter::default(),
+    });
+    let v1 = Router::new()
+        .route("/auth/login-context", get(login_context))
+        .route("/auth/login", post(login))
+        .route("/auth/reauthenticate", post(reauthenticate))
+        .route("/auth/session", get(session))
+        .route("/auth/logout", post(logout))
+        .route("/auth/sessions", get(list_sessions))
+        .route("/auth/sessions/{id}", delete(revoke_session))
+        .route("/agent-clients", get(agent_clients))
+        .route(
+            "/delegations",
+            get(list_delegations).post(create_delegation),
+        )
+        .route("/delegations/{id}/revoke", post(revoke_delegation))
+        .route("/agent-contexts", get(list_contexts).post(new_context))
+        .route("/agent-contexts/{id}/close", post(close_context))
+        .route("/agent-contexts/{id}/credentials", post(issue_credential))
+        .route("/agent-credentials/{id}/revoke", post(revoke_credential))
+        .fallback(|| async { ApiFailure(api(ErrorCode::NotFound, "no such endpoint")) })
+        .method_not_allowed_fallback(|| async {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidRequest, "this method is not allowed here")
+                    .with_details(json!({"kind": "method_not_allowed"}))
+                    .into(),
+            )
+        })
+        .layer(middleware::from_fn_with_state(state.clone(), api_guard))
+        .with_state(state.clone());
+
+    let mcp_app = app.clone();
+    let mcp = StreamableHttpService::new(
+        move || Ok(OxServer::new(mcp_app.clone(), None)),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default(),
+    );
+    let mcp = Router::new()
+        .nest_service("/mcp", mcp)
+        .layer(middleware::from_fn_with_state(state, mcp_auth));
+
+    Router::new()
+        .nest("/api/v1", v1)
+        .merge(mcp)
+        .route("/healthz", get(|| async { "ok" }))
+}
+
+// ---------------------------------------------------------------- responses
+
+/// `{"data": …, "meta": {…}}` (§4.3).
+fn ok(data: impl serde::Serialize) -> Response {
+    Json(json!({
+        "data": data,
+        "meta": {"request_id": Uuid::now_v7(), "observed_at": Utc::now()},
+    }))
+    .into_response()
+}
+
+/// Any handler error. Domain errors become `{"error": …}` with their HTTP
+/// status; everything else a 500 that names only a request id.
+pub struct ApiFailure(pub anyhow::Error);
+
+impl<E: Into<anyhow::Error>> From<E> for ApiFailure {
+    fn from(e: E) -> Self {
+        ApiFailure(e.into())
+    }
+}
+
+impl IntoResponse for ApiFailure {
+    fn into_response(self) -> Response {
+        let request_id = Uuid::now_v7();
+        match error::classify(&self.0) {
+            Some(e) => {
+                let status = StatusCode::from_u16(e.code.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let mut resp = (status, Json(json!({"error": e.body(request_id)}))).into_response();
+                if let Some(ms) = e.retry_after_ms {
+                    let secs = ms.div_ceil(1000).to_string();
+                    if let Ok(v) = HeaderValue::from_str(&secs) {
+                        resp.headers_mut().insert(header::RETRY_AFTER, v);
+                    }
+                }
+                resp
+            }
+            None => {
+                tracing::error!(%request_id, "request failed: {:#}", self.0);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": {
+                        "code": "internal_error", "request_id": request_id, "retryable": false,
+                        "retry_after_ms": null, "next_actions": ["stop"],
+                        "message": "internal error",
+                    }})),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+type ApiResult = Result<Response, ApiFailure>;
+
+/// JSON body with unknown fields rejected as `invalid_request` (§4.3, T-A2).
+pub struct ApiJson<T>(pub T);
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for ApiJson<T> {
+    type Rejection = ApiFailure;
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(v)) => Ok(ApiJson(v)),
+            Err(e) => Err(ApiFailure(
+                ApiError::new(ErrorCode::InvalidRequest, e.body_text())
+                    .with_details(json!({"kind": "invalid_body"}))
+                    .into(),
+            )),
+        }
+    }
+}
+
+fn id_param(s: &str) -> Result<Uuid, ApiFailure> {
+    s.parse()
+        .map_err(|_| ApiFailure(api(ErrorCode::NotFound, "no such object")))
+}
+
+// ---------------------------------------------------------------- cookies
+
+pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.to_string())
+}
+
+fn set_cookie(resp: &mut Response, name: &str, value: &str, max_age_secs: i64, same_site: &str) {
+    let v = format!(
+        "{name}={value}; Path=/; Secure; HttpOnly; SameSite={same_site}; Max-Age={max_age_secs}"
+    );
+    if let Ok(v) = HeaderValue::from_str(&v) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+}
+
+// ---------------------------------------------------------------- guard
+
+/// What the guard found, for the handlers.
+#[derive(Clone)]
+pub struct RequestAuth {
+    pub ctx: AuthContext,
+    pub csrf_secret: Option<Vec<u8>>,
+    pub client_ip: Option<String>,
+    /// The raw session cookie the request carried (valid or not).
+    pub had_session_cookie: bool,
+}
+
+fn has_bearer(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim_start().len() >= 6 && v[..6].eq_ignore_ascii_case("bearer"))
+}
+
+async fn api_guard(State(st): State<Arc<ApiState>>, mut req: Request, next: Next) -> Response {
+    let mut resp = match guard(&st, &mut req).await {
+        Ok(()) => next.run(req).await,
+        Err(e) => e.into_response(),
+    };
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+async fn guard(st: &ApiState, req: &mut Request) -> Result<(), ApiFailure> {
+    let headers = req.headers();
+    let session_cookie = cookie(headers, SESSION_COOKIE);
+    if has_bearer(headers) {
+        if session_cookie.is_some() {
+            return Err(ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "send either a session cookie or a bearer token, not both",
+                )
+                .with_details(json!({"kind": "ambiguous_credentials"}))
+                .into(),
+            ));
+        }
+        return Err(ApiFailure(api(
+            ErrorCode::Unauthenticated,
+            "this API only accepts a browser session",
+        )));
+    }
+    let info = match &session_cookie {
+        Some(c) => auth::session_from_cookie(&st.app.pool, &st.cfg.session, c).await?,
+        None => None,
+    };
+    let client_ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+
+    if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        let csrf = |msg: &str| ApiFailure(api(ErrorCode::CsrfFailed, msg));
+        let json_type = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"));
+        if !json_type {
+            return Err(csrf("Content-Type must be application/json"));
+        }
+        let origin_ok = headers
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|o| o == st.cfg.spa_origin);
+        if !origin_ok {
+            return Err(csrf("request origin is not allowed"));
+        }
+        // Login has its own challenge; everything else with a session needs the session token.
+        let is_login = req.uri().path().ends_with("/auth/login");
+        if let (Some(i), false) = (&info, is_login) {
+            let presented = headers
+                .get(CSRF_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !auth::token_matches(presented, &i.csrf_secret) {
+                return Err(csrf("missing or wrong CSRF token"));
+            }
+        }
+    }
+    let ra = RequestAuth {
+        ctx: info.as_ref().map_or(AuthContext::anonymous(), |i| i.ctx),
+        csrf_secret: info.map(|i| i.csrf_secret),
+        client_ip,
+        had_session_cookie: session_cookie.is_some(),
+    };
+    req.extensions_mut().insert(ra);
+    Ok(())
+}
+
+/// The signed-in person or `unauthenticated`.
+fn human(ra: &RequestAuth) -> Result<AuthContext, ApiFailure> {
+    match ra.ctx.require_human_session() {
+        Ok(_) => Ok(ra.ctx),
+        Err(_) => Err(ApiFailure(api(ErrorCode::Unauthenticated, "sign in first"))),
+    }
+}
+
+/// MCP: bearer only (agent token or legacy key).
+async fn mcp_auth(State(st): State<Arc<ApiState>>, req: Request, next: Next) -> Response {
+    let mut resp = mcp_auth_inner(&st, req, next).await;
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+async fn mcp_auth_inner(st: &ApiState, mut req: Request, next: Next) -> Response {
+    let headers = req.headers();
+    if cookie(headers, SESSION_COOKIE).is_some() && has_bearer(headers) {
+        return ApiFailure(
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "send either a session cookie or a bearer token, not both",
+            )
+            .with_details(json!({"kind": "ambiguous_credentials"}))
+            .into(),
+        )
+        .into_response();
+    }
+    let unauthenticated = || {
+        ApiFailure(api(
+            ErrorCode::Unauthenticated,
+            "MCP needs an agent token (or a legacy API key) as a bearer token",
+        ))
+        .into_response()
+    };
+    let Some(raw) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+    else {
+        return unauthenticated();
+    };
+    match auth::authenticate_bearer(&st.app.pool, raw.trim()).await {
+        Ok(Some(ctx)) => {
+            req.extensions_mut().insert(ctx);
+            next.run(req).await
+        }
+        Ok(None) => unauthenticated(),
+        Err(e) => ApiFailure(e).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- login rate limit
+
+/// Failed logins per normalized login and per client IP, in one process
+/// (§3.3). Several server processes each count separately.
+#[derive(Default)]
+struct LoginLimiter {
+    failures: Mutex<HashMap<String, (u32, Instant)>>,
+}
+
+const LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
+const MAX_PER_LOGIN: u32 = 10;
+const MAX_PER_IP: u32 = 50;
+/// Wrong step-up passwords per session; the session is ended at this count.
+const MAX_REAUTH_FAILURES: u32 = 5;
+
+impl LoginLimiter {
+    fn keys(login: &str, ip: Option<&str>) -> Vec<(String, u32)> {
+        let mut k = vec![(
+            format!("login:{}", login.trim().to_lowercase()),
+            MAX_PER_LOGIN,
+        )];
+        if let Some(ip) = ip {
+            k.push((format!("ip:{ip}"), MAX_PER_IP));
+        }
+        k
+    }
+
+    /// `Some(ms)` to wait when any key is over its limit.
+    fn blocked(&self, login: &str, ip: Option<&str>) -> Option<u64> {
+        let map = self.failures.lock().unwrap();
+        let now = Instant::now();
+        Self::keys(login, ip)
+            .into_iter()
+            .filter_map(|(k, max)| {
+                let (n, start) = map.get(&k)?;
+                let elapsed = now.duration_since(*start);
+                (elapsed < LIMIT_WINDOW && *n >= max)
+                    .then(|| (LIMIT_WINDOW - elapsed).as_millis() as u64)
+            })
+            .max()
+    }
+
+    fn fail(&self, login: &str, ip: Option<&str>) {
+        let mut map = self.failures.lock().unwrap();
+        let now = Instant::now();
+        map.retain(|_, (_, start)| now.duration_since(*start) < LIMIT_WINDOW);
+        for (k, _) in Self::keys(login, ip) {
+            let e = map.entry(k).or_insert((0, now));
+            e.0 += 1;
+        }
+    }
+
+    /// Counts one failure for `key`; returns the count in the window.
+    fn fail_key(&self, key: &str) -> u32 {
+        let mut map = self.failures.lock().unwrap();
+        let now = Instant::now();
+        map.retain(|_, (_, start)| now.duration_since(*start) < LIMIT_WINDOW);
+        let e = map.entry(key.to_string()).or_insert((0, now));
+        e.0 += 1;
+        e.0
+    }
+
+    fn succeed(&self, login: &str) {
+        let mut map = self.failures.lock().unwrap();
+        map.remove(&format!("login:{}", login.trim().to_lowercase()));
+    }
+}
+
+// ---------------------------------------------------------------- auth handlers
+
+async fn login_context(State(st): State<Arc<ApiState>>) -> ApiResult {
+    let c = auth::new_login_challenge(&st.app.pool, &st.cfg.session).await?;
+    let mut resp = ok(json!({"csrf_token": c.csrf_token, "expires_at": c.expires_at}));
+    set_cookie(
+        &mut resp,
+        LOGIN_COOKIE,
+        &c.cookie,
+        st.cfg.session.login_challenge.num_seconds(),
+        "Strict",
+    );
+    Ok(resp)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginBody {
+    login: String,
+    password: String,
+}
+
+async fn login(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<LoginBody>,
+) -> ApiResult {
+    if let Some(ms) = st.limiter.blocked(&body.login, ra.client_ip.as_deref()) {
+        return Err(ApiFailure(
+            ApiError::new(
+                ErrorCode::RateLimited,
+                "too many failed sign-ins; try again later",
+            )
+            .with_retry_after(ms)
+            .into(),
+        ));
+    }
+    let challenge = cookie(&headers, LOGIN_COOKIE);
+    let csrf = headers
+        .get(CSRF_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let result = auth::login(
+        &st.app.pool,
+        &st.cfg.session,
+        LoginInput {
+            challenge_cookie: challenge.as_deref(),
+            challenge_csrf: csrf,
+            login: &body.login,
+            password: &body.password,
+        },
+    )
+    .await;
+    let s = match result {
+        Ok(s) => s,
+        Err(e) => {
+            if error::as_api_error(&e).is_some_and(|a| a.code == ErrorCode::InvalidCredentials) {
+                st.limiter.fail(&body.login, ra.client_ip.as_deref());
+            }
+            return Err(ApiFailure(e));
+        }
+    };
+    st.limiter.succeed(&body.login);
+    // Session fixation: whatever session the browser had before is ended.
+    if let (Some(old), true) = (cookie(&headers, SESSION_COOKIE), ra.had_session_cookie)
+        && let Some(info) = auth::session_from_cookie(&st.app.pool, &st.cfg.session, &old).await?
+        && let Some(id) = info.ctx.session_id()
+    {
+        sqlx::query("UPDATE browser_sessions SET revoked_at = now(), revoked_reason = 'replaced_by_login' WHERE id = $1 AND revoked_at IS NULL")
+            .bind(id)
+            .execute(&st.app.pool)
+            .await?;
+    }
+    let max_age = (s.absolute_expires_at - Utc::now()).num_seconds().max(0);
+    let mut resp = ok(json!({
+        "user_id": s.user_id,
+        "session_id": s.session_id,
+        "csrf_token": s.csrf_token,
+        "expires_at": s.absolute_expires_at,
+    }));
+    set_cookie(&mut resp, SESSION_COOKIE, &s.token, max_age, "Lax");
+    set_cookie(&mut resp, LOGIN_COOKIE, "", 0, "Strict");
+    Ok(resp)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasswordBody {
+    password: String,
+}
+
+async fn reauthenticate(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<PasswordBody>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let (_, session) = ctx.require_human_session()?;
+    match auth::reauthenticate(&st.app.pool, &ctx, &body.password).await {
+        Ok(()) => Ok(ok(json!({"reauthenticated": true}))),
+        Err(e)
+            if error::as_api_error(&e).map(|a| a.code) == Some(ErrorCode::InvalidCredentials) =>
+        {
+            // A stolen session must not become a password oracle: after a few
+            // wrong passwords the session itself ends.
+            let n = st.limiter.fail_key(&format!("reauth:{session}"));
+            if n >= MAX_REAUTH_FAILURES {
+                auth::revoke_session(&st.app.pool, &ctx, session, "reauth_failures").await?;
+                return Err(ApiFailure(api(
+                    ErrorCode::Unauthenticated,
+                    "too many wrong passwords; this session has ended, sign in again",
+                )));
+            }
+            Err(ApiFailure(e))
+        }
+        Err(e) => Err(ApiFailure(e)),
+    }
+}
+
+async fn session(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let (user, session) = ctx.require_human_session()?;
+    let row: (
+        String,
+        String,
+        bool,
+        chrono::DateTime<Utc>,
+        chrono::DateTime<Utc>,
+    ) = sqlx::query_as(
+        "SELECT p.login, p.name, p.is_admin, s.reauthenticated_at, s.absolute_expires_at
+         FROM browser_sessions s JOIN principals p ON p.id = s.user_id WHERE s.id = $1",
+    )
+    .bind(session)
+    .fetch_one(&st.app.pool)
+    .await?;
+    let csrf = ra.csrf_secret.as_deref().map(auth::encode);
+    Ok(ok(json!({
+        "user_id": user,
+        "session_id": session,
+        "login": row.0,
+        "name": row.1,
+        "is_admin": row.2,
+        "csrf_token": csrf,
+        "reauthenticated_at": row.3,
+        "expires_at": row.4,
+    })))
+}
+
+async fn logout(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let (_, session) = ctx.require_human_session()?;
+    auth::revoke_session(&st.app.pool, &ctx, session, "logout").await?;
+    let mut resp = ok(json!({"signed_out": true}));
+    set_cookie(&mut resp, SESSION_COOKIE, "", 0, "Lax");
+    Ok(resp)
+}
+
+async fn list_sessions(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let (user, current) = ctx.require_human_session()?;
+    let sql = format!(
+        "SELECT s.id, s.created_at, s.last_seen_at, s.absolute_expires_at
+         FROM browser_sessions s JOIN principals p ON p.id = s.user_id
+         JOIN user_passwords up ON up.user_id = s.user_id
+         WHERE s.user_id = $1 AND {} ORDER BY s.created_at DESC",
+        auth::SESSION_VALID
+    );
+    type Row = (
+        Uuid,
+        chrono::DateTime<Utc>,
+        chrono::DateTime<Utc>,
+        chrono::DateTime<Utc>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(user)
+        .fetch_all(&st.app.pool)
+        .await?;
+    let list: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, created, seen, exp)| {
+            json!({"id": id, "created_at": created, "last_seen_at": seen, "expires_at": exp, "current": id == current})
+        })
+        .collect();
+    Ok(ok(list))
+}
+
+async fn revoke_session(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    auth::revoke_session(&st.app.pool, &ctx, id_param(&id)?, "revoked_by_user").await?;
+    Ok(ok(json!({"revoked": true})))
+}
+
+// ---------------------------------------------------------------- agents
+
+async fn agent_clients(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::list_agent_clients(&st.app.pool, &ctx).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegationBody {
+    agent_client_id: Uuid,
+    project_id: Uuid,
+    proposal_ops: Vec<String>,
+    writable_fields: Vec<String>,
+    max_ops: Option<i32>,
+    expires_in_days: Option<i64>,
+}
+
+async fn create_delegation(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<DelegationBody>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let d = agents::create_delegation(
+        &st.app.pool,
+        &st.cfg.session,
+        &ctx,
+        DelegationInput {
+            agent_client_id: b.agent_client_id,
+            project_id: b.project_id,
+            proposal_ops: b.proposal_ops,
+            writable_fields: b.writable_fields,
+            max_ops: b.max_ops,
+            expires_in_days: b.expires_in_days,
+        },
+    )
+    .await?;
+    Ok(ok(d))
+}
+
+async fn list_delegations(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::list_delegations(&st.app.pool, &ctx).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+
+async fn revoke_delegation(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    agents::revoke_delegation(&st.app.pool, &ctx, id_param(&id)?).await?;
+    Ok(ok(json!({"revoked": true})))
+}
+
+async fn list_contexts(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::list_contexts(&st.app.pool, &ctx).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewContextBody {
+    agent_client_id: Uuid,
+    fresh_context_ack: bool,
+}
+
+async fn new_context(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<NewContextBody>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = agents::new_context(
+        &st.app.pool,
+        &st.cfg.session,
+        &ctx,
+        b.agent_client_id,
+        b.fresh_context_ack,
+    )
+    .await?;
+    Ok(ok(json!({"id": id})))
+}
+
+async fn close_context(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    agents::close_context(&st.app.pool, &ctx, id_param(&id)?).await?;
+    Ok(ok(json!({"closed": true})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialBody {
+    #[serde(default)]
+    label: String,
+    expires_in_days: Option<i64>,
+}
+
+async fn issue_credential(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<CredentialBody>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let c = agents::issue_credential(
+        &st.app.pool,
+        &st.cfg.session,
+        &ctx,
+        id_param(&id)?,
+        &b.label,
+        b.expires_in_days,
+    )
+    .await?;
+    Ok(ok(c))
+}
+
+async fn revoke_credential(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    agents::revoke_credential(&st.app.pool, &ctx, id_param(&id)?).await?;
+    Ok(ok(json!({"revoked": true})))
+}

@@ -14,8 +14,23 @@ docker run -d --name oxledger-pg -e POSTGRES_USER=oxledger -e POSTGRES_PASSWORD=
 cp .env.example .env            # 或直接 export 裡面的變數
 cargo build --features test-support   # seed-demo 只在這個 feature 下編譯（契約 02 §2 P5）
 ./target/debug/oxledger seed-demo   # 只能對空資料庫跑；印出 admin/alice/bob/carol 的 API key（只顯示這一次）
-./target/debug/oxledger serve       # http://127.0.0.1:8080/mcp，Authorization: Bearer <key>
+./target/debug/oxledger serve       # /api/v1（SPA，session cookie）、/mcp（Bearer）、/healthz
 ```
+
+帳號與 agent（契約 02 §3，S1）：
+
+```bash
+echo 'a long password here' | ./target/debug/oxledger user add dave "Dave Wang" [--admin]   # 密碼從 stdin，至少 12 字元
+echo 'another long one' | ./target/debug/oxledger user set-password alice   # 會結束 alice 所有 session
+./target/debug/oxledger user lock|unlock bob
+./target/debug/oxledger agent-client add "Claude Code" policy-2026-01       # 建立時是停用的
+./target/debug/oxledger agent-client enable "Claude Code"
+```
+
+委派與 agent token 只能由**真人瀏覽器 session** 在 15 分鐘內重新驗證過密碼後建立（`POST /api/v1/delegations`、
+`POST /api/v1/agent-contexts/{id}/credentials`），CLI 刻意不提供。手動試的流程見 `scripts/e2e_s1.py`：
+`GET /auth/login-context`（拿 `__Host-ox_login` cookie 與 csrf_token）→ `POST /auth/login`（帶 `X-CSRF-Token`）→
+之後非 GET 請求都要 `Content-Type: application/json`、`Origin: <OXLEDGER_SPA_ORIGIN>`、`X-CSRF-Token: <登入回傳的 csrf_token>`。
 
 測試：`cargo test`（整合測試透過 dev-dependency 自動開 `test-support`）。整合測試（E4 可見性、自訂欄位、S0）預設用同一台 PostgreSQL 上的 `oxledger_test`；
 `OXLEDGER_TEST_DATABASE_URL` 可以指到別的資料庫名稱，不存在會自動建（`tests/common/mod.rs`）。
@@ -23,8 +38,11 @@ cargo build --features test-support   # seed-demo 只在這個 feature 下編譯
 
 ### 接到 MCP client
 
-- **HTTP（Streamable HTTP）**：URL `http://127.0.0.1:8080/mcp`，header `Authorization: Bearer <key>`。
+- **HTTP（Streamable HTTP）**：URL `http://127.0.0.1:8080/mcp`，header `Authorization: Bearer <token>`。
 - **stdio**：命令 `oxledger stdio`，環境變數 `DATABASE_URL`、`OXLEDGER_API_KEY`。log 走 stderr，不會污染 stdout。
+- token 有兩種：agent token（`oxa_…`，由使用者在 SPA 為某個 agent client 發；只讀得到委派專案的非私有單與 `visible = true` 的欄位）
+  和舊式 API key（`seed-demo` 印的那種，等同使用者本人的讀取權限，S3 起會限縮）。兩種都在每次工具呼叫重新檢查，撤銷後下一次呼叫就失敗。
+- 示範資料的 AUTH 有 Reporter（own）角色，**不是受眾一致的專案**，不能委派給 agent（`project_not_audience_consistent`）。試 agent 要另建一個只有 all／default 角色的專案。
 
 示範資料的權限（用來手動驗證可見性）：
 
@@ -79,6 +97,12 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | 新增 migration 檔後測試還是舊行為（例如 0004 的 trigger 修正沒生效） | `sqlx::migrate!` 在編譯時嵌入 migrations；只新增檔案、Rust 原始碼沒變時 crate 不會重編 | `crates/oxledger/build.rs` 宣告 `rerun-if-changed=../../migrations`。不要刪這個檔 |
 | 啟動或測試時 migration 0004 失敗：`N issue_cf row(s) do not match their custom field type` | 0002 的 `IF NOT ok` 讓檢查結果是 NULL 的值通過（例如 string 欄位寫進 `v_num`），0004 先掃描既有資料，有壞資料就拒絕繼續 | 列出來：`SELECT c.* , d.ftype FROM issue_cf c JOIN field_defs d ON d.id = c.field_id`，對照 0004 的 CASE 找出不符的列，搬到正確的值欄位或刪掉後重啟。訊息只列前 5 筆 |
 | `cargo run -- seed-demo` 回「only in builds with the test-support feature」 | `seed`、`test_support` 直接寫表、不經命令引擎，正式建置不編進去 | `cargo run --features test-support -- seed-demo` |
+| 用 curl 或 Python 打本機 http 的 /api/v1 時，登入後下一個請求還是 `unauthenticated` | cookie 名稱是 `__Host-` 前綴、`Secure`，http://127.0.0.1 上 cookie jar 會丟掉 | 手動帶 `Cookie:` header（`scripts/e2e_s1.py` 就是這樣）；瀏覽器在 localhost 會接受 Secure cookie |
+| 登入或改密碼在 debug 建置要好幾秒、整合測試很慢 | Argon2id（19 MiB、t=2）在未最佳化的 debug 建置很慢 | workspace `Cargo.toml` 對 `argon2`、`blake2` 開 `opt-level = 3`（`[profile.dev.package.*]`），只影響 dev 建置 |
+| `impl From<ApiError> for anyhow::Error` 編譯錯誤 conflicting implementations | anyhow 已有 `impl<E: std::error::Error + Send + Sync> From<E>` | 不要自己寫，直接 `.into()` 或 `Err(api(...))?` |
+| clippy `collapsible_if` 指向巢狀 `if let` | Rust 2024 可以用 let chains | 改成 `if let A = a && let B = b { … }` |
+| `POST /delegations` 回 `forbidden_op`／`project_not_audience_consistent` | 專案有 `own` 角色或 tracker 受限的 view_issues，agent 不能保證看到和每個人一樣的單 | 換專案，或改角色設定；這是刻意的（§3.5） |
+| `POST /delegations` 回 `context_unavailable`（closed） | 使用者先前按過「停止這個 agent」，脈絡已關閉 | `POST /agent-contexts` 帶 `fresh_context_ack: true` 開新脈絡，舊 token 不會復活 |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
 
 ## 設計上的防呆
@@ -86,7 +110,17 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - **可見性只有一份規則**：`ox-core::Scope::predicate()` 產生 `Pred`，同時編成 SQL（`db::push_pred`）與 tantivy filter（`SearchIndex::filter`）。E4 測試拿 Redmine 規則的獨立實作對照四種結果。改規則時先跑 `cargo test -p oxledger --test visibility_e4`。
 - **搜尋結果一律回 DB 複驗**：tantivy 可能落後資料庫（outbox 非同步），所以 `service::search` 會把候選 id 再過一次 SQL 可見性條件。
 - **看不到 = 不存在**：`get` 對沒權限的 issue 回 `not_found`「no issue X」，和真的不存在一樣，避免用 key 探測。
-- **身分只在一處檢查**（契約 02 §2 P4）：`db::effective` 確認 principal 存在、是 user、是 active；`load_scope`、`role_ids_for`、`is_admin` 都先經過它。被鎖的使用者在下一個請求就回 `unauthenticated`，長時間執行的 stdio 也一樣。新增授權函式時一律從 `effective` 開始。
+- **身分只在一處檢查**（契約 02 §2 P4、§3.7）：`auth::AuthContext` 只記「是誰、用什麼憑證」（principal、method、session／credential／context id），欄位私有、只能由 `auth`／`api` 建立；能不能用一律由 `db::effective` 每次查 DB：session 沒撤銷、沒過期、密碼版本沒變；API key 沒撤銷沒過期；agent token 的 credential、脈絡、client、agent 與委派人都還有效，委派專案取當下沒撤銷沒過期的。`load_scope`、`role_ids_for`、`is_admin` 都先經過它。被鎖的使用者、撤銷的 token 在下一個請求就回 `unauthenticated`，長時間執行的 stdio 也一樣（S1 e2e 實測）。新增授權函式時一律從 `effective` 開始。
+- **agent 的讀取範圍**（§3.5）：委派人的可見範圍 ∩ 委派專案 ∩ 非私有單 ∩ `visible = true` 欄位；委派人的 `own` 角色不帶給 agent。`load_scope` 對 agent 回 `Scope::anonymous` 形狀（只有非私有），`filter::resolve` 與 `service::custom_field_values` 對 agent 不算角色可讀性。
+- **只有真人 session 能做的事**（T-A1）：委派、發 token、撤銷、開關脈絡在 service 層一開始就呼叫 `ctx.require_human_session()`，不靠路由擋；`/api/v1` 另外只收 cookie，帶 Bearer 一律 401、cookie 與 Bearer 並存 400。
+- **step-up**：`auth::require_step_up` 在同一個交易裡對 session 加 `FOR SHARE` 再檢查 `reauthenticated_at`，所以「檢查完、寫入前被登出」不會成立。
+- **鎖順序**（§3.7）：agent_work_contexts → principals → browser_sessions → delegations → agent_clients → projects。新寫的交易照這個順序拿鎖。
+- **DB 層的身分防線**（T-A9，migration 0005）：agent principal 不能當成員、群組成員、指派對象、user 型自訂欄位值、API key 擁有者；principal 的 kind 不能改。這些是觸發器，繞過 Rust 直接寫 SQL 也擋得住。
+- **agent 讀取每次重驗**：R 中任一專案 `security_epoch` 和授予時不同 → `context_unavailable`（quarantined），連讀取都停；委派專案若已不是受眾一致就當作沒委派。
+- **step-up 不是密碼 oracle**：同一 session 錯 5 次密碼，session 直接結束。
+- **管理員結束某人所有 session**：`oxledger user revoke-sessions <login>`（寫稽核）。
+- **部署**：應用程式的 DB 帳號不要是 superuser（可停用觸發器防線）。
+- **登入速率限制在記憶體**：每個 login 15 分鐘 10 次失敗、每個 IP 50 次。多個 `serve` process 各算各的，要水平擴充時改成 DB 或共用存放。
 - **授權函式吃連線，不吃 pool**（P3）：`load_scope`、`role_ids_for`、`is_admin`、`custom_fields::readable_projects` 收 `&mut PgConnection`。寫入路徑傳交易本身，權限判斷才會看到同一個快照與鎖；讀取路徑傳 `&mut app.pool.acquire().await?`。
 - **錯誤碼**（P9，契約 02 §4.3、§4.4、§14.2）：可行動的錯誤是 `error::ApiError`（穩定的 `code`、`next_actions`、`details`）。MCP 回工具結果 `isError: true`，structured content 是錯誤物件本身；其他錯誤是 JSON-RPC internal error，只帶 `request_id`，原因只寫進 log。不要把 SQL、constraint 名稱放進 `message`。
 - **測試用的直接寫入**（P5）：`test_support::create_issue` 不檢查權限、不走 workflow、不產生事件，只在 `test-support` feature 下編譯。
