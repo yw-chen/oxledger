@@ -42,6 +42,7 @@ pub const UNSUPPORTED: &[&str] = &[
     "delete_issue",
     "move_issue_project",
     "relative_date",
+    "version_delete",
 ];
 
 // ---------------------------------------------------------------- types
@@ -191,6 +192,9 @@ pub struct AssigneeList {
 pub enum DescribeScope {
     ProjectTracker,
     IssueActions,
+    /// Agents only: which projects the work context reads and where it may
+    /// write (contract 02 §5.3).
+    Context,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -231,6 +235,8 @@ pub struct DescribeResult {
     pub project_tracker: Option<TrackerSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_actions: Option<IssueActions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::agents::ContextDescription>,
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -476,13 +482,12 @@ async fn tracker_schema_in(
             ops: ops_for(key),
         });
         if key == "assigned_to_id" {
-            let ops = if can_update
-                && actor.delegation_allows(project_id, perm::OP_TRANSITION, Some("status_id"))
-            {
-                vec!["transition".to_string()]
-            } else {
-                Vec::new()
-            };
+            let ops =
+                if can_update && actor.delegation_allows(project_id, perm::OP_TRANSITION, None) {
+                    vec!["transition".to_string()]
+                } else {
+                    Vec::new()
+                };
             fields.push(FieldSchema {
                 key: "status_id".into(),
                 name: None,
@@ -666,7 +671,7 @@ pub(crate) async fn allowed_transitions(
             .fetch_all(&mut *conn)
             .await?;
     let editable = pp.attributes_editable(issue.tracker_id, issue.is_own(actor))
-        && actor.delegation_allows(issue.project_id, perm::OP_TRANSITION, Some("status_id"));
+        && actor.delegation_allows(issue.project_id, perm::OP_TRANSITION, None);
     let roles = pp.workflow_roles();
     let ids = if editable && !roles.is_empty() {
         let rows: Vec<(Uuid, Uuid, Uuid, Uuid, String)> = sqlx::query_as(
@@ -749,7 +754,7 @@ pub async fn issue_actions(app: &App, caller: AuthContext, key: &str) -> Result<
     Ok(r)
 }
 
-async fn issue_actions_in(
+pub(crate) async fn issue_actions_in(
     conn: &mut PgConnection,
     caller: AuthContext,
     key: &str,
@@ -935,6 +940,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
             Ok(DescribeResult {
                 project_tracker: Some(tracker_schema(app, caller, &project, &tracker).await?),
                 issue_actions: None,
+                context: None,
             })
         }
         DescribeScope::IssueActions => {
@@ -946,6 +952,19 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
             Ok(DescribeResult {
                 project_tracker: None,
                 issue_actions: Some(issue_actions(app, caller, &key).await?),
+                context: None,
+            })
+        }
+        DescribeScope::Context => {
+            let (None, None, None) = (&p.project, &p.tracker, &p.issue_key) else {
+                return Err(user_err(
+                    "scope context takes no `project`, `tracker` or `issue_key`",
+                ));
+            };
+            Ok(DescribeResult {
+                project_tracker: None,
+                issue_actions: None,
+                context: Some(crate::agents::describe_context(app, caller).await?),
             })
         }
     }

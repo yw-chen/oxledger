@@ -472,11 +472,12 @@ async fn s5_changesets() {
             ]
             .map(String::from)
             .to_vec(),
-            writable_fields: ["subject", "description", "assigned_to_id", "status_id"]
+            writable_fields: ["subject", "description", "assigned_to_id"]
                 .map(String::from)
                 .to_vec(),
             max_ops: None,
             expires_in_days: Some(30),
+            policies: None,
         },
     )
     .await
@@ -509,7 +510,7 @@ async fn s5_changesets() {
         .await
         .unwrap();
     assert_eq!((p1.version, p1.state.as_str()), (1, "proposed"));
-    assert_eq!(p1.validation.status, "passed");
+    assert_eq!(p1.validation.as_ref().unwrap().status, "passed");
     assert!(p1.proposal_hash.starts_with("sha256:") && p1.proposal_hash.len() == 71);
     assert_eq!(p1.targets.len(), 1);
     assert_eq!(p1.targets[0].key, "WEB-1");
@@ -597,16 +598,26 @@ async fn s5_changesets() {
         ))
         .await
         .unwrap();
-    assert_eq!(blocked.validation.status, "blocked");
-    assert_eq!(blocked.validation.blocking[0].code, "invalid_transition");
-    assert!(blocked.validation.blocking[0].op_id.is_some());
+    assert_eq!(blocked.validation.as_ref().unwrap().status, "blocked");
+    assert_eq!(
+        blocked.validation.as_ref().unwrap().blocking[0].code,
+        "invalid_transition"
+    );
+    assert!(
+        blocked.validation.as_ref().unwrap().blocking[0]
+            .op_id
+            .is_some()
+    );
     assert_eq!(
         serde_json::to_value(&blocked.next_actions).unwrap(),
         json!(["fix_input"])
     );
     let stale = t.propose(&note_doc(issues[2], 5, "stale")).await.unwrap();
-    assert_eq!(stale.validation.status, "conflict");
-    assert_eq!(stale.validation.blocking[0].code, "conflict");
+    assert_eq!(stale.validation.as_ref().unwrap().status, "conflict");
+    assert_eq!(
+        stale.validation.as_ref().unwrap().blocking[0].code,
+        "conflict"
+    );
     let n = count(&pool, "SELECT count(*) FROM changesets").await;
     // Not delegated: the field (priority_id is not writable), a project without delegation.
     let e = t
@@ -1001,7 +1012,7 @@ async fn s5_changesets() {
     // ---------------------------------------------- failure, retry, revise (§8.2)
     let w3 = issues[2];
     let p3 = t.propose(&note_doc(w3, 0, "after triage")).await.unwrap();
-    assert_eq!(p3.validation.status, "passed");
+    assert_eq!(p3.validation.as_ref().unwrap().status, "passed");
     // Someone changes the issue after the proposal: the apply fails with a conflict.
     exec(
         &pool,
@@ -1045,7 +1056,10 @@ async fn s5_changesets() {
     )
     .await
     .unwrap();
-    assert_eq!((rv.version, rv.validation.status.as_str()), (2, "passed"));
+    assert_eq!(
+        (rv.version, rv.validation.as_ref().unwrap().status.as_str()),
+        (2, "passed")
+    );
     let e = t.approve(&p3, Uuid::now_v7()).await.unwrap_err();
     assert_eq!(code(&e), ErrorCode::VersionSuperseded);
     let e = t
@@ -1143,7 +1157,7 @@ async fn s5_changesets() {
     )
     .await;
     let po = t.propose(&note_doc(w5, 0, "needs a fix")).await.unwrap();
-    assert_eq!(po.validation.status, "conflict");
+    assert_eq!(po.validation.as_ref().unwrap().status, "conflict");
     let ko = Uuid::now_v7();
     let rev = json!({"expected_current_version": 1, "proposal": note_doc(w5, 3, "fixed by alice")});
     let r = call(
@@ -1214,7 +1228,12 @@ async fn s5_changesets() {
         ))
         .await
         .unwrap();
-    assert_eq!(pw.validation.status, "passed", "{:?}", pw.validation);
+    assert_eq!(
+        pw.validation.as_ref().unwrap().status,
+        "passed",
+        "{:?}",
+        pw.validation
+    );
     let stored = changesets::get(&app, alice, pw.changeset_id, None)
         .await
         .unwrap();
@@ -1369,7 +1388,7 @@ async fn s5_changesets() {
         ))
         .await
         .unwrap();
-    assert_eq!(pt.validation.status, "blocked");
+    assert_eq!(pt.validation.as_ref().unwrap().status, "blocked");
     let k = Uuid::now_v7();
     let g = Arc::new(Gate::default());
     faults::arm("apply.before_fail_record", Action::Block(g.clone()));
@@ -1629,16 +1648,7 @@ async fn s5_changesets() {
             assert_eq!(notes(&pool, w7).await, before, "zero effect");
         }
         // A new delegation for the same context and project (§3.5).
-        sqlx::query(
-            "INSERT INTO delegations (agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
-                                      proposal_ops, writable_fields, expires_at)
-             SELECT agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
-                    proposal_ops, writable_fields, now() + interval '20 days' FROM delegations WHERE id = $1",
-        )
-        .bind(d)
-        .execute(&pool)
-        .await
-        .unwrap();
+        clone_delegation(&pool, d).await;
     }
 
     // T-R7: waiting for the issue lock until the proposal expired → zero effect.
@@ -1898,16 +1908,16 @@ async fn s5_changesets() {
     )
     .await
     .unwrap();
-    let alice_web: Uuid = id(
+    // The issue moves to a project alice is not in (no epoch change in R:
+    // membership elsewhere is untouched).
+    let hidden = id(
         &pool,
-        &format!(
-            "SELECT id FROM members WHERE project_id = '{web}' AND principal_id = '{alice_id}'"
-        ),
+        "INSERT INTO projects (key, name) VALUES ('HID','Hidden') RETURNING id",
     )
     .await;
     exec(
         &pool,
-        &format!("DELETE FROM member_roles WHERE member_id = '{alice_web}'"),
+        &format!("UPDATE issues SET project_id = '{hidden}' WHERE id = '{w7}'"),
     )
     .await;
     let decisions = count(&pool, "SELECT count(*) FROM changeset_decisions").await;
@@ -1919,7 +1929,7 @@ async fn s5_changesets() {
     );
     exec(
         &pool,
-        &format!("INSERT INTO member_roles VALUES ('{alice_web}', '{dev}')"),
+        &format!("UPDATE issues SET project_id = '{web}' WHERE id = '{w7}'"),
     )
     .await;
 
@@ -2148,6 +2158,55 @@ async fn s5_changesets() {
     );
     assert_eq!(notes(&pool, w7).await, before, "zero effect");
 
+    // Locking a user bumps every project (T-X12): the context is quarantined
+    // even after alice is active again. She starts a new work context.
+    let e = changesets::propose(
+        &app,
+        agent2,
+        Uuid::now_v7(),
+        &note_doc(w7, lv, "old ctx"),
+        ORIGIN,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ContextUnavailable);
+    agents::new_context(&pool, &policy, &alice, client, true)
+        .await
+        .unwrap();
+    let deleg = agents::create_delegation(
+        &pool,
+        &policy,
+        &alice,
+        DelegationInput {
+            agent_client_id: client,
+            project_id: web,
+            proposal_ops: [
+                "create_issue",
+                "update_fields",
+                "transition",
+                "add_note",
+                "duplicate_of",
+            ]
+            .map(String::from)
+            .to_vec(),
+            writable_fields: ["subject", "description", "assigned_to_id"]
+                .map(String::from)
+                .to_vec(),
+            max_ops: None,
+            expires_in_days: Some(30),
+            policies: None,
+        },
+    )
+    .await
+    .unwrap();
+    let cred3 = agents::issue_credential(&pool, &policy, &alice, deleg.context_id, "t3", None)
+        .await
+        .unwrap();
+    let agent2 = auth::authenticate_bearer(&pool, &cred3.token)
+        .await
+        .unwrap()
+        .unwrap();
+
     // The agent suspended before step 5 → delegation_unavailable, zero effect.
     let lv = lock_version(&pool, w7).await;
     let ps = changesets::propose(
@@ -2222,16 +2281,7 @@ async fn s5_changesets() {
         "rejected before acceptance: no rows"
     );
     // The context closed: context_unavailable.
-    sqlx::query(
-        "INSERT INTO delegations (agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
-                                  proposal_ops, writable_fields, expires_at)
-         SELECT agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
-                proposal_ops, writable_fields, now() + interval '20 days' FROM delegations WHERE id = $1",
-    )
-    .bind(deleg.id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    clone_delegation(&pool, deleg.id).await;
     let pz = changesets::propose(
         &app,
         agent2,
@@ -2385,6 +2435,26 @@ async fn s5_migrations_from_empty() {
         "DROP DATABASE {name} WITH (FORCE)"
     )))
     .execute(&admin)
+    .await
+    .unwrap();
+}
+
+/// A new delegation like `d` (same context and project), with its policy
+/// rows (§16.3 rule 1: a missing row is "off").
+async fn clone_delegation(pool: &PgPool, d: Uuid) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "WITH n AS (
+           INSERT INTO delegations (agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
+                                    proposal_ops, writable_fields, expires_at)
+           SELECT agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
+                  proposal_ops, writable_fields, now() + interval '20 days' FROM delegations WHERE id = '{d}'
+           RETURNING id),
+         c AS (INSERT INTO delegation_command_policies
+               SELECT n.id, command_kind, mode FROM n, delegation_command_policies WHERE delegation_id = '{d}')
+         INSERT INTO delegation_field_policies
+         SELECT n.id, field_key, mode FROM n, delegation_field_policies WHERE delegation_id = '{d}'"
+    )))
+    .execute(pool)
     .await
     .unwrap();
 }

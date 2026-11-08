@@ -635,7 +635,7 @@ async fn custom_field_filters_match_reference_on_pg() {
     let mut rng = Rng(0x00D1_4C0F_FEE5_EED5);
     let w = load_world(&pool, &mut rng).await;
     let index = SearchIndex::open(None).unwrap();
-    index.sync(&pool).await.unwrap();
+    index.sync_all(&pool).await.unwrap();
     let app = App {
         pool: pool.clone(),
         index,

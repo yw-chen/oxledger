@@ -392,7 +392,7 @@ async fn e4_visibility_sql_index_memory_agree_with_reference() {
         let w = gen_world(&mut rng);
         load_world(&pool, &w).await;
         let index = SearchIndex::open(None).unwrap();
-        index.sync(&pool).await.unwrap();
+        index.sync_all(&pool).await.unwrap();
         let app = App {
             pool: pool.clone(),
             index,

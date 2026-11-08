@@ -3,18 +3,24 @@
 
 pub mod agents;
 pub mod api;
+pub mod audience;
 pub mod auth;
 pub mod changesets;
+pub mod citations;
 pub mod commands;
 pub mod cursor;
 pub mod custom_fields;
 pub mod db;
 pub mod describe;
 pub mod error;
+pub mod evidence;
 pub mod filter;
+pub mod issue_view;
 pub mod mcp;
 pub mod openapi;
 pub mod perm;
+pub mod policy;
+pub mod quota;
 pub mod registry;
 pub mod search;
 #[cfg(feature = "test-support")]

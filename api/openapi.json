@@ -426,6 +426,24 @@
         ],
         "type": "object"
       },
+      "Consistency": {
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "eventual (free text, index may lag) | not_applicable (SQL only).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
       "ContextView": {
         "properties": {
           "agent_client_id": {
@@ -591,6 +609,17 @@
               "integer",
               "null"
             ]
+          },
+          "policies": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Modes inside the ceiling (§16.3); unlisted commands and fields are direct."
           },
           "project_id": {
             "format": "uuid",
@@ -977,6 +1006,46 @@
             "const": "changeset_expired",
             "description": "The ChangeSet expired.",
             "type": "string"
+          },
+          {
+            "const": "audience_expansion_forbidden",
+            "description": "The write would reach readers outside every source project (§3.8).",
+            "type": "string"
+          },
+          {
+            "const": "source_unverifiable",
+            "description": "An evidence citation did not verify as `valid` (§6.7 step 7).",
+            "type": "string"
+          },
+          {
+            "const": "invalid_citation",
+            "description": "A citation id cannot be decoded or has an unsupported kind (03 §3.7).",
+            "type": "string"
+          },
+          {
+            "const": "citation_mismatch",
+            "description": "The quote is not what the cited range says (03 §3.6).",
+            "type": "string"
+          },
+          {
+            "const": "quota_exceeded",
+            "description": "A proposal or write quota is used up (§8.9, §16.6).",
+            "type": "string"
+          },
+          {
+            "const": "agent_suspended",
+            "description": "The circuit breaker paused this agent work context (§16.6).",
+            "type": "string"
+          },
+          {
+            "const": "invalid_query",
+            "description": "`q` has non-blank characters but no searchable term (design 03 §3.7).",
+            "type": "string"
+          },
+          {
+            "const": "search_unavailable",
+            "description": "The search index is broken or its worker stopped (not ordinary lag).",
+            "type": "string"
           }
         ]
       },
@@ -1266,6 +1335,30 @@
         ],
         "description": "Custom field filter: a condition, or `{\"and\": [...]}` / `{\"or\": [...]}` of filters."
       },
+      "Highlight": {
+        "description": "A highlighted range of a returned `text`, in code points, half-open.",
+        "properties": {
+          "end": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "strength": {
+            "$ref": "#/components/schemas/Strength"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "strength"
+        ],
+        "type": "object"
+      },
       "Impact": {
         "description": "What a date or status change touches, over visible issues only.",
         "properties": {
@@ -1378,6 +1471,7 @@
         "type": "object"
       },
       "IssueBrief": {
+        "description": "One line of an issue list (children of an issue).",
         "properties": {
           "assignee": {
             "type": [
@@ -1393,13 +1487,6 @@
           },
           "project": {
             "type": "string"
-          },
-          "score": {
-            "format": "float",
-            "type": [
-              "number",
-              "null"
-            ]
           },
           "status": {
             "type": "string"
@@ -1580,8 +1667,12 @@
       "ItemResult": {
         "properties": {
           "issue_id": {
+            "description": "The issue the op wrote (issue ops).",
             "format": "uuid",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "op_id": {
             "format": "uuid",
@@ -1590,12 +1681,19 @@
           "status": {
             "description": "`applied` or `no_effect`.",
             "type": "string"
+          },
+          "version_id": {
+            "description": "The milestone the op wrote (version ops).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "op_id",
-          "status",
-          "issue_id"
+          "status"
         ],
         "type": "object"
       },
@@ -1678,6 +1776,27 @@
           "session_id",
           "csrf_token",
           "expires_at"
+        ],
+        "type": "object"
+      },
+      "MatchInfo": {
+        "description": "Which fields matched, recomputed from the current text (design 03 §3.4 step 6).",
+        "properties": {
+          "fields": {
+            "description": "subject and/or description.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "strength": {
+            "$ref": "#/components/schemas/Strength",
+            "description": "primary: a full term matched; fallback: only single CJK characters or identifier parts."
+          }
+        },
+        "required": [
+          "fields",
+          "strength"
         ],
         "type": "object"
       },
@@ -2009,6 +2128,70 @@
               "target"
             ],
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "§17.9a: agents only; the only op of its document.",
+            "properties": {
+              "bind": {
+                "description": "Accepted for symmetry with create_issue; nothing can refer to it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fields": {
+                "$ref": "#/components/schemas/VersionFields",
+                "description": "`name` (required), `effective_date`, `description`."
+              },
+              "kind": {
+                "const": "create_version",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "project_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "project_id",
+              "fields"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "§17.9a: agents only; the only op, one precondition on the version.",
+            "properties": {
+              "kind": {
+                "const": "update_version",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "set": {
+                "$ref": "#/components/schemas/VersionFields"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef",
+                "description": "`{\"type\": \"version\", \"id\": …}`."
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "set"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -2092,6 +2275,75 @@
         ],
         "type": "object"
       },
+      "PolicyInput": {
+        "additionalProperties": false,
+        "description": "Per-command and per-field modes (§16.3). Keys must be inside the ceiling.",
+        "properties": {
+          "commands": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "default": {},
+            "type": "object"
+          },
+          "fields": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "default": {},
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "PolicyMode": {
+        "enum": [
+          "direct",
+          "review",
+          "off"
+        ],
+        "type": "string"
+      },
+      "PolicyView": {
+        "description": "A delegation's policies (§16.3) and what could be added (rule 1: commands\nthe server supports that the delegation lacks are never added by themselves).",
+        "properties": {
+          "available_commands": {
+            "description": "Operations the server supports that this delegation does not have.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "commands": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "type": "object"
+          },
+          "delegation_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "type": "object"
+          },
+          "policy_version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delegation_id",
+          "policy_version",
+          "commands",
+          "fields",
+          "available_commands"
+        ],
+        "type": "object"
+      },
       "Precondition": {
         "additionalProperties": false,
         "properties": {
@@ -2140,6 +2392,22 @@
         "properties": {
           "kind": {
             "description": "Optional: project | tracker | status | principal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "default": null,
+            "description": "With `purpose`: the project (key or id).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "default": null,
+            "description": "`assignee`: only who an issue of `project` may be assigned to; more\nthan one match → `ambiguous_reference` with the visible candidates.",
             "type": [
               "string",
               "null"
@@ -2194,6 +2462,163 @@
         ],
         "type": "object"
       },
+      "SearchEvidence": {
+        "description": "A snippet of the current text and its citation (design 03 §3.6).",
+        "properties": {
+          "citation_id": {
+            "type": "string"
+          },
+          "evidence_status": {
+            "description": "current | rechecked (the index may still rank by older text; the snippet is from the current text).",
+            "type": "string"
+          },
+          "field": {
+            "description": "subject | description",
+            "type": "string"
+          },
+          "highlights": {
+            "description": "Ranges of `text` in code points, half-open.",
+            "items": {
+              "$ref": "#/components/schemas/Highlight"
+            },
+            "type": "array"
+          },
+          "text": {
+            "description": "The cited text, verbatim: pass it unchanged as `quote`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "evidence_status",
+          "text",
+          "highlights",
+          "citation_id"
+        ],
+        "type": "object"
+      },
+      "SearchItem": {
+        "description": "One search hit. Only the requested `fields` appear (and `key`).",
+        "properties": {
+          "assignee": {
+            "description": "null when unassigned.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "custom_fields": {
+            "description": "Requested `cf:<name>` fields that apply to this issue and the caller may read.",
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldValue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "evidence": {
+            "description": "Snippets (empty without `q` or with explain=none).",
+            "items": {
+              "$ref": "#/components/schemas/SearchEvidence"
+            },
+            "type": "array"
+          },
+          "is_private": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "lock_version": {
+            "description": "As re-checked in SQL (not the index): pass back as a precondition.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null without `q`."
+          },
+          "priority": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "description": "With `q`: position across pages (page 2 starts at limit + 1). Compare\nrank and `match.strength`; there is no score.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "match",
+          "evidence"
+        ],
+        "type": "object"
+      },
       "SearchParams": {
         "additionalProperties": false,
         "properties": {
@@ -2208,6 +2633,23 @@
             "description": "Opaque cursor from a previous `next_cursor`.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "explain": {
+            "description": "With `q`: \"none\" (no snippets), \"brief\" (default: one ~60-character snippet per issue)\nor \"full\" (up to two ~160-character snippets per matching field).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "description": "Fields per item: key, subject, project, tracker, status, status_category, assignee,\npriority, is_private, created_at, updated_at, lock_version, cf:<custom field name>.\n`key` is always returned. Default: key, subject, project, tracker, status,\nstatus_category, assignee, is_private, updated_at.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
               "null"
             ]
           },
@@ -2283,9 +2725,20 @@
       },
       "SearchResult": {
         "properties": {
+          "complete": {
+            "description": "false when `truncated`.",
+            "type": "boolean"
+          },
+          "consistency": {
+            "$ref": "#/components/schemas/Consistency"
+          },
+          "evidence_truncated": {
+            "description": "Some snippets were left out to keep the response small (the item list is still complete).",
+            "type": "boolean"
+          },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/IssueBrief"
+              "$ref": "#/components/schemas/SearchItem"
             },
             "type": "array"
           },
@@ -2295,13 +2748,23 @@
               "null"
             ]
           },
+          "outcome": {
+            "description": "Always \"ok\".",
+            "type": "string"
+          },
           "truncated": {
             "description": "Only with `q`: the server stopped after ranking 8000 candidates without\nfinding everything this page needs. More matches may exist (even if there\nis no `next_cursor`); narrow `q` or the filters.",
             "type": "boolean"
           }
         },
         "required": [
-          "items"
+          "outcome",
+          "complete",
+          "truncated",
+          "consistency",
+          "items",
+          "next_cursor",
+          "evidence_truncated"
         ],
         "type": "object"
       },
@@ -2425,6 +2888,14 @@
         ],
         "type": "object"
       },
+      "Strength": {
+        "description": "`primary`: at least one full-weight term matched. `fallback`: only\nlow-weight terms (CJK unigrams inside a run, identifier segments).",
+        "enum": [
+          "fallback",
+          "primary"
+        ],
+        "type": "string"
+      },
       "TargetRef": {
         "description": "`{\"type\":\"issue\",\"id\"|\"key\"}` or `{\"type\":\"temp\",\"ref\"}`.",
         "oneOf": [
@@ -2468,6 +2939,25 @@
             "required": [
               "type",
               "ref"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A milestone (update_version and its precondition only).",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "version",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
             ],
             "type": "object"
           }
@@ -2772,6 +3262,37 @@
           "items",
           "next_cursor"
         ],
+        "type": "object"
+      },
+      "VersionFields": {
+        "additionalProperties": false,
+        "description": "A milestone's fields (§17.9a). Absent = not set; `effective_date: null`\nclears the date. `status` only in `update_version`.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "VersionList": {
@@ -3330,6 +3851,146 @@
         },
         "summary": "New agent token (shown once).",
         "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/agent-contexts/{id}/resume": {
+      "post": {
+        "operationId": "post_agent_contexts_id_resume",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Resume a paused context (needs a step-up; re-checks the context first).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/agent-contexts/{id}/suspend": {
+      "post": {
+        "operationId": "post_agent_contexts_id_suspend",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Pause the agent's writes in this context (reads go on).",
+        "x-access": "session",
         "x-csrf": true
       }
     },
@@ -4475,6 +5136,133 @@
         },
         "summary": "Delegate a project to an agent (creates its first work context if needed).",
         "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/delegations/{id}/policies": {
+      "get": {
+        "operationId": "get_delegations_id_policies",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PolicyView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "A delegation's write policies (direct / review / off per command and field) and operations that could be added.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_delegations_id_policies",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PolicyView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change modes or add commands / fields (needs a step-up; policy_version + 1).",
+        "x-access": "session",
         "x-csrf": true
       }
     },

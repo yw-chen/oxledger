@@ -118,6 +118,12 @@ export type CondInput = {
   value?: unknown;
 };
 
+export type Consistency = {
+  reason?: string | null;
+  /** eventual (free text, index may lag) | not_applicable (SQL only). */
+  status: string;
+};
+
 export type ContextView = {
   agent_client_id: string;
   agent_principal_id: string;
@@ -163,6 +169,8 @@ export type DelegationBody = {
   agent_client_id: string;
   expires_in_days?: number | null;
   max_ops?: number | null;
+  /** Modes inside the ceiling (§16.3); unlisted commands and fields are direct. */
+  policies?: PolicyInput | null;
   project_id: string;
   proposal_ops: Array<string>;
   writable_fields: Array<string>;
@@ -214,7 +222,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -295,6 +303,13 @@ export type FilterInput = {
   or: Array<FilterInput>;
 } | CondInput;
 
+/** A highlighted range of a returned `text`, in code points, half-open. */
+export type Highlight = {
+  end: number;
+  start: number;
+  strength: Strength;
+};
+
 /** What a date or status change touches, over visible issues only. */
 export type Impact = {
   /** The version would turn `overdue` (it was not before). */
@@ -324,12 +339,12 @@ export type IssueActions = {
   workflow_version: number;
 };
 
+/** One line of an issue list (children of an issue). */
 export type IssueBrief = {
   assignee: string | null;
   is_private: boolean;
   key: string;
   project: string;
-  score?: number | null;
   status: string;
   status_category: string;
   subject: string;
@@ -373,10 +388,13 @@ export type IssuedCredential = {
 };
 
 export type ItemResult = {
-  issue_id: string;
+  /** The issue the op wrote (issue ops). */
+  issue_id?: string | null;
   op_id: string;
   /** `applied` or `no_effect`. */
   status: string;
+  /** The milestone the op wrote (version ops). */
+  version_id?: string | null;
 };
 
 export type Limits = {
@@ -402,6 +420,14 @@ export type LoginData = {
   expires_at: string;
   session_id: string;
   user_id: string;
+};
+
+/** Which fields matched, recomputed from the current text (design 03 §3.4 step 6). */
+export type MatchInfo = {
+  /** subject and/or description. */
+  fields: Array<string>;
+  /** primary: a full term matched; fallback: only single CJK characters or identifier parts. */
+  strength: Strength;
 };
 
 export type Meta = {
@@ -479,6 +505,20 @@ export type OpInput = {
   op_id: string;
   source: TargetRef;
   target: TargetRef;
+} | {
+  /** Accepted for symmetry with create_issue; nothing can refer to it. */
+  bind?: string | null;
+  /** `name` (required), `effective_date`, `description`. */
+  fields: VersionFields;
+  kind: "create_version";
+  op_id: string;
+  project_id: string;
+} | {
+  kind: "update_version";
+  op_id: string;
+  set: VersionFields;
+  /** `{"type": "version", "id": …}`. */
+  target: TargetRef;
 };
 
 export type OperationView = {
@@ -501,6 +541,24 @@ export type PasswordBody = {
   password: string;
 };
 
+/** Per-command and per-field modes (§16.3). Keys must be inside the ceiling. */
+export type PolicyInput = {
+  commands?: Record<string, PolicyMode>;
+  fields?: Record<string, PolicyMode>;
+};
+
+export type PolicyMode = "direct" | "review" | "off";
+
+/** A delegation's policies (§16.3) and what could be added (rule 1: commands the server supports that the delegation lacks are never added by themselves). */
+export type PolicyView = {
+  /** Operations the server supports that this delegation does not have. */
+  available_commands: Array<string>;
+  commands: Record<string, PolicyMode>;
+  delegation_id: string;
+  fields: Record<string, PolicyMode>;
+  policy_version: number;
+};
+
 export type Precondition = {
   /** Extra conditions on readable fields (normalized values). */
   field_values?: Record<string, unknown>;
@@ -518,6 +576,10 @@ export type PrivateChoice = {
 export type ResolveParams = {
   /** Optional: project | tracker | status | principal. */
   kind?: string | null;
+  /** With `purpose`: the project (key or id). */
+  project?: string | null;
+  /** `assignee`: only who an issue of `project` may be assigned to; more than one match → `ambiguous_reference` with the visible candidates. */
+  purpose?: string | null;
   /** Name, login, project key or alias to look up (e.g. "缺陷", "alice", "AUTH"). */
   text: string;
 };
@@ -534,11 +596,54 @@ export type RevisionInput = {
   proposal: CommandDoc;
 };
 
+/** A snippet of the current text and its citation (design 03 §3.6). */
+export type SearchEvidence = {
+  citation_id: string;
+  /** current | rechecked (the index may still rank by older text; the snippet is from the current text). */
+  evidence_status: string;
+  /** subject | description */
+  field: string;
+  /** Ranges of `text` in code points, half-open. */
+  highlights: Array<Highlight>;
+  /** The cited text, verbatim: pass it unchanged as `quote`. */
+  text: string;
+};
+
+/** One search hit. Only the requested `fields` appear (and `key`). */
+export type SearchItem = {
+  /** null when unassigned. */
+  assignee?: string | null;
+  created_at?: string | null;
+  /** Requested `cf:<name>` fields that apply to this issue and the caller may read. */
+  custom_fields?: Array<CustomFieldValue> | null;
+  /** Snippets (empty without `q` or with explain=none). */
+  evidence: Array<SearchEvidence>;
+  is_private?: boolean | null;
+  key: string;
+  /** As re-checked in SQL (not the index): pass back as a precondition. */
+  lock_version?: number | null;
+  /** null without `q`. */
+  match: MatchInfo | null;
+  priority?: string | null;
+  project?: string | null;
+  /** With `q`: position across pages (page 2 starts at limit + 1). Compare rank and `match.strength`; there is no score. */
+  rank?: number | null;
+  status?: string | null;
+  status_category?: string | null;
+  subject?: string | null;
+  tracker?: string | null;
+  updated_at?: string | null;
+};
+
 export type SearchParams = {
   /** "me", "none", a user login/name, or a group name. */
   assignee?: string | null;
   /** Opaque cursor from a previous `next_cursor`. */
   cursor?: string | null;
+  /** With `q`: "none" (no snippets), "brief" (default: one ~60-character snippet per issue) or "full" (up to two ~160-character snippets per matching field). */
+  explain?: string | null;
+  /** Fields per item: key, subject, project, tracker, status, status_category, assignee, priority, is_private, created_at, updated_at, lock_version, cf:<custom field name>. `key` is always returned. Default: key, subject, project, tracker, status, status_category, assignee, is_private, updated_at. */
+  fields?: Array<string> | null;
   /** Custom field filter, e.g. {"and": [{"field": "Severity", "op": "in", "value": ["High", "Critical"]}, {"field": "Estimate (h)", "op": "between", "value": [2, 8]}]}. Combined with the other filters by AND. */
   filter?: FilterInput | null;
   /** Max items, default 50, max 100. */
@@ -561,10 +666,17 @@ export type SearchReceipt = {
 };
 
 export type SearchResult = {
-  items: Array<IssueBrief>;
-  next_cursor?: string | null;
+  /** false when `truncated`. */
+  complete: boolean;
+  consistency: Consistency;
+  /** Some snippets were left out to keep the response small (the item list is still complete). */
+  evidence_truncated: boolean;
+  items: Array<SearchItem>;
+  next_cursor: string | null;
+  /** Always "ok". */
+  outcome: string;
   /** Only with `q`: the server stopped after ranking 8000 candidates without finding everything this page needs. More matches may exist (even if there is no `next_cursor`); narrow `q` or the filters. */
-  truncated?: boolean;
+  truncated: boolean;
 };
 
 export type SessionData = {
@@ -599,6 +711,9 @@ export type StateView = {
   state: string;
 };
 
+/** `primary`: at least one full-weight term matched. `fallback`: only low-weight terms (CJK unigrams inside a run, identifier segments). */
+export type Strength = "fallback" | "primary";
+
 /** `{"type":"issue","id"|"key"}` or `{"type":"temp","ref"}`. */
 export type TargetRef = {
   id?: string | null;
@@ -607,6 +722,9 @@ export type TargetRef = {
 } | {
   ref: string;
   type: "temp";
+} | {
+  id: string;
+  type: "version";
 };
 
 export type TargetView = {
@@ -688,6 +806,14 @@ export type VersionEvent = {
 export type VersionEvents = {
   items: Array<VersionEvent>;
   next_cursor: string | null;
+};
+
+/** A milestone's fields (§17.9a). Absent = not set; `effective_date: null` clears the date. `status` only in `update_version`. */
+export type VersionFields = {
+  description?: string | null;
+  effective_date?: string | null;
+  name?: string | null;
+  status?: string | null;
 };
 
 export type VersionList = {
@@ -773,6 +899,8 @@ export interface Endpoints {
   "POST /agent-contexts": { body: NewContextBody; data: Created };
   "POST /agent-contexts/{id}/close": { body: Empty; data: Done };
   "POST /agent-contexts/{id}/credentials": { body: CredentialBody; data: IssuedCredential };
+  "POST /agent-contexts/{id}/resume": { body: Empty; data: Done };
+  "POST /agent-contexts/{id}/suspend": { body: Empty; data: Done };
   "POST /agent-credentials/{id}/revoke": { body: Empty; data: Done };
   "POST /auth/login": { body: LoginBody; data: LoginData };
   "GET /auth/login-context": { body: never; data: LoginContextData };
@@ -792,6 +920,8 @@ export interface Endpoints {
   "POST /commands": { body: CommandDoc; data: CommandResult };
   "GET /delegations": { body: never; data: Array<DelegationView> };
   "POST /delegations": { body: DelegationBody; data: DelegationView };
+  "GET /delegations/{id}/policies": { body: never; data: PolicyView };
+  "PUT /delegations/{id}/policies": { body: PolicyInput; data: PolicyView };
   "POST /delegations/{id}/revoke": { body: Empty; data: Done };
   "GET /executions/{id}": { body: never; data: ExecutionView };
   "POST /issues/search": { body: SearchParams; data: SearchResult };

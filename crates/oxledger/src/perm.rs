@@ -53,6 +53,8 @@ pub const OP_UPDATE_FIELDS: &str = "update_fields";
 pub const OP_TRANSITION: &str = "transition";
 pub const OP_ADD_NOTE: &str = "add_note";
 pub const OP_DUPLICATE_OF: &str = "duplicate_of";
+pub const OP_CREATE_VERSION: &str = "create_version";
+pub const OP_UPDATE_VERSION: &str = "update_version";
 
 /// One active delegation's scope.
 #[derive(Debug, Clone, PartialEq, Eq)]

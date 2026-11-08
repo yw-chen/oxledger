@@ -48,8 +48,9 @@ const COMPOUND_JOINERS: [char; 2] = ['_', '.'];
 /// A longer compound is not emitted as a whole (its parts still are).
 const MAX_COMPOUND_BYTES: usize = 128;
 
+/// What a [`Lexeme`] is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
+pub enum Kind {
     /// Non-CJK alphanumeric run that is not part of a compound.
     Word,
     /// A segment of a compound (`invalid` in `invalid_grant`).
@@ -64,13 +65,30 @@ enum Kind {
     CjkBigram,
 }
 
+/// One token with where it came from (design 03 §3.3): `from..to` is the
+/// UTF-8 byte range in the original text. Lower-casing changes only `term`:
+/// a character that lower-cases to several still maps to its own full range,
+/// and a compound spans its first segment's start to its last segment's end
+/// (joiners included).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Lexeme {
+    pub term: String,
+    pub kind: Kind,
+    pub from: usize,
+    pub to: usize,
+}
+
 #[derive(Default)]
 struct Lexer {
-    out: Vec<(String, Kind)>,
-    cjk: Vec<char>,
-    /// Current segment, and the segments of the compound so far.
+    out: Vec<Lexeme>,
+    /// The current CJK run: (char, byte offset).
+    cjk: Vec<(char, usize)>,
+    /// Current segment (lower-cased) and its byte range.
     word: String,
-    parts: Vec<String>,
+    word_from: usize,
+    word_to: usize,
+    /// The segments of the compound so far.
+    parts: Vec<(String, usize, usize)>,
     /// The compound as written (lower-cased), joiners included.
     whole: String,
     joiner: Option<char>,
@@ -79,28 +97,48 @@ struct Lexer {
 impl Lexer {
     fn end_cjk(&mut self) {
         let alone = self.cjk.len() == 1;
-        for (i, c) in self.cjk.iter().enumerate() {
+        for (i, (c, at)) in self.cjk.iter().enumerate() {
             let kind = if alone {
                 Kind::CjkAlone
             } else {
                 Kind::CjkInRun
             };
-            self.out.push((c.to_string(), kind));
-            if let Some(n) = self.cjk.get(i + 1) {
-                self.out.push(([*c, *n].iter().collect(), Kind::CjkBigram));
+            let end = at + c.len_utf8();
+            self.out.push(Lexeme {
+                term: c.to_string(),
+                kind,
+                from: *at,
+                to: end,
+            });
+            if let Some((n, n_at)) = self.cjk.get(i + 1) {
+                self.out.push(Lexeme {
+                    term: [*c, *n].iter().collect(),
+                    kind: Kind::CjkBigram,
+                    from: *at,
+                    to: n_at + n.len_utf8(),
+                });
             }
         }
         self.cjk.clear();
     }
 
-    fn latin_char(&mut self, c: char) {
+    fn latin_char(&mut self, c: char, at: usize) {
         if let Some(j) = self.joiner.take() {
             self.whole.push(j);
         }
+        if self.word.is_empty() {
+            self.word_from = at;
+        }
+        self.word_to = at + c.len_utf8();
         for l in c.to_lowercase() {
             self.word.push(l);
             self.whole.push(l);
         }
+    }
+
+    fn take_word(&mut self) {
+        let w = std::mem::take(&mut self.word);
+        self.parts.push((w, self.word_from, self.word_to));
     }
 
     /// A joiner right after a segment may start or extend a compound;
@@ -109,35 +147,52 @@ impl Lexer {
         if self.word.is_empty() {
             self.end_latin();
         } else {
-            self.parts.push(std::mem::take(&mut self.word));
+            self.take_word();
             self.joiner = Some(j);
         }
     }
 
     fn end_latin(&mut self) {
         if !self.word.is_empty() {
-            self.parts.push(std::mem::take(&mut self.word));
+            self.take_word();
         }
         self.joiner = None; // a trailing joiner (`invalid_grant.`) is dropped
         let whole = std::mem::take(&mut self.whole);
         let compound = self.parts.len() >= 2 && whole.len() <= MAX_COMPOUND_BYTES;
         let kind = if compound { Kind::Part } else { Kind::Word };
-        self.out.extend(self.parts.drain(..).map(|p| (p, kind)));
+        let span = match (self.parts.first(), self.parts.last()) {
+            (Some(f), Some(l)) => (f.1, l.2),
+            _ => (0, 0),
+        };
+        self.out
+            .extend(self.parts.drain(..).map(|(term, from, to)| Lexeme {
+                term,
+                kind,
+                from,
+                to,
+            }));
         if compound {
-            self.out.push((whole, Kind::Compound));
+            self.out.push(Lexeme {
+                term: whole,
+                kind: Kind::Compound,
+                from: span.0,
+                to: span.1,
+            });
         }
     }
 }
 
-fn tokens(text: &str) -> Vec<(String, Kind)> {
+/// The spanned lexer (design 03 §3.3): one implementation for the index
+/// tokenizer, [`tokenize`], [`query_terms`] and evidence matching.
+pub fn lexemes(text: &str) -> Vec<Lexeme> {
     let mut lx = Lexer::default();
-    for c in text.chars() {
+    for (at, c) in text.char_indices() {
         if is_cjk(c) {
             lx.end_latin();
-            lx.cjk.push(c);
+            lx.cjk.push((c, at));
         } else if c.is_alphanumeric() {
             lx.end_cjk();
-            lx.latin_char(c);
+            lx.latin_char(c, at);
         } else if COMPOUND_JOINERS.contains(&c) {
             lx.end_cjk();
             lx.joiner(c);
@@ -156,7 +211,14 @@ fn tokens(text: &str) -> Vec<(String, Kind)> {
 /// `grant`, `invalid_grant`); CJK runs → every character plus every adjacent
 /// pair.
 pub fn tokenize(text: &str) -> Vec<String> {
-    tokens(text).into_iter().map(|(t, _)| t).collect()
+    lexemes(text).into_iter().map(|l| l.term).collect()
+}
+
+fn tokens(text: &str) -> Vec<(String, Kind)> {
+    lexemes(text)
+        .into_iter()
+        .map(|l| (l.term, l.kind))
+        .collect()
 }
 
 #[derive(Clone, Default)]
@@ -186,13 +248,17 @@ impl TokenStream for VecStream {
 
 impl Tokenizer for CjkBigram {
     type TokenStream<'a> = VecStream;
+    /// Positions stay the expanded token ordinal (the index format does not
+    /// change); offsets are the original byte range (design 03 §3.3).
     fn token_stream<'a>(&'a mut self, text: &'a str) -> VecStream {
-        let tokens = tokenize(text)
+        let tokens = lexemes(text)
             .into_iter()
             .enumerate()
-            .map(|(i, t)| Token {
+            .map(|(i, l)| Token {
                 position: i,
-                text: t,
+                offset_from: l.from,
+                offset_to: l.to,
+                text: l.term,
                 ..Token::default()
             })
             .collect();
@@ -415,6 +481,40 @@ impl SearchIndex {
 
     /// Applies committed outbox messages (xid8 snapshot rule, D11).
     /// Returns how many messages were applied. At-least-once: re-applying is harmless.
+    /// Tests: `sync` until every outbox row written so far is indexed.
+    /// `sync` alone skips rows newer than the cluster-wide xmin, so another
+    /// database's open transaction can leave a just-committed row for the
+    /// next round (playbook).
+    #[cfg(feature = "test-support")]
+    pub async fn sync_all(&self, pool: &PgPool) -> Result<usize> {
+        let target: Option<(String, i64)> = sqlx::query_as(
+            "SELECT xid::text, id FROM outbox WHERE topic = 'issue' ORDER BY xid DESC, id DESC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        let mut applied = 0;
+        for _ in 0..1000 {
+            applied += self.sync(pool).await?;
+            let Some((xid, id)) = &target else {
+                return Ok(applied);
+            };
+            let done: bool = sqlx::query_scalar(
+                "SELECT COALESCE((c.last_xid, c.last_id) >= ($1::xid8, $2), false)
+                   FROM (SELECT 1) one
+                   LEFT JOIN outbox_cursors c ON c.consumer = 'search'",
+            )
+            .bind(xid)
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+            if done {
+                return Ok(applied);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        anyhow::bail!("search index did not catch up with the outbox within 20 s")
+    }
+
     pub async fn sync(&self, pool: &PgPool) -> Result<usize> {
         const CONSUMER: &str = "search";
         let mut applied = 0;
@@ -505,6 +605,116 @@ impl SearchIndex {
     }
 }
 
+/// The lexer before design 03 (no offsets), kept to prove the spanned one
+/// emits exactly the same terms.
+#[cfg(test)]
+mod v0 {
+    use super::{COMPOUND_JOINERS, MAX_COMPOUND_BYTES, is_cjk};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Kind {
+        /// Non-CJK alphanumeric run that is not part of a compound.
+        Word,
+        /// A segment of a compound (`invalid` in `invalid_grant`).
+        Part,
+        /// The whole compound (`invalid_grant`).
+        Compound,
+        /// A CJK character standing alone.
+        CjkAlone,
+        /// A CJK character inside a run of two or more.
+        CjkInRun,
+        /// Two adjacent CJK characters.
+        CjkBigram,
+    }
+
+    #[derive(Default)]
+    struct Lexer {
+        out: Vec<(String, Kind)>,
+        cjk: Vec<char>,
+        /// Current segment, and the segments of the compound so far.
+        word: String,
+        parts: Vec<String>,
+        /// The compound as written (lower-cased), joiners included.
+        whole: String,
+        joiner: Option<char>,
+    }
+
+    impl Lexer {
+        fn end_cjk(&mut self) {
+            let alone = self.cjk.len() == 1;
+            for (i, c) in self.cjk.iter().enumerate() {
+                let kind = if alone {
+                    Kind::CjkAlone
+                } else {
+                    Kind::CjkInRun
+                };
+                self.out.push((c.to_string(), kind));
+                if let Some(n) = self.cjk.get(i + 1) {
+                    self.out.push(([*c, *n].iter().collect(), Kind::CjkBigram));
+                }
+            }
+            self.cjk.clear();
+        }
+
+        fn latin_char(&mut self, c: char) {
+            if let Some(j) = self.joiner.take() {
+                self.whole.push(j);
+            }
+            for l in c.to_lowercase() {
+                self.word.push(l);
+                self.whole.push(l);
+            }
+        }
+
+        /// A joiner right after a segment may start or extend a compound;
+        /// anywhere else (`__init`, `a..b`, `a._b`) it ends the run.
+        fn joiner(&mut self, j: char) {
+            if self.word.is_empty() {
+                self.end_latin();
+            } else {
+                self.parts.push(std::mem::take(&mut self.word));
+                self.joiner = Some(j);
+            }
+        }
+
+        fn end_latin(&mut self) {
+            if !self.word.is_empty() {
+                self.parts.push(std::mem::take(&mut self.word));
+            }
+            self.joiner = None; // a trailing joiner (`invalid_grant.`) is dropped
+            let whole = std::mem::take(&mut self.whole);
+            let compound = self.parts.len() >= 2 && whole.len() <= MAX_COMPOUND_BYTES;
+            let kind = if compound { Kind::Part } else { Kind::Word };
+            self.out.extend(self.parts.drain(..).map(|p| (p, kind)));
+            if compound {
+                self.out.push((whole, Kind::Compound));
+            }
+        }
+    }
+
+    pub fn tokens(text: &str) -> Vec<(String, Kind)> {
+        let mut lx = Lexer::default();
+        for c in text.chars() {
+            if is_cjk(c) {
+                lx.end_latin();
+                lx.cjk.push(c);
+            } else if c.is_alphanumeric() {
+                lx.end_cjk();
+                lx.latin_char(c);
+            } else if COMPOUND_JOINERS.contains(&c) {
+                lx.end_cjk();
+                lx.joiner(c);
+            } else {
+                lx.end_cjk();
+                lx.end_latin();
+            }
+        }
+        lx.end_cjk();
+        lx.end_latin();
+        lx.out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CJK_UNIGRAM_WEIGHT, Hit, NONE_TERM, SearchIndex, query_terms, tokenize};
@@ -512,6 +722,84 @@ mod tests {
     use std::collections::BTreeSet;
     use tantivy::doc;
     use uuid::Uuid;
+
+    /// Texts for the lexer properties: the E1 corpus (every subject and
+    /// description) plus Unicode edge cases.
+    fn lexer_corpus() -> Vec<String> {
+        let mut out: Vec<String> = include_str!("../../../experiments/e1/data/issues.jsonl")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .flat_map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                [
+                    v["subject"].as_str().unwrap_or_default().to_string(),
+                    v["description"].as_str().unwrap_or_default().to_string(),
+                ]
+            })
+            .collect();
+        out.extend(
+            [
+                "İstanbul İİ_x ǅemal ẞtraße",
+                "👨\u{200D}👩\u{200D}👧 家族 e\u{0301}clair café",
+                "line1\r\nline2\r\n登入\r\n",
+                "__invalid_grant__ a..b a._b e.g. v3.2.0. foo_bar.baz",
+                "ＡＢＣ全形１２３ ﬁle",
+            ]
+            .map(String::from),
+        );
+        out.push(format!("{}_x", "a".repeat(200)));
+        out
+    }
+
+    /// Design 03 §3.9 lexer: the same term sequence as before, offsets on
+    /// char boundaries, and each range lower-cased gives back its term.
+    #[test]
+    fn spanned_lexer_matches_old_tokens_and_offsets() {
+        use super::{lexemes, v0};
+        let corpus = lexer_corpus();
+        assert!(corpus.len() > 100, "E1 corpus loaded");
+        for text in &corpus {
+            let new: Vec<String> = lexemes(text).into_iter().map(|l| l.term).collect();
+            let old: Vec<String> = v0::tokens(text).into_iter().map(|(t, _)| t).collect();
+            assert_eq!(new, old, "{text}");
+            for l in lexemes(text) {
+                assert!(l.from < l.to, "{l:?}");
+                assert!(text.is_char_boundary(l.from) && text.is_char_boundary(l.to));
+                assert_eq!(text[l.from..l.to].to_lowercase(), l.term, "{text}: {l:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn lexeme_ranges_cover_whole_identifiers_and_long_lowercase() {
+        use super::{Kind, lexemes};
+        let text = "x İnvalid_Grant.v2 y";
+        let ls = lexemes(text);
+        let whole = ls.iter().find(|l| l.kind == Kind::Compound).unwrap();
+        assert_eq!(&text[whole.from..whole.to], "İnvalid_Grant.v2");
+        assert_eq!(whole.term, "i\u{307}nvalid_grant.v2");
+        // İ lower-cases to two chars but keeps its own 2-byte range.
+        let first = ls.iter().find(|l| l.kind == Kind::Part).unwrap();
+        assert_eq!(&text[first.from..first.to], "İnvalid");
+        // The tokenizer now reports the offsets; positions are unchanged.
+        use tantivy::tokenizer::{TokenStream, Tokenizer};
+        let mut tk = super::CjkBigram;
+        let mut s = tk.token_stream("登入 ok");
+        let mut seen = Vec::new();
+        while s.advance() {
+            let t = s.token();
+            seen.push((t.position, t.offset_from, t.offset_to, t.text.clone()));
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (0, 0, 3, "登".into()),
+                (1, 0, 6, "登入".into()),
+                (2, 3, 6, "入".into()),
+                (3, 7, 9, "ok".into())
+            ]
+        );
+    }
 
     #[test]
     fn identifiers_glued_by_underscore_or_dot_are_kept_whole() {

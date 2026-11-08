@@ -227,7 +227,7 @@ async fn world(pool: &PgPool) -> World {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
     });
-    app.index.sync(pool).await.unwrap();
+    app.index.sync_all(pool).await.unwrap();
     let router = api::router(
         app.clone(),
         ApiConfig {
@@ -703,7 +703,7 @@ async fn s1_identity() {
     let deleg = |project: Uuid| {
         json!({"agent_client_id": w.client, "project_id": project,
                                        "proposal_ops": ["add_note", "update_fields"],
-                                       "writable_fields": ["subject", "status_id"]})
+                                       "writable_fields": ["subject"]})
     };
     sqlx::query("UPDATE browser_sessions SET reauthenticated_at = now() - interval '16 minutes' WHERE id = $1")
         .bind(a.session_id)
@@ -820,6 +820,7 @@ async fn s1_identity() {
                 writable_fields: vec![],
                 max_ops: None,
                 expires_in_days: None,
+                policies: None,
             },
         )
         .await
@@ -995,27 +996,6 @@ async fn s1_identity() {
             .is_ok()
     );
 
-    // Delegator locked → the agent stops too.
-    auth::set_user_status(&pool, w.alice, false).await.unwrap();
-    assert_eq!(
-        code(
-            &service::search(&w.app, agent_ctx, SearchParams::default())
-                .await
-                .unwrap_err()
-        ),
-        ErrorCode::Unauthenticated
-    );
-    assert_eq!(
-        code(
-            &service::search(&w.app, legacy_ctx, SearchParams::default())
-                .await
-                .unwrap_err()
-        ),
-        ErrorCode::Unauthenticated
-    );
-    auth::set_user_status(&pool, w.alice, true).await.unwrap();
-    let a = login(r, "alice").await; // her sessions were revoked by the lock
-
     // Token rotation: a second token works; revoking the first stops only the first.
     as_browser(
         r,
@@ -1067,6 +1047,37 @@ async fn s1_identity() {
         "rotation keeps the delegation"
     );
 
+    // Delegator locked → the agent stops too.
+    auth::set_user_status(&pool, w.alice, false).await.unwrap();
+    assert_eq!(
+        code(
+            &service::search(&w.app, agent2, SearchParams::default())
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::Unauthenticated
+    );
+    assert_eq!(
+        code(
+            &service::search(&w.app, legacy_ctx, SearchParams::default())
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::Unauthenticated
+    );
+    auth::set_user_status(&pool, w.alice, true).await.unwrap();
+    let a = login(r, "alice").await; // her sessions were revoked by the lock
+    // T-X12: locking and unlocking a user bumps every project's epoch; the
+    // context stays quarantined even after the user is active again.
+    assert_eq!(
+        code(
+            &service::search(&w.app, agent2, SearchParams::default())
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::ContextUnavailable
+    );
+
     // Legacy key revoked → next call unauthenticated (T-A10 for keys).
     let alice_key = auth::authenticate_bearer(&pool, legacy_raw)
         .await
@@ -1093,14 +1104,17 @@ async fn s1_identity() {
     )
     .await;
     assert_eq!(close.status, StatusCode::OK, "{}", close.body);
+    // T-X20: a token of a closed context says so (kind closed).
+    let e = service::search(&w.app, agent2, SearchParams::default())
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ContextUnavailable);
     assert_eq!(
-        code(
-            &service::search(&w.app, agent2, SearchParams::default())
-                .await
-                .unwrap_err()
-        ),
-        ErrorCode::Unauthenticated
+        as_api_error(&e).unwrap().details.as_ref().unwrap()["kind"],
+        "closed"
     );
+    let e = auth::authenticate_bearer(&pool, &token2).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ContextUnavailable);
     // A closed context is not silently replaced by a new delegation...
     as_browser(
         r,
@@ -1126,6 +1140,72 @@ async fn s1_identity() {
     )
     .await;
     assert_eq!(no_ack.code(), "invalid_value");
+    // PUB: a public project whose Non member role reads a restricted field.
+    let tracker: Uuid = sqlx::query_scalar("SELECT id FROM trackers LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let status: Uuid = sqlx::query_scalar("SELECT id FROM issue_statuses LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let pub_p = id(
+        &pool,
+        "INSERT INTO projects (key, name, is_public) VALUES ('PUB','Pub',true) RETURNING id",
+    )
+    .await;
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules SELECT id, 'issue_tracking' FROM projects WHERE key = 'PUB'",
+    )
+    .await;
+    let nm = id(&pool, "INSERT INTO roles (name, builtin, issues_visibility) VALUES ('Non member','non_member','default') RETURNING id").await;
+    sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, 'view_issues')")
+        .bind(nm)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, pub_key) = create_issue(
+        &pool,
+        NewIssue {
+            project_id: pub_p,
+            tracker_id: tracker,
+            status_id: status,
+            subject: "public project issue",
+            description: "",
+            author_id: w.bob,
+            assigned_to_id: None,
+            is_private: false,
+            parent_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let nm_field: i32 = sqlx::query_scalar(
+        "INSERT INTO field_defs (name, ftype, is_for_all, visible) VALUES ('Budget', 'string', true, false) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO field_trackers VALUES ($1, $2)")
+        .bind(nm_field)
+        .bind(tracker)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO field_roles VALUES ($1, $2)")
+        .bind(nm_field)
+        .bind(nm)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO issue_cf (issue_id, field_id, v_text) SELECT issue_id, $1, 'budget 5' FROM issue_keys WHERE key = $2")
+        .bind(nm_field)
+        .bind(&pub_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    w.app.index.sync_all(&pool).await.unwrap();
     let nc = as_browser(
         r,
         &a,
@@ -1296,72 +1376,8 @@ async fn s1_identity() {
     );
 
     // Restricted field readable via a public project's Non member role: the
-    // agent still must not see or filter on it.
-    let tracker: Uuid = sqlx::query_scalar("SELECT id FROM trackers LIMIT 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let status: Uuid = sqlx::query_scalar("SELECT id FROM issue_statuses LIMIT 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let pub_p = id(
-        &pool,
-        "INSERT INTO projects (key, name, is_public) VALUES ('PUB','Pub',true) RETURNING id",
-    )
-    .await;
-    exec(
-        &pool,
-        "INSERT INTO enabled_modules SELECT id, 'issue_tracking' FROM projects WHERE key = 'PUB'",
-    )
-    .await;
-    let nm = id(&pool, "INSERT INTO roles (name, builtin, issues_visibility) VALUES ('Non member','non_member','default') RETURNING id").await;
-    sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, 'view_issues')")
-        .bind(nm)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let (_, pub_key) = create_issue(
-        &pool,
-        NewIssue {
-            project_id: pub_p,
-            tracker_id: tracker,
-            status_id: status,
-            subject: "public project issue",
-            description: "",
-            author_id: w.bob,
-            assigned_to_id: None,
-            is_private: false,
-            parent_id: None,
-        },
-    )
-    .await
-    .unwrap();
-    let nm_field: i32 = sqlx::query_scalar(
-        "INSERT INTO field_defs (name, ftype, is_for_all, visible) VALUES ('Budget', 'string', true, false) RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO field_trackers VALUES ($1, $2)")
-        .bind(nm_field)
-        .bind(tracker)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO field_roles VALUES ($1, $2)")
-        .bind(nm_field)
-        .bind(nm)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO issue_cf (issue_id, field_id, v_text) SELECT issue_id, $1, 'budget 5' FROM issue_keys WHERE key = $2")
-        .bind(nm_field)
-        .bind(&pub_key)
-        .execute(&pool)
-        .await
-        .unwrap();
-    w.app.index.sync(&pool).await.unwrap();
+    // agent still must not see or filter on it (PUB was set up before the new
+    // context: configuration changes after delegating quarantine it).
     as_browser(
         r,
         &a,
@@ -1433,35 +1449,8 @@ async fn s1_identity() {
     .execute(&pool)
     .await
     .unwrap();
-    let after_own = service::search(
-        &w.app,
-        agent3,
-        SearchParams {
-            project: Some("AUTH".into()),
-            ..Default::default()
-        },
-    )
-    .await;
-    assert!(
-        after_own.map(|r| r.items.is_empty()).unwrap_or(true),
-        "own role after delegation: agent reads nothing in AUTH"
-    );
-    // PUB is unaffected.
-    assert_eq!(
-        n_agent(
-            service::search(&w.app, agent3, SearchParams::default())
-                .await
-                .unwrap()
-        ),
-        1
-    );
-
-    // An epoch change in R quarantines the whole context, reads included.
-    sqlx::query("UPDATE projects SET security_epoch = security_epoch + 1 WHERE id = $1")
-        .bind(w.auth_p)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // The role change bumps AUTH's epoch: the whole context is quarantined,
+    // PUB reads included (§3.8 rule 5, M7).
     let e = service::search(&w.app, agent3, SearchParams::default())
         .await
         .unwrap_err();

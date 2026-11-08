@@ -105,8 +105,14 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
             get(list_delegations).post(create_delegation),
         )
         .route("/delegations/{id}/revoke", post(revoke_delegation))
+        .route(
+            "/delegations/{id}/policies",
+            get(delegation_policies).put(set_delegation_policies),
+        )
         .route("/agent-contexts", get(list_contexts).post(new_context))
         .route("/agent-contexts/{id}/close", post(close_context))
+        .route("/agent-contexts/{id}/suspend", post(suspend_context))
+        .route("/agent-contexts/{id}/resume", post(resume_context))
         .route("/agent-contexts/{id}/credentials", post(issue_credential))
         .route("/agent-credentials/{id}/revoke", post(revoke_credential))
         .fallback(|| async { ApiFailure(api(ErrorCode::NotFound, "no such endpoint")) })
@@ -121,8 +127,9 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .with_state(state.clone());
 
     let mcp_app = app.clone();
+    let mcp_origin = state.cfg.spa_origin.clone();
     let mcp = StreamableHttpService::new(
-        move || Ok(OxServer::new(mcp_app.clone(), None)),
+        move || Ok(OxServer::new(mcp_app.clone(), None, mcp_origin.clone())),
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default(),
     );
@@ -725,13 +732,7 @@ async fn resolve(
     ApiJson(p): ApiJson<ResolveParams>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    Ok(ok(service::resolve(
-        &st.app,
-        ctx,
-        &p.text,
-        p.kind.as_deref(),
-    )
-    .await?))
+    Ok(ok(p.run(&st.app, ctx).await?))
 }
 
 // ---------------------------------------------------------------- response DTOs
@@ -817,6 +818,8 @@ pub struct DelegationBody {
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
+    /// Modes inside the ceiling (§16.3); unlisted commands and fields are direct.
+    pub policies: Option<agents::PolicyInput>,
 }
 
 pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
@@ -1182,6 +1185,7 @@ async fn create_delegation(
             writable_fields: b.writable_fields,
             max_ops: b.max_ops,
             expires_in_days: b.expires_in_days,
+            policies: b.policies,
         },
     )
     .await?;
@@ -1208,6 +1212,59 @@ async fn revoke_delegation(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     agents::revoke_delegation(&st.app.pool, &ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn delegation_policies(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::delegation_policies(
+        &st.app.pool,
+        &ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn set_delegation_policies(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<agents::PolicyInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::set_delegation_policies(
+        &st.app.pool,
+        &st.cfg.session,
+        &ctx,
+        id_param(&id)?,
+        b,
+    )
+    .await?))
+}
+
+async fn suspend_context(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    agents::suspend_context(&st.app.pool, &ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn resume_context(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    agents::resume_context(&st.app.pool, &st.cfg.session, &ctx, id_param(&id)?).await?;
     Ok(ok(Done::default()))
 }
 

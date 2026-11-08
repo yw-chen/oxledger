@@ -330,7 +330,7 @@ async fn s2_api() {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
     });
-    app.index.sync(&pool).await.unwrap();
+    app.index.sync_all(&pool).await.unwrap();
     let r = api::router(
         app.clone(),
         ApiConfig {
@@ -450,7 +450,7 @@ async fn s2_api() {
     };
     let sr = search(json!({"project": "PAGE"}), a.clone()).await;
     check(&sr.body["data"], "SearchResult");
-    check(&sr.body["data"]["items"][0], "IssueBrief");
+    check(&sr.body["data"]["items"][0], "SearchItem");
     let rr = call(
         &r,
         "POST",

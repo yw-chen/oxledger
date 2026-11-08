@@ -779,6 +779,23 @@ pub async fn authenticate_bearer(pool: &PgPool, raw: &str) -> Result<Option<Auth
         .bind(&sha256(&token)[..])
         .fetch_optional(pool)
         .await?;
+        if row.is_none() {
+            // A token of a closed context (T-X20): say so, unless the token
+            // itself was revoked before the context closed.
+            let sql = format!(
+                "SELECT EXISTS (SELECT 1 FROM agent_credentials c
+                                JOIN agent_work_contexts w ON w.id = c.context_id
+                                WHERE c.token_sha256 = $1 AND {})",
+                crate::agents::CLOSED_WITH_CONTEXT
+            );
+            let closed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(&sha256(&token)[..])
+                .fetch_one(pool)
+                .await?;
+            if closed {
+                return Err(crate::agents::context_closed());
+            }
+        }
         return Ok(row.map(|(cred, ctx, agent, delegator)| {
             AuthContext::agent_token(agent, cred, ctx, delegator)
         }));

@@ -51,7 +51,8 @@ pub const ACTION_COMMAND: &str = "command";
 /// How long a stored result replays (§8.7: at least 90 days).
 pub(crate) const RESULT_DAYS: i32 = 90;
 const MAX_TITLE_CHARS: usize = 255;
-const MAX_EVIDENCE: usize = 50;
+/// §8.9: evidence references per document.
+const MAX_EVIDENCE: usize = 20;
 const MAX_CF_SHORT_BYTES: usize = 2000;
 const DEADLOCK_RETRIES: usize = 3;
 const MIN_DATE: (i32, u32, u32) = (1900, 1, 1);
@@ -68,12 +69,14 @@ pub enum Mode {
     Validate,
     /// The domain transaction of approve-and-apply (§8.6 B).
     Apply,
+    /// An agent's `command_submit` written directly (§16.5).
+    AgentDirect,
 }
 
 impl Mode {
     /// Whether this mode takes the row locks and may write.
     pub fn locks(self) -> bool {
-        matches!(self, Mode::Direct | Mode::Apply)
+        matches!(self, Mode::Direct | Mode::Apply | Mode::AgentDirect)
     }
 }
 
@@ -108,6 +111,10 @@ pub enum OpInput {
     Transition(TransitionOp),
     AddNote(AddNoteOp),
     DuplicateOf(DuplicateOfOp),
+    /// §17.9a: agents only; the only op of its document.
+    CreateVersion(CreateVersionOp),
+    /// §17.9a: agents only; the only op, one precondition on the version.
+    UpdateVersion(UpdateVersionOp),
 }
 
 const KINDS: &[&str] = &[
@@ -116,7 +123,55 @@ const KINDS: &[&str] = &[
     "transition",
     "add_note",
     "duplicate_of",
+    "create_version",
+    "update_version",
 ];
+
+/// A milestone's fields (§17.9a). Absent = not set; `effective_date: null`
+/// clears the date. `status` only in `update_version`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VersionFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_date: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateVersionOp {
+    pub op_id: Uuid,
+    /// Accepted for symmetry with create_issue; nothing can refer to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    pub project_id: Uuid,
+    /// `name` (required), `effective_date`, `description`.
+    pub fields: VersionFields,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateVersionOp {
+    pub op_id: Uuid,
+    /// `{"type": "version", "id": …}`.
+    pub target: TargetRef,
+    pub set: VersionFields,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -182,6 +237,8 @@ pub enum TargetRef {
         #[serde(rename = "ref")]
         reference: String,
     },
+    /// A milestone (update_version and its precondition only).
+    Version { id: Uuid },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -230,7 +287,22 @@ pub struct ItemResult {
     pub op_id: Uuid,
     /// `applied` or `no_effect`.
     pub status: String,
-    pub issue_id: Uuid,
+    /// The issue the op wrote (issue ops).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<Uuid>,
+    /// The milestone the op wrote (version ops).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<Uuid>,
+}
+
+/// What a version command did (§17.9a: the new id is in the response).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct VersionEffect {
+    pub version_id: Uuid,
+    pub project_id: Uuid,
+    pub lock_version: i32,
+    pub changed: bool,
+    pub created: bool,
 }
 
 /// Design 03 §4.3: wait for this before expecting search to show the write.
@@ -518,6 +590,60 @@ struct Write {
     path: String,
 }
 
+/// The issue an op writes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DestIssue {
+    Existing(Uuid),
+    /// Created by the op at this index of the same document.
+    Created(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DestKind {
+    /// A new issue: its readers depend on `private` (`None`: the tracker's
+    /// default) and the assignee.
+    NewIssue {
+        project_id: Uuid,
+        private: Option<bool>,
+        assignee: Option<Uuid>,
+    },
+    /// Fields, a public note, a relation: readers of the issue.
+    Content(DestIssue),
+    /// A private note on the issue.
+    PrivateNote(DestIssue),
+    /// A milestone's name and description: public content of its project
+    /// (§17.9a, M8). `New` = created in that project.
+    Version(VersionDest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionDest {
+    New(Uuid),
+    Existing(Uuid),
+}
+
+/// A version document's one op, for `versions::plan`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum VersionCmd<'a> {
+    Create {
+        op_id: Uuid,
+        project_id: Uuid,
+        fields: &'a VersionFields,
+    },
+    Update {
+        op_id: Uuid,
+        version_id: Uuid,
+        lock_version: i32,
+        set: &'a VersionFields,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Destination {
+    pub op_index: usize,
+    pub kind: DestKind,
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     Create {
@@ -549,6 +675,16 @@ enum Op {
         source: Target,
         target: Target,
     },
+    CreateVersion {
+        op_id: Uuid,
+        project_id: Uuid,
+        fields: VersionFields,
+    },
+    UpdateVersion {
+        op_id: Uuid,
+        version_id: Uuid,
+        set: VersionFields,
+    },
 }
 
 impl Op {
@@ -558,7 +694,9 @@ impl Op {
             | Op::Update { op_id, .. }
             | Op::Transition { op_id, .. }
             | Op::Note { op_id, .. }
-            | Op::Duplicate { op_id, .. } => *op_id,
+            | Op::Duplicate { op_id, .. }
+            | Op::CreateVersion { op_id, .. }
+            | Op::UpdateVersion { op_id, .. } => *op_id,
         }
     }
 }
@@ -580,6 +718,8 @@ pub(crate) struct Parsed {
     refs: BTreeMap<Uuid, String>,
     /// The normalized document (ids for keys, canonical numbers).
     pub norm: Json,
+    /// update_version's precondition.
+    version_lock: Option<i32>,
 }
 
 impl Parsed {
@@ -594,6 +734,8 @@ impl Parsed {
                     Op::Transition { .. } => perm::OP_TRANSITION,
                     Op::Note { .. } => perm::OP_ADD_NOTE,
                     Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
+                    Op::CreateVersion { .. } => perm::OP_CREATE_VERSION,
+                    Op::UpdateVersion { .. } => perm::OP_UPDATE_VERSION,
                 };
                 (o.op_id(), k)
             })
@@ -603,6 +745,139 @@ impl Parsed {
     /// Existing target issues.
     pub fn targets(&self) -> Vec<Uuid> {
         self.pre.keys().copied().collect()
+    }
+
+    /// The op of a version document (§17.9a), if this is one.
+    pub(crate) fn version_cmd(&self) -> Option<VersionCmd<'_>> {
+        match self.ops.first()? {
+            Op::CreateVersion {
+                op_id,
+                project_id,
+                fields,
+            } => Some(VersionCmd::Create {
+                op_id: *op_id,
+                project_id: *project_id,
+                fields,
+            }),
+            Op::UpdateVersion {
+                op_id,
+                version_id,
+                set,
+            } => Some(VersionCmd::Update {
+                op_id: *op_id,
+                version_id: *version_id,
+                lock_version: self.version_lock.expect("parsed with its precondition"),
+                set,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Where each op writes, for the audience check (§3.8 M8, M9; §6.7
+    /// step 8). Temp refs resolve to the op that creates the issue.
+    pub fn destinations(&self) -> Vec<Destination> {
+        let binds: BTreeMap<&str, usize> = self
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| match o {
+                Op::Create { bind: Some(b), .. } => Some((b.as_str(), i)),
+                _ => None,
+            })
+            .collect();
+        let on = |t: &Target| match t {
+            Target::Issue(id) => Some(DestIssue::Existing(*id)),
+            Target::Temp(r) => binds.get(r.as_str()).map(|i| DestIssue::Created(*i)),
+        };
+        let mut out = Vec::new();
+        for (i, o) in self.ops.iter().enumerate() {
+            match o {
+                Op::Create {
+                    project_id,
+                    fields,
+                    is_private,
+                    ..
+                } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::NewIssue {
+                        project_id: *project_id,
+                        private: *is_private,
+                        assignee: fields
+                            .iter()
+                            .find(|w| matches!(w.key, Key::AssignedTo))
+                            .and_then(|w| w.value.as_str())
+                            .and_then(|v| v.parse().ok()),
+                    },
+                }),
+                Op::Update { target, .. } | Op::Transition { target, .. } => {
+                    if let Some(t) = on(target) {
+                        out.push(Destination {
+                            op_index: i,
+                            kind: DestKind::Content(t),
+                        });
+                    }
+                }
+                Op::Note {
+                    target, private, ..
+                } => {
+                    if let Some(t) = on(target) {
+                        out.push(Destination {
+                            op_index: i,
+                            kind: if *private {
+                                DestKind::PrivateNote(t)
+                            } else {
+                                DestKind::Content(t)
+                            },
+                        });
+                    }
+                }
+                Op::Duplicate { source, target, .. } => {
+                    for t in [source, target].into_iter().filter_map(on) {
+                        out.push(Destination {
+                            op_index: i,
+                            kind: DestKind::Content(t),
+                        });
+                    }
+                }
+                Op::CreateVersion { project_id, .. } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::Version(VersionDest::New(*project_id)),
+                }),
+                Op::UpdateVersion { version_id, .. } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::Version(VersionDest::Existing(*version_id)),
+                }),
+            }
+        }
+        out
+    }
+
+    /// (op index, command kind, the field keys the agent asked for), for the
+    /// delegation policy (§16.3 rule 3: a create's fields count; defaults the
+    /// server fills in do not).
+    pub(crate) fn policy_items(&self) -> Vec<(usize, &'static str, Vec<String>)> {
+        self.ops
+            .iter()
+            .enumerate()
+            .map(|(i, o)| match o {
+                Op::Create { fields, .. } => (
+                    i,
+                    perm::OP_CREATE_ISSUE,
+                    fields.iter().map(|w| w.key.name()).collect(),
+                ),
+                Op::Update { set, .. } => (
+                    i,
+                    perm::OP_UPDATE_FIELDS,
+                    set.iter().map(|w| w.key.name()).collect(),
+                ),
+                Op::Transition { .. } => (i, perm::OP_TRANSITION, Vec::new()),
+                Op::Note { .. } => (i, perm::OP_ADD_NOTE, Vec::new()),
+                Op::Duplicate { .. } => (i, perm::OP_DUPLICATE_OF, Vec::new()),
+                // §17.9a: no field-level policy for versions.
+                Op::CreateVersion { .. } => (i, perm::OP_CREATE_VERSION, Vec::new()),
+                Op::UpdateVersion { .. } => (i, perm::OP_UPDATE_VERSION, Vec::new()),
+            })
+            .collect()
     }
 
     /// Projects where an issue is created, with the tracker.
@@ -706,7 +981,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         return Err(bad("title", "title is at most 255 characters"));
     }
     if doc.evidence.len() > MAX_EVIDENCE {
-        return Err(bad("evidence", "at most 50 evidence items"));
+        return Err(bad("evidence", "at most 20 evidence items"));
     }
     if doc.ops.is_empty() || doc.ops.len() > max_ops {
         return Err(bad("ops", format!("a document has 1–{max_ops} ops")));
@@ -729,6 +1004,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 collect(&o.source);
                 collect(&o.target);
             }
+            OpInput::CreateVersion(_) | OpInput::UpdateVersion(_) => {}
         }
     }
     for p in &doc.preconditions {
@@ -773,6 +1049,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 path,
                 "a temp ref must name a bind declared by an earlier create_issue",
             )),
+            TargetRef::Version { .. } => Err(bad(path, "this op targets an issue")),
         }
     };
 
@@ -781,6 +1058,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     let mut set_fields: BTreeSet<(Target, Key)> = BTreeSet::new();
     let mut transitions: BTreeSet<Target> = BTreeSet::new();
     let mut has_dup = false;
+    let mut has_version = false;
     for (i, op) in doc.ops.iter().enumerate() {
         let p = |s: &str| format!("ops[{i}].{s}");
         let parse_writes = |m: &BTreeMap<String, Json>,
@@ -905,6 +1183,43 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                     target: t,
                 }
             }
+            OpInput::CreateVersion(o) => {
+                has_version = true;
+                if o.fields.name.is_none() {
+                    return Err(
+                        ApiError::new(ErrorCode::RequiredFieldMissing, "name is required")
+                            .with_details(
+                                json!({"op_index": i, "op_id": o.op_id, "fields": ["name"]}),
+                            )
+                            .into(),
+                    );
+                }
+                if o.fields.status.is_some() {
+                    return Err(bad(
+                        &p("fields.status"),
+                        "a new version is open; set the status with update_version",
+                    ));
+                }
+                Op::CreateVersion {
+                    op_id: o.op_id,
+                    project_id: o.project_id,
+                    fields: o.fields.clone(),
+                }
+            }
+            OpInput::UpdateVersion(o) => {
+                has_version = true;
+                let TargetRef::Version { id } = o.target else {
+                    return Err(bad(&p("target"), "update_version targets a version"));
+                };
+                if o.set == VersionFields::default() {
+                    return Err(bad(&p("set"), "set names at least one field"));
+                }
+                Op::UpdateVersion {
+                    op_id: o.op_id,
+                    version_id: id,
+                    set: o.set.clone(),
+                }
+            }
         };
         if !op_ids.insert(parsed.op_id()) {
             return Err(bad(&p("op_id"), "op_id is unique in the document"));
@@ -913,6 +1228,35 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     }
     if has_dup && ops.len() != 1 {
         return Err(bad("ops", "duplicate_of is the only op of its document"));
+    }
+    if has_version && ops.len() != 1 {
+        return Err(bad(
+            "ops",
+            "a version command is the only op of its document",
+        ));
+    }
+    // §17.9a: create_version has no precondition; update_version exactly
+    // one, on its version, with lock_version.
+    let mut version_lock = None;
+    if has_version {
+        match (&ops[0], doc.preconditions.as_slice()) {
+            (Op::CreateVersion { .. }, []) => {}
+            (Op::CreateVersion { .. }, _) => {
+                return Err(bad("preconditions", "create_version has no preconditions"));
+            }
+            (Op::UpdateVersion { version_id, .. }, [one])
+                if matches!(one.target, TargetRef::Version { id } if id == *version_id)
+                    && one.field_values.is_empty() =>
+            {
+                version_lock = Some(one.lock_version);
+            }
+            _ => {
+                return Err(bad(
+                    "preconditions",
+                    "update_version needs exactly one precondition: its version's lock_version",
+                ));
+            }
+        }
     }
 
     // Preconditions: exactly one per existing target.
@@ -932,10 +1276,16 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 add(source);
                 add(target);
             }
+            Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
         }
     }
     let mut pre: BTreeMap<Uuid, Pre> = BTreeMap::new();
-    for (i, p) in doc.preconditions.iter().enumerate() {
+    for (i, p) in doc
+        .preconditions
+        .iter()
+        .enumerate()
+        .filter(|_| !has_version)
+    {
         let path = format!("preconditions[{i}].target");
         if matches!(p.target, TargetRef::Temp { .. }) {
             return Err(bad(&path, "a temp target has no precondition"));
@@ -993,6 +1343,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         hash,
         refs,
         norm,
+        version_lock,
     })
 }
 
@@ -1282,6 +1633,14 @@ async fn run(
     doc: &Json,
 ) -> Result<Outcome> {
     let parsed = parse(&mut *tx, doc, MAX_OPS as usize).await?;
+    if parsed.version_cmd().is_some() {
+        return Err(ApiError::new(
+            ErrorCode::UnsupportedOperation,
+            "people write versions through /projects/{id}/versions and /versions/{id}",
+        )
+        .with_details(json!({"path": "ops[0].kind"}))
+        .into());
+    }
     let fingerprint = fingerprint(ACTION_COMMAND, &parsed.hash);
 
     // Step 0: the operation request. A concurrent request with the same key
@@ -1295,9 +1654,16 @@ async fn run(
     )
     .await?;
     let Some(request_id) = inserted else {
-        return replay(&mut *tx, caller, who.user_id, operation_id, &fingerprint)
-            .await
-            .map(Outcome::Replay);
+        return replay(
+            &mut *tx,
+            caller,
+            who.user_id,
+            operation_id,
+            ACTION_COMMAND,
+            &fingerprint,
+        )
+        .await
+        .map(Outcome::Replay);
     };
 
     let result = evaluate(&mut *tx, caller, who, Mode::Direct, &parsed, request_id).await?;
@@ -1536,21 +1902,15 @@ pub(crate) async fn record_human_execution(
 
 /// The key was used before (§8.7). Same content → the stored result, with
 /// visibility re-checked; different content → `idempotency_key_reused`.
-async fn replay(
+pub(crate) async fn replay(
     conn: &mut PgConnection,
     caller: AuthContext,
     caller_id: Uuid,
     operation_id: Uuid,
+    action: &str,
     fingerprint: &[u8; 32],
 ) -> Result<CommandResult> {
-    let r = stored_result(
-        &mut *conn,
-        caller_id,
-        operation_id,
-        ACTION_COMMAND,
-        fingerprint,
-    )
-    .await?;
+    let r = stored_result(&mut *conn, caller_id, operation_id, action, fingerprint).await?;
     let scope = db::load_scope(&mut *conn, caller).await?;
     let stored: Vec<Json> = r["effects"].as_array().cloned().unwrap_or_default();
     let ids: Vec<Uuid> = stored
@@ -1595,7 +1955,7 @@ async fn replay(
     let items = serde_json::from_value::<Vec<ItemResult>>(r["items"].clone())
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| visible.contains_key(&i.issue_id))
+        .filter(|i| i.issue_id.is_some_and(|id| visible.contains_key(&id)))
         .collect();
     Ok(CommandResult {
         status: "succeeded".into(),
@@ -1644,7 +2004,7 @@ pub(crate) struct Attribution {
 }
 
 impl Attribution {
-    fn human(user: Uuid, request_id: Uuid, execution_id: Uuid) -> Self {
+    pub(crate) fn human(user: Uuid, request_id: Uuid, execution_id: Uuid) -> Self {
         Self {
             origin: "human_direct",
             actor_id: user,
@@ -1685,6 +2045,8 @@ pub(crate) struct Sim {
     pub items: Vec<ItemResult>,
     /// The receipt token (step 8b); only when locking.
     pub token: Option<String>,
+    /// A version document's planned write (§17.9a).
+    pub version: Option<crate::versions::Plan>,
 }
 
 /// Errors §6.7 never stores with a proposal (steps 1–8): the caller may not
@@ -1755,6 +2117,15 @@ async fn evaluate(
 /// the deadlines); Propose and Validate only read, and check preconditions
 /// after the ops so a permission problem is reported before a stale one.
 pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Parsed) -> Result<Sim> {
+    if let Some(cmd) = doc.version_cmd() {
+        let (plan, token) = crate::versions::plan(&mut *conn, ectx, cmd).await?;
+        return Ok(Sim {
+            work: BTreeMap::new(),
+            items: vec![plan.item()],
+            token,
+            version: Some(plan),
+        });
+    }
     let locks = ectx.mode.locks();
     // Targets and their projects (project_id never changes, so reading it
     // before the locks is safe).
@@ -1767,6 +2138,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             }
         };
         match op {
+            Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
             Op::Create { project_id, .. } => {
                 create_projects.insert(*project_id);
             }
@@ -2001,6 +2373,8 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 _ => true,
             };
             let kind = match op {
+                Op::CreateVersion { .. } => perm::OP_CREATE_VERSION,
+                Op::UpdateVersion { .. } => perm::OP_UPDATE_VERSION,
                 Op::Update { .. } => perm::OP_UPDATE_FIELDS,
                 Op::Transition { .. } => perm::OP_TRANSITION,
                 Op::Note { .. } => perm::OP_ADD_NOTE,
@@ -2024,6 +2398,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             Ok(())
         };
         match op {
+            Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
             Op::Update { target, .. } | Op::Transition { target, .. } => check(target, "edit")?,
             Op::Note { target, .. } => check(target, "note")?,
             Op::Duplicate { source, target, .. } => {
@@ -2053,7 +2428,12 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         (Err(p), _) => return Err(p),
         (Ok(()), r) => r?,
     };
-    Ok(Sim { work, items, token })
+    Ok(Sim {
+        work,
+        items,
+        token,
+        version: None,
+    })
 }
 
 /// Step 12: preconditions — readable fields first, then versions and values.
@@ -2191,6 +2571,9 @@ async fn run_ops(
             }
         }
         match op {
+            Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {
+                unreachable!("version documents are planned apart")
+            }
             Op::Create {
                 op_id,
                 bind,
@@ -2319,7 +2702,8 @@ async fn run_ops(
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: "applied".into(),
-                    issue_id: id,
+                    issue_id: Some(id),
+                    version_id: None,
                 });
             }
             Op::Update { op_id, target, set } => {
@@ -2381,7 +2765,8 @@ async fn run_ops(
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: if applied { "applied" } else { "no_effect" }.into(),
-                    issue_id: id,
+                    issue_id: Some(id),
+                    version_id: None,
                 });
             }
             Op::Transition { op_id, target, to } => {
@@ -2436,7 +2821,8 @@ async fn run_ops(
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: if applied { "applied" } else { "no_effect" }.into(),
-                    issue_id: id,
+                    issue_id: Some(id),
+                    version_id: None,
                 });
             }
             Op::Note {
@@ -2478,7 +2864,8 @@ async fn run_ops(
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: "applied".into(),
-                    issue_id: id,
+                    issue_id: Some(id),
+                    version_id: None,
                 });
             }
             Op::Duplicate {
@@ -2542,7 +2929,8 @@ async fn run_ops(
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: if exists { "no_effect" } else { "applied" }.into(),
-                    issue_id: s,
+                    issue_id: Some(s),
+                    version_id: None,
                 });
             }
         }
@@ -2613,6 +3001,10 @@ pub(crate) async fn write_effects(
     sim: &Sim,
     at: &Attribution,
 ) -> Result<Vec<Effect>> {
+    if let Some(plan) = &sim.version {
+        crate::versions::write_plan(&mut *conn, plan, at).await?;
+        return Ok(Vec::new());
+    }
     let (work, items) = (&sim.work, &sim.items);
     let execution_id = at.execution_ref;
 
@@ -2623,7 +3015,7 @@ pub(crate) async fn write_effects(
         .iter()
         .enumerate()
         .filter(|(_, o)| matches!(o, Op::Create { .. }))
-        .map(|(i, _)| items[i].issue_id)
+        .map(|(i, _)| items[i].issue_id.expect("a create item names its issue"))
         .collect();
     let mut order: Vec<Uuid> = created.clone();
     order.extend(work.keys().filter(|k| !created.contains(k)).copied());

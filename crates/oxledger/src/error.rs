@@ -98,6 +98,22 @@ pub enum ErrorCode {
     ProposalUnavailable,
     /// The ChangeSet expired.
     ChangesetExpired,
+    /// The write would reach readers outside every source project (§3.8).
+    AudienceExpansionForbidden,
+    /// An evidence citation did not verify as `valid` (§6.7 step 7).
+    SourceUnverifiable,
+    /// A citation id cannot be decoded or has an unsupported kind (03 §3.7).
+    InvalidCitation,
+    /// The quote is not what the cited range says (03 §3.6).
+    CitationMismatch,
+    /// A proposal or write quota is used up (§8.9, §16.6).
+    QuotaExceeded,
+    /// The circuit breaker paused this agent work context (§16.6).
+    AgentSuspended,
+    /// `q` has non-blank characters but no searchable term (design 03 §3.7).
+    InvalidQuery,
+    /// The search index is broken or its worker stopped (not ordinary lag).
+    SearchUnavailable,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -114,7 +130,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 38] = [
+    pub const ALL: [ErrorCode; 46] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -153,6 +169,14 @@ impl ErrorCode {
         Self::ChangesetNotExecutable,
         Self::ProposalUnavailable,
         Self::ChangesetExpired,
+        Self::AudienceExpansionForbidden,
+        Self::SourceUnverifiable,
+        Self::InvalidCitation,
+        Self::CitationMismatch,
+        Self::QuotaExceeded,
+        Self::AgentSuspended,
+        Self::InvalidQuery,
+        Self::SearchUnavailable,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -195,6 +219,14 @@ impl ErrorCode {
             Self::ChangesetNotExecutable => "changeset_not_executable",
             Self::ProposalUnavailable => "proposal_unavailable",
             Self::ChangesetExpired => "changeset_expired",
+            Self::AudienceExpansionForbidden => "audience_expansion_forbidden",
+            Self::SourceUnverifiable => "source_unverifiable",
+            Self::InvalidCitation => "invalid_citation",
+            Self::CitationMismatch => "citation_mismatch",
+            Self::QuotaExceeded => "quota_exceeded",
+            Self::AgentSuspended => "agent_suspended",
+            Self::InvalidQuery => "invalid_query",
+            Self::SearchUnavailable => "search_unavailable",
         }
     }
 
@@ -235,13 +267,24 @@ impl ErrorCode {
             Self::ChangesetNotExecutable => 409,
             Self::ProposalUnavailable => 409,
             Self::ChangesetExpired => 410,
+            Self::AudienceExpansionForbidden => 422,
+            Self::SourceUnverifiable => 422,
+            Self::InvalidCitation => 400,
+            Self::CitationMismatch => 422,
+            Self::QuotaExceeded => 429,
+            Self::AgentSuspended => 423,
+            Self::InvalidQuery => 400,
+            Self::SearchUnavailable => 503,
         }
     }
 
     pub fn retryable(self) -> bool {
         matches!(
             self,
-            Self::TemporarilyUnavailable | Self::RateLimited | Self::ExecutionInProgress
+            Self::TemporarilyUnavailable
+                | Self::RateLimited
+                | Self::ExecutionInProgress
+                | Self::SearchUnavailable
         )
     }
 
@@ -289,6 +332,14 @@ impl ErrorCode {
             Self::ChangesetNotExecutable => &[Stop],
             Self::ProposalUnavailable => &[AskHuman, Stop],
             Self::ChangesetExpired => &[Stop],
+            Self::AudienceExpansionForbidden => &[AskHuman, Stop],
+            Self::SourceUnverifiable => &[FixInput],
+            Self::InvalidCitation => &[FixInput],
+            Self::CitationMismatch => &[FixInput],
+            Self::QuotaExceeded => &[AskHuman, Stop],
+            Self::AgentSuspended => &[AskHuman, Stop],
+            Self::InvalidQuery => &[FixInput],
+            Self::SearchUnavailable => &[WaitAndRetry],
         }
     }
 }

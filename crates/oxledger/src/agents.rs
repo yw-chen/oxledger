@@ -14,26 +14,32 @@
 use crate::auth::{self, AuthContext, SessionPolicy};
 use crate::db;
 use crate::error::{ApiError, ErrorCode, api};
+use crate::policy::{self, PolicyMode};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const PROPOSAL_OPS: [&str; 5] = [
+pub const PROPOSAL_OPS: [&str; 7] = [
     "create_issue",
     "update_fields",
     "transition",
     "add_note",
     "duplicate_of",
+    "create_version",
+    "update_version",
 ];
+/// Commands that need the delegator's `manage_versions` for a policy row (§17.11).
+pub const VERSION_OPS: [&str; 2] = ["create_version", "update_version"];
 /// Built-in field keys a delegation may make writable; custom fields are `cf:<id>`.
 pub const BUILTIN_FIELDS: [&str; 7] = [
     "subject",
     "description",
     "assigned_to_id",
-    "status_id",
+    "priority_id",
     "start_date",
     "due_date",
     "fixed_version_id",
@@ -176,15 +182,60 @@ async fn agent_principal(conn: &mut PgConnection, user: Uuid, client: Uuid) -> R
             .bind(format!("{user_name} 的 {client_name}"))
             .fetch_one(&mut *conn)
             .await?;
-    sqlx::query(
-        "INSERT INTO agent_principals (agent_principal_id, delegator_user_id, agent_client_id) VALUES ($1,$2,$3)",
-    )
-    .bind(id)
-    .bind(user)
-    .bind(client)
-    .execute(&mut *conn)
-    .await?;
-    Ok(id)
+    let login: String =
+        sqlx::query_scalar("SELECT coalesce(login, '') FROM principals WHERE id = $1")
+            .bind(user)
+            .fetch_one(&mut *conn)
+            .await?;
+    let base = handle_base(&client_name, &login);
+    // UNIQUE and never changed (§16.2): a clash (two clients slugging alike)
+    // takes the first free -2, -3, …; serialize_agent makes this race-free
+    // per (user, client), the unique index across pairs.
+    let mut n = 1;
+    loop {
+        let handle = if n == 1 {
+            base.clone()
+        } else {
+            match base.split_once('@') {
+                Some((a, b)) => format!("{a}-{n}@{b}"),
+                None => format!("{base}-{n}"),
+            }
+        };
+        let taken: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM agent_principals WHERE handle = $1)")
+                .bind(&handle)
+                .fetch_one(&mut *conn)
+                .await?;
+        if !taken {
+            sqlx::query(
+                "INSERT INTO agent_principals (agent_principal_id, delegator_user_id, agent_client_id, handle)
+                 VALUES ($1,$2,$3,$4)",
+            )
+            .bind(id)
+            .bind(user)
+            .bind(client)
+            .bind(&handle)
+            .execute(&mut *conn)
+            .await?;
+            return Ok(id);
+        }
+        n += 1;
+    }
+}
+
+/// `claude-code@alice`: the client name slugged, then the delegator's login.
+pub fn handle_base(client_name: &str, login: &str) -> String {
+    let mut slug = String::new();
+    for c in client_name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "agent" } else { slug };
+    format!("{slug}@{login}")
 }
 
 /// Locks the enabled client (FOR SHARE) or fails.
@@ -250,6 +301,19 @@ pub(crate) fn quarantined() -> anyhow::Error {
     .with_details(json!({"kind": "quarantined"}))
     .into()
 }
+
+pub(crate) fn context_closed() -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::ContextUnavailable,
+        "this agent work context was closed; a new context needs a new token",
+    )
+    .with_details(json!({"kind": "closed"}))
+    .into()
+}
+
+/// SQL condition (aliases `c` credential, `w` context): the credential was
+/// valid until its context closed (T-X20), not revoked on its own before.
+pub(crate) const CLOSED_WITH_CONTEXT: &str = "w.state = 'closed' AND c.expires_at > now() AND (c.revoked_at IS NULL OR c.revoked_at >= w.closed_at)";
 
 // ---------------------------------------------------------------- agent clients
 
@@ -333,6 +397,18 @@ pub struct DelegationInput {
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
+    /// Modes inside the ceiling (§16.10); anything not listed is `direct`.
+    pub policies: Option<PolicyInput>,
+}
+
+/// Per-command and per-field modes (§16.3). Keys must be inside the ceiling.
+#[derive(Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyInput {
+    #[serde(default)]
+    pub commands: BTreeMap<String, PolicyMode>,
+    #[serde(default)]
+    pub fields: BTreeMap<String, PolicyMode>,
 }
 
 /// Creates a delegation (§3.5). Adds it to the agent's active work context,
@@ -357,6 +433,9 @@ pub async fn create_delegation(
             .with_details(json!({"path": "proposal_ops", "allowed": PROPOSAL_OPS}))
             .into());
         }
+    }
+    if let Some(p) = &input.policies {
+        check_policy_keys(p, &input.proposal_ops, &input.writable_fields)?;
     }
     let max_ops = input.max_ops.unwrap_or(10);
     if !(1..=10).contains(&max_ops) {
@@ -511,6 +590,43 @@ pub async fn create_delegation(
     .bind(input.agent_client_id)
     .fetch_one(&mut *tx)
     .await?;
+    // §16.3 rule 1: one row per command and field in the ceiling.
+    let manage_versions = {
+        let actor = crate::perm::actor(&mut tx, *ctx).await?;
+        crate::perm::project_perms(&mut tx, &actor, input.project_id)
+            .await?
+            .is_some_and(|pp| pp.allowed_any(crate::perm::MANAGE_VERSIONS))
+    };
+    let chosen = input.policies.clone().unwrap_or_default();
+    for op in &input.proposal_ops {
+        if VERSION_OPS.contains(&op.as_str()) && !manage_versions {
+            continue; // offered later as a new operation (§17.11)
+        }
+        let mode = chosen
+            .commands
+            .get(op)
+            .copied()
+            .unwrap_or(PolicyMode::Direct);
+        sqlx::query(
+            "INSERT INTO delegation_command_policies VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(view.id)
+        .bind(op)
+        .bind(mode)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for f in &input.writable_fields {
+        let mode = chosen.fields.get(f).copied().unwrap_or(PolicyMode::Direct);
+        sqlx::query(
+            "INSERT INTO delegation_field_policies VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(view.id)
+        .bind(f)
+        .bind(mode)
+        .execute(&mut *tx)
+        .await?;
+    }
     // R grows in the same transaction (M3); never shrinks (M4).
     sqlx::query(
         "INSERT INTO agent_context_source_projects (context_id, project_id, security_epoch, first_delegation_id)
@@ -532,6 +648,214 @@ pub async fn create_delegation(
     .await?;
     tx.commit().await?;
     Ok(view)
+}
+
+fn check_policy_keys(p: &PolicyInput, ops: &[String], fields: &[String]) -> Result<()> {
+    for k in p.commands.keys() {
+        if !ops.contains(k) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidValue,
+                format!("{k:?} is not one of the delegated operations"),
+            )
+            .with_details(json!({"path": "policies.commands", "allowed": ops}))
+            .into());
+        }
+    }
+    for k in p.fields.keys() {
+        if !fields.contains(k) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidValue,
+                format!("{k:?} is not one of the delegated fields"),
+            )
+            .with_details(json!({"path": "policies.fields", "allowed": fields}))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// A delegation's policies (§16.3) and what could be added (rule 1: commands
+/// the server supports that the delegation lacks are never added by themselves).
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct PolicyView {
+    pub delegation_id: Uuid,
+    pub policy_version: i64,
+    pub commands: BTreeMap<String, PolicyMode>,
+    pub fields: BTreeMap<String, PolicyMode>,
+    /// Operations the server supports that this delegation does not have.
+    pub available_commands: Vec<String>,
+}
+
+async fn policy_view_in(conn: &mut PgConnection, user: Uuid, id: Uuid) -> Result<PolicyView> {
+    let policy_version: Option<i64> = sqlx::query_scalar(
+        "SELECT policy_version FROM delegations WHERE id = $1 AND delegator_user_id = $2",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(policy_version) = policy_version else {
+        return Err(api(ErrorCode::NotFound, "no such delegation"));
+    };
+    let p = policy::load(&mut *conn, id).await?;
+    let available_commands = PROPOSAL_OPS
+        .iter()
+        .filter(|o| !p.commands.contains_key(**o))
+        .map(|o| o.to_string())
+        .collect();
+    Ok(PolicyView {
+        delegation_id: id,
+        policy_version,
+        commands: p.commands,
+        fields: p.fields,
+        available_commands,
+    })
+}
+
+/// The delegator reads a delegation's policies.
+pub async fn delegation_policies(pool: &PgPool, ctx: &AuthContext, id: Uuid) -> Result<PolicyView> {
+    let (user, _) = ctx.require_human_session()?;
+    let mut tx = pool.begin().await?;
+    let v = policy_view_in(&mut tx, user, id).await?;
+    tx.commit().await?;
+    Ok(v)
+}
+
+async fn manages_versions(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    project: Uuid,
+) -> Result<bool> {
+    let actor = crate::perm::actor(&mut *conn, *ctx).await?;
+    Ok(crate::perm::project_perms(&mut *conn, &actor, project)
+        .await?
+        .is_some_and(|pp| pp.allowed_any(crate::perm::MANAGE_VERSIONS)))
+}
+
+/// The delegator changes modes or adds commands / fields (§16.3 rule 4: the
+/// delegation row FOR UPDATE, policy_version + 1). Any change may widen what
+/// the agent does without review, so it needs a step-up like creating one.
+pub async fn set_delegation_policies(
+    pool: &PgPool,
+    session_policy: &SessionPolicy,
+    ctx: &AuthContext,
+    id: Uuid,
+    input: PolicyInput,
+) -> Result<PolicyView> {
+    let (user, _) = ctx.require_human_session()?;
+    let mut tx = pool.begin().await?;
+    // §3.7 lock order: the browser session (step-up) before the delegation.
+    auth::require_step_up(&mut tx, session_policy, ctx).await?;
+    type Row = (
+        Uuid,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+        Vec<String>,
+        Vec<String>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT project_id, revoked_at, expires_at, proposal_ops, writable_fields FROM delegations
+         WHERE id = $1 AND delegator_user_id = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((project, revoked, expires, mut ops, mut fields)) = row else {
+        return Err(api(ErrorCode::NotFound, "no such delegation"));
+    };
+    if revoked.is_some() || expires <= Utc::now() {
+        return Err(api(
+            ErrorCode::DelegationUnavailable,
+            "the delegation was revoked or expired",
+        ));
+    }
+    for k in input.commands.keys() {
+        if !PROPOSAL_OPS.contains(&k.as_str()) {
+            return Err(
+                ApiError::new(ErrorCode::InvalidValue, format!("unknown operation {k:?}"))
+                    .with_details(json!({"path": "commands", "allowed": PROPOSAL_OPS}))
+                    .into(),
+            );
+        }
+        if VERSION_OPS.contains(&k.as_str()) && !manages_versions(&mut tx, ctx, project).await? {
+            return Err(ApiError::new(
+                ErrorCode::ForbiddenOp,
+                "you need manage_versions in this project to delegate version commands",
+            )
+            .with_details(json!({"reason": "permission", "path": "commands"}))
+            .into());
+        }
+        if !ops.contains(k) {
+            ops.push(k.clone());
+        }
+    }
+    for k in input.fields.keys() {
+        let ok = match k.strip_prefix("cf:") {
+            Some(n) => match n.parse::<i32>() {
+                Ok(fid) => sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS (SELECT 1 FROM field_defs WHERE id = $1 AND visible AND index_state <> 'dropping')",
+                )
+                .bind(fid)
+                .fetch_one(&mut *tx)
+                .await?,
+                Err(_) => false,
+            },
+            None => BUILTIN_FIELDS.contains(&k.as_str()),
+        };
+        if !ok {
+            return Err(
+                ApiError::new(ErrorCode::InvalidValue, format!("unknown field {k:?}"))
+                    .with_details(json!({"path": "fields", "allowed": BUILTIN_FIELDS}))
+                    .into(),
+            );
+        }
+        if !fields.contains(k) {
+            fields.push(k.clone());
+        }
+    }
+    sqlx::query(
+        "UPDATE delegations SET policy_version = policy_version + 1, proposal_ops = $2, writable_fields = $3
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(&ops)
+    .bind(&fields)
+    .execute(&mut *tx)
+    .await?;
+    for (k, m) in &input.commands {
+        sqlx::query(
+            "INSERT INTO delegation_command_policies VALUES ($1, $2, $3)
+             ON CONFLICT (delegation_id, command_kind) DO UPDATE SET mode = EXCLUDED.mode",
+        )
+        .bind(id)
+        .bind(k)
+        .bind(m)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for (k, m) in &input.fields {
+        sqlx::query(
+            "INSERT INTO delegation_field_policies VALUES ($1, $2, $3)
+             ON CONFLICT (delegation_id, field_key) DO UPDATE SET mode = EXCLUDED.mode",
+        )
+        .bind(id)
+        .bind(k)
+        .bind(m)
+        .execute(&mut *tx)
+        .await?;
+    }
+    auth::audit(
+        &mut tx,
+        "delegation_policy_changed",
+        Some(user),
+        Some(id),
+        json!({"commands": input.commands, "fields": input.fields}),
+    )
+    .await?;
+    let v = policy_view_in(&mut tx, user, id).await?;
+    tx.commit().await?;
+    Ok(v)
 }
 
 const DELEGATION_COLUMNS: &str =
@@ -731,6 +1055,87 @@ pub async fn close_context(pool: &PgPool, ctx: &AuthContext, context: Uuid) -> R
     Ok(())
 }
 
+/// "Pause writes" (§16.10): the delegator suspends the context's writes;
+/// reads go on.
+pub async fn suspend_context(pool: &PgPool, ctx: &AuthContext, context: Uuid) -> Result<()> {
+    let (user, _) = ctx.require_human_session()?;
+    let mut tx = pool.begin().await?;
+    context_owned(&mut tx, user, context, false).await?;
+    sqlx::query(
+        "UPDATE agent_context_write_controls SET suspended_at = clock_timestamp(), suspension_reason = 'manual'
+         WHERE context_id = $1 AND suspended_at IS NULL",
+    )
+    .bind(context)
+    .execute(&mut *tx)
+    .await?;
+    auth::audit(
+        &mut tx,
+        "context_suspended",
+        Some(user),
+        Some(context),
+        json!({}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Lifts a suspension (§16.6: only the delegator, in the web app, after
+/// re-checking the context: active, R's epochs, a usable delegation). Needs
+/// a step-up. Quotas are not reset: they count the log, which stays.
+pub async fn resume_context(
+    pool: &PgPool,
+    policy: &SessionPolicy,
+    ctx: &AuthContext,
+    context: Uuid,
+) -> Result<()> {
+    let (user, _) = ctx.require_human_session()?;
+    let mut tx = pool.begin().await?;
+    let (_, state) = context_owned(&mut tx, user, context, true).await?;
+    if state != "active" {
+        return Err(context_closed());
+    }
+    auth::require_step_up(&mut tx, policy, ctx).await?;
+    if !changed_sources(&mut tx, context, true).await?.is_empty() {
+        return Err(quarantined());
+    }
+    let usable: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND revoked_at IS NULL
+                                                  AND expires_at > clock_timestamp())",
+    )
+    .bind(context)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !usable {
+        return Err(api(
+            ErrorCode::DelegationUnavailable,
+            "this context has no usable delegation",
+        ));
+    }
+    let reason: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT suspension_reason FROM agent_context_write_controls WHERE context_id = $1 FOR UPDATE",
+    )
+    .bind(context)
+    .fetch_optional(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE agent_context_write_controls SET suspended_at = NULL, suspension_reason = NULL WHERE context_id = $1",
+    )
+    .bind(context)
+    .execute(&mut *tx)
+    .await?;
+    auth::audit(
+        &mut tx,
+        "context_resumed",
+        Some(user),
+        Some(context),
+        json!({"was": reason.flatten()}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------- tokens
 
 /// Issues a token for an active context (shown once). Needs a step-up.
@@ -833,4 +1238,108 @@ pub async fn revoke_credential(pool: &PgPool, ctx: &AuthContext, id: Uuid) -> Re
     }
     tx.commit().await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------- describe {"scope": "context"} (§5.3)
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ContextPublish {
+    /// `same_or_narrower`: new non-private content written there passes the
+    /// audience check against the current R; `blocked`: it would not.
+    pub public_content: String,
+    /// `per_target`: private notes and new private issues are judged by
+    /// their actual readers when proposed; `blocked`: no delegation.
+    pub private_destinations: String,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ContextProject {
+    pub project: String,
+    pub project_id: Uuid,
+    /// `active`, `revoked` or `expired`.
+    pub delegation: String,
+    pub readable: bool,
+    pub publish: ContextPublish,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ContextDescription {
+    pub context_id: Uuid,
+    pub state: String,
+    /// R: every project ever delegated in this context (no reader lists).
+    pub projects: Vec<ContextProject>,
+}
+
+/// §5.3: the agent's current work context. A closed or quarantined context
+/// is `context_unavailable` (checked by `db::effective`).
+pub async fn describe_context(
+    app: &crate::service::App,
+    caller: AuthContext,
+) -> Result<ContextDescription> {
+    let mut tx = crate::service::read_tx(app).await?;
+    let me = crate::db::effective(&mut tx, caller).await?;
+    let Some(a) = me.agent else {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            "scope context is for agents; people see their delegations in the web app",
+        )
+        .with_details(json!({"reason": "agent_only"}))
+        .into());
+    };
+    let state: String = sqlx::query_scalar("SELECT state FROM agent_work_contexts WHERE id = $1")
+        .bind(a.context_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let rows: Vec<(Uuid, String, bool, bool)> = sqlx::query_as(
+        "SELECT p.id, p.key,
+                EXISTS (SELECT 1 FROM delegations d WHERE d.context_id = r.context_id AND d.project_id = p.id
+                          AND d.revoked_at IS NULL AND d.expires_at > clock_timestamp()),
+                EXISTS (SELECT 1 FROM delegations d WHERE d.context_id = r.context_id AND d.project_id = p.id
+                          AND d.revoked_at IS NOT NULL)
+         FROM agent_context_source_projects r JOIN projects p ON p.id = r.project_id
+         WHERE r.context_id = $1 ORDER BY p.key",
+    )
+    .bind(a.context_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let scope = crate::db::load_scope(&mut tx, caller).await?;
+    let readable: std::collections::BTreeSet<Uuid> = scope.project_ids().collect();
+    let mut audiences = Vec::new();
+    for (id, ..) in &rows {
+        audiences.push(crate::audience::project_audience(&mut tx, *id).await?);
+    }
+    let projects = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (id, key, active, revoked))| {
+            let fits = audiences.iter().all(|r| audiences[i].is_subset(r));
+            ContextProject {
+                project: key.clone(),
+                project_id: *id,
+                delegation: if *active {
+                    "active"
+                } else if *revoked {
+                    "revoked"
+                } else {
+                    "expired"
+                }
+                .into(),
+                readable: *active && readable.contains(id),
+                publish: ContextPublish {
+                    public_content: if *active && fits {
+                        "same_or_narrower"
+                    } else {
+                        "blocked"
+                    }
+                    .into(),
+                    private_destinations: if *active { "per_target" } else { "blocked" }.into(),
+                },
+            }
+        })
+        .collect();
+    Ok(ContextDescription {
+        context_id: a.context_id,
+        state,
+        projects,
+    })
 }

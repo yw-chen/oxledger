@@ -196,7 +196,7 @@ async fn s0_scope_in_transaction_active_check_and_error_codes() {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
     };
-    app.index.sync(&pool).await.unwrap();
+    app.index.sync_all(&pool).await.unwrap();
     let root = AuthContext::test_user(admin);
     assert!(service::get(&app, root, &key).await.is_ok());
     let missing = service::get(&app, root, "AUTH-999").await.unwrap_err();

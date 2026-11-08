@@ -15,7 +15,9 @@
 //! thresholds already stored are used here.
 
 use crate::auth::AuthContext;
-use crate::commands::{self, Executor};
+use crate::commands::{
+    self, Attribution, EvalCtx, Executor, ItemResult, VersionCmd, VersionEffect, VersionFields,
+};
 use crate::cursor::{self, Position};
 use crate::db;
 use crate::describe;
@@ -1073,28 +1075,33 @@ async fn access_after_locks(
     Ok((a, token))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One version event with its attribution (§16.2), then the field origins.
 async fn write_event(
     conn: &mut PgConnection,
     version: Uuid,
     seq: i64,
     kind: &str,
-    who: Uuid,
-    execution_id: Uuid,
-    request_id: Uuid,
+    at: &Attribution,
     changes: &Map<String, Json>,
 ) -> Result<()> {
+    let execution_id = at.execution_ref;
     sqlx::query(
         "INSERT INTO version_events (version_id, seq, kind, origin, actor_id, actor_kind,
+                                     on_behalf_of_id, approver_id, delegation_id,
                                      execution_id, operation_request_id, payload)
-         VALUES ($1, $2, $3, 'human_direct', $4, 'user', $5, $6, $7)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(version)
     .bind(seq)
     .bind(kind)
-    .bind(who)
+    .bind(at.origin)
+    .bind(at.actor_id)
+    .bind(at.actor_kind)
+    .bind(at.on_behalf_of_id)
+    .bind(at.approver_id)
+    .bind(at.delegation_id)
     .bind(execution_id)
-    .bind(request_id)
+    .bind(at.request_id)
     .bind(json!({"changes": changes}))
     .execute(&mut *conn)
     .await?;
@@ -1257,9 +1264,7 @@ async fn create_in(
         id,
         1,
         "created",
-        who.user_id,
-        execution_id,
-        request_id,
+        &Attribution::human(who.user_id, request_id, execution_id),
         &changes,
     )
     .await?;
@@ -1438,9 +1443,7 @@ async fn update_in(
             v.id,
             seq,
             "updated",
-            who.user_id,
-            execution_id,
-            request_id,
+            &Attribution::human(who.user_id, request_id, execution_id),
             &changes,
         )
         .await?;
@@ -1538,9 +1541,7 @@ async fn delete_in(
         v.id,
         seq,
         "deleted",
-        who.user_id,
-        execution_id,
-        request_id,
+        &Attribution::human(who.user_id, request_id, execution_id),
         &Map::new(),
     )
     .await?;
@@ -1748,4 +1749,415 @@ mod tests {
         assert!(parse_date("2026-2-1").is_err());
         assert!(parse_date("2200-01-01").is_err());
     }
+}
+
+// ---------------------------------------------------------------- agent version commands (§17.9a)
+
+/// A version document's write, planned by [`plan`] (under the locks in
+/// Direct and Apply) and done by [`write_plan`].
+#[derive(Debug, Clone)]
+pub(crate) struct Plan {
+    op_id: Uuid,
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub created: bool,
+    name: String,
+    /// `Some` when the name (key) changes or is new.
+    key: Option<String>,
+    description: String,
+    date: Option<NaiveDate>,
+    status: String,
+    changes: Map<String, Json>,
+    /// The event's seq (the version's last + 1; 1 for a new one).
+    seq: i64,
+    lock_version: i32,
+}
+
+impl Plan {
+    pub(crate) fn item(&self) -> ItemResult {
+        ItemResult {
+            op_id: self.op_id,
+            status: if self.changes.is_empty() {
+                "no_effect"
+            } else {
+                "applied"
+            }
+            .into(),
+            issue_id: None,
+            version_id: Some(self.id),
+        }
+    }
+
+    pub(crate) fn effect(&self) -> VersionEffect {
+        VersionEffect {
+            version_id: self.id,
+            project_id: self.project_id,
+            lock_version: self.lock_version,
+            changed: !self.changes.is_empty(),
+            created: self.created,
+        }
+    }
+}
+
+fn op_forbidden(op_id: Uuid, reason: &str, msg: &str) -> anyhow::Error {
+    ApiError::new(ErrorCode::ForbiddenOp, msg)
+        .with_details(json!({"reason": reason, "op_index": 0, "op_id": op_id}))
+        .into()
+}
+
+/// The project (and version) of a version command for the agent's checks
+/// (§16.6 quotas, the audience): `(project, Some(version))`; `None` when
+/// the version does not exist (the plan reports `not_found`).
+pub(crate) async fn cmd_project(
+    conn: &mut PgConnection,
+    cmd: VersionCmd<'_>,
+) -> Result<Option<Uuid>> {
+    Ok(match cmd {
+        VersionCmd::Create { project_id, .. } => Some(project_id),
+        VersionCmd::Update { version_id, .. } => {
+            sqlx::query_scalar("SELECT project_id FROM versions WHERE id = $1")
+                .bind(version_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+    })
+}
+
+/// §17.9a: locks (project FOR SHARE, then the version FOR UPDATE for an
+/// update), deadlines, visibility, permission (`manage_versions` of the
+/// delegator ∩ the delegation or the proposal's ceiling), the precondition
+/// and the values (R8 names, R9 dates). Returns the plan and, when locking,
+/// the receipt token.
+pub(crate) async fn plan(
+    conn: &mut PgConnection,
+    ectx: &EvalCtx,
+    cmd: VersionCmd<'_>,
+) -> Result<(Plan, Option<String>)> {
+    let locks = ectx.mode.locks();
+    let (op_id, kind) = match cmd {
+        VersionCmd::Create { op_id, .. } => (op_id, perm::OP_CREATE_VERSION),
+        VersionCmd::Update { op_id, .. } => (op_id, perm::OP_UPDATE_VERSION),
+    };
+    let project = cmd_project(&mut *conn, cmd).await?.ok_or_else(not_found)?;
+    let found: Option<i32> = sqlx::query_scalar(if locks {
+        "SELECT 1 FROM projects WHERE id = $1 FOR SHARE"
+    } else {
+        "SELECT 1 FROM projects WHERE id = $1"
+    })
+    .bind(project)
+    .fetch_optional(&mut *conn)
+    .await?;
+    found.ok_or_else(not_found)?;
+    let row = match cmd {
+        VersionCmd::Update { version_id, .. } => Some(
+            version_row(&mut *conn, version_id, locks)
+                .await?
+                .ok_or_else(not_found)?,
+        ),
+        VersionCmd::Create { .. } => None,
+    };
+    let token = if locks {
+        let t = commands::search_token(&mut *conn).await?;
+        commands::check_deadlines(&mut *conn, &ectx.deadlines).await?;
+        Some(t)
+    } else {
+        None
+    };
+
+    // Visibility: invisible, archived and deleted look like missing.
+    let scope = db::load_scope(&mut *conn, ectx.caller).await?;
+    if !scope.project_ids().any(|p| p == project) {
+        return Err(not_found());
+    }
+    let mut actor = perm::actor(&mut *conn, ectx.caller).await?;
+    if let Some(c) = &ectx.ceiling {
+        actor.delegations = Some(c.clone());
+    }
+    let pp = perm::project_perms(&mut *conn, &actor, project)
+        .await?
+        .ok_or_else(not_found)?;
+    if pp.status == "archived"
+        || !pp.allowed_any(VIEW_ISSUES)
+        || row.as_ref().is_some_and(|v| v.deleted)
+    {
+        return Err(not_found());
+    }
+    if !pp.writable() {
+        return Err(op_forbidden(
+            op_id,
+            "project_not_writable",
+            "the project does not accept changes",
+        ));
+    }
+    if !pp.allowed_any(MANAGE_VERSIONS) || !actor.delegation_allows(project, kind, None) {
+        return Err(op_forbidden(
+            op_id,
+            "permission",
+            "manage_versions and a delegation that allows this command are needed",
+        ));
+    }
+
+    match (cmd, row) {
+        (VersionCmd::Create { fields, .. }, _) => {
+            let (name, key) =
+                name_and_key(&mut *conn, fields.name.as_deref().unwrap_or_default()).await?;
+            let date = match &fields.effective_date {
+                Some(Some(d)) => Some(parse_date(d)?),
+                _ => None,
+            };
+            let description = fields.description.clone().unwrap_or_default();
+            check_description(&description)?;
+            if let Some(other) = taken(&mut *conn, project, &key, None).await? {
+                return Err(name_taken(other));
+            }
+            let status = "open".to_string();
+            let mut changes = Map::new();
+            changes.insert("name".into(), json!({"old": null, "new": name}));
+            changes.insert(
+                "description".into(),
+                json!({"old": null, "new": description}),
+            );
+            changes.insert(
+                "effective_date".into(),
+                json!({"old": null, "new": date.map(|d| d.to_string())}),
+            );
+            changes.insert("status".into(), json!({"old": null, "new": status}));
+            Ok((
+                Plan {
+                    op_id,
+                    id: Uuid::now_v7(),
+                    project_id: project,
+                    created: true,
+                    name,
+                    key: Some(key),
+                    description,
+                    date,
+                    status,
+                    changes,
+                    seq: 1,
+                    lock_version: 0,
+                },
+                token,
+            ))
+        }
+        (
+            VersionCmd::Update {
+                lock_version, set, ..
+            },
+            Some(v),
+        ) => {
+            if v.lock_version != lock_version {
+                return Err(
+                    ApiError::new(ErrorCode::Conflict, "the version changed meanwhile")
+                        .with_details(
+                            json!({"version_id": v.id, "expected_lock_version": lock_version,
+                                         "lock_version": v.lock_version}),
+                        )
+                        .into(),
+                );
+            }
+            let s: &VersionFields = set;
+            let mut changes = Map::new();
+            let (mut name, mut key) = (v.name.clone(), None);
+            if let Some(n) = &s.name {
+                let (nn, nk) = name_and_key(&mut *conn, n).await?;
+                if nn != v.name {
+                    if let Some(other) = taken(&mut *conn, v.project_id, &nk, Some(v.id)).await? {
+                        return Err(name_taken(other));
+                    }
+                    changes.insert("name".into(), json!({"old": v.name, "new": nn}));
+                    (name, key) = (nn, Some(nk));
+                }
+            }
+            let mut description = v.description.clone();
+            if let Some(d) = &s.description {
+                check_description(d)?;
+                if *d != v.description {
+                    changes.insert(
+                        "description".into(),
+                        json!({"old": v.description, "new": d}),
+                    );
+                    description = d.clone();
+                }
+            }
+            let mut date = v.effective_date;
+            if let Some(d) = &s.effective_date {
+                let nd = d.as_deref().map(parse_date).transpose()?;
+                if nd != v.effective_date {
+                    changes.insert(
+                        "effective_date".into(),
+                        json!({"old": v.effective_date.map(|x| x.to_string()), "new": nd.map(|x| x.to_string())}),
+                    );
+                    date = nd;
+                }
+            }
+            let mut status = v.status.clone();
+            if let Some(st) = &s.status {
+                check_status(st)?;
+                if *st != v.status {
+                    changes.insert("status".into(), json!({"old": v.status, "new": st}));
+                    status = st.clone();
+                }
+            }
+            let changed = !changes.is_empty();
+            Ok((
+                Plan {
+                    op_id,
+                    id: v.id,
+                    project_id: v.project_id,
+                    created: false,
+                    name,
+                    key,
+                    description,
+                    date,
+                    status,
+                    changes,
+                    seq: v.last_event_seq + 1,
+                    lock_version: v.lock_version + i32::from(changed),
+                },
+                token,
+            ))
+        }
+        (VersionCmd::Update { .. }, None) => unreachable!("an update has its row"),
+    }
+}
+
+/// Writes a planned version command with `at`'s attribution: the row
+/// (`created_by` = the agent, `created_on_behalf_of_id` = the delegator),
+/// the event, the field origins and — for agent writes — the before/after
+/// copies for undo (§17.9a).
+pub(crate) async fn write_plan(conn: &mut PgConnection, p: &Plan, at: &Attribution) -> Result<()> {
+    if p.changes.is_empty() {
+        return Ok(());
+    }
+    if p.created {
+        let inserted: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO versions (id, project_id, name, name_key, description, effective_date, status,
+                                   created_by, created_on_behalf_of_id, last_event_seq)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+             ON CONFLICT (project_id, name_key) WHERE deleted_at IS NULL DO NOTHING RETURNING id",
+        )
+        .bind(p.id)
+        .bind(p.project_id)
+        .bind(&p.name)
+        .bind(p.key.as_deref())
+        .bind(&p.description)
+        .bind(p.date)
+        .bind(&p.status)
+        .bind(at.author_id)
+        .bind(at.author_on_behalf)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if inserted.is_none() {
+            let other = taken(
+                &mut *conn,
+                p.project_id,
+                p.key.as_deref().unwrap_or_default(),
+                None,
+            )
+            .await?
+            .unwrap_or_default();
+            return Err(name_taken(other));
+        }
+    } else {
+        sqlx::query(
+            "UPDATE versions SET name = $2, name_key = COALESCE($3, name_key), description = $4,
+                    effective_date = $5, status = $6, lock_version = lock_version + 1,
+                    last_event_seq = $7, updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(p.id)
+        .bind(&p.name)
+        .bind(p.key.as_deref())
+        .bind(&p.description)
+        .bind(p.date)
+        .bind(&p.status)
+        .bind(p.seq)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| unique_to_taken(e, p.id))?;
+    }
+    write_event(
+        &mut *conn,
+        p.id,
+        p.seq,
+        if p.created { "created" } else { "updated" },
+        at,
+        &p.changes,
+    )
+    .await?;
+    if at.record_changes {
+        let rows: Vec<(&str, Json, Json)> = if p.created {
+            vec![(
+                "_created",
+                Json::Null,
+                json!({"name": p.name, "description": p.description,
+                   "effective_date": p.date.map(|d| d.to_string()), "status": p.status}),
+            )]
+        } else {
+            p.changes
+                .iter()
+                .map(|(k, c)| (k.as_str(), c["old"].clone(), c["new"].clone()))
+                .collect()
+        };
+        for (field, before, after) in rows {
+            sqlx::query(
+                "INSERT INTO execution_version_changes (execution_id, version_id, field_key, before_value, after_value)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(at.execution_ref)
+            .bind(p.id)
+            .bind(field)
+            .bind(before)
+            .bind(after)
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// MCP `version_list` (§17.9): `name` keeps only the version whose
+/// `name_key` matches (none → an empty list, the project being visible).
+pub async fn list_for_tool(
+    app: &App,
+    caller: AuthContext,
+    project: &str,
+    status: Option<&[String]>,
+    name: Option<&str>,
+    next: bool,
+) -> Result<VersionList> {
+    let status = status.map(|s| s.join(","));
+    let mut out = list(
+        app,
+        caller,
+        project,
+        status.as_deref(),
+        next.then_some("next"),
+    )
+    .await?;
+    if let Some(n) = name {
+        let names: Vec<String> = out.versions.iter().map(|v| v.name.clone()).collect();
+        let (want, keys): (String, Vec<String>) = {
+            let mut conn = app.pool.acquire().await?;
+            let want: String = sqlx::query_scalar("SELECT casefold(normalize(btrim($1), NFC))")
+                .bind(n)
+                .fetch_one(&mut *conn)
+                .await?;
+            let keys: Vec<String> = sqlx::query_scalar(
+                "SELECT casefold(normalize(x, NFC)) FROM unnest($1::text[]) WITH ORDINALITY AS t(x, i) ORDER BY i",
+            )
+            .bind(&names)
+            .fetch_all(&mut *conn)
+            .await?;
+            (want, keys)
+        };
+        let mut i = 0;
+        out.versions.retain(|_| {
+            let keep = keys[i] == want;
+            i += 1;
+            keep
+        });
+    }
+    Ok(out)
 }

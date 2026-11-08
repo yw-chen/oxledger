@@ -126,7 +126,8 @@ async fn stdio() -> Result<()> {
         bail!("OXLEDGER_API_KEY is not a valid agent token or API key")
     };
     // Fixed for the process; `db::effective` re-checks it on every tool call.
-    let server = OxServer::new(app, Some(ctx));
+    let origin = env("OXLEDGER_SPA_ORIGIN", Some("http://127.0.0.1:8080"))?;
+    let server = OxServer::new(app, Some(ctx), origin);
     let running = server.serve(rmcp::transport::stdio()).await?;
     running.waiting().await?;
     Ok(())

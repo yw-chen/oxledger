@@ -153,8 +153,25 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | 套用失敗後同一個 key 重送仍回 failed | 同 key 是 replay，回原結果 | 修好之後用**新的** key 再批准（attempt_no +1），或請 agent 修訂 |
 | 測試要改 changeset 的 `expires_at` 卻報 immutable | `changesets_guard` 不讓應用程式改到期時間 | 測試裡用 `SET session_replication_role = replica` 暫停 trigger（`s5_changesets::set_expiry`） |
 | 套用回 `delegation_unavailable`，但委派看起來還在 | agent client 被停用、委派到期或被撤銷，交易 B 會重查 | 重新啟用 client，或建立新委派後請 agent 重新提案 |
+| 測試裡 agent 突然 `context_unavailable`（`kind = quarantined`），明明沒動 epoch | 0010 起，委派之後只要改了成員、角色、權限、欄位可見性、專案公開／狀態／模組、建立／停權使用者，相關專案（多數是全部）的 `security_epoch` 都會 +1 | 先把設定都做完再委派；要在委派後改設定，就 `agents::new_context` 開新脈絡再委派（`tests/s6_world` 的 `World::new_context`） |
+| 關閉脈絡後舊 token 回 `context_unavailable`（`kind = closed`）而不是 `unauthenticated` | T-X20：脈絡關閉造成的失效要講清楚 | 刻意的；單獨撤銷的 token 才回 `unauthenticated` |
+| 建專案卡住 | 另一個交易正在做全專案 epoch bump（持有 `project_catalog` FOR UPDATE） | 等那個交易提交；這是 T-X24 的協調 |
+| agent 提案或寫入回 `forbidden_op`（`details.reason = "policy"`），但委派的 `proposal_ops` 明明有這個命令 | 0011 起，委派內每個命令、欄位都要有政策列；缺列＝off（§16.3 規則 1）。測試或資料修補直接 `INSERT INTO delegations` 時沒有一起建政策列 | 用 `agents::create_delegation`；直接複製委派時把 `delegation_command_policies`／`delegation_field_policies` 一起複製（`tests/s5_changesets.rs` 的 `clone_delegation`） |
+| `writable_fields` 帶 `status_id` 回 `invalid_value` | 0011 起 `status_id` 不是欄位：狀態改變是 `transition` 命令 | 把 `transition` 放進 `proposal_ops`，`writable_fields` 拿掉 `status_id` |
+| 測試裡 agent 寫入突然回 `agent_suspended`（`reason = audience_blocked`） | 熔斷：1 小時內 3 次 `audience_expansion_forbidden`（agent 層，跨脈絡）就暫停脈絡 | 測試刻意被擋時，之後清掉 `agent_write_log` 的 `audience_blocked` 列（`tests/s6_audience.rs` 的 `forbidden`）；正式環境由委派者在 SPA 解除 |
+| 並行 `command_submit` 有些回 `rate_limited`（`kind = concurrent_write`） | 同一脈絡同時只允許 1 筆直接寫入（§16.6，控制列 NOWAIT） | 同一脈絡依序送；平行只能跨脈絡 |
 | Python `subprocess.run(['cargo', …])` 在 Windows 報 FileNotFoundError | PATH 改了也不會影響 CreateProcess 找執行檔 | 用完整路徑 `~/.cargo/bin/cargo.exe` |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
+| `utoipa` 產生 OpenAPI 時 panic：schema `Evidence` differs between request and response | 兩個不同的 struct 用了同一個 schema 名稱（commands 的 `Evidence` 是 propose 的輸入，search 的是輸出） | 改名，搜尋端叫 `SearchEvidence`；新增 DTO 前先 `grep -rn "pub struct 名稱"` |
+| 在 CRLF 檔上用 perl 多行替換，沒有任何效果 | git `autocrlf=true`，檔案在磁碟上是 CRLF，pattern 裡的 `\n` 對不到 `\r\n` | 先 `perl -pi -e 's/\r\n/\n/'` 轉 LF，改完再轉回；或直接用編輯工具。perl 也不要用 `\|` 當分隔字元，會吃掉內容 |
+| 搜尋結果的 `highlights` 和前端位置差一兩格 | 偏移是 Unicode code point（和 JS `Array.from` 一致），不是 UTF-8 byte，也不是 UTF-16 | 前端用 `Array.from(text).slice(start, end)`；後端用 `evidence::CpText` |
+| 字素邊界在國旗 emoji（regional indicator 對）上切歪 | 沒有 unicode-segmentation crate，`evidence.rs` 只用近似的延伸字元清單（組合符號、ZWJ、VS、膚色、tag、CRLF） | 已知限制；要精確就加 unicode-segmentation（新 crate，需使用者同意） |
+| agent 呼叫 get／get_many／verify_citations／get_source 得到 `delegation_unavailable`，但 search 回空結果 | 讀取的新工具經 `citations::Reader::new`，脈絡沒有任何有效委派就整批拒絕；search 仍是 S1 的行為 | 已知不一致，記在 decisions.tsv；先建立委派 |
+| 測試中 `commands::submit` 回 `invalid_request: every existing target needs a precondition with lock_version` | 對既有 issue 的 op 一定要帶 precondition | 先讀目前 `lock_version` 再送（`tests/s6_read.rs` 的 `act`） |
+| 全套測試偶爾 `s2_api` 第 548 行 ranked search 回 0 筆，單獨重跑 12 次都過 | `SearchIndex::sync` 只讀 `xid < pg_snapshot_xmin(pg_current_snapshot())` 的 outbox；xmin 是整個 PostgreSQL 叢集共用，同一台 server 上別的 DB（例如另一條線在跑測試）有長交易時，sync 這一輪會跳過剛寫入的 row，測試只 sync 一次就查 | 2026-11-08 證實：另一條線在同叢集跑測試時 `visibility_e4` 連續失敗（index 和參考結果不符），改用 `SearchIndex::sync_all`（test-support：重複 sync 直到 cursor 追上當下最後一筆 outbox）後，同樣情況連過 5 次。測試一律用 `sync_all` |
+| agent 的 `changeset_get`／`changeset_list` 看得到 owner 修訂後改去的那張單（驗證者 B1） | 回應的 `targets` 從該版本的本文算出；owner_revise 版本的本文對 agent 是隱藏的，目標也是本文的一部分 | owner 版本一律回空 `targets`（`filter_for_agent`、`agent_list` 用 `is_agent_version` 判斷）；s6_mcp 斷言 |
+| agent 的 cancel 沒有算進每委派 60 次／小時（驗證者 B3） | 只有 propose／revise 呼叫 `quota::record_proposal` | `changesets::cancel` 在 agent 路徑也 reserve＋record；s6_mcp 數 `agent_write_log` |
+| 寫突變測試時，突變存活但其實有別層擋住（例如 revise 不檢查脈絡，仍因委派 id 不符被擋） | 深度防線 | 記成等價突變；要保護時改寫單元層斷言，不要只靠 E2E |
 
 ## 設計上的防呆
 

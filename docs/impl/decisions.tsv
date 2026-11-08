@@ -101,3 +101,67 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S5	驗證修正：validate 先檢查狀態與期限（already_applied／changeset_not_executable／changeset_expired）	§8.5 不對已結束的提案回 passed	—	驗證報告 S5 缺陷 6
 2026-11-08	S5	faults 的 Fail 改成模擬斷線（sqlx PoolClosed），讓 C-1…C-6 走「結果未知」路徑	和缺陷 1 的修正一致：一般錯誤現在會被記成 failed	保留 anyhow 字串錯誤	—
 2026-11-08	S5	已知缺口：changeset_executions_active_uniq、交易 B 的 current_version／state／executor_id 重驗、核准者停權在步驟 5 的檢查都是第二道防線（突變存活屬等價）；lock_sources 的 epoch 比對在 S6 測	前面的檢查已在 changeset 鎖底下擋住	造出繞過第一道的情境	驗證報告 S5 M09、M12a、M24、M25、M27、M29
+2026-11-08	S6	使用者決定：S6 內把設計 03 第 1–3 步做完（search fields／explain／evidence、get citations、status_since、時間篩選），§14 用法 1–4 照契約完整跑通	§14 用法 1–4 依賴 03	只做最小 citation；延後用法 1–4	使用者 2026-11-08
+2026-11-08	S6	使用者決定：T-X21、T-X22（需 D12 遮蔽）移到 S7 驗收	遮蔽交易在 S7	S6 先做最小遮蔽	使用者 2026-11-08
+2026-11-08	S6	使用者決定：D20 command_submit、政策表、熔斷在 S6 做並先測 T-D1–5、T-D10、T-D11；配額依契約 L2304 三層分開：短期速率 → rate_limited（wait_and_retry）、配額用完 → quota_exceeded（429，ask_human／stop）、熔斷 → agent_suspended（ask_human／stop，details.scope=context）；熔斷計數放獨立交易寫入的只附加表（更正：問使用者時選項寫成 rate_limited kind=quota，與契約不符，照契約做並在回報說明）	契約 L2304 已定碼	D20 延到 S6c	使用者 2026-11-08
+2026-11-08	S6	S6.1：epoch trigger 只算 principals.kind=user（agent／group／system 不算讀者）；field_defs 的 INSERT／DELETE 不 bump（接上 field_trackers／field_projects 才生效，那時會 bump）；受眾演算法升版不在 0010 bump（之前沒有依賴 trigger 的脈絡）	A22、A30	全部都 bump	checklist A22、A30
+2026-11-08	S6	S6.1：全專案 bump 用 statement-level trigger＋bump_all_projects（catalog FOR UPDATE → 依 id 鎖全部 → UPDATE）；單一專案用 row-level＋bump_projects；group 相關先鎖群組 principal 列	§3.7 鎖順序、T-X23、T-X24	每列都全 bump	契約 02 §3.7
+2026-11-08	S6	S6.1：關閉脈絡後的 token（含已建立的 AuthContext）回 context_unavailable kind=closed；只有在脈絡關閉前就單獨撤銷的 token 回 unauthenticated	T-X20	一律 unauthenticated	契約 02 T-X20
+2026-11-08	S6	S6.1：issue 換專案（project_id 改變）不 bump（不在 §3.8 表；第一版沒有搬移命令）	契約沒列	也 bump 兩個專案	—
+2026-11-08	S6	S6.2：受眾 A(P)＝管理員＋經成員或群組持 view_issues（visibility all／default）的 active 使用者＋公開專案的 Non member 與 Anonymous 角色；封存或沒開 issue_tracking 的專案沒有讀者	§3.8；core 讀取規則	只看成員	契約 02 §3.8
+2026-11-08	S6	S6.2：私有目的地的 D：新私有 issue＝visibility all 的讀者＋委派者／指派人（有任何 visibility 的 view_issues 時，群組展開）；私有 note＝持 view_private_notes 且讀得到該 issue 的人＋委派者。create 沒寫 is_private 時用 tracker 的 private_by_default	M9；T-W7	私有一律算通過	契約 02 §3.8 M9
+2026-11-08	S6	S6.2：既有私有 issue 不在受眾檢查回 private_target，而交給可見性回 not_found（T-Q5 優先：不洩漏存在）	T-Q5 與錯誤表 private_target 衝突時取 T-Q5	回 audience_expansion_forbidden private_target	契約 02 T-Q5
+2026-11-08	S6	S6.2：受眾檢查在 propose／revise 的模擬之前（第 8 步，來源＝目前 R）與套用的模擬之後（第 14 步，來源＝該版本快照）；不存結果；AUDIENCE_CONTRACT_VER 綁 audience::AUDIENCE_ALGORITHM_VERSION 進 hash	M6、M8、M10	存可寫集合	契約 02 §6.7
+2026-11-08	S6	S6.2：owner_revise 不在送出時做受眾檢查（人寫的內容），新版來源仍＝目前 R，套用時第 14 步擋	T-X6 要求「套用時被擋」	owner 修訂當下就擋	契約 02 T-X6
+2026-11-08	S6	S6.6：proposal_ops／writable_fields 保留為 ceiling（§3.5），政策列在 ceiling 內逐項給 direct／review／off；缺列＝off（規則 1）；既有委派在 0011 回填為 direct	§16.3 規則 1；DDL 只給政策表沒說 ceiling 去留	拿掉 proposal_ops／writable_fields 只用政策表	契約 02 §16.3
+2026-11-08	S6	S6.6：BUILTIN_FIELDS 加 priority_id、拿掉 status_id；transition 只看命令層（proposal_ops＋政策），describe 的 transition 也不再看 status_id；0011 從既有委派的 writable_fields 移除 status_id	§16.3 欄位清單沒有 status_id；A6	保留 status_id 當欄位	契約 02 §16.3、checklist A6
+2026-11-08	S6	S6.6：改政策 REST 為 GET／PUT /delegations/{id}/policies；任何改動都要 step-up（改成 direct 也是放寬）；新增命令或欄位等於擴大 ceiling，同一個 PUT 處理（一鍵加入）；版本命令要委派者目前有 manage_versions	A17 契約沒定路徑；§17.11	只開放改 mode 不能加	checklist A17
+2026-11-08	S6	S6.6：agent handle＝client 名稱轉小寫、非英數換成 -、去頭尾 -（空的用 agent）＋@＋委派者 login；撞名加 -2、-3…；建立後不改	§16.2 只給例子 claude-code@alice	用 UUID	契約 02 §16.2、A16
+2026-11-08	S6	S6.7：command_submit 併入 changesets 的 agent 寫入交易（共用步驟 1 鎖、冪等、受眾）；fingerprint 多一個 require_review 位元組；action 用 command_submit（和 changeset_propose 分開，跨工具同鍵 → idempotency_key_reused）	§16.5 冪等鍵與 fingerprint	另寫一條獨立路徑	契約 02 §16.4、§16.5
+2026-11-08	S6	S6.7：步驟 1 加鎖 principals（agent、委派者，id 序）與 credential FOR SHARE（propose／revise 也套用）；agent 或委派者不 active → delegation_unavailable；credential 撤銷或過期 → unauthenticated	§16.5 鎖序：脈絡 → principals／credential／delegation → projects	只在 direct 路徑鎖	契約 02 §16.5
+2026-11-08	S6	S6.7：政策 off 也擋 changeset_propose 與核准套用（套用時重算政策，off → execution failed forbidden_op）；review／direct 都允許套用已核准的版本	§16.1「direct 與 review 一樣檢查」；避免改 off 後舊提案仍可套用	套用時不看政策	契約 02 §16.1、§16.3
+2026-11-08	S6	S6.7：direct 成功回應的 effects 只列 agent 目前讀得到的 issue（私有新單不列，T-D10）；冪等重播用同一個 visibility 重算	§8.8 回應過濾、T-D10	回全部 effects	契約 02 §8.8
+2026-11-08	S6	S6.7：已知缺口：T-D4「等計數器鎖跨過期限時回錯誤」只靠 check_deadlines 機制，沒有專門的並行期限測試	需要在計數器鎖上注入等待	—	—
+2026-11-08	S6	S6.9：計數用只附加的 agent_write_log（direct_write、issue_create、issue_write、propose、audience_blocked、version_*）按時間窗 count，agent 層計數鎖 agent_principals 列 FOR UPDATE 讓計數精確；冪等重播在計數前就回傳，不重扣	A7 契約沒給 DDL；「開始前原子保留」	固定時間窗的計數列	checklist A7
+2026-11-08	S6	S6.9：「同一脈絡同時 1 筆」用控制列 FOR UPDATE NOWAIT（拿不到 → rate_limited kind=concurrent_write，retry_after 1 秒），inflight_lease_until 欄位保留不用；控制列由 agent_work_contexts 的 AFTER INSERT trigger 建立	A9：同交易的列鎖就是租約，程序崩潰時交易自動結束	獨立交易寫租約	checklist A9
+2026-11-08	S6	S6.9：配額門檻在 direct 路徑的 projects 鎖之後、模擬（issues 鎖）之前檢查，不在 issues／search_settings 之後	simulate 內部在鎖完 issues 後立即檢查期限；人與套用路徑從不拿控制列，順序不會成環	把配額檢查塞進 simulate	契約 02 §16.5
+2026-11-08	S6	S6.9：熔斷兩種觸發：1 小時內 audience_expansion_forbidden ≥3（agent 層計數，第 3 次回 agent_suspended）與同 issue 10 分鐘內 agent 寫入已達 10 次再寫；暫停在另一個交易提交（ON CONFLICT 保留先發生的理由）；送審路徑（propose）也受暫停與 audience 計數影響	A8：被擋的請求 rollback，計數要另一個交易	只算 direct	checklist A8、契約 L2304
+2026-11-08	S6	S6.9：§8.9 propose 類只做「每委派每小時 60（propose＋revise）」與「每 agent 未結案 100」；validate 120／h、同委派同時 2、payload 768／512 KiB、每人與全組織總上限沒做（S6b／S7 補）	先做 §16.6 與 T-D5 要的部分	—	契約 02 §8.9
+2026-11-08	S6	S6.9：解除暫停 POST /agent-contexts/{id}/resume（委派者、step-up、重驗脈絡 active、R 的 epoch、至少一個有效委派）；手動暫停 POST /agent-contexts/{id}/suspend（reason manual）；配額不重設（計數表留著）	§16.6「解除前重驗 epoch、委派、配額」	解除時清空計數	契約 02 §16.6、§16.10
+2026-11-08	S6.3	search 的 fields 可選 priority、lock_version、created_at	U3 已實作（migration 0008 加了 priority_id），用法 2 需要 lock_version	排除 priority 直到另行確認	設計 03 §3.4；契約 02 用法 2
+2026-11-08	S6.3	get 不帶 fields 時回傳既有的完整 detail（含 description、allowed_statuses）	「不含大段正文」解讀為不含 notes 與歷史；保留既有呼叫者的形狀	不帶 fields 只回摘要欄位	設計 03 §3.6
+2026-11-08	S6.3	REST GET /issues/{key} 維持舊形狀（registry 名稱 issue_get）；擴充的 get、get_many、verify_citations、get_source 只在 MCP	範圍只要求 MCP 與 registry；SPA 尚無需求	REST 同步加新工具	設計 03 §7 第 1–3 步
+2026-11-08	S6.3	搜尋與 get 的結果一律帶 key，即使 fields 沒列	key 是後續所有呼叫的識別	fields 沒列就不回	設計 03 §3.4
+2026-11-08	S6.3	rank 只在有 q 時出現；rank＝offset＋序號＋1，跨頁連續	沒有 q 時排序是 SQL 預設排序，不是相關度	沒有 q 也給 rank	設計 03 §3.4
+2026-11-08	S6.3	explain 預設 brief（REST 與 MCP 相同）；不合法值回 invalid_argument 並附 allowed	照設計文字的預設	REST 預設 none	設計 03 §3.4
+2026-11-08	S6.3	evidence_status 一律 rechecked	search_rev 還沒做（§7 第 8–9 步），每個片段都是從 SQL 現值重算	輸出 indexed	設計 03 §3.4、§7
+2026-11-08	S6.3	索引與 SQL 不一致時：SQL 文字沒有命中的候選不論 explain 都丟掉；強度依 SQL 文字重算（可能從 primary 降為 fallback）	不能用舊索引內容當證據	explain=none 時不做文字重查	設計 03 §3.9
+2026-11-08	S6.3	不做 matched_filters	範圍外，沒有測試條目	一併實作	設計 03 §3.4
+2026-11-08	S6.3	get 的 fields 不加 fixed_version	目前 schema 沒有版本欄位	先回 null	契約 02 用法 5
+2026-11-08	S6.3	相鄰（端點相接）的 highlight 合併成一段	避免同一詞被拆成多段	只合併重疊	設計 03 §3.4
+2026-11-08	S6.3	字素對齊用近似清單（組合符號、ZWJ、VS、膚色、tag、CRLF），不處理國旗 regional indicator 對	不能加新 crate（unicode-segmentation）	加 unicode-segmentation	設計 03 §3.4；任務限制
+2026-11-08	S6.3	verify_citations 的 quote 為空或超過 2000 code point → 整批 invalid_argument；citation 範圍超過 2000 code point → 該項 invalid_citation（subquote 除外）	quote 是呼叫者輸入錯誤；citation 是解碼後的內容問題	逐項回 citation_mismatch	設計 03 §3.5、§3.7
+2026-11-08	S6.3	verify_one 對空 quote 或過長 quote 回 CitationMismatch（id 無法解碼時 InvalidCitation），權限或脈絡錯誤回 Err，不回 NotFound	propose 步驟 7 只需要逐項狀態；脈絡錯誤必須讓整個提案失敗	verify_one 也回 invalid_argument	契約 02 §6.7 第 7 步
+2026-11-08	S6.3	agent 脈絡沒有任何有效委派時，get／get_many／verify_citations／get_source 回 delegation_unavailable；search 仍維持 S1 的空結果	不讓 not_found 掩蓋委派問題；search 改行為超出範圍	search 也改	設計 03 §3.7；已知不一致
+2026-11-08	S6.3	status_since：沒有歷史、事件被遮蔽、或最新事件的狀態和目前狀態不符 → null 且 status_since_known=false；created 事件 → issues.created_at	不猜；no_effect 的轉換不產生事件	用 updated_at 估計	契約 02 T-U8
+2026-11-08	S6.3	last_activity_at＝呼叫者看得到的最新事件時間，沒有就 created_at；被遮蔽的非留言事件仍算活動	看不到的私有留言不能透露活動時間	一律用 updated_at	契約 02 用法 4
+2026-11-08	S6.3	recent_notes、recent_events 新到舊；先依權限過濾再套 limit	隱藏項目不佔名額也不留痕跡	先 limit 再過濾	設計 03 §3.6
+2026-11-08	S6.3	get_many 超過 256 KiB 時，後面的項目變成 {key, truncated:true}	回應大小有上限，且呼叫者知道要再取哪些	整批失敗	設計 03 §3.6
+2026-11-08	S6.3	內文被遮蔽的留言不給 citation	遮蔽後的文字不是可引用的來源	照樣給	設計 03 §3.5
+2026-11-08	S6.3	cf: 名稱依「全域可讀」的欄位驗證，個別 issue 只回該 issue 適用的欄位；看不到的欄位不出現在 allowed	不透露隱藏欄位名稱	依該 issue 驗證	設計 03 §3.6
+2026-11-08	S6.3	E1 nDCG 沒重跑	排序程式沒改（同分以 key 決勝與原本相同），lexer 有逐詞比對舊版的單元測試	重跑 E1	設計 03 §3.9
+2026-11-08	S6.5	ItemResult.issue_id 改成 Option；SubmitResult 加 versions	版本命令的結果沒有 issue，要回 version_id	另開一種 result 型別	契約 02 §17.11
+2026-11-08	S6.8	人用 /commands 收到版本命令回 unsupported_operation	人的版本管理走 versions REST；/commands 的版本路徑契約沒定	讓 /commands 也收	契約 02 §17.9a
+2026-11-08	S6.5	group_label／group_id 進 propose 的 fingerprint	同一個 operation_id 改了分組要算衝突，不能靜默重播	不進 fingerprint	契約 02 §8.8、§14.3
+2026-11-08	S6.5	同 label 24 小時內重用同一組，用 pg_advisory_xact_lock(委派, 專案, label) 協調	兩個並行 propose 同 label 不建兩組	UNIQUE 約束（label 可被遮蔽，不能放約束）	契約 02 §14.3，checklist A15
+2026-11-08	S6.4	憑證方法表：舊 key 只能 search/get/resolve/describe；agent 工具只收 AgentToken；get_many/verify_citations/get_source 收 BrowserSession 或 AgentToken	§3.4 舊 key 維持原本四個工具；新讀取工具 SPA 也要用	全部工具都收舊 key	契約 02 §3.4，checklist A4
+2026-11-08	S6.5	agent 回應過濾：內容、hash、validation 只對 agent 自己的版本（agent_propose／agent_revise）且所有目標可讀時給；owner_revise 版本回 content_unavailable:"owner_revised"	agent 不能從回應看到人改過的內容	依目前版本一律給	契約 02 §8.8 L1553–1561
+2026-11-08	S6.10	resolve 的 purpose:"assignee" 只在 describe::assignable 的人裡比對（先完全相符、再部分相符）；多個 → ambiguous_reference 附候選；沒有 → valid_values 列可指派者名稱	不可指派的人不該搶走完全相符；和命令檢查用同一個函式	先跑一般 resolve 再過濾	契約 02 §8.8、§14.1 用法 6
+2026-11-08	S6.10	get 加 fields:"fixed_version"（{id,name} 或 null）	§14 用法 5／§17.11 第 2 步要讀目前版本	只回 fixed_version_id	契約 02 §17.11
+2026-11-08	S6.10	§14 E2E 用預設政策 direct：用法 5 的 command_submit 回 applied；I-2 先把 add_note 設為 review 再驗不能繞過	D20 預設 direct（0011 migration、§16.10）	E2E 全用 review	契約 02 §16.10、§17.11
+2026-11-08	S6.10	測試改用 SearchIndex::sync_all（只在 test-support）：重複 sync 直到 cursor 追上當下最後一筆 outbox	叢集共用 xmin 讓 sync 跳過剛寫入的列，造成偶發失敗	測試用獨立 PostgreSQL	playbook
+2026-11-08	S6 驗證	owner_revise 版本對 agent 不回 targets（changeset_get、changeset_list 都是）	目標來自隱藏的本文，owner 可改到 ceiling 內別張單（驗證 B1）	照常回可讀的目標	契約 02 §8.8
+2026-11-08	S6 驗證	ProposeResult.validation 改 Option，加 content_unavailable；冪等重播時有目標讀不到就不回 validation	重播也要經同一個過濾器（驗證 B2；目前 destination 會先回 not_found，這是深度防線）	重播一律回	契約 02 §8.8
+2026-11-08	S6 驗證	agent 的 changeset_cancel 也計入每委派 60 次／小時（取代 S6.9 只算 propose＋revise 的那列）	契約寫 propose＋revise＋cancel 共用（驗證 B3）	不算 cancel	契約 02 §8.9
+2026-11-08	S6 驗證	set_delegation_policies 先 step-up（browser_sessions FOR SHARE）再鎖 delegations	§3.7 固定鎖序	維持原順序（目前不死結）	契約 02 §3.7
+2026-11-08	S6 驗證	resolve purpose:assignee 的部分比對跳脫 % _ \	使用者輸入的萬用字元照字面比	不跳脫（只在可指派者內誤配）	—

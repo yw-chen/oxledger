@@ -33,6 +33,8 @@ use crate::db;
 use crate::describe::MAX_OPS;
 use crate::error::{ApiError, ErrorCode, NextAction, api, classify};
 use crate::perm::DelegationScope;
+use crate::policy;
+use crate::quota;
 use crate::service::{App, read_tx};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -46,13 +48,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub const ACTION_PROPOSE: &str = "changeset_propose";
+/// `command_submit` (§16.4): direct, or a ChangeSet when the policy says review.
+pub const ACTION_SUBMIT: &str = "command_submit";
 pub const ACTION_REVISE: &str = "changeset_revise";
 pub const ACTION_OWNER_REVISE: &str = "changeset_owner_revise";
 pub const ACTION_CANCEL: &str = "changeset_cancel";
 pub const ACTION_REJECT: &str = "changeset_reject";
 pub const ACTION_APPROVE: &str = "approve_and_apply";
 /// `changeset_versions.audience_contract_ver` (§8.1).
-pub const AUDIENCE_CONTRACT_VER: i32 = 1;
+pub const AUDIENCE_CONTRACT_VER: i32 = crate::audience::AUDIENCE_ALGORITHM_VERSION;
 const COMMAND_SCHEMA_VERSION: i32 = 1;
 /// Default lifetime of a proposal, capped by the delegation (§8.2).
 const DEFAULT_DAYS: i32 = 7;
@@ -172,7 +176,12 @@ pub struct ProposeResult {
     pub state: String,
     pub group_id: Option<Uuid>,
     pub targets: Vec<TargetView>,
-    pub validation: CompactValidation,
+    /// Absent on an agent's replay when a target is no longer readable (§8.8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<CompactValidation>,
+    /// `not_readable` (or why the content is gone) when `validation` is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_unavailable: Option<String>,
     pub review_url: String,
     pub expires_at: DateTime<Utc>,
     pub next_actions: Vec<NextAction>,
@@ -411,6 +420,7 @@ struct DelegRow {
     writable_fields: Vec<String>,
     max_ops: i32,
     expires_at: DateTime<Utc>,
+    policy_version: i64,
 }
 
 async fn load_cs(conn: &mut PgConnection, id: Uuid, lock: bool) -> Result<Option<CsRow>> {
@@ -743,6 +753,7 @@ fn body_targets(body: &Json) -> Vec<Uuid> {
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|p| p["target"]["type"] == "issue")
         .filter_map(|p| p["target"]["id"].as_str()?.parse().ok())
         .collect()
 }
@@ -774,6 +785,7 @@ struct AgentWho {
     agent: Uuid,
     context: Uuid,
     delegator: Uuid,
+    credential: Option<Uuid>,
 }
 
 /// The agent behind `caller`, re-checked now (token, context, client,
@@ -794,12 +806,56 @@ async fn agent_who(conn: &mut PgConnection, caller: AuthContext) -> Result<Agent
         agent: a.agent_principal_id,
         context: a.context_id,
         delegator: a.delegator_id,
+        credential: caller.credential_id(),
     })
 }
 
 /// The one project the document writes to (§1: one issue, a new issue, or
 /// a duplicate within one project).
+/// §6.7 step 7: every `{citation_id, quote}` must verify as `valid`;
+/// otherwise `source_unverifiable` listing the others (T-M14).
+async fn check_evidence(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    parsed: &Parsed,
+) -> Result<()> {
+    let Some(items) = parsed.norm.get("evidence").and_then(Json::as_array) else {
+        return Ok(());
+    };
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut reader = crate::citations::Reader::new(&mut *conn, caller).await?;
+    let mut bad = Vec::new();
+    for (i, ev) in items.iter().enumerate() {
+        let st = reader
+            .verify_exact(
+                &mut *conn,
+                ev["citation_id"].as_str().unwrap_or_default(),
+                ev["quote"].as_str().unwrap_or_default(),
+            )
+            .await?;
+        if st != crate::citations::CitationStatus::Valid {
+            bad.push(json!({"index": i, "status": st.as_str()}));
+        }
+    }
+    if bad.is_empty() {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        ErrorCode::SourceUnverifiable,
+        "some evidence does not verify; use citation ids and quotes exactly as the tools returned them",
+    )
+    .with_details(json!({"items": bad}))
+    .into())
+}
+
 async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
+    if let Some(cmd) = parsed.version_cmd() {
+        return crate::versions::cmd_project(&mut *conn, cmd)
+            .await?
+            .ok_or_else(|| api(ErrorCode::NotFound, "no version"));
+    }
     let mut projects: BTreeSet<Uuid> = parsed.creates().iter().map(|c| c.1).collect();
     let targets = parsed.targets();
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
@@ -921,8 +977,38 @@ async fn agent_step1(
     creates: bool,
 ) -> Result<(DelegRow, Vec<(Uuid, i64)>)> {
     lock_context_row(&mut *conn, who.context).await?;
+    // §16.5: principals (id order) and the credential FOR SHARE, still valid.
+    let mut ids = vec![who.agent, who.delegator];
+    ids.sort();
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT id, status FROM principals WHERE id = ANY($1) ORDER BY id FOR SHARE) x
+         WHERE status = 'active'",
+    )
+    .bind(&ids)
+    .fetch_one(&mut *conn)
+    .await?;
+    if active != 2 {
+        return Err(delegation_gone());
+    }
+    if let Some(c) = who.credential {
+        let ok: Option<bool> = sqlx::query_scalar(
+            "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM agent_credentials
+             WHERE id = $1 AND context_id = $2 FOR SHARE",
+        )
+        .bind(c)
+        .bind(who.context)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if ok != Some(true) {
+            return Err(api(
+                ErrorCode::Unauthenticated,
+                "the credentials are no longer valid",
+            ));
+        }
+    }
     let d: Option<DelegRow> = sqlx::query_as(
-        "SELECT id, project_id, proposal_ops, writable_fields, max_ops, expires_at FROM delegations
+        "SELECT id, project_id, proposal_ops, writable_fields, max_ops, expires_at, policy_version
+         FROM delegations
          WHERE context_id = $1 AND project_id = $2 AND revoked_at IS NULL
            AND expires_at > clock_timestamp() FOR SHARE",
     )
@@ -960,7 +1046,95 @@ pub async fn propose(
     proposal: &Json,
     spa_origin: &str,
 ) -> Result<ProposeResult> {
-    agent_write(app, caller, operation_id, proposal, None, spa_origin).await
+    propose_in_group(app, caller, operation_id, proposal, None, spa_origin).await
+}
+
+/// Which group a new proposal joins (§14.3): a label (a group of this
+/// delegation and project with that label from the last 24 hours, or a new
+/// one) or the id of such a group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupRef {
+    Label(String),
+    Id(Uuid),
+}
+
+/// `changeset_propose` with `group_label` or `group_id`.
+pub async fn propose_in_group(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    proposal: &Json,
+    group: Option<&GroupRef>,
+    spa_origin: &str,
+) -> Result<ProposeResult> {
+    agent_write(
+        app,
+        caller,
+        operation_id,
+        proposal,
+        None,
+        None,
+        group,
+        spa_origin,
+    )
+    .await
+    .map(SubmitResult::into_proposal)
+}
+
+/// `command_submit` (§16.4): the whole document is written directly when
+/// every command and field in it is `direct` and `require_review` is false;
+/// a ChangeSet when anything is `review` (or review was asked for); refused
+/// when anything is `off`.
+pub async fn command_submit(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    command: &Json,
+    require_review: bool,
+    spa_origin: &str,
+) -> Result<SubmitResult> {
+    agent_write(
+        app,
+        caller,
+        operation_id,
+        command,
+        None,
+        Some(require_review),
+        None,
+        spa_origin,
+    )
+    .await
+}
+
+/// The answer of `command_submit` (§16.4, a discriminated union).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum SubmitResult {
+    Applied {
+        execution_id: Uuid,
+        /// Issues the agent can read now; others are left out (§8.8 filter).
+        effects: Vec<commands::Effect>,
+        /// A version document's result (§17.9a).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        versions: Vec<commands::VersionEffect>,
+        search: commands::SearchReceipt,
+        next_actions: Vec<NextAction>,
+    },
+    ReviewRequired {
+        /// `policy` or `requested`.
+        reason: String,
+        #[serde(flatten)]
+        proposal: ProposeResult,
+    },
+}
+
+impl SubmitResult {
+    fn into_proposal(self) -> ProposeResult {
+        match self {
+            SubmitResult::ReviewRequired { proposal, .. } => proposal,
+            SubmitResult::Applied { .. } => unreachable!("propose never writes directly"),
+        }
+    }
 }
 
 /// `changeset_revise`: a complete new document for `changeset_id`, based on
@@ -980,9 +1154,12 @@ pub async fn revise(
         operation_id,
         proposal,
         Some((changeset_id, expected_current_version)),
+        None,
+        None,
         spa_origin,
     )
     .await
+    .map(SubmitResult::into_proposal)
 }
 
 macro_rules! retrying {
@@ -1017,43 +1194,88 @@ macro_rules! retrying {
     }};
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_write(
     app: &App,
     caller: AuthContext,
     operation_id: Uuid,
     proposal: &Json,
     revise: Option<(Uuid, i32)>,
+    submit: Option<bool>,
+    group: Option<&GroupRef>,
     spa_origin: &str,
-) -> Result<ProposeResult> {
-    retrying!(
+) -> Result<SubmitResult> {
+    if let Some(GroupRef::Label(l)) = group {
+        check_group_label(l)?;
+    }
+    let r = retrying!(
         app,
         tx,
-        agent_write_tx(&mut tx, caller, operation_id, proposal, revise, spa_origin).await
-    )
+        agent_write_tx(
+            &mut tx,
+            caller,
+            operation_id,
+            proposal,
+            revise,
+            submit,
+            group,
+            spa_origin
+        )
+        .await
+    );
+    // §16.6: the breaker's state commits although the request rolled back.
+    let Err(e) = r else { return r };
+    if let Some(t) = e.downcast_ref::<quota::TripBreaker>() {
+        quota::trip(&app.pool, t.context, t.reason).await?;
+        return Err(quota::suspended(t.reason));
+    }
+    if classify(&e).is_some_and(|a| a.code == ErrorCode::AudienceExpansionForbidden)
+        && let (Some(agent), Some(context)) = (caller.principal_id(), caller.context_id())
+        && quota::audience_blocked(&app.pool, agent, context).await?
+    {
+        return Err(quota::suspended("audience_blocked"));
+    }
+    Err(e)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_write_tx(
     conn: &mut PgConnection,
     caller: AuthContext,
     operation_id: Uuid,
     proposal: &Json,
     revise: Option<(Uuid, i32)>,
+    submit: Option<bool>,
+    group: Option<&GroupRef>,
     spa_origin: &str,
-) -> Result<ProposeResult> {
+) -> Result<SubmitResult> {
     let who = agent_who(&mut *conn, caller).await?;
     // Steps 2–4.
     let parsed = commands::parse(&mut *conn, proposal, MAX_OPS as usize).await?;
-    let action = if revise.is_some() {
-        ACTION_REVISE
-    } else {
-        ACTION_PROPOSE
+    let action = match (revise, submit) {
+        (Some(_), _) => ACTION_REVISE,
+        (None, Some(_)) => ACTION_SUBMIT,
+        (None, None) => ACTION_PROPOSE,
     };
+    // §16.5: the fingerprint covers require_review.
+    let review_flag = [submit.map(|r| 1 + r as u8).unwrap_or(0)];
     let payload: [u8; 32] = Sha256::digest(
         [
             &parsed.hash[..],
             who.context.as_bytes(),
             revise.map(|r| r.0).unwrap_or_default().as_bytes(),
             &revise.map(|r| r.1).unwrap_or(0).to_be_bytes(),
+            &review_flag[..],
+            // The group is part of the request (not of the proposal hash).
+            match group {
+                None => b"".as_slice(),
+                Some(GroupRef::Label(l)) => l.as_bytes(),
+                Some(GroupRef::Id(_)) => b"\0id".as_slice(),
+            },
+            match group {
+                Some(GroupRef::Id(g)) => g.as_bytes().as_slice(),
+                _ => b"".as_slice(),
+            },
         ]
         .concat(),
     )
@@ -1081,13 +1303,32 @@ async fn agent_write_tx(
         commands::open_request(&mut *conn, who.agent, operation_id, action, &fp).await?
     else {
         let r = commands::stored_result(&mut *conn, who.agent, operation_id, action, &fp).await?;
+        if r.get("execution_id").is_some() {
+            // A direct write: the stored result, visibility re-checked.
+            let c =
+                commands::replay(&mut *conn, caller, who.agent, operation_id, action, &fp).await?;
+            return Ok(SubmitResult::Applied {
+                execution_id: c.execution_id,
+                effects: c.effects,
+                versions: serde_json::from_value(r["versions"].clone()).unwrap_or_default(),
+                search: c.search,
+                next_actions: Vec::new(),
+            });
+        }
         let id: Uuid = r["changeset_id"]
             .as_str()
             .and_then(|s| s.parse().ok())
             .ok_or_else(not_found)?;
         let v = r["version"].as_i64().unwrap_or(1) as i32;
-        return agent_view(&mut *conn, caller, id, v, spa_origin).await;
+        // §16.5: a key that answered review_required keeps that answer.
+        let reason = r["reason"].as_str().unwrap_or("requested").to_string();
+        return agent_view(&mut *conn, caller, id, v, spa_origin)
+            .await
+            .map(|proposal| SubmitResult::ReviewRequired { reason, proposal });
     };
+
+    // §16.6: a suspended context writes nothing (reads go on).
+    quota::check_not_suspended(&mut *conn, who.context).await?;
 
     let mut old_ceiling = None;
     if let Some((cs, expected)) = &base {
@@ -1130,6 +1371,31 @@ async fn agent_write_tx(
         .into());
     }
 
+    // Step 7: evidence, exact, in the agent's read scope (design 03 §3.6).
+    check_evidence(&mut *conn, caller, &parsed).await?;
+
+    // §16.3: the delegation's policies (its row is held FOR SHARE, rule 4).
+    // `off` refuses every path; `review` turns a submit into a ChangeSet.
+    let decision = policy::load(&mut *conn, deleg.id).await?.decide(&parsed);
+    if let Some(e) = decision.refusal() {
+        return Err(e);
+    }
+
+    // Step 8: the audience check against the current R (§3.8 M8, M9); not stored.
+    let source_ids: Vec<Uuid> = sources.iter().map(|s| s.0).collect();
+    crate::audience::check(&mut *conn, &parsed, &source_ids, who.delegator).await?;
+
+    let reason = match (submit, &decision) {
+        (Some(false), policy::Decision::Direct) => {
+            return agent_direct(
+                &mut *conn, caller, &who, &deleg, &parsed, &sources, request_id,
+            )
+            .await;
+        }
+        (Some(false), _) => "policy",
+        _ => "requested",
+    };
+
     // Steps 5, 6 and 9: the simulation as the agent. Rejections are not stored.
     let ectx = EvalCtx {
         mode: Mode::Propose,
@@ -1170,7 +1436,15 @@ async fn agent_write_tx(
     if let Some((cs, _)) = &base {
         sources_kept(&mut *conn, cs, &sources).await?;
     }
+    quota::reserve_proposal(&mut *conn, who.agent, deleg.id, base.is_none()).await?;
+    quota::record_proposal(&mut *conn, who.agent, who.context, deleg.id).await?;
+    let group_id = match (group, &base) {
+        (Some(g), None) => Some(resolve_group(&mut *conn, deleg.id, dest, g).await?),
+        (_, Some((cs, _))) => cs.group_id,
+        (None, None) => None,
+    };
     let stored = StoreVersion {
+        group_id,
         cs_id,
         version,
         new_changeset: base.is_none(),
@@ -1191,7 +1465,7 @@ async fn agent_write_tx(
     commands::complete_request(
         &mut *conn,
         request_id,
-        &json!({"changeset_id": cs_id, "version": version}),
+        &json!({"changeset_id": cs_id, "version": version, "reason": reason}),
     )
     .await?;
 
@@ -1200,24 +1474,193 @@ async fn agent_write_tx(
         .as_str()
         .unwrap_or("blocked")
         .to_string();
-    Ok(ProposeResult {
+    let proposal = ProposeResult {
         changeset_id: cs_id,
         version,
         proposal_hash: hash_str(&hash),
         state: "proposed".into(),
-        group_id: None,
+        group_id,
         targets: targets
             .into_iter()
             .map(|(id, key)| TargetView { id, key })
             .collect(),
-        validation: compact(&validation),
+        validation: Some(compact(&validation)),
+        content_unavailable: None,
         review_url: format!("{spa_origin}{}", review_path(cs_id, version)),
         expires_at,
         next_actions: next_for(&status),
+    };
+    Ok(SubmitResult::ReviewRequired {
+        reason: reason.to_string(),
+        proposal,
+    })
+}
+
+/// The direct branch of `command_submit` (§16.5): the same simulation with
+/// the row locks, then the write, attributed to the agent on behalf of the
+/// delegator (`agent_direct`, §16.2). Step 1 already holds the context,
+/// principals, credential, delegation and projects.
+async fn agent_direct(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &AgentWho,
+    deleg: &DelegRow,
+    parsed: &Parsed,
+    sources: &[(Uuid, i64)],
+    request_id: Uuid,
+) -> Result<SubmitResult> {
+    let client: Uuid = sqlx::query_scalar(
+        "SELECT c.id FROM agent_clients c JOIN agent_principals ap ON ap.agent_client_id = c.id
+         WHERE ap.agent_principal_id = $1 AND c.enabled FOR SHARE OF c",
+    )
+    .bind(who.agent)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(delegation_gone)?;
+    let mut deadlines = vec![(deleg.expires_at, ErrorCode::DelegationUnavailable)];
+    if let Some(c) = who.credential {
+        let exp: DateTime<Utc> =
+            sqlx::query_scalar("SELECT expires_at FROM agent_credentials WHERE id = $1")
+                .bind(c)
+                .fetch_one(&mut *conn)
+                .await?;
+        deadlines.push((exp, ErrorCode::Unauthenticated));
+    }
+    // §16.6 counters (the context's control row NOWAIT, the agent row).
+    let existing: Vec<Uuid> = parsed.targets();
+    let vw = match parsed.version_cmd() {
+        Some(commands::VersionCmd::Create { .. }) => quota::VersionWrite {
+            create: true,
+            update: None,
+        },
+        Some(commands::VersionCmd::Update { version_id, .. }) => quota::VersionWrite {
+            create: false,
+            update: Some(version_id),
+        },
+        None => quota::VersionWrite::default(),
+    };
+    quota::reserve_direct(
+        &mut *conn,
+        who.agent,
+        who.context,
+        &existing,
+        parsed.creates().len() as i64,
+        vw,
+    )
+    .await?;
+    let ectx = EvalCtx {
+        mode: Mode::AgentDirect,
+        caller,
+        ceiling: None,
+        deadlines,
+        author: Some((who.agent, Some(who.delegator))),
+    };
+    let sim = commands::simulate(&mut *conn, &ectx, parsed).await?;
+    let consistent_after = sim.token.clone().unwrap_or_default();
+    let execution_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO execution_refs (id, kind) VALUES ($1, 'command')")
+        .bind(execution_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "INSERT INTO command_executions (id, operation_request_id, actor_id, on_behalf_of_id, origin,
+                                         delegation_id, context_id, policy_version, command_hash, consistent_after)
+         VALUES ($1, $2, $3, $4, 'agent_direct', $5, $6, $7, $8, $9)",
+    )
+    .bind(execution_id)
+    .bind(request_id)
+    .bind(who.agent)
+    .bind(who.delegator)
+    .bind(deleg.id)
+    .bind(who.context)
+    .bind(deleg.policy_version)
+    .bind(&parsed.hash[..])
+    .bind(&consistent_after)
+    .execute(&mut *conn)
+    .await?;
+    for (p, e) in sources {
+        sqlx::query(
+            "INSERT INTO command_execution_source_projects (execution_id, project_id, security_epoch)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(execution_id)
+        .bind(p)
+        .bind(e)
+        .execute(&mut *conn)
+        .await?;
+    }
+    let at = Attribution {
+        origin: "agent_direct",
+        actor_id: who.agent,
+        actor_kind: "agent",
+        author_id: who.agent,
+        author_on_behalf: Some(who.delegator),
+        request_id,
+        command_execution_id: Some(execution_id),
+        execution_ref: execution_id,
+        changeset: None,
+        changeset_execution_id: None,
+        proposer_id: None,
+        approver_id: None,
+        on_behalf_of_id: Some(who.delegator),
+        delegation_id: Some(deleg.id),
+        agent_client_id: Some(client),
+        record_changes: true,
+    };
+    let effects = commands::write_effects(&mut *conn, parsed, &sim, &at).await?;
+    let written: Vec<Uuid> = effects.iter().map(|e| e.issue_id).collect();
+    let created: Vec<Uuid> = effects
+        .iter()
+        .filter(|e| e.created)
+        .map(|e| e.issue_id)
+        .collect();
+    quota::record_direct(
+        &mut *conn,
+        who.agent,
+        who.context,
+        deleg.id,
+        &written,
+        &created,
+        sim.version.as_ref().map(|p| (p.id, p.created)),
+    )
+    .await?;
+    let versions: Vec<commands::VersionEffect> = sim.version.iter().map(|p| p.effect()).collect();
+    commands::complete_request(
+        &mut *conn,
+        request_id,
+        &json!({
+            "execution_id": execution_id,
+            "consistent_after": consistent_after,
+            "versions": versions,
+            "effects": effects.iter().map(|e| json!({
+                "issue_id": e.issue_id, "lock_version": e.lock_version,
+                "changed": e.changed, "created": e.created,
+            })).collect::<Vec<_>>(),
+            "items": sim.items,
+        }),
+    )
+    .await?;
+    // The response filter (§8.8): only issues the agent can read now (a new
+    // private issue is not among them, T-D10).
+    let ids: Vec<Uuid> = effects.iter().map(|e| e.issue_id).collect();
+    let visible: BTreeMap<Uuid, String> = visible_keys(&mut *conn, caller, &ids)
+        .await?
+        .into_iter()
+        .collect();
+    Ok(SubmitResult::Applied {
+        execution_id,
+        effects: effects
+            .into_iter()
+            .filter(|e| visible.contains_key(&e.issue_id))
+            .collect(),
+        versions,
+        search: commands::SearchReceipt { consistent_after },
+        next_actions: Vec::new(),
     })
 }
 
 struct StoreVersion<'a> {
+    group_id: Option<Uuid>,
     cs_id: Uuid,
     version: i32,
     new_changeset: bool,
@@ -1273,8 +1716,8 @@ async fn store_version(
     if s.new_changeset {
         sqlx::query(
             "INSERT INTO changesets (id, origin, context_project_id, proposer_id, on_behalf_of_id,
-                                     delegation_id, context_id, current_version, state, expires_at)
-             VALUES ($1, 'external_agent', $2, $3, $4, $5, $6, 1, 'proposed', $7)",
+                                     delegation_id, context_id, current_version, state, expires_at, group_id)
+             VALUES ($1, 'external_agent', $2, $3, $4, $5, $6, 1, 'proposed', $7, $8)",
         )
         .bind(s.cs_id)
         .bind(s.context_project_id)
@@ -1283,6 +1726,7 @@ async fn store_version(
         .bind(s.delegation)
         .bind(s.context)
         .bind(s.expires_at)
+        .bind(s.group_id)
         .execute(&mut *conn)
         .await?;
     }
@@ -1364,14 +1808,29 @@ async fn agent_view(
     let v = load_version(&mut *conn, id, version)
         .await?
         .ok_or_else(not_found)?;
-    let validation = v.validation.clone().unwrap_or(Json::Null);
-    let status = validation["status"]
-        .as_str()
-        .unwrap_or("blocked")
-        .to_string();
-    let targets = match &v.body {
-        Some(b) => visible_keys(&mut *conn, caller, &body_targets(b)).await?,
-        None => BTreeMap::new(),
+    let (targets, all_readable) = match &v.body {
+        Some(b) => {
+            let ids = body_targets(b);
+            let k = visible_keys(&mut *conn, caller, &ids).await?;
+            let all = ids.iter().all(|i| k.contains_key(i));
+            (k, all)
+        }
+        None => (BTreeMap::new(), false),
+    };
+    // The §8.8 filter: validation only while every target is readable.
+    let validation = all_readable
+        .then(|| v.validation.as_ref().map(compact))
+        .flatten();
+    let next_actions = match &validation {
+        Some(c) => next_for(&c.status),
+        None => vec![NextAction::AskHuman],
+    };
+    let content_unavailable = if v.body.is_none() {
+        Some(v.content_state.clone())
+    } else if !all_readable {
+        Some("not_readable".to_string())
+    } else {
+        None
     };
     Ok(ProposeResult {
         changeset_id: id,
@@ -1383,11 +1842,543 @@ async fn agent_view(
             .into_iter()
             .map(|(id, key)| TargetView { id, key })
             .collect(),
-        validation: compact(&validation),
+        validation,
+        content_unavailable,
         review_url: format!("{spa_origin}{}", review_path(id, version)),
         expires_at: cs.expires_at,
-        next_actions: next_for(&status),
+        next_actions,
     })
+}
+
+// ---------------------------------------------------------------- groups (§14.3)
+
+/// §14.3: at most 80 characters and 320 bytes, no line breaks, control or
+/// bidirectional formatting characters (A15).
+fn check_group_label(l: &str) -> Result<()> {
+    let bad_char = |c: char| {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{2028}' | '\u{2029}' | '\u{061C}' | '\u{200E}' | '\u{200F}'
+            )
+            || ('\u{202A}'..='\u{202E}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c)
+    };
+    let n = l.chars().count();
+    if l.trim().is_empty() || n > 80 || l.len() > 320 || l.chars().any(bad_char) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            "group_label is 1–80 characters (at most 320 bytes) on one line, without control characters",
+        )
+        .with_details(json!({"path": "group_label"}))
+        .into());
+    }
+    Ok(())
+}
+
+/// The group a new proposal joins. A label reuses a group of the same
+/// delegation and project from the last 24 hours (concurrent first uses of
+/// one label wait on an advisory lock, so they make one group); an id must
+/// name such a group.
+async fn resolve_group(
+    conn: &mut PgConnection,
+    delegation: Uuid,
+    project: Uuid,
+    g: &GroupRef,
+) -> Result<Uuid> {
+    match g {
+        GroupRef::Id(id) => {
+            let ok: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM changeset_groups WHERE id = $1 AND delegation_id = $2 AND project_id = $3
+                   AND created_at > clock_timestamp() - interval '24 hours'",
+            )
+            .bind(id)
+            .bind(delegation)
+            .bind(project)
+            .fetch_optional(&mut *conn)
+            .await?;
+            ok.ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    "group_id must be a group of this delegation and project from the last 24 hours",
+                )
+                .with_details(json!({"path": "group_id"}))
+                .into()
+            })
+        }
+        GroupRef::Label(label) => {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("oxledger/group/{delegation}/{project}/{label}"))
+                .execute(&mut *conn)
+                .await?;
+            let found: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM changeset_groups WHERE delegation_id = $1 AND project_id = $2 AND label = $3
+                   AND label_state = 'available' AND created_at > clock_timestamp() - interval '24 hours'
+                 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(delegation)
+            .bind(project)
+            .bind(label)
+            .fetch_optional(&mut *conn)
+            .await?;
+            if let Some(id) = found {
+                return Ok(id);
+            }
+            Ok(sqlx::query_scalar(
+                "INSERT INTO changeset_groups (delegation_id, project_id, security_epoch, label)
+                 SELECT $1, $2, security_epoch, $3 FROM projects WHERE id = $2 RETURNING id",
+            )
+            .bind(delegation)
+            .bind(project)
+            .bind(label)
+            .fetch_one(&mut *conn)
+            .await?)
+        }
+    }
+}
+
+// ---------------------------------------------------------------- agent reads (§8.8)
+
+/// A proposal as its agent sees it now: the one response filter of §8.8
+/// (changeset_get, changeset_list, operation_get, changeset_validate).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentChangeset {
+    pub changeset_id: Uuid,
+    pub state: String,
+    pub current_version: i32,
+    pub version: i32,
+    pub edit_method: String,
+    /// Only for the agent's own versions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_hash: Option<String>,
+    /// The document: only the agent's own version, every target readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<Json>,
+    /// `owner_revised`, `not_readable`, or why the content is gone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_unavailable: Option<String>,
+    /// Target issues the agent can read now.
+    pub targets: Vec<TargetView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<CompactValidation>,
+    pub group_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_label: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub review_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_execution: Option<AgentExecution>,
+    /// Always true: a person approves in the web app; agents cannot apply.
+    pub requires_human_approval: bool,
+    pub next_actions: Vec<NextAction>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentExecution {
+    pub version: i32,
+    /// `queued`, `running`, `succeeded` or `failed` (no error code, §8.8).
+    pub status: String,
+    /// Per op, only for the agent's own version with readable targets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<AgentItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consistent_after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentItem {
+    pub op_id: Uuid,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentChangesetRow {
+    pub changeset_id: Uuid,
+    pub state: String,
+    pub current_version: i32,
+    pub targets: Vec<TargetView>,
+    pub group_id: Option<Uuid>,
+    pub last_execution_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentChangesetList {
+    pub items: Vec<AgentChangesetRow>,
+}
+
+/// `changeset_validate` for the agent: its own version is run again;
+/// an owner's revision shows only that it exists.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentValidation {
+    pub version: i32,
+    pub state: String,
+    pub edit_method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_unavailable: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<Validation>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentOperation {
+    pub operation_id: Uuid,
+    pub action: String,
+    /// `in_progress`, `completed` or `failed`.
+    pub status: String,
+    /// For a proposal (or a submit that needed review).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changeset: Option<AgentChangeset>,
+    /// For a direct write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<commands::Effect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<commands::VersionEffect>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consistent_after: Option<String>,
+}
+
+fn is_agent_version(edit_method: &str) -> bool {
+    matches!(edit_method, "agent_propose" | "agent_revise")
+}
+
+async fn delegation_live(conn: &mut PgConnection, d: Option<Uuid>) -> Result<bool> {
+    let Some(d) = d else { return Ok(false) };
+    Ok(sqlx::query_scalar(
+        "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM delegations WHERE id = $1",
+    )
+    .bind(d)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false))
+}
+
+/// The agent's proposal in its current context, its delegation still usable
+/// (§8.8: not even its own proposal or receipt is let through otherwise).
+async fn agent_cs(conn: &mut PgConnection, caller: AuthContext, id: Uuid) -> Result<CsRow> {
+    let who = agent_who(&mut *conn, caller).await?;
+    let cs = load_cs(&mut *conn, id, false)
+        .await?
+        .filter(|cs| cs.proposer_id == who.agent && cs.context_id == Some(who.context))
+        .ok_or_else(not_found)?;
+    if !delegation_live(&mut *conn, cs.delegation_id).await? {
+        return Err(delegation_gone());
+    }
+    Ok(cs)
+}
+
+/// The §8.8 filter.
+async fn filter_for_agent(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    cs: &CsRow,
+    version: i32,
+    spa_origin: &str,
+) -> Result<AgentChangeset> {
+    let ver = load_version(&mut *conn, cs.id, version)
+        .await?
+        .ok_or_else(not_found)?;
+    let own = is_agent_version(&ver.edit_method);
+    let ids = ver.body.as_ref().map(body_targets).unwrap_or_default();
+    let visible = visible_keys(&mut *conn, caller, &ids).await?;
+    let all_readable = ids.iter().all(|i| visible.contains_key(i));
+    let shows_body = own && all_readable && ver.body.is_some();
+    let content_unavailable = if !own {
+        Some("owner_revised".to_string())
+    } else if ver.body.is_none() {
+        Some(ver.content_state.clone())
+    } else if !all_readable {
+        Some("not_readable".to_string())
+    } else {
+        None
+    };
+    let validation = shows_body
+        .then(|| ver.validation.as_ref().map(compact))
+        .flatten();
+    let label: Option<String> = match cs.group_id {
+        Some(g) => sqlx::query_scalar(
+            "SELECT label FROM changeset_groups WHERE id = $1 AND label_state = 'available'",
+        )
+        .bind(g)
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten(),
+        None => None,
+    };
+    let last_execution = match latest_exec(&mut *conn, cs.id).await? {
+        None => None,
+        Some(e) => {
+            let detail = if e.version == version {
+                shows_body
+            } else {
+                match load_version(&mut *conn, cs.id, e.version).await? {
+                    Some(v) => {
+                        is_agent_version(&v.edit_method) && v.body.is_some() && {
+                            let t = body_targets(v.body.as_ref().expect("body"));
+                            let k = visible_keys(&mut *conn, caller, &t).await?;
+                            t.iter().all(|i| k.contains_key(i))
+                        }
+                    }
+                    None => false,
+                }
+            };
+            let items = if detail {
+                let stored: Vec<ExecItem> = e
+                    .item_results
+                    .as_ref()
+                    .and_then(|r| serde_json::from_value(r["items"].clone()).ok())
+                    .unwrap_or_default();
+                let ids: Vec<Uuid> = stored.iter().filter_map(|i| i.issue_id).collect();
+                let keys = visible_keys(&mut *conn, caller, &ids).await?;
+                Some(
+                    stored
+                        .into_iter()
+                        .map(|i| AgentItem {
+                            op_id: i.op_id,
+                            status: i.status,
+                            key: i.issue_id.and_then(|id| keys.get(&id).cloned()),
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            Some(AgentExecution {
+                version: e.version,
+                status: e.status.clone(),
+                items,
+                consistent_after: e.consistent_after.clone(),
+            })
+        }
+    };
+    let next_actions = match (cs.state.as_str(), &validation) {
+        ("proposed", Some(v)) => next_for(&v.status),
+        ("proposed", None) => vec![NextAction::AskHuman],
+        _ => Vec::new(),
+    };
+    Ok(AgentChangeset {
+        changeset_id: cs.id,
+        state: cs.state.clone(),
+        current_version: cs.current_version,
+        version,
+        edit_method: ver.edit_method.clone(),
+        proposal_hash: own.then(|| hash_str(&ver.proposal_hash)),
+        proposal: if shows_body { ver.body.clone() } else { None },
+        content_unavailable,
+        // The targets come from the version's body: an owner's version
+        // hides them too (§8.8).
+        targets: if own {
+            ids.iter()
+                .filter_map(|id| {
+                    visible.get(id).map(|k| TargetView {
+                        id: *id,
+                        key: k.clone(),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        validation,
+        group_id: cs.group_id,
+        group_label: label,
+        expires_at: cs.expires_at,
+        review_url: format!("{spa_origin}{}", review_path(cs.id, version)),
+        last_execution,
+        requires_human_approval: true,
+        next_actions,
+    })
+}
+
+/// MCP `changeset_get` (§8.8).
+pub async fn agent_get(
+    app: &App,
+    caller: AuthContext,
+    id: Uuid,
+    version: Option<i32>,
+    spa_origin: &str,
+) -> Result<AgentChangeset> {
+    let mut tx = read_tx(app).await?;
+    let cs = agent_cs(&mut tx, caller, id).await?;
+    let v = version.unwrap_or(cs.current_version);
+    filter_for_agent(&mut tx, caller, &cs, v, spa_origin).await
+}
+
+/// MCP `changeset_list` (§8.8): this context's proposals whose delegation
+/// is still usable (others are left out, not an error).
+pub async fn agent_list(
+    app: &App,
+    caller: AuthContext,
+    state: Option<&str>,
+    group_id: Option<Uuid>,
+) -> Result<AgentChangesetList> {
+    let mut tx = read_tx(app).await?;
+    let who = agent_who(&mut tx, caller).await?;
+    let sql = format!(
+        "SELECT {CS_COLS} FROM changesets c
+         WHERE proposer_id = $1 AND context_id = $2
+           AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR group_id = $4)
+           AND EXISTS (SELECT 1 FROM delegations d WHERE d.id = c.delegation_id
+                         AND d.revoked_at IS NULL AND d.expires_at > clock_timestamp())
+         ORDER BY created_at DESC, id DESC LIMIT $5"
+    );
+    let rows: Vec<CsRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(who.agent)
+        .bind(who.context)
+        .bind(state)
+        .bind(group_id)
+        .bind(LIST_LIMIT)
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut items = Vec::new();
+    for cs in rows {
+        let ver = load_version(&mut tx, cs.id, cs.current_version).await?;
+        // Only the agent's own versions name their targets (§8.8).
+        let ids = ver
+            .as_ref()
+            .filter(|v| is_agent_version(&v.edit_method))
+            .and_then(|v| v.body.as_ref())
+            .map(body_targets)
+            .unwrap_or_default();
+        let keys = visible_keys(&mut tx, caller, &ids).await?;
+        let last = latest_exec(&mut tx, cs.id).await?.map(|e| e.status);
+        items.push(AgentChangesetRow {
+            changeset_id: cs.id,
+            state: cs.state,
+            current_version: cs.current_version,
+            targets: ids
+                .iter()
+                .filter_map(|id| {
+                    keys.get(id).map(|k| TargetView {
+                        id: *id,
+                        key: k.clone(),
+                    })
+                })
+                .collect(),
+            group_id: cs.group_id,
+            last_execution_status: last,
+        });
+    }
+    Ok(AgentChangesetList { items })
+}
+
+/// MCP `changeset_validate` (§8.5, §8.8).
+pub async fn agent_validate(
+    app: &App,
+    caller: AuthContext,
+    id: Uuid,
+    version: i32,
+) -> Result<AgentValidation> {
+    let mut tx = read_tx(app).await?;
+    let cs = agent_cs(&mut tx, caller, id).await?;
+    let ver = load_version(&mut tx, id, version)
+        .await?
+        .ok_or_else(not_found)?;
+    if !is_agent_version(&ver.edit_method) {
+        return Ok(AgentValidation {
+            version,
+            state: cs.state,
+            edit_method: ver.edit_method,
+            content_unavailable: Some("owner_revised".into()),
+            validation: None,
+        });
+    }
+    let v = validate_in(&mut tx, caller, &cs, version, &ver).await?;
+    Ok(AgentValidation {
+        version,
+        state: cs.state,
+        edit_method: ver.edit_method,
+        content_unavailable: None,
+        validation: Some(v),
+    })
+}
+
+/// MCP `operation_get` (§8.8): what one of the agent's keys did.
+pub async fn agent_operation(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    spa_origin: &str,
+) -> Result<AgentOperation> {
+    let mut tx = read_tx(app).await?;
+    let who = agent_who(&mut tx, caller).await?;
+    let row: Option<(String, String, Option<Json>, bool)> = sqlx::query_as(
+        "SELECT action, status, result_ref, COALESCE(result_expires_at < now(), false)
+         FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+    )
+    .bind(who.agent)
+    .bind(operation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((action, status, r, expired)) = row else {
+        return Err(api(ErrorCode::NotFound, "no such operation"));
+    };
+    if expired || (status != "in_progress" && r.is_none()) {
+        return Err(api(
+            ErrorCode::OperationResultExpired,
+            "the result of this operation is no longer kept; it is not run again",
+        ));
+    }
+    let r = r.unwrap_or(Json::Null);
+    let uuid = |k: &str| r[k].as_str().and_then(|s| s.parse::<Uuid>().ok());
+    let mut out = AgentOperation {
+        operation_id,
+        action,
+        status,
+        changeset: None,
+        execution_id: None,
+        effects: Vec::new(),
+        versions: Vec::new(),
+        consistent_after: None,
+    };
+    if let Some(c) = uuid("changeset_id") {
+        let cs = agent_cs(&mut tx, caller, c).await?;
+        let v = r["version"]
+            .as_i64()
+            .map(|v| v as i32)
+            .unwrap_or(cs.current_version);
+        out.changeset = Some(filter_for_agent(&mut tx, caller, &cs, v, spa_origin).await?);
+    } else if let Some(e) = uuid("execution_id") {
+        let (deleg, context): (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+            "SELECT delegation_id, context_id FROM command_executions WHERE id = $1",
+        )
+        .bind(e)
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or((None, None));
+        if context != Some(who.context) {
+            return Err(api(ErrorCode::NotFound, "no such operation"));
+        }
+        if !delegation_live(&mut tx, deleg).await? {
+            return Err(delegation_gone());
+        }
+        let stored: Vec<Json> = r["effects"].as_array().cloned().unwrap_or_default();
+        let ids: Vec<Uuid> = stored
+            .iter()
+            .filter_map(|x| x["issue_id"].as_str()?.parse().ok())
+            .collect();
+        let keys = visible_keys(&mut tx, caller, &ids).await?;
+        out.effects = stored
+            .iter()
+            .filter_map(|x| {
+                let id: Uuid = x["issue_id"].as_str()?.parse().ok()?;
+                Some(Effect {
+                    issue_id: id,
+                    key: keys.get(&id)?.clone(),
+                    lock_version: x["lock_version"].as_i64()? as i32,
+                    changed: x["changed"].as_bool()?,
+                    created: x["created"].as_bool()?,
+                })
+            })
+            .collect();
+        out.versions = serde_json::from_value(r["versions"].clone()).unwrap_or_default();
+        out.execution_id = Some(e);
+        out.consistent_after = r["consistent_after"].as_str().map(String::from);
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------- owner side
@@ -1615,19 +2606,45 @@ pub async fn validate(
     let ver = load_version(&mut tx, id, input.version)
         .await?
         .ok_or_else(not_found)?;
+    validate_in(&mut tx, caller, &cs, input.version, &ver).await
+}
+
+/// §8.5 without the owner checks: the state, expiry and version checks,
+/// then steps 9–14 as `caller` within the version's ceiling.
+async fn validate_in(
+    tx: &mut PgConnection,
+    caller: AuthContext,
+    cs: &CsRow,
+    version: i32,
+    ver: &VerRow,
+) -> Result<Validation> {
+    if let Some(e) = state_error(cs, None) {
+        return Err(e);
+    }
+    if clock(&mut *tx).await? >= cs.expires_at {
+        return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
+    }
+    if version != cs.current_version {
+        return Err(ApiError::new(
+            ErrorCode::VersionSuperseded,
+            "the proposal has a newer version",
+        )
+        .with_details(json!({"current_version": cs.current_version}))
+        .into());
+    }
     let Some(body) = ver.body.clone() else {
         return Err(api(
             ErrorCode::ProposalUnavailable,
             "the proposal content was removed",
         ));
     };
-    if readable_targets(&mut tx, caller, &body).await?.is_none() {
+    if readable_targets(&mut *tx, caller, &body).await?.is_none() {
         return Err(api(
             ErrorCode::ProposalUnavailable,
             "you can no longer read every issue this proposal changes",
         ));
     }
-    let parsed = commands::parse(&mut tx, &body, MAX_OPS as usize).await?;
+    let parsed = commands::parse(&mut *tx, &body, MAX_OPS as usize).await?;
     let ectx = EvalCtx {
         mode: Mode::Validate,
         caller,
@@ -1635,8 +2652,8 @@ pub async fn validate(
         deadlines: Vec::new(),
         author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
     };
-    let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
-    let checked_at = clock(&mut tx).await?;
+    let sim = commands::simulate(&mut *tx, &ectx, &parsed).await;
+    let checked_at = clock(&mut *tx).await?;
     let names = [
         "structure",
         "visibility",
@@ -1695,7 +2712,7 @@ pub async fn validate(
         }
     };
     Ok(Validation {
-        version: input.version,
+        version,
         proposal_hash: hash_str(&ver.proposal_hash),
         status: status.into(),
         checked_at,
@@ -1920,6 +2937,11 @@ pub async fn cancel(
             .bind(operation_id)
             .fetch_one(&mut *tx)
             .await?;
+            // §8.9: propose + revise + cancel share 60 per delegation per hour.
+            if !is_owner && let (Some(d), Some(c)) = (cs.delegation_id, cs.context_id) {
+                quota::reserve_proposal(&mut tx, who, d, false).await?;
+                quota::record_proposal(&mut tx, who, c, d).await?;
+            }
             if cs.state == "succeeded" {
                 return Err(api(
                     ErrorCode::ChangesetNotExecutable,
@@ -2139,6 +3161,7 @@ pub async fn owner_revise(
             &mut tx,
             &parsed,
             &StoreVersion {
+                group_id: cs.group_id,
                 cs_id: id,
                 version,
                 new_changeset: false,
@@ -2586,6 +3609,13 @@ async fn apply_tx(
     fault("apply.after_step5").await?;
     // Step 6: R and the destination, epochs as recorded.
     let parsed = commands::parse(&mut *conn, &body, MAX_OPS as usize).await?;
+    // §16.3: an operation the delegator has since turned off is not applied
+    // (review and direct both allow applying an approved version).
+    if let Some(d) = cs.delegation_id
+        && let Some(e) = policy::load(&mut *conn, d).await?.decide(&parsed).refusal()
+    {
+        return Err(e);
+    }
     let mut dest: BTreeMap<Uuid, bool> = ceiling_map(&ver.authority_ceiling)
         .keys()
         .map(|p| (*p, false))
@@ -2622,6 +3652,16 @@ async fn apply_tx(
         author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
     };
     let sim = commands::simulate(&mut *conn, &ectx, &parsed).await?;
+    // Step 14: the audience against this version's source snapshot (M6).
+    let snapshot: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT project_id FROM changeset_version_source_projects
+         WHERE changeset_id = $1 AND version = $2 ORDER BY project_id",
+    )
+    .bind(cs_id)
+    .bind(ex.version)
+    .fetch_all(&mut *conn)
+    .await?;
+    crate::audience::check(&mut *conn, &parsed, &snapshot, cs.on_behalf_of_id).await?;
     fault("apply.after_locks").await?;
 
     // Steps 15–18.
@@ -2647,7 +3687,9 @@ async fn apply_tx(
     let token = sim.token.clone().unwrap_or_default();
     let item_results = json!({
         "items": sim.items.iter().map(|i: &ItemResult| json!({
-            "op_id": i.op_id, "status": i.status, "issue_id": i.issue_id})).collect::<Vec<_>>(),
+            "op_id": i.op_id, "status": i.status, "issue_id": i.issue_id,
+            "version_id": i.version_id})).collect::<Vec<_>>(),
+        "versions": sim.version.iter().map(|p| p.effect()).collect::<Vec<_>>(),
         "effects": effects.iter().map(|e| json!({
             "issue_id": e.issue_id, "lock_version": e.lock_version,
             "changed": e.changed, "created": e.created})).collect::<Vec<_>>(),
@@ -2659,7 +3701,10 @@ async fn apply_tx(
     .bind(cs_id)
     .bind(ex.version)
     .bind(exec_id)
-    .bind(effects.iter().filter(|e| e.changed).count() as i32)
+    .bind(
+        (effects.iter().filter(|e| e.changed).count()
+            + sim.version.iter().filter(|p| p.effect().changed).count()) as i32,
+    )
     .execute(&mut *conn)
     .await?;
     sqlx::query(

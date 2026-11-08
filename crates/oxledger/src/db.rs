@@ -134,7 +134,21 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             .fetch_optional(&mut *conn)
             .await?;
             let Some((context_id, agent_id, delegator_id, delegator_is_admin)) = row else {
-                return Err(unauthenticated());
+                let sql = format!(
+                    "SELECT EXISTS (SELECT 1 FROM agent_credentials c
+                                    JOIN agent_work_contexts w ON w.id = c.context_id
+                                    WHERE c.id = $1 AND {})",
+                    crate::agents::CLOSED_WITH_CONTEXT
+                );
+                let closed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                    .bind(ctx.credential_id())
+                    .fetch_one(&mut *conn)
+                    .await?;
+                return Err(if closed {
+                    crate::agents::context_closed()
+                } else {
+                    unauthenticated()
+                });
             };
             // §3.5: every request compares the epochs of R; any change
             // quarantines the whole context (reads too).

@@ -947,7 +947,7 @@ async fn s3_permissions() {
             "agent_client_id": client,
             "project_id": web,
             "proposal_ops": ["update_fields", "add_note", "transition"],
-            "writable_fields": ["description", "status_id"],
+            "writable_fields": ["description"],
             "max_ops": 3,
         })),
         &br,
@@ -1023,7 +1023,7 @@ async fn s3_permissions() {
             "agent_client_id": client,
             "project_id": web,
             "proposal_ops": ["update_fields"],
-            "writable_fields": ["description", "status_id"],
+            "writable_fields": ["description"],
         })),
         &bc,
     )
