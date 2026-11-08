@@ -10,7 +10,6 @@ use crate::filter::{self, FilterInput};
 use crate::search::SearchIndex;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
-use ox_core::workflow::{Transition, allowed_statuses};
 use ox_core::{IssueFacts, Pred};
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
@@ -600,13 +599,7 @@ async fn get_in(conn: &mut PgConnection, caller: AuthContext, key: &str) -> Resu
     let not_found = || api(ErrorCode::NotFound, format!("no issue {key}"));
     // Keys are PROJECT-123; anything else cannot exist (and must not reach SQL
     // as text PostgreSQL rejects, which would look different from not_found).
-    let well_formed = key.len() <= 32
-        && key.split_once('-').is_some_and(|(p, n)| {
-            !p.is_empty()
-                && p.chars().all(|c| c.is_ascii_alphanumeric())
-                && !n.is_empty()
-                && n.chars().all(|c| c.is_ascii_digit())
-        });
+    let well_formed = crate::describe::well_formed_key(&key);
     // The caller's scope comes first, whether or not the key exists, so a
     // missing key does not answer measurably faster than an invisible one.
     let scope = db::load_scope(&mut *conn, caller).await?;
@@ -668,42 +661,31 @@ async fn get_in(conn: &mut PgConnection, caller: AuthContext, key: &str) -> Resu
     let children = rows_to_briefs(qb.build_query_as().fetch_all(&mut *conn).await?);
 
     let role_ids = db::role_ids_for(&mut *conn, caller, row.project_id).await?;
-    let transitions: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
-        "SELECT tracker_id, role_id, old_status_id, new_status_id FROM workflow_transitions
-         WHERE tracker_id = $1 AND old_status_id = $2",
-    )
-    .bind(row.tracker_id)
-    .bind(row.status_id)
-    .fetch_all(&mut *conn)
-    .await?;
-    let transitions: Vec<Transition> = transitions
-        .into_iter()
-        .map(
-            |(tracker_id, role_id, old_status_id, new_status_id)| Transition {
-                tracker_id,
-                role_id,
-                old_status_id,
-                new_status_id,
-            },
-        )
-        .collect();
-    let statuses: Vec<(Uuid, String)> =
-        sqlx::query_as("SELECT id, name FROM issue_statuses ORDER BY position, name")
-            .fetch_all(&mut *conn)
-            .await?;
-    let mut order: Vec<Uuid> = vec![row.status_id];
-    order.extend(statuses.iter().map(|s| s.0).filter(|s| *s != row.status_id));
-    let allowed = allowed_statuses(
-        &transitions,
-        &role_ids,
-        row.tracker_id,
-        row.status_id,
-        &order,
-    );
-    let allowed_statuses = allowed
-        .iter()
-        .filter_map(|id| statuses.iter().find(|s| s.0 == *id).map(|s| s.1.clone()))
-        .collect();
+    // Same answer as describe's issue actions (§5.2): workflow roles, the
+    // transition conditions, edit permission and (agents) the delegation.
+    let actor = crate::perm::actor(&mut *conn, caller).await?;
+    let allowed_statuses =
+        match crate::perm::project_perms(&mut *conn, &actor, row.project_id).await? {
+            None => Vec::new(),
+            Some(pp) => {
+                let core = crate::describe::IssueCore {
+                    id: row.id,
+                    key: row.current_key.clone(),
+                    project_id: row.project_id,
+                    tracker_id: row.tracker_id,
+                    status_id: row.status_id,
+                    author_id: row.author_id,
+                    assigned_to_id: row.assigned_to_id,
+                    is_private: row.is_private,
+                    lock_version: row.lock_version,
+                };
+                crate::describe::allowed_transitions(&mut *conn, &actor, &pp, &core)
+                    .await?
+                    .into_iter()
+                    .map(|(_, name)| name)
+                    .collect()
+            }
+        };
     let custom_fields = custom_field_values(&mut *conn, caller, &role_ids, &row).await?;
 
     Ok(IssueDetail {

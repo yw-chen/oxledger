@@ -17,6 +17,46 @@
         ],
         "type": "object"
       },
+      "Assignee": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "user | group",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "AssigneeList": {
+        "properties": {
+          "assignees": {
+            "items": {
+              "$ref": "#/components/schemas/Assignee"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "assignees"
+        ],
+        "type": "object"
+      },
       "Candidate": {
         "properties": {
           "id": {
@@ -145,6 +185,29 @@
         },
         "required": [
           "id"
+        ],
+        "type": "object"
+      },
+      "Creation": {
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "initial_status_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_private": {
+            "$ref": "#/components/schemas/PrivateChoice"
+          }
+        },
+        "required": [
+          "allowed",
+          "initial_status_id",
+          "is_private"
         ],
         "type": "object"
       },
@@ -312,6 +375,17 @@
         ],
         "type": "object"
       },
+      "DuplicateActions": {
+        "properties": {
+          "can_propose": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_propose"
+        ],
+        "type": "object"
+      },
       "Empty": {
         "additionalProperties": false,
         "type": "object"
@@ -448,6 +522,89 @@
           }
         ]
       },
+      "FieldAction": {
+        "properties": {
+          "editable": {
+            "description": "Can be changed (for agents: can be changed in a proposal).",
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why not editable: project_not_writable | not_editable | workflow_readonly.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "description": "Required in the current status (definition or workflow rule).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "editable",
+          "required"
+        ],
+        "type": "object"
+      },
+      "FieldSchema": {
+        "properties": {
+          "constraints": true,
+          "key": {
+            "description": "`subject`, `assigned_to_id`, … or `cf:<id>` for custom fields.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Display name (custom fields).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ops": {
+            "description": "create | update | transition: what the caller could do with the field.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "options": {
+            "description": "List fields: every option, inactive ones marked (they can be kept but\nnot newly chosen).",
+            "items": {
+              "$ref": "#/components/schemas/OptionView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "options_source": {
+            "description": "Where the valid values come from.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "description": "The field definition itself is required (workflow rules are per status:\nsee the issue actions).",
+            "type": "boolean"
+          },
+          "type": {
+            "description": "string | text | date | principal_ref | status_ref | version_ref, or a\ncustom field type (int, float, date, string, text, list, user, bool, link).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "required",
+          "ops"
+        ],
+        "type": "object"
+      },
       "FilterInput": {
         "anyOf": [
           {
@@ -485,6 +642,77 @@
           }
         ],
         "description": "Custom field filter: a condition, or `{\"and\": [...]}` / `{\"or\": [...]}` of filters."
+      },
+      "IssueActions": {
+        "description": "What the caller can do to one issue now (§5.2). There is deliberately no\n`can_apply`.",
+        "properties": {
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DuplicateActions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldAction"
+            },
+            "type": "array"
+          },
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NoteActions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/TransitionAction"
+            },
+            "type": "array"
+          },
+          "workflow_version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue_id",
+          "key",
+          "lock_version",
+          "schema_version",
+          "workflow_version",
+          "observed_at",
+          "fields",
+          "transitions"
+        ],
+        "type": "object"
       },
       "IssueBrief": {
         "properties": {
@@ -686,6 +914,28 @@
         ],
         "type": "object"
       },
+      "Limits": {
+        "properties": {
+          "max_description_bytes": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_note_bytes": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_ops": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_ops",
+          "max_note_bytes",
+          "max_description_bytes"
+        ],
+        "type": "object"
+      },
       "LoginBody": {
         "additionalProperties": false,
         "properties": {
@@ -792,6 +1042,21 @@
         ],
         "type": "string"
       },
+      "NoteActions": {
+        "properties": {
+          "can_add": {
+            "type": "boolean"
+          },
+          "can_set_private": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_add",
+          "can_set_private"
+        ],
+        "type": "object"
+      },
       "Op": {
         "description": "`ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field.",
         "enum": [
@@ -808,6 +1073,26 @@
         ],
         "type": "string"
       },
+      "OptionView": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "active"
+        ],
+        "type": "object"
+      },
       "PasswordBody": {
         "additionalProperties": false,
         "properties": {
@@ -817,6 +1102,26 @@
         },
         "required": [
           "password"
+        ],
+        "type": "object"
+      },
+      "PrivateChoice": {
+        "properties": {
+          "allowed_values": {
+            "description": "Values the caller may give explicitly.",
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array"
+          },
+          "default": {
+            "description": "Used when `is_private` is not given (the tracker's default).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "default",
+          "allowed_values"
         ],
         "type": "object"
       },
@@ -1056,6 +1361,105 @@
         "required": [
           "project_id",
           "security_epoch"
+        ],
+        "type": "object"
+      },
+      "TrackerSchema": {
+        "description": "Static schema of an issue in a project × tracker (§5.1).",
+        "properties": {
+          "command_schema_version": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "creation": {
+            "$ref": "#/components/schemas/Creation"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldSchema"
+            },
+            "type": "array"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "schema_version": {
+            "description": "Changes when field definitions change: a hint, not a ticket.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "tracker_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "unsupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "workflow_version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "tracker_id",
+          "schema_version",
+          "workflow_version",
+          "command_schema_version",
+          "observed_at",
+          "fields",
+          "creation",
+          "limits",
+          "unsupported"
+        ],
+        "type": "object"
+      },
+      "TransitionAction": {
+        "properties": {
+          "blocked": {
+            "description": "A condition the caller cannot see blocks this transition.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "then_readonly": {
+            "description": "Readable fields read-only after moving to this status.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "then_required": {
+            "description": "Readable fields required after moving to this status.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to_status_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_status_id",
+          "name",
+          "then_required",
+          "then_readonly"
         ],
         "type": "object"
       }
@@ -2116,6 +2520,191 @@
           }
         },
         "summary": "One issue by key, read from the database (not the index).",
+        "x-access": "session"
+      }
+    },
+    "/issues/{key}/actions": {
+      "get": {
+        "operationId": "get_issues_key_actions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IssueActions"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "What the caller can do to this issue now: editable fields, transitions, notes, duplicate (describe, dynamic).",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/assignees": {
+      "get": {
+        "operationId": "get_projects_id_assignees",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AssigneeList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Users (and groups, when enabled) an issue in this project may be assigned to.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/trackers/{tracker_id}/schema": {
+      "get": {
+        "operationId": "get_projects_id_trackers_trackerid_schema",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tracker_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TrackerSchema"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Fields, ops and creation rules of an issue in this project × tracker (describe, static).",
         "x-access": "session"
       }
     },

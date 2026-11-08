@@ -35,3 +35,23 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S2	NUL／無效字元（22021、22P05）回 invalid_argument	§4.4：讀取工具參數值不合法用 invalid_argument	invalid_request	驗證報告 S2
 2026-11-08	S2	測試缺口（接受）：cursor 過期沒有直接測（無法在測試偽造金鑰下的過期 cursor）；query hash 涵蓋 filter 只由程式碼審查確認	加測試要開測試用的時鐘或金鑰注入，S8 發布門檻前再補	現在加測試鉤子	驗證報告 S2
 2026-11-08	S2	TS 型別：Option 欄位產生 `?: T | null`（比實際寬鬆）；字串列舉欄位（state、type、kind）仍是 string	產生器保守；S6b 前端接真資料時再收緊 schema	現在逐一改成 enum	驗證報告 S2
+2026-11-08	S3	日期修復不寫 issue_events：0007 修正值、lock_version+1，原值與理由記在 migration_date_fixes；S4 的 migration 把這些列轉成 fields_changed 事件（origin=import、system_operation=u39_date_fix）後再刪表	§17.2 要求寫事件，但 issue_events 在 S4 才建立；不能在 S3 先建半套事件表	S3 先建 issue_events；或修復延到 S4（期間 NOT VALID 擋所有 UPDATE）	契約 02 §17.2、§10
+2026-11-08	S3	org_settings.spa_origin 可為 NULL＝沿用 OXLEDGER_SPA_ORIGIN	第一切片的 origin 仍由環境設定；migration 插入單列時沒有可靠的值	NOT NULL 並在 migration 寫死預設值	契約 02 §6.6
+2026-11-08	S3	schema_version／workflow_version 是 org_settings 的全域計數器，由 statement-level trigger 遞增（field_*、project_trackers、trackers／workflow_transitions、workflow_field_rules）	§4.7 只要求「設定變了」的提示、不是授權票；全域計數簡單且不會漏	每專案 × tracker 一個版本號	契約 02 §4.7、§5
+2026-11-08	S3	trackers.private_by_default 在 S3 加入	§6.1 create_issue 預設值與 §5.1 creation.is_private.default 需要；S3 列表沒寫	S4 再加	契約 02 §6.1、§5.1
+2026-11-08	S3	issue_priorities（U3）延到 S4 與命令引擎一起做；workflow_field_rules 的 CHECK 先容許 priority_id	S3 列表沒有 priority；describe 在 S4 加入 priority_id	S3 一起做	契約 02 §6.6、§10
+2026-11-08	S3	role_permissions.permission 加 CHECK（11 個 Redmine 權限名＋manage_versions），perm::PERMISSIONS 與之相同（測試比對）	「manage_versions 加進角色權限清單」：沒有清單就打錯字只會靜默不給權限	不加約束	契約 02 §17.4
+2026-11-08	S3	workflow 欄位規則照 Redmine：讀不到的受限欄位對該角色一律改成 readonly（覆蓋原規則），所以人永遠不會因讀不到的欄位而 blocked；blocked 實際只發生在 agent（只讀 visible 欄位）	§6.3 演算法照抄 Redmine；§5.2 blocked 的情境由此限縮	讓讀不到的 required 保留 required	契約 02 §6.3、§5.2
+2026-11-08	S3	visible=false 且沒有任何 field_roles 的欄位，也對所有角色補 readonly（契約虛擬碼）；Redmine 的 joins(:roles) 會漏掉這種欄位	照契約文字，較保守；oxledger 本來就禁止寫讀不到的欄位	照 Redmine 漏掉	契約 02 §6.3
+2026-11-08	S3	指派對象包含「經群組成員資格」取得可指派角色的使用者	Redmine 加群組進專案會為成員建繼承的 Member 列；oxledger 不展開成員列，改在查詢時展開	只算直接成員	契約 02 §6.5、Redmine Project#assignable_users
+2026-11-08	S3	agent 權限用委派者權限（含 admin）∩ 委派；可讀欄位仍只限 visible=true	§5.2「委派者權限 ∩ 委派範圍」；admin 委派不給受限內容（§3.5）只限讀取面	agent 一律當非 admin	契約 02 §3.5、§5.2
+2026-11-08	S3	get 的 allowed_statuses 改用與 describe 相同的判斷（workflow 角色、條件、attributes_editable、委派 transition）	兩個讀取出口對同一問題要給同一答案；原本只看角色的轉移表	保留舊行為	契約 02 §5.2
+2026-11-08	S3	§5.3 多專案脈絡的 M8 actions 限制、describe scope=context 延到 S6	S6 列表包含受眾判定與 describe scope context	S3 先做	契約 02 §10 S6
+2026-11-08	S3	is_closed 以 issue_statuses.category = 'done' 代替（沒有 is_closed 欄位）	0001 沒有 is_closed；category done 已是封閉語意	新增 is_closed 欄位	契約 02 §17.3
+2026-11-08	S3	「沒有 field_roles 的受限欄位補 readonly」連帶影響 admin：admin 用全部角色、都不在 field_roles，所以該狀態只要有任何欄位規則，admin 對這種欄位就是 readonly（Redmine 不會）	比 Redmine 保守；這種欄位本來沒人能讀（只有 admin 例外）	照 Redmine 漏掉	驗證報告 S3
+2026-11-08	S3	schema_version 涵蓋 field_defs／field_trackers／field_projects／field_options／field_roles／project_trackers／trackers；workflow_version 涵蓋 workflow_transitions／workflow_field_rules。roles、role_permissions、issue_statuses 的變更不遞增	只是「設定變了」的提示（§4.7），不是授權票；每次寫入都重驗	把角色、狀態也納入	驗證報告 S3
+2026-11-08	S3	小偏離：project_schedule_settings.project_id ON DELETE CASCADE；user 型自訂欄位的 options_source 指向可指派對象（Redmine 用專案成員）；可指派對象不依 tracker 的 view_issues 過濾（契約沒要求）	跟著專案生命週期；第一切片 user 欄位與指派共用同一份名單	照契約 DDL 不加 CASCADE	驗證報告 S3
+2026-11-08	S3	tracker 名稱查詢不分大小寫，同名（只差大小寫）多筆 → ambiguous_reference；id 永遠精確	trackers.name UNIQUE 分大小寫，否則會靜默取到另一個 tracker	把 tracker 名稱改成不分大小寫唯一	契約 02 §5.1、驗證報告 S3
+2026-11-08	S3	待使用者確認：agent 的 then_required／then_readonly 會列出可讀但不在 writable_fields 的欄位（不算洩漏；§5.2「委派範圍外的欄位不列」是否也套到這兩個清單）	轉移後的必填條件 agent 要知道才不會送出必失敗的提案	依 writable_fields 過濾	驗證報告 S3
+2026-11-08	S3	已知限制：describe 的 options_source（/projects/{id}/assignees、versions）是 REST，只收瀏覽器 session，agent 目前呼叫不到；S6 補 MCP 工具	REST 不收 bearer（§4.2）	現在就開 bearer	驗證報告 S3
+2026-11-08	S3	已知限制：role_permissions_known 是立即驗證的 CHECK，將來匯入含其他 Redmine 權限名稱（如 view_time_entries）會失敗；匯入功能上線前處理	1.0 前沒有正式資料	NOT VALID	驗證報告 S3

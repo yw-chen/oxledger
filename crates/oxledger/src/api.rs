@@ -13,6 +13,7 @@
 
 use crate::agents::{self, DelegationInput};
 use crate::auth::{self, AuthContext, LoginInput, SessionPolicy};
+use crate::describe;
 use crate::error::{self, ApiError, ErrorCode, api};
 use crate::mcp::{OxServer, ResolveParams};
 use crate::service::{self, App, SearchParams};
@@ -70,6 +71,12 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/auth/sessions/{id}", delete(revoke_session))
         .route("/issues/search", post(issues_search))
         .route("/issues/{key}", get(issue_get))
+        .route("/issues/{key}/actions", get(issue_actions))
+        .route(
+            "/projects/{id}/trackers/{tracker_id}/schema",
+            get(project_tracker_schema),
+        )
+        .route("/projects/{id}/assignees", get(project_assignees))
         .route("/resolve", post(resolve))
         .route("/agent-clients", get(agent_clients))
         .route(
@@ -660,6 +667,35 @@ async fn issue_get(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(service::get(&st.app, ctx, &key).await?))
+}
+
+async fn issue_actions(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(describe::issue_actions(&st.app, ctx, &key).await?))
+}
+
+async fn project_tracker_schema(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, tracker_id)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        describe::tracker_schema(&st.app, ctx, &id, &tracker_id).await?
+    ))
+}
+
+async fn project_assignees(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(describe::assignees(&st.app, ctx, &id).await?))
 }
 
 async fn resolve(

@@ -79,6 +79,13 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - 讀取：`POST /issues/search`（body 同 MCP `search` 的參數）、`GET /issues/{key}`、`POST /resolve`。REST 和 MCP 呼叫同一組 service（`registry.rs` 列出這些操作）。
 - 分頁：回傳的 `next_cursor` 原樣帶回。cursor 綁定登入者、查詢條件與排序，24 小時有效（XChaCha20-Poly1305，金鑰存 `server_secrets`，啟動時載入；換金鑰：刪那一列並重啟全部 process）；預設每頁 50、最多 100；換條件、換人、竄改或過期都回 `invalid_cursor`，重新查一次即可。`limit` 可以每頁不同。
 
+### 權限與 describe（S3）
+
+- `GET /issues/{key}/actions`：這個人現在對這張單能做什麼（可改欄位、可轉的狀態與轉過去之後的必填／唯讀、note、duplicate）。`GET /projects/{id}/trackers/{tracker_id}/schema`：這個專案 × tracker 的欄位、型別、選項、可用的 op、建立規則與限制（`{id}` 可用專案 key、`{tracker_id}` 可用名稱）。MCP 是 `describe`，`scope` 為 `project_tracker` 或 `issue_actions`。兩者都不是授權票，寫入時一律重驗。
+- `GET /projects/{id}/assignees`：可指派對象（有 `assignable` 角色的 active 使用者，含經群組取得的；群組本身要 `org_settings.issue_group_assignment = true`）。
+- 權限名稱只能是 `perm::PERMISSIONS` 那 11 個（DB CHECK `role_permissions_known`），新增權限要兩邊一起改。
+- 角色的 tracker 限制是**每個權限各自**的（`role_permission_trackers.permission`）；`view_issues` 全部 tracker、`edit_issues` 只有 Bug 是合法設定。
+
 ## 症狀 → 原因 → 修法
 
 | 症狀 | 原因 | 修法 |
@@ -114,6 +121,11 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | 新增的 `/api/v1` 路由在 s2 測試報「documented but not routed」或反過來沒進 OpenAPI | 路由要在兩個地方登記：`api::router` 和 `openapi::session_routes`（或 `registry::tools` 的 `rest`） | 兩邊都加；s2 測試會對每條文件化的路由打一次請求 |
 | `invalid_cursor`：伺服器重啟後舊 cursor 還能用嗎 | cursor 金鑰存在 `server_secrets`（第一次使用時產生），重啟與多個 process 共用；刪掉那列等於讓所有 cursor 失效 | 正常；client 收到 `invalid_cursor` 就從第一頁重查 |
 | 路徑或文字參數含 NUL（`%00`）時回 500 | PostgreSQL text 不能存 NUL（SQLSTATE 22021） | `error::classify` 把 22021／22P05 當成 `invalid_request`；`get` 對格式不對的 key 直接回 `not_found` |
+| describe 說某欄位 `workflow_readonly`，但那個角色明明沒有這條規則 | Redmine 演算法：該 tracker／狀態只要有任何欄位規則，讀不到的受限欄位對那個角色會補成 readonly；而且要「每個 workflow 角色都有規則」才生效（admin 用全部有 add/edit 的角色，常因某角色沒規則而不生效） | 看 `workflow_field_rules` 該 tracker × 狀態的所有角色列；這是刻意照 Redmine（`ox-core::workflow::field_rules` 的單元測試列了各種情況） |
+| describe／get 沒有列出某個轉移 | 轉移要：可編輯（`edit_issues` 或作者的 `edit_own_issues`，且專案 active）、角色有 add/edit（consider_workflow）、條件成立（`author`／`assignee` 看交易開始時的值）；agent 另要委派含 `transition` 與 `status_id` | 對照 `describe::allowed_transitions` |
+| `GET .../trackers/bug/schema` 回 `ambiguous_reference` | 有兩個 tracker 名稱只差大小寫 | 改用 tracker id |
+| migration 0007 失敗：`role_permissions_known` | 既有 `role_permissions` 有清單外的權限名稱 | 先刪或改名那些列；匯入 Redmine 前要先處理 |
+| 0007 之後有些 issue 的開始／到期日變成空的 | 0007 修復違反日期 CHECK 的舊資料（超出 1900–2199 清成 NULL；開始晚於到期兩端都清），原值與理由在 `migration_date_fixes` | 查那張表手動補回合理的值；S4 會把它轉成 issue 事件 |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
 
 ## 設計上的防呆

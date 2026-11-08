@@ -6,6 +6,7 @@
 //! puts an [`AuthContext`] into the request extensions.
 
 use crate::auth::AuthContext;
+use crate::describe::{self, DescribeParams, DescribeResult};
 use crate::error::{self, ApiError, ErrorCode};
 use crate::service::{self, App, IssueDetail, ResolveResult, SearchParams, SearchResult};
 use rmcp::RoleServer;
@@ -173,12 +174,29 @@ impl OxServer {
             .map(Json)
             .map_err(to_error)
     }
+
+    #[tool(
+        name = "describe",
+        description = "Before writing, ask what is possible. scope=project_tracker with `project` (key or id) and `tracker` (name or id): the fields of that issue type, their types and options, which ops you could use, creation rules, limits and what this version does not support. scope=issue_actions with `issue_key`: which fields you can change now, the statuses you can move it to (with the fields required or read-only afterwards), notes and duplicate. Only what you may read or propose is listed; nothing here authorizes a write.",
+        annotations(read_only_hint = true)
+    )]
+    async fn describe(
+        &self,
+        Parameters(p): Parameters<DescribeParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<DescribeResult>, ToolError> {
+        let caller = self.caller(&ctx)?;
+        describe::describe(&self.app, caller, p)
+            .await
+            .map(Json)
+            .map_err(to_error)
+    }
 }
 
 #[tool_handler(
     router = self.tool_router,
     name = "oxledger",
-    instructions = "oxledger issue tracker (read-only in this version). Issues have keys like AUTH-12. Use `search` to find issues, `get` for detail, `resolve` to map names/aliases to ids. Results only include what the caller is allowed to see."
+    instructions = "oxledger issue tracker (read-only in this version). Issues have keys like AUTH-12. Use `search` to find issues, `get` for detail, `resolve` to map names/aliases to ids, `describe` to learn fields and what you may do. Results only include what the caller is allowed to see."
 )]
 impl ServerHandler for OxServer {}
 

@@ -6,6 +6,18 @@ export type AgentClientView = {
   name: string;
 };
 
+export type Assignee = {
+  id: string;
+  /** user | group */
+  kind: string;
+  name: string;
+};
+
+export type AssigneeList = {
+  assignees: Array<Assignee>;
+  project_id: string;
+};
+
 export type Candidate = {
   id: string;
   kind: string;
@@ -43,6 +55,12 @@ export type ContextView = {
 
 export type Created = {
   id: string;
+};
+
+export type Creation = {
+  allowed: boolean;
+  initial_status_id: string | null;
+  is_private: PrivateChoice;
 };
 
 export type CredentialBody = {
@@ -86,6 +104,10 @@ export type Done = {
   ok: boolean;
 };
 
+export type DuplicateActions = {
+  can_propose: boolean;
+};
+
 export type Empty = Record<string, never>;
 
 /** The error object of §4.3 (`{"error": …}` in REST, bare in MCP). */
@@ -102,6 +124,34 @@ export type ErrorBody = {
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
 export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable";
 
+export type FieldAction = {
+  /** Can be changed (for agents: can be changed in a proposal). */
+  editable: boolean;
+  key: string;
+  /** Why not editable: project_not_writable | not_editable | workflow_readonly. */
+  reason?: string | null;
+  /** Required in the current status (definition or workflow rule). */
+  required: boolean;
+};
+
+export type FieldSchema = {
+  constraints?: unknown;
+  /** `subject`, `assigned_to_id`, … or `cf:<id>` for custom fields. */
+  key: string;
+  /** Display name (custom fields). */
+  name?: string | null;
+  /** create | update | transition: what the caller could do with the field. */
+  ops: Array<string>;
+  /** List fields: every option, inactive ones marked (they can be kept but not newly chosen). */
+  options?: Array<OptionView> | null;
+  /** Where the valid values come from. */
+  options_source?: string | null;
+  /** The field definition itself is required (workflow rules are per status: see the issue actions). */
+  required: boolean;
+  /** string | text | date | principal_ref | status_ref | version_ref, or a custom field type (int, float, date, string, text, list, user, bool, link). */
+  type: string;
+};
+
 /** Custom field filter: a condition, or `{"and": [...]}` / `{"or": [...]}` of filters. */
 export type FilterInput = {
   /** All of these must hold. */
@@ -110,6 +160,20 @@ export type FilterInput = {
   /** At least one of these must hold. */
   or: Array<FilterInput>;
 } | CondInput;
+
+/** What the caller can do to one issue now (§5.2). There is deliberately no `can_apply`. */
+export type IssueActions = {
+  duplicate_of?: DuplicateActions | null;
+  fields: Array<FieldAction>;
+  issue_id: string;
+  key: string;
+  lock_version: number;
+  notes?: NoteActions | null;
+  observed_at: string;
+  schema_version: number;
+  transitions: Array<TransitionAction>;
+  workflow_version: number;
+};
 
 export type IssueBrief = {
   assignee: string | null;
@@ -159,6 +223,12 @@ export type IssuedCredential = {
   token: string;
 };
 
+export type Limits = {
+  max_description_bytes: number;
+  max_note_bytes: number;
+  max_ops: number;
+};
+
 export type LoginBody = {
   login: string;
   password: string;
@@ -191,11 +261,29 @@ export type NewContextBody = {
 /** What the caller may do next (contract 02 §14.2). A closed set; the list on an error names options, not steps to run in order. */
 export type NextAction = "fix_input" | "refresh_and_revise" | "retry_same_request" | "wait_and_retry" | "ask_human" | "stop";
 
+export type NoteActions = {
+  can_add: boolean;
+  can_set_private: boolean;
+};
+
 /** `ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field. */
 export type Op = "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "between" | "in" | "is_null" | "not_null";
 
+export type OptionView = {
+  active: boolean;
+  id: string;
+  label: string;
+};
+
 export type PasswordBody = {
   password: string;
+};
+
+export type PrivateChoice = {
+  /** Values the caller may give explicitly. */
+  allowed_values: Array<boolean>;
+  /** Used when `is_private` is not given (the tracker's default). */
+  default: boolean;
 };
 
 export type ResolveParams = {
@@ -265,6 +353,32 @@ export type SourceProject = {
   security_epoch: number;
 };
 
+/** Static schema of an issue in a project × tracker (§5.1). */
+export type TrackerSchema = {
+  command_schema_version: number;
+  creation: Creation;
+  fields: Array<FieldSchema>;
+  limits: Limits;
+  observed_at: string;
+  project_id: string;
+  /** Changes when field definitions change: a hint, not a ticket. */
+  schema_version: number;
+  tracker_id: string;
+  unsupported: Array<string>;
+  workflow_version: number;
+};
+
+export type TransitionAction = {
+  /** A condition the caller cannot see blocks this transition. */
+  blocked?: boolean;
+  name: string;
+  /** Readable fields read-only after moving to this status. */
+  then_readonly: Array<string>;
+  /** Readable fields required after moving to this status. */
+  then_required: Array<string>;
+  to_status_id: string;
+};
+
 /** Success envelope (§4.3). */
 export interface Ok<T> {
   data: T;
@@ -296,5 +410,8 @@ export interface Endpoints {
   "POST /delegations/{id}/revoke": { body: Empty; data: Done };
   "POST /issues/search": { body: SearchParams; data: SearchResult };
   "GET /issues/{key}": { body: never; data: IssueDetail };
+  "GET /issues/{key}/actions": { body: never; data: IssueActions };
+  "GET /projects/{id}/assignees": { body: never; data: AssigneeList };
+  "GET /projects/{id}/trackers/{tracker_id}/schema": { body: never; data: TrackerSchema };
   "POST /resolve": { body: ResolveParams; data: ResolveResult };
 }
