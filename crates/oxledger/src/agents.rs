@@ -45,13 +45,13 @@ pub const MAX_TOKEN_DAYS: i64 = 30;
 
 // ---------------------------------------------------------------- views
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct AgentClientView {
     pub id: Uuid,
     pub name: String,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct DelegationView {
     pub id: Uuid,
     pub agent_principal_id: Uuid,
@@ -66,7 +66,7 @@ pub struct DelegationView {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ContextView {
     pub id: Uuid,
     pub agent_principal_id: Uuid,
@@ -80,13 +80,13 @@ pub struct ContextView {
     pub changed_projects: Vec<Uuid>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct SourceProject {
     pub project_id: Uuid,
     pub security_epoch: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct IssuedCredential {
     pub id: Uuid,
     pub context_id: Uuid,

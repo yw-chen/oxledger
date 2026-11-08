@@ -24,7 +24,7 @@ use crate::auth::AuthContext;
 use crate::custom_fields::{self, FieldRow, value_column};
 use crate::db::{self, push_pred};
 use crate::error::{ErrorCode, api};
-use crate::service::{App, resolve_one};
+use crate::service::resolve_one;
 use anyhow::Result;
 use chrono::NaiveDate;
 use ox_core::Pred;
@@ -33,7 +33,7 @@ use ox_core::filter::{Cmp, Field, FieldType, Filter, Test, Value, ValueKind};
 use rmcp::schemars::{self, JsonSchema};
 use serde::Serialize;
 use serde_json::Value as Json;
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::{PgConnection, Postgres, QueryBuilder};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -168,7 +168,8 @@ fn filter_err(msg: impl Into<String>) -> anyhow::Error {
 // ---------------------------------------------------------------- resolve
 
 struct Ctx<'a> {
-    app: &'a App,
+    /// The read transaction's connection, shared by the recursive resolution.
+    conn: tokio::sync::Mutex<&'a mut PgConnection>,
     caller: AuthContext,
     /// Fields the caller may read somewhere, by lowercase name, with their gate E.
     fields: HashMap<String, (FieldRow, Pred)>,
@@ -210,32 +211,27 @@ fn applies(row: &FieldRow, admin: bool, readable: &HashMap<i32, Vec<Uuid>>) -> O
 /// options by label and users by login/name ("me" = the caller), and attaches
 /// each condition's applicability gate.
 pub async fn resolve(
-    app: &App,
+    conn: &mut PgConnection,
     caller: AuthContext,
     scope: &Scope,
     input: &FilterInput,
 ) -> Result<Filter> {
-    let me = db::effective(&mut *app.pool.acquire().await?, caller).await?;
+    let me = db::effective(&mut *conn, caller).await?;
     let admin = me.is_admin;
     // Agents read only fields with visible = true (contract 02 §3.5), so no
     // role-based readability at all.
     let readable = if me.agent.is_some() {
         Default::default()
     } else {
-        custom_fields::readable_projects(
-            &mut *app.pool.acquire().await?,
-            caller,
-            &scope.principal_ids,
-        )
-        .await?
+        custom_fields::readable_projects(&mut *conn, caller, &scope.principal_ids).await?
     };
-    let fields = custom_fields::list_fields(&app.pool)
+    let fields = custom_fields::list_fields(&mut *conn)
         .await?
         .into_iter()
         .filter_map(|f| applies(&f, admin, &readable).map(|e| (f.name.to_lowercase(), (f, e))))
         .collect();
     let ctx = Ctx {
-        app,
+        conn: tokio::sync::Mutex::new(conn),
         caller,
         fields,
     };
@@ -246,7 +242,7 @@ pub async fn resolve(
 
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
-fn resolve_at<'a>(ctx: &'a Ctx<'a>, input: &'a FilterInput) -> BoxFut<'a, Filter> {
+fn resolve_at<'a, 'c: 'a>(ctx: &'a Ctx<'c>, input: &'a FilterInput) -> BoxFut<'a, Filter> {
     Box::pin(async move {
         match input {
             FilterInput::And { and } => {
@@ -385,14 +381,15 @@ async fn value(ctx: &Ctx<'_>, field: Field, name: &str, x: &Json) -> Result<Valu
             };
             match field.ty {
                 FieldType::List => {
-                    if let Some(id) = custom_fields::option_id(&ctx.app.pool, field.id, s).await? {
+                    let mut conn = ctx.conn.lock().await;
+                    if let Some(id) = custom_fields::option_id(&mut **conn, field.id, s).await? {
                         return Ok(Value::Ref(id));
                     }
                     let labels: Vec<String> = sqlx::query_scalar(
                         "SELECT label FROM field_options WHERE field_id = $1 ORDER BY position, label",
                     )
                     .bind(field.id)
-                    .fetch_all(&ctx.app.pool)
+                    .fetch_all(&mut **conn)
                     .await?;
                     Err(filter_err(format!(
                         "field {name:?} has no option {s:?}; options: {}",
@@ -404,7 +401,7 @@ async fn value(ctx: &Ctx<'_>, field: Field, name: &str, x: &Json) -> Result<Valu
                     None => Err(filter_err("\"me\" needs an authenticated caller")),
                 },
                 _ => Ok(Value::Ref(
-                    resolve_one(ctx.app, ctx.caller, "principal", s).await?,
+                    resolve_one(&mut **ctx.conn.lock().await, ctx.caller, "principal", s).await?,
                 )),
             }
         }

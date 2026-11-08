@@ -193,6 +193,10 @@ pub fn encode(b: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(b)
 }
 
+pub fn decode_bytes(s: &str) -> Option<Vec<u8>> {
+    URL_SAFE_NO_PAD.decode(s).ok()
+}
+
 fn decode32(s: &str) -> Option<[u8; 32]> {
     URL_SAFE_NO_PAD.decode(s).ok()?.try_into().ok()
 }

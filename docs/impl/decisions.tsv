@@ -18,3 +18,20 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S1	延後到 S2：search/get 的授權與可見性在同一連線同一 snapshot（REPEATABLE READ）	目前各步各取連線，每步都只會收縮、不越權；S2 重整讀取路徑時一併改	S1 就改	驗證報告 S1；契約 02 §3.7、§3.8
 2026-11-08	S1	待決：登入限流 map 無上限、反向代理後 IP 相同	單機第一版；部署在 proxy 後要信任 X-Forwarded-For 或改用 DB 限流，屬部署設定	現在就做 DB 版	驗證報告 S1
 2026-11-08	S1	部署注意：應用程式不可用 superuser 連線	superuser 可設 session_replication_role 停用防線觸發器；docker 預設 POSTGRES_USER 是 superuser	—	驗證報告 S1
+2026-11-08	S2	讀取路徑改成同連線 READ ONLY REPEATABLE READ（read_tx）	§3.7 授權與資料同一連線、§3.8 同一 snapshot；S1 驗證報告指出	每步各取連線（只收縮、不越權，但不合契約字面）	契約 02 §3.7、§3.8
+2026-11-08	S2	cursor = ChaCha20-Poly1305 加密 JSON（principal、query hash、位置、24h 到期），金鑰存 server_secrets	§4.5 要加密或 server handle；加密不必每頁寫 DB，多 process 共用金鑰	server 端 handle 表（每頁一次寫入與清理）	契約 02 §4.5
+2026-11-08	S2	一般列表 keyset (updated_at, id)；全文排序沿用 offset（綁在加密 cursor 內）	分數無法 keyset；§4.5 允許全文沿用候選擴充	全文也 keyset（分數會變）	契約 02 §4.5
+2026-11-08	S2	query hash 不含 limit	換頁大小不改變查詢身分	含 limit（client 改頁大小就要重查）	—
+2026-11-08	S2	OpenAPI 用 schemars draft 2020-12 自組（不用 utoipa）；TS 由自寫的小轉換器產生（不用 npm 工具）	DTO 已有 schemars；不新增依賴、不需要下載 npm 套件	utoipa；openapi-typescript（npm，需下載）	D6
+2026-11-08	S2	auth/logout/revoke 等動作的回應統一成 {ok: true}（Done）	型別固定、TS 好用	每個動作各自的 key	—
+2026-11-08	S2	GET /auth/session 回 capabilities.command_schema_versions = [1]	§4.5：client 先看 capabilities 再決定送什麼	S4 再加	契約 02 §4.5
+2026-11-08	S2	格式不對的 issue key 回 not_found；DB 的 22021/22P05 對應 invalid_request	原本 NUL 會變 500，和 not_found 形狀不同	—	s2 測試發現
+2026-11-08	S2	偏離契約：issue 搜尋的 keyset 用 (updated_at, id) 而非 §4.5 的 (created_at, id)	搜尋本來就是「最近更新優先」（MCP 既有行為），使用者找的是最近動過的單	改成 created_at（排序語意改變）	驗證報告 S2；契約 02 §4.5
+2026-11-08	S2	已知代價：換頁之間被更新的 issue 會跳到前面而在後續頁漏掉（不會重複）	live 分頁，§4.5 不承諾跨頁 snapshot；需要完整清單時改用不分頁或重新查詢	created_at keyset（只漏新建的）	驗證報告 S2
+2026-11-08	S2	預設 limit 改成 50（§4.5），MCP 與 REST 相同	照契約	MCP 維持 20 省 token	驗證報告 S2
+2026-11-08	S2	OpenAPI 回應用 serialize 模式、request 用 deserialize 模式產生；同名型別兩邊不同時產生器直接 panic	skip_serializing_if 的欄位在回應裡是選填；避免 schema 與實際 JSON 不符	單一 deserialize 產生器（驗證發現不符）	驗證報告 S2
+2026-11-08	S2	cursor 改用 XChaCha20-Poly1305（24-byte 隨機 nonce）；金鑰 serve/stdio 啟動時載入，換金鑰要重啟全部 process	長期不換金鑰時 96-bit 隨機 nonce 的碰撞上限較低；啟動載入避免首批請求搶連線	ChaCha20-Poly1305；定期重讀金鑰	驗證報告 S2
+2026-11-08	S2	get 先載入可見範圍再查 key，縮小「不存在」與「看不到」的時間差	驗證量到 9ms vs 18ms；不宣稱消除所有時間旁路（§9.7）	可見性條件併入主查詢	驗證報告 S2
+2026-11-08	S2	NUL／無效字元（22021、22P05）回 invalid_argument	§4.4：讀取工具參數值不合法用 invalid_argument	invalid_request	驗證報告 S2
+2026-11-08	S2	測試缺口（接受）：cursor 過期沒有直接測（無法在測試偽造金鑰下的過期 cursor）；query hash 涵蓋 filter 只由程式碼審查確認	加測試要開測試用的時鐘或金鑰注入，S8 發布門檻前再補	現在加測試鉤子	驗證報告 S2
+2026-11-08	S2	TS 型別：Option 欄位產生 `?: T | null`（比實際寬鬆）；字串列舉欄位（state、type、kind）仍是 string	產生器保守；S6b 前端接真資料時再收緊 schema	現在逐一改成 enum	驗證報告 S2

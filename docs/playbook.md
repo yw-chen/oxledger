@@ -72,6 +72,13 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 `ne` 是 `eq` 的補集，所以會包含沒有值與不適用的單；`is_null` 只算適用但沒有值的單。
 因此 `is_null` 不等於 `not(not_null)`。讀不到的欄位會回「no custom field」，和不存在的欄位一樣。
 
+### SPA API（`/api/v1`，S2）
+
+- 端點、request／response 型別：`api/openapi.json`（OpenAPI 3.1）與 `api/types.ts`（SPA 用），由 Rust DTO 產生：`oxledger api-spec`。
+  改了 DTO 或路由後要重產，否則測試 `api_spec_is_current` 會失敗（也可以 `OXLEDGER_UPDATE_API_SPEC=1 cargo test --test s2_api` 直接覆寫）。
+- 讀取：`POST /issues/search`（body 同 MCP `search` 的參數）、`GET /issues/{key}`、`POST /resolve`。REST 和 MCP 呼叫同一組 service（`registry.rs` 列出這些操作）。
+- 分頁：回傳的 `next_cursor` 原樣帶回。cursor 綁定登入者、查詢條件與排序，24 小時有效（XChaCha20-Poly1305，金鑰存 `server_secrets`，啟動時載入；換金鑰：刪那一列並重啟全部 process）；預設每頁 50、最多 100；換條件、換人、竄改或過期都回 `invalid_cursor`，重新查一次即可。`limit` 可以每頁不同。
+
 ## 症狀 → 原因 → 修法
 
 | 症狀 | 原因 | 修法 |
@@ -103,6 +110,10 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | clippy `collapsible_if` 指向巢狀 `if let` | Rust 2024 可以用 let chains | 改成 `if let A = a && let B = b { … }` |
 | `POST /delegations` 回 `forbidden_op`／`project_not_audience_consistent` | 專案有 `own` 角色或 tracker 受限的 view_issues，agent 不能保證看到和每個人一樣的單 | 換專案，或改角色設定；這是刻意的（§3.5） |
 | `POST /delegations` 回 `context_unavailable`（closed） | 使用者先前按過「停止這個 agent」，脈絡已關閉 | `POST /agent-contexts` 帶 `fresh_context_ack: true` 開新脈絡，舊 token 不會復活 |
+| `api_spec_is_current` 失敗：api/openapi.json is stale | 改了 DTO、路由或 doc comment，沒有重產規格 | `cargo run -- api-spec`，把 `api/` 的變更一起 commit |
+| 新增的 `/api/v1` 路由在 s2 測試報「documented but not routed」或反過來沒進 OpenAPI | 路由要在兩個地方登記：`api::router` 和 `openapi::session_routes`（或 `registry::tools` 的 `rest`） | 兩邊都加；s2 測試會對每條文件化的路由打一次請求 |
+| `invalid_cursor`：伺服器重啟後舊 cursor 還能用嗎 | cursor 金鑰存在 `server_secrets`（第一次使用時產生），重啟與多個 process 共用；刪掉那列等於讓所有 cursor 失效 | 正常；client 收到 `invalid_cursor` 就從第一頁重查 |
+| 路徑或文字參數含 NUL（`%00`）時回 500 | PostgreSQL text 不能存 NUL（SQLSTATE 22021） | `error::classify` 把 22021／22P05 當成 `invalid_request`；`get` 對格式不對的 key 直接回 `not_found` |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
 
 ## 設計上的防呆
@@ -120,6 +131,8 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - **step-up 不是密碼 oracle**：同一 session 錯 5 次密碼，session 直接結束。
 - **管理員結束某人所有 session**：`oxledger user revoke-sessions <login>`（寫稽核）。
 - **部署**：應用程式的 DB 帳號不要是 superuser（可停用觸發器防線）。
+- **一次讀取一個 snapshot**（§3.7、§3.8 第 2 條）：`service::search`／`get`／`resolve` 先開 `read_tx`（READ ONLY、REPEATABLE READ），身分重驗、可見範圍、資料都在同一條連線、同一個 snapshot。內部函式收 `&mut PgConnection`；`filter::resolve` 的遞迴用 `tokio::sync::Mutex` 共用那條連線。
+- **cursor 不帶授權**：每一頁都重新載入可見範圍；cursor 只記位置（keyset 的 `(updated_at, id)` 或全文排序的 offset），加密（XChaCha20-Poly1305）而不是只簽章，所以看不出內部 id。
 - **登入速率限制在記憶體**：每個 login 15 分鐘 10 次失敗、每個 IP 50 次。多個 `serve` process 各算各的，要水平擴充時改成 DB 或共用存放。
 - **授權函式吃連線，不吃 pool**（P3）：`load_scope`、`role_ids_for`、`is_admin`、`custom_fields::readable_projects` 收 `&mut PgConnection`。寫入路徑傳交易本身，權限判斷才會看到同一個快照與鎖；讀取路徑傳 `&mut app.pool.acquire().await?`。
 - **錯誤碼**（P9，契約 02 §4.3、§4.4、§14.2）：可行動的錯誤是 `error::ApiError`（穩定的 `code`、`next_actions`、`details`）。MCP 回工具結果 `isError: true`，structured content 是錯誤物件本身；其他錯誤是 JSON-RPC internal error，只帶 `request_id`，原因只寫進 log。不要把 SQL、constraint 名稱放進 `message`。

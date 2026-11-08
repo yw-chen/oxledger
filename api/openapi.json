@@ -1,0 +1,2188 @@
+{
+  "components": {
+    "schemas": {
+      "AgentClientView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "Candidate": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "matched": {
+            "description": "The label that matched (name, login, key or alias).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "name",
+          "matched"
+        ],
+        "type": "object"
+      },
+      "Capabilities": {
+        "properties": {
+          "command_schema_versions": {
+            "description": "Command document versions this server accepts (§4.5).",
+            "items": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "command_schema_versions"
+        ],
+        "type": "object"
+      },
+      "CondInput": {
+        "description": "One condition on a custom field.",
+        "properties": {
+          "field": {
+            "description": "Custom field name (case-insensitive), e.g. \"Severity\".",
+            "type": "string"
+          },
+          "op": {
+            "$ref": "#/components/schemas/Op"
+          },
+          "value": {
+            "description": "eq/ne/lt/le/gt/ge: one value. in: an array. between: [min, max], inclusive, either may be null.\nis_null/not_null: omit. Numbers for int/float, \"YYYY-MM-DD\" for date, true/false for bool,\nthe option label for list, \"me\"/login/name for user."
+          }
+        },
+        "required": [
+          "field",
+          "op"
+        ],
+        "type": "object"
+      },
+      "ContextView": {
+        "properties": {
+          "agent_client_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "agent_principal_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "changed_projects": {
+            "description": "Source projects whose settings changed since (the context can no longer be used).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "closed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "source_projects": {
+            "description": "R: every project ever granted to this context, with the epoch recorded then.",
+            "items": {
+              "$ref": "#/components/schemas/SourceProject"
+            },
+            "type": "array"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent_principal_id",
+          "agent_client_id",
+          "state",
+          "created_at",
+          "closed_at",
+          "source_projects",
+          "changed_projects"
+        ],
+        "type": "object"
+      },
+      "Created": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "CredentialBody": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_days": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "label": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CustomFieldValue": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "description": "int | float | date | string | text | list | user | bool | link",
+            "type": "string"
+          },
+          "value": {
+            "description": "Number, \"YYYY-MM-DD\", string or bool; list: {id, label, active}; user: {id, name}."
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "value"
+        ],
+        "type": "object"
+      },
+      "DelegationBody": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_client_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expires_in_days": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_ops": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "proposal_ops": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "writable_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent_client_id",
+          "project_id",
+          "proposal_ops",
+          "writable_fields"
+        ],
+        "type": "object"
+      },
+      "DelegationView": {
+        "properties": {
+          "agent_client_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "agent_principal_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "context_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "max_ops": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "proposal_ops": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writable_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "agent_principal_id",
+          "agent_client_id",
+          "context_id",
+          "project_id",
+          "proposal_ops",
+          "writable_fields",
+          "max_ops",
+          "created_at",
+          "expires_at",
+          "revoked_at"
+        ],
+        "type": "object"
+      },
+      "Done": {
+        "description": "An action that returns nothing but success.",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "Empty": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "ErrorBody": {
+        "description": "The error object of §4.3 (`{\"error\": …}` in REST, bare in MCP).",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": true,
+          "message": {
+            "type": "string"
+          },
+          "next_actions": {
+            "items": {
+              "$ref": "#/components/schemas/NextAction"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "request_id",
+          "retryable",
+          "retry_after_ms",
+          "next_actions",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorCode": {
+        "description": "Stable error codes. Programs depend on these, never on `message`.\nCodes of the §4.4 table arrive with the code that produces them.",
+        "oneOf": [
+          {
+            "const": "invalid_request",
+            "description": "Malformed request: bad JSON, unknown or missing fields, both a cookie\nand a bearer token (`details.kind = \"ambiguous_credentials\"`).",
+            "type": "string"
+          },
+          {
+            "const": "unauthenticated",
+            "description": "No valid credentials, or the principal behind them is no longer active.",
+            "type": "string"
+          },
+          {
+            "const": "invalid_credentials",
+            "description": "Login failed. Unknown login and wrong password look the same.",
+            "type": "string"
+          },
+          {
+            "const": "reauthentication_required",
+            "description": "The action needs a recent step-up (password re-entry within 15 minutes).",
+            "type": "string"
+          },
+          {
+            "const": "csrf_failed",
+            "description": "Origin, CSRF token or Content-Type check failed.",
+            "type": "string"
+          },
+          {
+            "const": "human_session_required",
+            "description": "Only a person in a browser session may do this (not an agent or a legacy key).",
+            "type": "string"
+          },
+          {
+            "const": "forbidden_op",
+            "description": "The target is visible but the caller may not do this to it.",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "Missing, or the caller may not know it exists (same shape for both).",
+            "type": "string"
+          },
+          {
+            "const": "invalid_value",
+            "description": "A value in a write request is not allowed; `details.allowed`.",
+            "type": "string"
+          },
+          {
+            "const": "invalid_argument",
+            "description": "A read tool parameter has a bad value; `details.path`, `details.allowed`.",
+            "type": "string"
+          },
+          {
+            "const": "invalid_filter",
+            "description": "The custom field `filter` cannot be used (design 03 §3.7).",
+            "type": "string"
+          },
+          {
+            "const": "invalid_cursor",
+            "description": "Tampered or foreign cursor.",
+            "type": "string"
+          },
+          {
+            "const": "ambiguous_reference",
+            "description": "A name matches several visible objects; `details.candidates`.",
+            "type": "string"
+          },
+          {
+            "const": "context_unavailable",
+            "description": "The agent's work context cannot be used: `details.kind` is\n`\"quarantined\"` or `\"closed\"` (§4.4).",
+            "type": "string"
+          },
+          {
+            "const": "delegation_unavailable",
+            "description": "No usable delegation for this project.",
+            "type": "string"
+          },
+          {
+            "const": "rate_limited",
+            "description": "Too many attempts; `retry_after_ms`.",
+            "type": "string"
+          },
+          {
+            "const": "temporarily_unavailable",
+            "description": "Database or another dependency is down for a moment.",
+            "type": "string"
+          }
+        ]
+      },
+      "FilterInput": {
+        "anyOf": [
+          {
+            "properties": {
+              "and": {
+                "description": "All of these must hold.",
+                "items": {
+                  "$ref": "#/components/schemas/FilterInput"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "and"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "or": {
+                "description": "At least one of these must hold.",
+                "items": {
+                  "$ref": "#/components/schemas/FilterInput"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "or"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/CondInput"
+          }
+        ],
+        "description": "Custom field filter: a condition, or `{\"and\": [...]}` / `{\"or\": [...]}` of filters."
+      },
+      "IssueBrief": {
+        "properties": {
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_private": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "score": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_category": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "tracker": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "subject",
+          "project",
+          "tracker",
+          "status",
+          "status_category",
+          "assignee",
+          "is_private",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "IssueDetail": {
+        "properties": {
+          "allowed_statuses": {
+            "description": "Statuses the caller may move this issue to (workflow), current first.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": "string"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/IssueBrief"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "custom_fields": {
+            "description": "Custom fields that apply to this issue (tracker and project) and that the\ncaller may read, in display order; `value` is null when empty.",
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldValue"
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "due_date": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_private": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "lock_version": {
+            "description": "Pass back as `expected_lock_version` when updating (M1).",
+            "format": "int32",
+            "type": "integer"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "requested_key": {
+            "description": "Set when the requested key is an old key of a moved issue.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_category": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "tracker": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "subject",
+          "description",
+          "project",
+          "tracker",
+          "status",
+          "status_category",
+          "author",
+          "assignee",
+          "is_private",
+          "parent",
+          "children",
+          "start_date",
+          "due_date",
+          "created_at",
+          "updated_at",
+          "lock_version",
+          "allowed_statuses",
+          "custom_fields"
+        ],
+        "type": "object"
+      },
+      "IssuedCredential": {
+        "properties": {
+          "context_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "token": {
+            "description": "Shown once; only its hash is stored.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "context_id",
+          "token",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "LoginBody": {
+        "additionalProperties": false,
+        "properties": {
+          "login": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "login",
+          "password"
+        ],
+        "type": "object"
+      },
+      "LoginContextData": {
+        "properties": {
+          "csrf_token": {
+            "description": "Send back as `X-CSRF-Token` with `POST /auth/login`.",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "csrf_token",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "LoginData": {
+        "properties": {
+          "csrf_token": {
+            "description": "Send as `X-CSRF-Token` with every non-GET request of this session.",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "session_id",
+          "csrf_token",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "Meta": {
+        "properties": {
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "NewContextBody": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_client_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "fresh_context_ack": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent_client_id",
+          "fresh_context_ack"
+        ],
+        "type": "object"
+      },
+      "NextAction": {
+        "description": "What the caller may do next (contract 02 §14.2). A closed set; the list\non an error names options, not steps to run in order.",
+        "enum": [
+          "fix_input",
+          "refresh_and_revise",
+          "retry_same_request",
+          "wait_and_retry",
+          "ask_human",
+          "stop"
+        ],
+        "type": "string"
+      },
+      "Op": {
+        "description": "`ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field.",
+        "enum": [
+          "eq",
+          "ne",
+          "lt",
+          "le",
+          "gt",
+          "ge",
+          "between",
+          "in",
+          "is_null",
+          "not_null"
+        ],
+        "type": "string"
+      },
+      "PasswordBody": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "type": "object"
+      },
+      "ResolveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Optional: project | tracker | status | principal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Name, login, project key or alias to look up (e.g. \"缺陷\", \"alice\", \"AUTH\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "ResolveResult": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            },
+            "type": "array"
+          },
+          "valid_values": {
+            "description": "When nothing matched: valid values for the requested kind.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidates"
+        ],
+        "type": "object"
+      },
+      "SearchParams": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "description": "\"me\", \"none\", a user login/name, or a group name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cursor": {
+            "description": "Opaque cursor from a previous `next_cursor`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FilterInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Custom field filter, e.g. {\"and\": [{\"field\": \"Severity\", \"op\": \"in\", \"value\": [\"High\", \"Critical\"]},\n{\"field\": \"Estimate (h)\", \"op\": \"between\", \"value\": [2, 8]}]}. Combined with the other filters by AND."
+          },
+          "limit": {
+            "description": "Max items, default 50, max 100.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "Project key (e.g. \"AUTH\"), name, or alias.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "q": {
+            "description": "Free text (BM25 over subject and description; Chinese works without word segmentation).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Exact status name or alias.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_category": {
+            "description": "\"open\" (todo + doing), \"todo\", \"doing\" or \"done\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracker": {
+            "description": "Tracker name or alias (e.g. \"bug\", \"缺陷\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SearchResult": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IssueBrief"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "Only with `q`: the server stopped after ranking 8000 candidates without\nfinding everything this page needs. More matches may exist (even if there\nis no `next_cursor`); narrow `q` or the filters.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "SessionData": {
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "csrf_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "is_admin": {
+            "type": "boolean"
+          },
+          "login": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "reauthenticated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "session_id",
+          "login",
+          "name",
+          "is_admin",
+          "csrf_token",
+          "reauthenticated_at",
+          "expires_at",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "SessionItem": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current": {
+            "description": "The session making this request.",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "last_seen_at",
+          "expires_at",
+          "current"
+        ],
+        "type": "object"
+      },
+      "SourceProject": {
+        "properties": {
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "security_epoch": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "security_epoch"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Browser-session API (contract 02 §4). Cookie only: a bearer token is always unauthenticated. Non-GET requests need Content-Type: application/json, the SPA Origin and X-CSRF-Token. Every response is Cache-Control: no-store.",
+    "title": "oxledger SPA API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/agent-clients": {
+      "get": {
+        "operationId": "get_agent_clients",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/AgentClientView"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Agent software that can be delegated to.",
+        "x-access": "session"
+      }
+    },
+    "/agent-contexts": {
+      "get": {
+        "operationId": "get_agent_contexts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/ContextView"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Own agents' work contexts, R and why a context is unusable.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_agent_contexts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewContextBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Created"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "New work context (fresh_context_ack: true); closes the old one.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/agent-contexts/{id}/close": {
+      "post": {
+        "operationId": "post_agent_contexts_id_close",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Stop this agent: close the context, revoke delegations and tokens.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/agent-contexts/{id}/credentials": {
+      "post": {
+        "operationId": "post_agent_contexts_id_credentials",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IssuedCredential"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "New agent token (shown once).",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/agent-credentials/{id}/revoke": {
+      "post": {
+        "operationId": "post_agent_credentials_id_revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Revoke an agent token.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "post_auth_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LoginData"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Sign in; sets the __Host-ox_session cookie.",
+        "x-access": "anonymous",
+        "x-csrf": true
+      }
+    },
+    "/auth/login-context": {
+      "get": {
+        "operationId": "get_auth_login_context",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LoginContextData"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Login challenge; sets the __Host-ox_login cookie.",
+        "x-access": "anonymous"
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "post_auth_logout",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "End this session.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/auth/reauthenticate": {
+      "post": {
+        "operationId": "post_auth_reauthenticate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Step-up: re-enter the password.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/auth/session": {
+      "get": {
+        "operationId": "get_auth_session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SessionData"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Current identity, CSRF token and capabilities.",
+        "x-access": "session"
+      }
+    },
+    "/auth/sessions": {
+      "get": {
+        "operationId": "get_auth_sessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/SessionItem"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Own sessions (no tokens).",
+        "x-access": "session"
+      }
+    },
+    "/auth/sessions/{id}": {
+      "delete": {
+        "operationId": "delete_auth_sessions_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "End one of the own sessions.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/delegations": {
+      "get": {
+        "operationId": "get_delegations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/DelegationView"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Own delegations.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_delegations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DelegationBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DelegationView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Delegate a project to an agent (creates its first work context if needed).",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/delegations/{id}/revoke": {
+      "post": {
+        "operationId": "post_delegations_id_revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Revoke a delegation (only that project).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/issues/search": {
+      "post": {
+        "operationId": "post_issues_search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchParams"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SearchResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Find issues the caller can see (filters, custom field filter, free text).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/issues/{key}": {
+      "get": {
+        "operationId": "get_issues_key",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IssueDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One issue by key, read from the database (not the index).",
+        "x-access": "session"
+      }
+    },
+    "/resolve": {
+      "post": {
+        "operationId": "post_resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveParams"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ResolveResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Name, login, key or alias to ids the caller can see.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ]
+}

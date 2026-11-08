@@ -14,8 +14,8 @@
 use crate::agents::{self, DelegationInput};
 use crate::auth::{self, AuthContext, LoginInput, SessionPolicy};
 use crate::error::{self, ApiError, ErrorCode, api};
-use crate::mcp::OxServer;
-use crate::service::App;
+use crate::mcp::{OxServer, ResolveParams};
+use crate::service::{self, App, SearchParams};
 use axum::extract::{ConnectInfo, FromRequest, Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -25,9 +25,10 @@ use axum::{Extension, Json, Router};
 use chrono::Utc;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use serde::Deserialize;
+use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -67,6 +68,9 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/auth/logout", post(logout))
         .route("/auth/sessions", get(list_sessions))
         .route("/auth/sessions/{id}", delete(revoke_session))
+        .route("/issues/search", post(issues_search))
+        .route("/issues/{key}", get(issue_get))
+        .route("/resolve", post(resolve))
         .route("/agent-clients", get(agent_clients))
         .route(
             "/delegations",
@@ -425,7 +429,10 @@ impl LoginLimiter {
 
 async fn login_context(State(st): State<Arc<ApiState>>) -> ApiResult {
     let c = auth::new_login_challenge(&st.app.pool, &st.cfg.session).await?;
-    let mut resp = ok(json!({"csrf_token": c.csrf_token, "expires_at": c.expires_at}));
+    let mut resp = ok(LoginContextData {
+        csrf_token: c.csrf_token,
+        expires_at: c.expires_at,
+    });
     set_cookie(
         &mut resp,
         LOGIN_COOKIE,
@@ -436,11 +443,11 @@ async fn login_context(State(st): State<Arc<ApiState>>) -> ApiResult {
     Ok(resp)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct LoginBody {
-    login: String,
-    password: String,
+pub struct LoginBody {
+    pub login: String,
+    pub password: String,
 }
 
 async fn login(
@@ -496,21 +503,21 @@ async fn login(
             .await?;
     }
     let max_age = (s.absolute_expires_at - Utc::now()).num_seconds().max(0);
-    let mut resp = ok(json!({
-        "user_id": s.user_id,
-        "session_id": s.session_id,
-        "csrf_token": s.csrf_token,
-        "expires_at": s.absolute_expires_at,
-    }));
+    let mut resp = ok(LoginData {
+        user_id: s.user_id,
+        session_id: s.session_id,
+        csrf_token: s.csrf_token,
+        expires_at: s.absolute_expires_at,
+    });
     set_cookie(&mut resp, SESSION_COOKIE, &s.token, max_age, "Lax");
     set_cookie(&mut resp, LOGIN_COOKIE, "", 0, "Strict");
     Ok(resp)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct PasswordBody {
-    password: String,
+pub struct PasswordBody {
+    pub password: String,
 }
 
 async fn reauthenticate(
@@ -521,7 +528,7 @@ async fn reauthenticate(
     let ctx = human(&ra)?;
     let (_, session) = ctx.require_human_session()?;
     match auth::reauthenticate(&st.app.pool, &ctx, &body.password).await {
-        Ok(()) => Ok(ok(json!({"reauthenticated": true}))),
+        Ok(()) => Ok(ok(Done::default())),
         Err(e)
             if error::as_api_error(&e).map(|a| a.code) == Some(ErrorCode::InvalidCredentials) =>
         {
@@ -561,16 +568,19 @@ async fn session(
     .fetch_one(&st.app.pool)
     .await?;
     let csrf = ra.csrf_secret.as_deref().map(auth::encode);
-    Ok(ok(json!({
-        "user_id": user,
-        "session_id": session,
-        "login": row.0,
-        "name": row.1,
-        "is_admin": row.2,
-        "csrf_token": csrf,
-        "reauthenticated_at": row.3,
-        "expires_at": row.4,
-    })))
+    Ok(ok(SessionData {
+        user_id: user,
+        session_id: session,
+        login: row.0,
+        name: row.1,
+        is_admin: row.2,
+        csrf_token: csrf,
+        reauthenticated_at: row.3,
+        expires_at: row.4,
+        capabilities: Capabilities {
+            command_schema_versions: vec![1],
+        },
+    }))
 }
 
 async fn logout(
@@ -580,7 +590,7 @@ async fn logout(
     let ctx = human(&ra)?;
     let (_, session) = ctx.require_human_session()?;
     auth::revoke_session(&st.app.pool, &ctx, session, "logout").await?;
-    let mut resp = ok(json!({"signed_out": true}));
+    let mut resp = ok(Done::default());
     set_cookie(&mut resp, SESSION_COOKIE, "", 0, "Lax");
     Ok(resp)
 }
@@ -608,10 +618,14 @@ async fn list_sessions(
         .bind(user)
         .fetch_all(&st.app.pool)
         .await?;
-    let list: Vec<Value> = rows
+    let list: Vec<SessionItem> = rows
         .into_iter()
-        .map(|(id, created, seen, exp)| {
-            json!({"id": id, "created_at": created, "last_seen_at": seen, "expires_at": exp, "current": id == current})
+        .map(|(id, created_at, last_seen_at, expires_at)| SessionItem {
+            id,
+            created_at,
+            last_seen_at,
+            expires_at,
+            current: id == current,
         })
         .collect();
     Ok(ok(list))
@@ -624,7 +638,107 @@ async fn revoke_session(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     auth::revoke_session(&st.app.pool, &ctx, id_param(&id)?, "revoked_by_user").await?;
-    Ok(ok(json!({"revoked": true})))
+    Ok(ok(Done::default()))
+}
+
+// ---------------------------------------------------------------- issues (S2)
+// The same application services as MCP (§4.6); REST adds only the session.
+
+async fn issues_search(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(p): ApiJson<SearchParams>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(service::search(&st.app, ctx, p).await?))
+}
+
+async fn issue_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(service::get(&st.app, ctx, &key).await?))
+}
+
+async fn resolve(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(p): ApiJson<ResolveParams>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(service::resolve(
+        &st.app,
+        ctx,
+        &p.text,
+        p.kind.as_deref(),
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- response DTOs
+
+#[derive(Serialize, JsonSchema)]
+pub struct LoginContextData {
+    /// Send back as `X-CSRF-Token` with `POST /auth/login`.
+    pub csrf_token: String,
+    pub expires_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct LoginData {
+    pub user_id: Uuid,
+    pub session_id: Uuid,
+    /// Send as `X-CSRF-Token` with every non-GET request of this session.
+    pub csrf_token: String,
+    pub expires_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct Capabilities {
+    /// Command document versions this server accepts (§4.5).
+    pub command_schema_versions: Vec<u16>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct SessionData {
+    pub user_id: Uuid,
+    pub session_id: Uuid,
+    pub login: String,
+    pub name: String,
+    pub is_admin: bool,
+    pub csrf_token: Option<String>,
+    pub reauthenticated_at: chrono::DateTime<Utc>,
+    pub expires_at: chrono::DateTime<Utc>,
+    pub capabilities: Capabilities,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct SessionItem {
+    pub id: Uuid,
+    pub created_at: chrono::DateTime<Utc>,
+    pub last_seen_at: chrono::DateTime<Utc>,
+    pub expires_at: chrono::DateTime<Utc>,
+    /// The session making this request.
+    pub current: bool,
+}
+
+/// An action that returns nothing but success.
+#[derive(Serialize, JsonSchema)]
+pub struct Done {
+    pub ok: bool,
+}
+
+impl Default for Done {
+    fn default() -> Self {
+        Done { ok: true }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct Created {
+    pub id: Uuid,
 }
 
 // ---------------------------------------------------------------- agents
@@ -637,15 +751,15 @@ async fn agent_clients(
     Ok(ok(agents::list_agent_clients(&st.app.pool, &ctx).await?))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct DelegationBody {
-    agent_client_id: Uuid,
-    project_id: Uuid,
-    proposal_ops: Vec<String>,
-    writable_fields: Vec<String>,
-    max_ops: Option<i32>,
-    expires_in_days: Option<i64>,
+pub struct DelegationBody {
+    pub agent_client_id: Uuid,
+    pub project_id: Uuid,
+    pub proposal_ops: Vec<String>,
+    pub writable_fields: Vec<String>,
+    pub max_ops: Option<i32>,
+    pub expires_in_days: Option<i64>,
 }
 
 async fn create_delegation(
@@ -679,9 +793,9 @@ async fn list_delegations(
     Ok(ok(agents::list_delegations(&st.app.pool, &ctx).await?))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct Empty {}
+pub struct Empty {}
 
 async fn revoke_delegation(
     State(st): State<Arc<ApiState>>,
@@ -691,7 +805,7 @@ async fn revoke_delegation(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     agents::revoke_delegation(&st.app.pool, &ctx, id_param(&id)?).await?;
-    Ok(ok(json!({"revoked": true})))
+    Ok(ok(Done::default()))
 }
 
 async fn list_contexts(
@@ -702,11 +816,11 @@ async fn list_contexts(
     Ok(ok(agents::list_contexts(&st.app.pool, &ctx).await?))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct NewContextBody {
-    agent_client_id: Uuid,
-    fresh_context_ack: bool,
+pub struct NewContextBody {
+    pub agent_client_id: Uuid,
+    pub fresh_context_ack: bool,
 }
 
 async fn new_context(
@@ -723,7 +837,7 @@ async fn new_context(
         b.fresh_context_ack,
     )
     .await?;
-    Ok(ok(json!({"id": id})))
+    Ok(ok(Created { id }))
 }
 
 async fn close_context(
@@ -734,15 +848,15 @@ async fn close_context(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     agents::close_context(&st.app.pool, &ctx, id_param(&id)?).await?;
-    Ok(ok(json!({"closed": true})))
+    Ok(ok(Done::default()))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct CredentialBody {
+pub struct CredentialBody {
     #[serde(default)]
-    label: String,
-    expires_in_days: Option<i64>,
+    pub label: String,
+    pub expires_in_days: Option<i64>,
 }
 
 async fn issue_credential(
@@ -772,5 +886,5 @@ async fn revoke_credential(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     agents::revoke_credential(&st.app.pool, &ctx, id_param(&id)?).await?;
-    Ok(ok(json!({"revoked": true})))
+    Ok(ok(Done::default()))
 }

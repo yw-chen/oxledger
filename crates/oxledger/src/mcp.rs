@@ -86,6 +86,17 @@ fn to_error(e: anyhow::Error) -> ToolError {
 }
 
 impl OxServer {
+    /// Names of the tools this server registers (checked against the registry).
+    pub fn tool_names() -> Vec<String> {
+        let mut v: Vec<String> = Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
     pub fn new(app: Arc<App>, fixed_caller: Option<AuthContext>) -> Self {
         Self {
             app,

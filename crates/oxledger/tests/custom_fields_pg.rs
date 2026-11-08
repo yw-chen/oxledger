@@ -486,7 +486,8 @@ async fn server_ids(
 ) -> Result<BTreeSet<Uuid>, String> {
     let caller = AuthContext::test_viewer(viewer);
     let input = cf_filter::parse_input(json).map_err(|e| e.to_string())?;
-    let f = cf_filter::resolve(app, caller, scope, &input)
+    let mut conn = app.pool.acquire().await.unwrap();
+    let f = cf_filter::resolve(&mut conn, caller, scope, &input)
         .await
         .map_err(|e| e.to_string())?;
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT i.id FROM issues i WHERE ");

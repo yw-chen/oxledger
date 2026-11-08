@@ -3,6 +3,7 @@
 //! Every query goes through the caller's per-request scope.
 
 use crate::auth::AuthContext;
+use crate::cursor::{self, Position};
 use crate::db::{self, push_pred};
 use crate::error::{ApiError, ErrorCode, api};
 use crate::filter::{self, FilterInput};
@@ -13,12 +14,23 @@ use ox_core::workflow::{Transition, allowed_statuses};
 use ox_core::{IssueFacts, Pred};
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
+use sqlx::{FromRow, PgConnection, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 pub struct App {
     pub pool: PgPool,
     pub index: SearchIndex,
+}
+
+/// One read: a READ ONLY, REPEATABLE READ transaction, so the authorization
+/// checks and the data they guard come from the same snapshot on the same
+/// connection (contract 02 §3.7, §3.8 item 2).
+pub(crate) async fn read_tx(app: &App) -> Result<sqlx::Transaction<'static, Postgres>> {
+    let mut tx = app.pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
 }
 
 /// A bad read-tool parameter (`invalid_argument`, contract 02 §4.4).
@@ -27,7 +39,7 @@ pub(crate) fn user_err(msg: impl Into<String>) -> anyhow::Error {
 }
 
 const MAX_LIMIT: u32 = 100;
-const DEFAULT_LIMIT: u32 = 20;
+const DEFAULT_LIMIT: u32 = 50;
 const SEARCH_CANDIDATES: usize = 500;
 /// With free text, the ranked candidate list grows 500 → 2000 → 8000 until
 /// enough candidates survive the SQL re-check (visibility drift, status and
@@ -55,7 +67,7 @@ pub struct SearchParams {
     /// {"field": "Estimate (h)", "op": "between", "value": [2, 8]}]}. Combined with the other filters by AND.
     #[schemars(with = "Option<FilterInput>")]
     pub filter: Option<serde_json::Value>,
-    /// Max items, default 20, max 100.
+    /// Max items, default 50, max 100.
     pub limit: Option<u32>,
     /// Opaque cursor from a previous `next_cursor`.
     pub cursor: Option<String>,
@@ -161,6 +173,18 @@ pub async fn resolve(
     text: &str,
     kind: Option<&str>,
 ) -> Result<ResolveResult> {
+    let mut tx = read_tx(app).await?;
+    let r = resolve_in(&mut tx, caller, text, kind).await?;
+    tx.commit().await?;
+    Ok(r)
+}
+
+pub(crate) async fn resolve_in(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    text: &str,
+    kind: Option<&str>,
+) -> Result<ResolveResult> {
     if let Some(k) = kind
         && !KINDS.contains(&k)
     {
@@ -171,7 +195,7 @@ pub async fn resolve(
         .with_details(serde_json::json!({"path": "kind", "allowed": KINDS}))
         .into());
     }
-    let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
+    let scope = db::load_scope(&mut *conn, caller).await?;
     let visible_projects: Vec<Uuid> = scope.project_ids().collect();
     let t = text.trim();
     // Exact (case-insensitive) matches first; substring matches only if nothing exact.
@@ -206,7 +230,7 @@ pub async fn resolve(
             .bind(t)
             .bind(&visible_projects)
             .bind(kind)
-            .fetch_all(&app.pool)
+            .fetch_all(&mut *conn)
             .await?;
         if !found.is_empty() {
             return Ok(ResolveResult {
@@ -218,12 +242,12 @@ pub async fn resolve(
     let valid_values = match kind {
         Some("tracker") => {
             sqlx::query_scalar("SELECT name FROM trackers ORDER BY position, name")
-                .fetch_all(&app.pool)
+                .fetch_all(&mut *conn)
                 .await?
         }
         Some("status") => {
             sqlx::query_scalar("SELECT name FROM issue_statuses ORDER BY position, name")
-                .fetch_all(&app.pool)
+                .fetch_all(&mut *conn)
                 .await?
         }
         Some("project") => {
@@ -231,7 +255,7 @@ pub async fn resolve(
                 "SELECT key || ' ' || name FROM projects WHERE id = ANY($1) ORDER BY key",
             )
             .bind(&visible_projects)
-            .fetch_all(&app.pool)
+            .fetch_all(&mut *conn)
             .await?
         }
         _ => Vec::new(),
@@ -244,12 +268,12 @@ pub async fn resolve(
 
 /// Resolves a filter value to exactly one id of `kind`, or explains why not.
 pub(crate) async fn resolve_one(
-    app: &App,
+    conn: &mut PgConnection,
     caller: AuthContext,
     kind: &str,
     text: &str,
 ) -> Result<Uuid> {
-    let r = resolve(app, caller, text, Some(kind)).await?;
+    let r = resolve_in(conn, caller, text, Some(kind)).await?;
     let mut ids: Vec<Uuid> = r.candidates.iter().map(|c| c.id).collect();
     ids.sort();
     ids.dedup();
@@ -320,35 +344,63 @@ fn rows_to_briefs(rows: Vec<BriefRow>) -> Vec<IssueBrief> {
 }
 
 pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<SearchResult> {
-    let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
+    let mut tx = read_tx(app).await?;
+    let r = search_in(&mut tx, app, caller, p).await?;
+    tx.commit().await?;
+    Ok(r)
+}
+
+async fn search_in(
+    conn: &mut PgConnection,
+    app: &App,
+    caller: AuthContext,
+    p: SearchParams,
+) -> Result<SearchResult> {
+    let scope = db::load_scope(&mut *conn, caller).await?;
     let visible = scope.predicate();
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as i64;
-    let offset: i64 = match p.cursor.as_deref() {
-        None => 0,
-        Some(c) => c.parse().map_err(|_| {
-            api(
+    let text = p.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    // The cursor is bound to who asked, what was asked and the order (§4.5).
+    let qhash = cursor::query_hash(&serde_json::json!({
+        "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
+        "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
+        "order": if text.is_some() { "rank" } else { "updated_desc" },
+    }));
+    let pos = match p.cursor.as_deref() {
+        None => None,
+        Some(c) => Some(cursor::decode(&app.pool, c, caller.principal_id(), &qhash).await?),
+    };
+    let after: Option<(DateTime<Utc>, Uuid)> = match (&pos, text) {
+        (Some(Position::Keyset { t, i }), None) => Some((*t, *i)),
+        (None, _) | (Some(Position::Rank { .. }), Some(_)) => None,
+        _ => {
+            return Err(api(
                 ErrorCode::InvalidCursor,
                 "invalid cursor; search again without it",
-            )
-        })?,
+            ));
+        }
+    };
+    let offset: i64 = match pos {
+        Some(Position::Rank { o }) => o as i64,
+        _ => 0,
     };
 
     let mut filters: Vec<Pred> = Vec::new();
     let mut sql_extra: Vec<(&str, Uuid)> = Vec::new();
     if let Some(v) = p.project.as_deref() {
         filters.push(Pred::ProjectIs(
-            resolve_one(app, caller, "project", v).await?,
+            resolve_one(&mut *conn, caller, "project", v).await?,
         ));
     }
     if let Some(v) = p.tracker.as_deref() {
         filters.push(Pred::TrackerIn(vec![
-            resolve_one(app, caller, "tracker", v).await?,
+            resolve_one(&mut *conn, caller, "tracker", v).await?,
         ]));
     }
     if let Some(v) = p.status.as_deref() {
         sql_extra.push((
             "i.status_id = ",
-            resolve_one(app, caller, "status", v).await?,
+            resolve_one(&mut *conn, caller, "status", v).await?,
         ));
     }
     let categories: Option<Vec<String>> = match p.status_category.as_deref() {
@@ -370,13 +422,15 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
             None => return Err(user_err("assignee=me needs an authenticated caller")),
         },
         Some(v) => filters.push(Pred::AssigneeIn(vec![
-            resolve_one(app, caller, "principal", v).await?,
+            resolve_one(&mut *conn, caller, "principal", v).await?,
         ])),
     }
 
     let custom = match &p.filter {
         None => None,
-        Some(v) => Some(filter::resolve(app, caller, &scope, &filter::parse_input(v)?).await?),
+        Some(v) => {
+            Some(filter::resolve(&mut *conn, caller, &scope, &filter::parse_input(v)?).await?)
+        }
     };
 
     let mut all = vec![visible];
@@ -407,18 +461,24 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
                 qb.push(" AND i.id = ANY(").push_bind(ids).push(")");
             }
             None => {
+                // Keyset: live paging, newest first (§4.5).
+                if let Some((t, id)) = after {
+                    qb.push(" AND (i.updated_at, i.id) < (")
+                        .push_bind(t)
+                        .push(", ")
+                        .push_bind(id)
+                        .push(")");
+                }
                 qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
-                    .push_bind(limit + 1)
-                    .push(" OFFSET ")
-                    .push_bind(offset);
+                    .push_bind(limit + 1);
             }
         }
         qb
     };
 
     let mut truncated = false;
-    let mut items = match p.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        None => rows_to_briefs(build(None).build_query_as().fetch_all(&app.pool).await?),
+    let mut items = match text {
+        None => rows_to_briefs(build(None).build_query_as().fetch_all(&mut *conn).await?),
         // Free text: rank in the index (already filtered by visibility + the
         // index-side filters), then re-check every candidate in SQL — the index
         // may lag the database, and some filters exist only in SQL. Grow the
@@ -437,7 +497,7 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
                 let mut items = rows_to_briefs(
                     build(Some(ids))
                         .build_query_as()
-                        .fetch_all(&app.pool)
+                        .fetch_all(&mut *conn)
                         .await?,
                 );
                 for i in &mut items {
@@ -465,8 +525,34 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
                 .collect()
         }
     };
-    let next_cursor = (items.len() as i64 > limit).then(|| (offset + limit).to_string());
+    let more = items.len() as i64 > limit;
     items.truncate(limit as usize);
+    let next_cursor = match (more, text, items.last()) {
+        (true, None, Some(last)) => Some(
+            cursor::encode(
+                &app.pool,
+                caller.principal_id(),
+                &qhash,
+                Position::Keyset {
+                    t: last.updated_at,
+                    i: last.id,
+                },
+            )
+            .await?,
+        ),
+        (true, Some(_), _) => Some(
+            cursor::encode(
+                &app.pool,
+                caller.principal_id(),
+                &qhash,
+                Position::Rank {
+                    o: (offset + limit) as u32,
+                },
+            )
+            .await?,
+        ),
+        _ => None,
+    };
     Ok(SearchResult {
         items,
         next_cursor,
@@ -503,8 +589,30 @@ struct DetailRow {
 }
 
 pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetail> {
+    let mut tx = read_tx(app).await?;
+    let r = get_in(&mut tx, caller, key).await?;
+    tx.commit().await?;
+    Ok(r)
+}
+
+async fn get_in(conn: &mut PgConnection, caller: AuthContext, key: &str) -> Result<IssueDetail> {
     let key = key.trim().to_uppercase();
     let not_found = || api(ErrorCode::NotFound, format!("no issue {key}"));
+    // Keys are PROJECT-123; anything else cannot exist (and must not reach SQL
+    // as text PostgreSQL rejects, which would look different from not_found).
+    let well_formed = key.len() <= 32
+        && key.split_once('-').is_some_and(|(p, n)| {
+            !p.is_empty()
+                && p.chars().all(|c| c.is_ascii_alphanumeric())
+                && !n.is_empty()
+                && n.chars().all(|c| c.is_ascii_digit())
+        });
+    // The caller's scope comes first, whether or not the key exists, so a
+    // missing key does not answer measurably faster than an invisible one.
+    let scope = db::load_scope(&mut *conn, caller).await?;
+    if !well_formed {
+        return Err(not_found());
+    }
     let row: Option<DetailRow> = sqlx::query_as(
         "SELECT i.id, ck.key AS current_key, i.project_id, i.tracker_id, i.status_id, i.author_id,
                 i.assigned_to_id, i.is_private, i.subject, i.description,
@@ -523,11 +631,10 @@ pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetai
          WHERE rk.key = $1 AND i.archived_at IS NULL",
     )
     .bind(&key)
-    .fetch_optional(&app.pool)
+    .fetch_optional(&mut *conn)
     .await?;
     let row = row.ok_or_else(not_found)?;
 
-    let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
     let facts = IssueFacts {
         project_id: row.project_id,
         tracker_id: row.tracker_id,
@@ -550,7 +657,7 @@ pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetai
             qb.push_bind(pk.clone()).push(" AND ");
             push_pred(&mut qb, "i", &visible);
             qb.push(")");
-            let ok: bool = qb.build_query_scalar().fetch_one(&app.pool).await?;
+            let ok: bool = qb.build_query_scalar().fetch_one(&mut *conn).await?;
             ok.then(|| pk.clone())
         }
     };
@@ -558,17 +665,16 @@ pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetai
     qb.push("i.parent_id = ").push_bind(row.id).push(" AND ");
     push_pred(&mut qb, "i", &visible);
     qb.push(" ORDER BY k.number");
-    let children = rows_to_briefs(qb.build_query_as().fetch_all(&app.pool).await?);
+    let children = rows_to_briefs(qb.build_query_as().fetch_all(&mut *conn).await?);
 
-    let role_ids =
-        db::role_ids_for(&mut *app.pool.acquire().await?, caller, row.project_id).await?;
+    let role_ids = db::role_ids_for(&mut *conn, caller, row.project_id).await?;
     let transitions: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
         "SELECT tracker_id, role_id, old_status_id, new_status_id FROM workflow_transitions
          WHERE tracker_id = $1 AND old_status_id = $2",
     )
     .bind(row.tracker_id)
     .bind(row.status_id)
-    .fetch_all(&app.pool)
+    .fetch_all(&mut *conn)
     .await?;
     let transitions: Vec<Transition> = transitions
         .into_iter()
@@ -583,7 +689,7 @@ pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetai
         .collect();
     let statuses: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, name FROM issue_statuses ORDER BY position, name")
-            .fetch_all(&app.pool)
+            .fetch_all(&mut *conn)
             .await?;
     let mut order: Vec<Uuid> = vec![row.status_id];
     order.extend(statuses.iter().map(|s| s.0).filter(|s| *s != row.status_id));
@@ -598,7 +704,7 @@ pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetai
         .iter()
         .filter_map(|id| statuses.iter().find(|s| s.0 == *id).map(|s| s.1.clone()))
         .collect();
-    let custom_fields = custom_field_values(app, caller, &role_ids, &row).await?;
+    let custom_fields = custom_field_values(&mut *conn, caller, &role_ids, &row).await?;
 
     Ok(IssueDetail {
         requested_key: (row.current_key != key).then_some(key.clone()),
@@ -645,12 +751,12 @@ struct CfRow {
 /// (`db::role_ids_for`), the same rule filtering uses
 /// (`custom_fields::readable_projects`).
 async fn custom_field_values(
-    app: &App,
+    conn: &mut PgConnection,
     caller: AuthContext,
     roles: &[Uuid],
     row: &DetailRow,
 ) -> Result<Vec<CustomFieldValue>> {
-    let me = db::effective(&mut *app.pool.acquire().await?, caller).await?;
+    let me = db::effective(&mut *conn, caller).await?;
     let admin = me.is_admin;
     // Agents: visible = true fields only (contract 02 §3.5); the delegator's
     // roles decide workflow, not what the agent may read.
@@ -676,7 +782,7 @@ async fn custom_field_values(
     .bind(row.project_id)
     .bind(admin)
     .bind(roles)
-    .fetch_all(&app.pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows
         .into_iter()

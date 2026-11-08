@@ -4,11 +4,14 @@
 pub mod agents;
 pub mod api;
 pub mod auth;
+pub mod cursor;
 pub mod custom_fields;
 pub mod db;
 pub mod error;
 pub mod filter;
 pub mod mcp;
+pub mod openapi;
+pub mod registry;
 pub mod search;
 #[cfg(feature = "test-support")]
 pub mod seed;

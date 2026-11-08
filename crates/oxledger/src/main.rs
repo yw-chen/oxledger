@@ -11,6 +11,7 @@
 //!   oxledger user revoke-sessions <login>        end all of the user's browser sessions
 //!   oxledger agent-client add <name> <egress-policy-ref>   created disabled
 //!   oxledger agent-client enable|disable <name>
+//!   oxledger api-spec [dir]  write <dir>/openapi.json and <dir>/types.ts (default dir: api)
 //!   oxledger seed-demo    fill an empty database with demo data, print API keys
 //!                         (only with --features test-support)
 //!   oxledger reindex      rebuild the search index from PostgreSQL
@@ -96,6 +97,7 @@ fn spawn_sweeper(app: Arc<App>) {
 
 async fn serve() -> Result<()> {
     let app = open_app().await?;
+    oxledger::cursor::init(&app.pool).await?;
     spawn_indexer(app.clone());
     spawn_field_indexer(app.clone());
     spawn_sweeper(app.clone());
@@ -117,6 +119,7 @@ async fn serve() -> Result<()> {
 
 async fn stdio() -> Result<()> {
     let app = open_app().await?;
+    oxledger::cursor::init(&app.pool).await?;
     spawn_indexer(app.clone());
     let key = env("OXLEDGER_API_KEY", None)?;
     let Some(ctx) = auth::authenticate_bearer(&app.pool, key.trim()).await? else {
@@ -198,12 +201,28 @@ async fn main() -> Result<()> {
             eprintln!("Demo data created. Keys above are shown once; only hashes are stored.");
             Ok(())
         }
+        Some("api-spec") => {
+            // Writes the OpenAPI document and the TypeScript types (no DB needed).
+            let dir = PathBuf::from(std::env::args().nth(2).unwrap_or_else(|| "api".into()));
+            std::fs::create_dir_all(&dir)?;
+            let doc = oxledger::openapi::document();
+            std::fs::write(
+                dir.join("openapi.json"),
+                serde_json::to_string_pretty(&doc)?
+                    + "
+",
+            )?;
+            std::fs::write(dir.join("types.ts"), oxledger::openapi::typescript(&doc))?;
+            eprintln!("wrote {}/openapi.json and types.ts", dir.display());
+            Ok(())
+        }
         Some("user" | "agent-client") => {
             let args: Vec<String> = std::env::args().skip(1).collect();
             admin(&args).await
         }
         Some("reindex") => {
             let app = open_app().await?;
+            oxledger::cursor::init(&app.pool).await?;
             let n = app.index.rebuild(&app.pool).await?;
             eprintln!("reindexed ({n} outbox messages applied)");
             Ok(())
@@ -215,7 +234,7 @@ async fn main() -> Result<()> {
             )
         }
         _ => {
-            eprintln!("usage: oxledger <serve|stdio|seed-demo|reindex|user|agent-client>");
+            eprintln!("usage: oxledger <serve|stdio|seed-demo|reindex|user|agent-client|api-spec>");
             std::process::exit(2);
         }
     }

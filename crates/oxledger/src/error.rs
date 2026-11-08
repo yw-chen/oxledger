@@ -10,13 +10,14 @@
 //! REST `{"error": …}`, without the wrapper). Only malformed parameters are
 //! JSON-RPC protocol errors.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
 /// Stable error codes. Programs depend on these, never on `message`.
 /// Codes of the §4.4 table arrive with the code that produces them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Malformed request: bad JSON, unknown or missing fields, both a cookie
@@ -59,7 +60,7 @@ pub enum ErrorCode {
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
 /// on an error names options, not steps to run in order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NextAction {
     FixInput,
@@ -182,7 +183,7 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 /// The error object of §4.3 (`{"error": …}` in REST, bare in MCP).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ErrorBody {
     pub code: ErrorCode,
     pub request_id: Uuid,
@@ -243,6 +244,21 @@ pub fn as_api_error(e: &anyhow::Error) -> Option<&ApiError> {
 pub fn classify(e: &anyhow::Error) -> Option<ApiError> {
     if let Some(a) = as_api_error(e) {
         return Some(a.clone());
+    }
+    // A text value PostgreSQL cannot store (NUL byte, invalid encoding): the
+    // caller's input, never a server fault.
+    let bad_text = e.chain().any(|c| {
+        matches!(c.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::Database(d)) if matches!(d.code().as_deref(), Some("22021" | "22P05")))
+    });
+    if bad_text {
+        return Some(
+            ApiError::new(
+                ErrorCode::InvalidArgument,
+                "a text value contains a NUL byte or invalid characters",
+            )
+            .with_details(serde_json::json!({"kind": "invalid_text"})),
+        );
     }
     let transient = e.chain().any(|c| {
         matches!(

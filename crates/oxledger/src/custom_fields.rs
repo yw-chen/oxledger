@@ -278,7 +278,11 @@ pub async fn clear_value<'e>(db: impl PgExecutor<'e>, issue_id: Uuid, field_id: 
 }
 
 /// The option id of a list field by label (case-insensitive).
-pub async fn option_id(pool: &PgPool, field_id: i32, label: &str) -> Result<Option<Uuid>> {
+pub async fn option_id<'e>(
+    pool: impl PgExecutor<'e>,
+    field_id: i32,
+    label: &str,
+) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar(
         "SELECT id FROM field_options WHERE field_id = $1 AND lower(label) = lower($2)",
     )
@@ -307,7 +311,7 @@ impl FieldRow {
 }
 
 /// All fields (except those being deleted) with their applicability, by position and name.
-pub async fn list_fields(pool: &PgPool) -> Result<Vec<FieldRow>> {
+pub async fn list_fields<'e>(pool: impl PgExecutor<'e>) -> Result<Vec<FieldRow>> {
     Ok(sqlx::query_as(
         "SELECT d.id, d.name, d.ftype, d.visible, d.is_for_all,
                 ARRAY(SELECT tracker_id FROM field_trackers t WHERE t.field_id = d.id ORDER BY tracker_id) AS trackers,

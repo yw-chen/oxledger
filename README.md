@@ -26,6 +26,8 @@ printf '%s' 'a long password' | cargo run -p oxledger -- user set-password alice
 
 Agents get their own `oxa_` tokens, issued by a signed-in user per delegated project (contract 02 §3).
 
+The SPA API contract is generated into [api/openapi.json](api/openapi.json) and [api/types.ts](api/types.ts) (`oxledger api-spec`).
+
 See [docs/playbook.md](docs/playbook.md) for MCP client setup, the demo permission matrix, and known pitfalls.
 
 ## Design docs
