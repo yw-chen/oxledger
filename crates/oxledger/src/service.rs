@@ -3,6 +3,7 @@
 //! Every query goes through the caller's per-request scope.
 
 use crate::db::{self, Caller, push_pred};
+use crate::error::{ApiError, ErrorCode, api};
 use crate::filter::{self, FilterInput};
 use crate::search::SearchIndex;
 use anyhow::Result;
@@ -19,19 +20,9 @@ pub struct App {
     pub index: SearchIndex,
 }
 
-/// Errors the caller can act on (bad filter value, unknown key). Anything
-/// else is an internal error.
-#[derive(Debug)]
-pub struct UserError(pub String);
-impl std::fmt::Display for UserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for UserError {}
-
+/// A bad read-tool parameter (`invalid_argument`, contract 02 §4.4).
 pub(crate) fn user_err(msg: impl Into<String>) -> anyhow::Error {
-    anyhow::Error::new(UserError(msg.into()))
+    api(ErrorCode::InvalidArgument, msg)
 }
 
 const MAX_LIMIT: u32 = 100;
@@ -171,12 +162,14 @@ pub async fn resolve(
     if let Some(k) = kind
         && !KINDS.contains(&k)
     {
-        return Err(user_err(format!(
-            "kind must be one of {}",
-            KINDS.join(", ")
-        )));
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            format!("kind must be one of {}", KINDS.join(", ")),
+        )
+        .with_details(serde_json::json!({"path": "kind", "allowed": KINDS}))
+        .into());
     }
-    let scope = db::load_scope(&app.pool, caller).await?;
+    let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
     let visible_projects: Vec<Uuid> = scope.project_ids().collect();
     let t = text.trim();
     // Exact (case-insensitive) matches first; substring matches only if nothing exact.
@@ -255,19 +248,39 @@ pub(crate) async fn resolve_one(app: &App, caller: Caller, kind: &str, text: &st
     ids.dedup();
     match ids.as_slice() {
         [one] => Ok(*one),
-        [] if r.valid_values.is_empty() => Err(user_err(format!("no {kind} matches {text:?}"))),
-        [] => Err(user_err(format!(
-            "no {kind} matches {text:?}; valid: {}",
-            r.valid_values.join(", ")
-        ))),
-        _ => Err(user_err(format!(
-            "{kind} {text:?} is ambiguous: {}",
-            r.candidates
-                .iter()
-                .map(|c| c.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
+        // `resolve` only returns what the caller can see, so the lists below
+        // reveal nothing hidden.
+        [] if r.valid_values.is_empty() => Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            format!("no {kind} matches {text:?}"),
+        )
+        .with_details(serde_json::json!({"path": kind}))
+        .into()),
+        [] => Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            format!(
+                "no {kind} matches {text:?}; valid: {}",
+                r.valid_values.join(", ")
+            ),
+        )
+        .with_details(serde_json::json!({"path": kind, "allowed": r.valid_values}))
+        .into()),
+        _ => Err(ApiError::new(
+            ErrorCode::AmbiguousReference,
+            format!(
+                "{kind} {text:?} is ambiguous: {}",
+                r.candidates
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+        .with_details(serde_json::json!({
+            "path": kind,
+            "candidates": r.candidates.iter().map(|c| serde_json::json!({"id": c.id, "name": c.name})).collect::<Vec<_>>(),
+        }))
+        .into()),
     }
 }
 
@@ -300,12 +313,17 @@ fn rows_to_briefs(rows: Vec<BriefRow>) -> Vec<IssueBrief> {
 }
 
 pub async fn search(app: &App, caller: Caller, p: SearchParams) -> Result<SearchResult> {
-    let scope = db::load_scope(&app.pool, caller).await?;
+    let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
     let visible = scope.predicate();
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as i64;
     let offset: i64 = match p.cursor.as_deref() {
         None => 0,
-        Some(c) => c.parse().map_err(|_| user_err("invalid cursor"))?,
+        Some(c) => c.parse().map_err(|_| {
+            api(
+                ErrorCode::InvalidCursor,
+                "invalid cursor; search again without it",
+            )
+        })?,
     };
 
     let mut filters: Vec<Pred> = Vec::new();
@@ -479,7 +497,7 @@ struct DetailRow {
 
 pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
     let key = key.trim().to_uppercase();
-    let not_found = || user_err(format!("no issue {key}"));
+    let not_found = || api(ErrorCode::NotFound, format!("no issue {key}"));
     let row: Option<DetailRow> = sqlx::query_as(
         "SELECT i.id, ck.key AS current_key, i.project_id, i.tracker_id, i.status_id, i.author_id,
                 i.assigned_to_id, i.is_private, i.subject, i.description,
@@ -502,7 +520,7 @@ pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
     .await?;
     let row = row.ok_or_else(not_found)?;
 
-    let scope = db::load_scope(&app.pool, caller).await?;
+    let scope = db::load_scope(&mut *app.pool.acquire().await?, caller).await?;
     let facts = IssueFacts {
         project_id: row.project_id,
         tracker_id: row.tracker_id,
@@ -535,7 +553,8 @@ pub async fn get(app: &App, caller: Caller, key: &str) -> Result<IssueDetail> {
     qb.push(" ORDER BY k.number");
     let children = rows_to_briefs(qb.build_query_as().fetch_all(&app.pool).await?);
 
-    let role_ids = db::role_ids_for(&app.pool, caller, row.project_id).await?;
+    let role_ids =
+        db::role_ids_for(&mut *app.pool.acquire().await?, caller, row.project_id).await?;
     let transitions: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
         "SELECT tracker_id, role_id, old_status_id, new_status_id FROM workflow_transitions
          WHERE tracker_id = $1 AND old_status_id = $2",
@@ -624,7 +643,7 @@ async fn custom_field_values(
     roles: &[Uuid],
     row: &DetailRow,
 ) -> Result<Vec<CustomFieldValue>> {
-    let admin = db::is_admin(&app.pool, caller).await?;
+    let admin = db::is_admin(&mut *app.pool.acquire().await?, caller).await?;
     let rows: Vec<CfRow> = sqlx::query_as(
         "SELECT d.name, d.ftype, cf.v_num::float8 AS v_num, cf.v_date, cf.v_text, cf.v_ref, cf.v_bool,
                 o.label AS option_label, o.active AS option_active, pr.name AS principal_name
@@ -672,9 +691,4 @@ async fn custom_field_values(
             }
         })
         .collect())
-}
-
-/// Unwraps a [`UserError`] if that is what `e` is.
-pub fn as_user_error(e: &anyhow::Error) -> Option<&UserError> {
-    e.downcast_ref::<UserError>()
 }

@@ -4,6 +4,7 @@
 //!   oxledger serve        HTTP server: /mcp (Streamable HTTP, bearer API key), /healthz
 //!   oxledger stdio        MCP over stdio as the user owning OXLEDGER_API_KEY
 //!   oxledger seed-demo    fill an empty database with demo data, print API keys
+//!                         (only with --features test-support)
 //!   oxledger reindex      rebuild the search index from PostgreSQL
 //!
 //! Configuration (environment): DATABASE_URL, OXLEDGER_INDEX_DIR (default ./data/index),
@@ -138,6 +139,7 @@ async fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("serve") => serve().await,
         Some("stdio") => stdio().await,
+        #[cfg(feature = "test-support")]
         Some("seed-demo") => {
             let pool = db::connect(&env("DATABASE_URL", None)?).await?;
             for (login, key) in oxledger::seed::seed_demo(&pool).await? {
@@ -151,6 +153,12 @@ async fn main() -> Result<()> {
             let n = app.index.rebuild(&app.pool).await?;
             eprintln!("reindexed ({n} outbox messages applied)");
             Ok(())
+        }
+        #[cfg(not(feature = "test-support"))]
+        Some("seed-demo") => {
+            bail!(
+                "seed-demo is only in builds with the test-support feature: cargo run --features test-support -- seed-demo"
+            )
         }
         _ => {
             eprintln!("usage: oxledger <serve|stdio|seed-demo|reindex>");

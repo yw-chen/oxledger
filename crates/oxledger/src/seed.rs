@@ -3,7 +3,8 @@
 //! Prints freshly generated API keys; only their hashes are stored.
 
 use crate::custom_fields::{self, NewField, set_value};
-use crate::db::{self, NewIssue};
+use crate::db;
+use crate::test_support::{self, NewIssue};
 use anyhow::{Result, bail};
 use ox_core::filter::{FieldType, Value};
 use sqlx::PgPool;
@@ -167,7 +168,7 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
                  assigned_to_id,
                  is_private,
                  parent_id| {
-        db::create_issue(
+        test_support::create_issue(
             pool,
             NewIssue {
                 project_id,

@@ -19,7 +19,7 @@ Rust (axum, sqlx) · PostgreSQL 18+ · tantivy · rmcp · SvelteKit SPA
 ```bash
 docker run -d --name oxledger-pg -e POSTGRES_USER=oxledger -e POSTGRES_PASSWORD=oxledger_dev   -e POSTGRES_DB=oxledger -p 127.0.0.1:55432:5432 -v oxledger-pgdata:/var/lib/postgresql postgres:18
 export DATABASE_URL=postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger
-cargo run -p oxledger -- seed-demo   # prints demo API keys
+cargo run -p oxledger --features test-support -- seed-demo   # prints demo API keys
 cargo run -p oxledger -- serve       # MCP at http://127.0.0.1:8080/mcp (Authorization: Bearer <key>)
 ```
 

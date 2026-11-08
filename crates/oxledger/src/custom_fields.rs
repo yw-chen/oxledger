@@ -326,7 +326,7 @@ pub async fn list_fields(pool: &PgPool) -> Result<Vec<FieldRow>> {
 /// not signed in. `get` uses the same rule, so filtering and display agree
 /// (Redmine differs here: it filters by member roles only).
 pub async fn readable_projects(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     caller: Caller,
     principals: &[Uuid],
 ) -> Result<std::collections::HashMap<i32, Vec<Uuid>>> {
@@ -354,7 +354,7 @@ pub async fn readable_projects(
     )
     .bind(principals)
     .bind(builtin)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().collect())
 }

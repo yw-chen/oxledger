@@ -296,9 +296,9 @@ async fn load_world(pool: &PgPool, rng: &mut Rng) -> World {
             author_id: users[rng.below(3)],
             assigned_to_id: rng.chance(0.5).then(|| users[rng.below(3)]),
         };
-        let (id, _) = db::create_issue(
+        let (id, _) = oxledger::test_support::create_issue(
             pool,
-            db::NewIssue {
+            oxledger::test_support::NewIssue {
                 project_id: f.project_id,
                 tracker_id: f.tracker_id,
                 status_id: status,
@@ -642,7 +642,11 @@ async fn custom_field_filters_match_reference_on_pg() {
     let viewers = [None, Some(w.admin), Some(w.member), Some(w.outsider)];
     let mut scopes = Vec::new();
     for v in viewers {
-        scopes.push(db::load_scope(&pool, Caller(v)).await.unwrap());
+        scopes.push(
+            db::load_scope(&mut pool.acquire().await.unwrap(), Caller(v))
+                .await
+                .unwrap(),
+        );
     }
     let idx = |name: &str| w.defs.iter().position(|d| d.name == name).unwrap();
     let num = |x: f64| Value::Num(x);
@@ -928,10 +932,10 @@ async fn custom_field_filters_match_reference_on_pg() {
         )
         .await
         .unwrap_err();
-        service::as_user_error(&e)
-            .unwrap_or_else(|| panic!("not a user error: {e:#}"))
-            .0
-            .clone()
+        let a =
+            oxledger::error::as_api_error(&e).unwrap_or_else(|| panic!("not an API error: {e:#}"));
+        assert_eq!(a.code, oxledger::error::ErrorCode::InvalidFilter, "{e:#}");
+        a.message.clone()
     };
     let msg = user_error(json!({"field": "Sevrity", "op": "eq", "value": "High"})).await;
     assert!(

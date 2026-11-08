@@ -12,12 +12,12 @@ docker run -d --name oxledger-pg -e POSTGRES_USER=oxledger -e POSTGRES_PASSWORD=
   -e POSTGRES_DB=oxledger -p 127.0.0.1:55432:5432 -v oxledger-pgdata:/var/lib/postgresql postgres:18
 
 cp .env.example .env            # 或直接 export 裡面的變數
-cargo build
+cargo build --features test-support   # seed-demo 只在這個 feature 下編譯（契約 02 §2 P5）
 ./target/debug/oxledger seed-demo   # 只能對空資料庫跑；印出 admin/alice/bob/carol 的 API key（只顯示這一次）
 ./target/debug/oxledger serve       # http://127.0.0.1:8080/mcp，Authorization: Bearer <key>
 ```
 
-測試：`cargo test`。整合測試（E4 可見性、自訂欄位）預設用同一台 PostgreSQL 上的 `oxledger_test`；
+測試：`cargo test`（整合測試透過 dev-dependency 自動開 `test-support`）。整合測試（E4 可見性、自訂欄位、S0）預設用同一台 PostgreSQL 上的 `oxledger_test`；
 `OXLEDGER_TEST_DATABASE_URL` 可以指到別的資料庫名稱，不存在會自動建（`tests/common/mod.rs`）。
 多條工作線同時跑測試時各用各的，例如 `.../oxledger_test_d14`：測試會 TRUNCATE 整個 schema，共用會互相清掉資料。
 
@@ -76,13 +76,20 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | 本分支的 binary 跑過共用的 `oxledger` 之後，其他分支的 binary 啟動失敗（未實際觸發，依 sqlx `Migrator` 預設行為推斷） | 資料庫記錄了 migration 0002，舊分支找不到這個檔案就拒絕執行 | 開發中的 migration 用獨立資料庫試，例如 `DATABASE_URL=.../oxledger_d14_demo` |
 | 改了已套用的 migration 後，測試或 binary 啟動失敗：`migration 2 was previously applied but has been modified` | sqlx 會比對每個已套用 migration 的 checksum | 還沒進 main 的 migration 可以改，但要重建自己的測試／示範資料庫（例如 `DROP DATABASE oxledger_test_d14`，`test_pool` 會自動重建）；進 main 之後一律另開新 migration |
 | 合成資料用 `generate_series … CROSS JOIN fields WHERE random() < coverage`，結果每個欄位不是全有就是全無 | planner 把 `random()` 的過濾放在只算一次的位置（實測 200 個欄位只長出 12 個，每個 10 萬筆） | 用決定性的 hash 抽樣：`hashint8extended(i * 1000 + field_id, seed)`，E9 也是這樣做 |
+| 新增 migration 檔後測試還是舊行為（例如 0004 的 trigger 修正沒生效） | `sqlx::migrate!` 在編譯時嵌入 migrations；只新增檔案、Rust 原始碼沒變時 crate 不會重編 | `crates/oxledger/build.rs` 宣告 `rerun-if-changed=../../migrations`。不要刪這個檔 |
+| 啟動或測試時 migration 0004 失敗：`N issue_cf row(s) do not match their custom field type` | 0002 的 `IF NOT ok` 讓檢查結果是 NULL 的值通過（例如 string 欄位寫進 `v_num`），0004 先掃描既有資料，有壞資料就拒絕繼續 | 列出來：`SELECT c.* , d.ftype FROM issue_cf c JOIN field_defs d ON d.id = c.field_id`，對照 0004 的 CASE 找出不符的列，搬到正確的值欄位或刪掉後重啟。訊息只列前 5 筆 |
+| `cargo run -- seed-demo` 回「only in builds with the test-support feature」 | `seed`、`test_support` 直接寫表、不經命令引擎，正式建置不編進去 | `cargo run --features test-support -- seed-demo` |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
 
 ## 設計上的防呆
 
 - **可見性只有一份規則**：`ox-core::Scope::predicate()` 產生 `Pred`，同時編成 SQL（`db::push_pred`）與 tantivy filter（`SearchIndex::filter`）。E4 測試拿 Redmine 規則的獨立實作對照四種結果。改規則時先跑 `cargo test -p oxledger --test visibility_e4`。
 - **搜尋結果一律回 DB 複驗**：tantivy 可能落後資料庫（outbox 非同步），所以 `service::search` 會把候選 id 再過一次 SQL 可見性條件。
-- **看不到 = 不存在**：`get` 對沒權限的 issue 回「no issue X」，和真的不存在一樣，避免用 key 探測。
+- **看不到 = 不存在**：`get` 對沒權限的 issue 回 `not_found`「no issue X」，和真的不存在一樣，避免用 key 探測。
+- **身分只在一處檢查**（契約 02 §2 P4）：`db::effective` 確認 principal 存在、是 user、是 active；`load_scope`、`role_ids_for`、`is_admin` 都先經過它。被鎖的使用者在下一個請求就回 `unauthenticated`，長時間執行的 stdio 也一樣。新增授權函式時一律從 `effective` 開始。
+- **授權函式吃連線，不吃 pool**（P3）：`load_scope`、`role_ids_for`、`is_admin`、`custom_fields::readable_projects` 收 `&mut PgConnection`。寫入路徑傳交易本身，權限判斷才會看到同一個快照與鎖；讀取路徑傳 `&mut app.pool.acquire().await?`。
+- **錯誤碼**（P9，契約 02 §4.3、§4.4、§14.2）：可行動的錯誤是 `error::ApiError`（穩定的 `code`、`next_actions`、`details`）。MCP 回工具結果 `isError: true`，structured content 是錯誤物件本身；其他錯誤是 JSON-RPC internal error，只帶 `request_id`，原因只寫進 log。不要把 SQL、constraint 名稱放進 `message`。
+- **測試用的直接寫入**（P5）：`test_support::create_issue` 不檢查權限、不走 workflow、不產生事件，只在 `test-support` feature 下編譯。
 - **自訂欄位（D14，型別化 EAV）**：值在 `issue_cf`，每種型別一個值欄位；觸發器 `issue_cf_check` 保證值放在該型別的欄位（`int` 必須是整數、list 必須是該欄位的選項、user 必須存在、string／link 最多 2000 bytes 以免超過 btree 單筆上限）。空字串不存（`set_value("")` 等於清除），對齊 Redmine 把 '' 當成沒有值。篩選器依賴這些保證：每個條件都是一個 `EXISTS (… cf.field_id = <id> …)`，帶型別條件，也就是對 `v_x` 的比較，或 is_null／not_null 時的 `v_x IS NOT NULL`（報告 02 §5.3、§8）。外面再包一層適用性條件 E（tracker、專案、可讀專案），由 `db::push_pred` 編譯。
 - **受限欄位（`field_defs.visible = false` + `field_roles`）**：只有 admin，以及在該專案的實際角色包含指定角色的人讀得到。實際角色同 `db::role_ids_for`：成員角色（含透過群組）；不是成員的公開專案用內建 Non member；沒登入用 Anonymous。`field_roles` 可以放內建角色（migration 0003）。`search`（filter，`custom_fields::readable_projects`）和 `get`（custom_fields）用同一套規則；改其中一邊要同步改另一邊，`custom_fields_pg` 的 Triage 欄位會抓到不一致。
 - **欄位不能改型別**：有觸發器擋，Redmine 也不允許。

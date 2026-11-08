@@ -6,16 +6,19 @@
 //! puts a [`Caller`] into the request extensions.
 
 use crate::db::Caller;
+use crate::error::{self, ApiError, ErrorCode};
 use crate::service::{self, App, IssueDetail, ResolveResult, SearchParams, SearchResult};
 use rmcp::RoleServer;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::IntoCallToolResult;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::ErrorData;
+use rmcp::model::{CallToolResponse, CallToolResult, ErrorData};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::service::RequestContext;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct OxServer {
@@ -39,12 +42,43 @@ pub struct ResolveParams {
     pub kind: Option<String>,
 }
 
-fn to_error(e: anyhow::Error) -> ErrorData {
-    match service::as_user_error(&e) {
-        Some(u) => ErrorData::invalid_params(u.0.clone(), None),
+/// Why a tool call failed. A domain error the caller can act on is a tool
+/// result with `isError: true` and the §4.3 error object as structured content
+/// (contract 02 §4.6), so agents get a stable `code`, `next_actions` and
+/// `details`. Anything else is a JSON-RPC error that says nothing about the
+/// cause; its `request_id` is in the log.
+#[derive(Debug)]
+pub enum ToolError {
+    Domain(ApiError),
+    Protocol(ErrorData),
+}
+
+impl IntoCallToolResult for ToolError {
+    fn into_call_tool_result(self) -> Result<CallToolResponse, ErrorData> {
+        match self {
+            ToolError::Domain(e) => {
+                let request_id = Uuid::now_v7();
+                tracing::info!(%request_id, code = e.code.as_str(), "tool error: {}", e.message);
+                let body = serde_json::to_value(e.body(request_id)).map_err(|e| {
+                    ErrorData::internal_error(format!("serialize error: {e}"), None)
+                })?;
+                Ok(CallToolResult::structured_error(body).into())
+            }
+            ToolError::Protocol(e) => Err(e),
+        }
+    }
+}
+
+fn to_error(e: anyhow::Error) -> ToolError {
+    match error::classify(&e) {
+        Some(a) => ToolError::Domain(a),
         None => {
-            tracing::error!("tool failed: {e:#}");
-            ErrorData::internal_error("internal error", None)
+            let request_id = Uuid::now_v7();
+            tracing::error!(%request_id, "tool failed: {e:#}");
+            ToolError::Protocol(ErrorData::internal_error(
+                format!("internal error (request_id {request_id})"),
+                None,
+            ))
         }
     }
 }
@@ -58,14 +92,19 @@ impl OxServer {
         }
     }
 
-    fn caller(&self, ctx: &RequestContext<RoleServer>) -> Result<Caller, ErrorData> {
+    fn caller(&self, ctx: &RequestContext<RoleServer>) -> Result<Caller, ToolError> {
         if let Some(c) = self.fixed_caller {
             return Ok(c);
         }
         ctx.extensions
             .get::<axum::http::request::Parts>()
             .and_then(|p| p.extensions.get::<Caller>().copied())
-            .ok_or_else(|| ErrorData::invalid_request("not authenticated", None))
+            .ok_or_else(|| {
+                ToolError::Domain(ApiError::new(
+                    ErrorCode::Unauthenticated,
+                    "not authenticated",
+                ))
+            })
     }
 }
 
@@ -80,7 +119,7 @@ impl OxServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
         ctx: RequestContext<RoleServer>,
-    ) -> Result<Json<SearchResult>, ErrorData> {
+    ) -> Result<Json<SearchResult>, ToolError> {
         let caller = self.caller(&ctx)?;
         service::search(&self.app, caller, p)
             .await
@@ -97,7 +136,7 @@ impl OxServer {
         &self,
         Parameters(p): Parameters<GetParams>,
         ctx: RequestContext<RoleServer>,
-    ) -> Result<Json<IssueDetail>, ErrorData> {
+    ) -> Result<Json<IssueDetail>, ToolError> {
         let caller = self.caller(&ctx)?;
         service::get(&self.app, caller, &p.key)
             .await
@@ -114,7 +153,7 @@ impl OxServer {
         &self,
         Parameters(p): Parameters<ResolveParams>,
         ctx: RequestContext<RoleServer>,
-    ) -> Result<Json<ResolveResult>, ErrorData> {
+    ) -> Result<Json<ResolveResult>, ToolError> {
         let caller = self.caller(&ctx)?;
         service::resolve(&self.app, caller, &p.text, p.kind.as_deref())
             .await
@@ -129,3 +168,38 @@ impl OxServer {
     instructions = "oxledger issue tracker (read-only in this version). Issues have keys like AUTH-12. Use `search` to find issues, `get` for detail, `resolve` to map names/aliases to ids. Results only include what the caller is allowed to see."
 )]
 impl ServerHandler for OxServer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn complete(r: Result<CallToolResponse, ErrorData>) -> CallToolResult {
+        match r.expect("tool result, not a protocol error") {
+            CallToolResponse::Complete(c) => c,
+            other => panic!("unexpected response {other:?}"),
+        }
+    }
+
+    #[test]
+    fn domain_error_is_a_tool_result_with_the_error_object() {
+        let e = error::api(ErrorCode::NotFound, "no issue AUTH-9");
+        let r = complete(Err::<Json<IssueDetail>, _>(to_error(e)).into_call_tool_result());
+        assert_eq!(r.is_error, Some(true));
+        let v = r.structured_content.expect("structured content");
+        assert_eq!(v["code"], json!("not_found"));
+        assert_eq!(v["next_actions"], json!(["fix_input", "stop"]));
+        assert_eq!(v["retryable"], json!(false));
+        assert!(v["request_id"].as_str().is_some_and(|s| s.len() == 36));
+        assert!(v.get("error").is_none(), "MCP has no error wrapper");
+    }
+
+    #[test]
+    fn internal_error_is_a_protocol_error_without_the_cause() {
+        let e = anyhow::anyhow!("duplicate key value violates unique constraint issue_keys_pkey");
+        let r = Err::<Json<IssueDetail>, _>(to_error(e)).into_call_tool_result();
+        let err = r.expect_err("protocol error");
+        assert!(!err.message.contains("issue_keys_pkey"), "{}", err.message);
+        assert!(err.message.contains("request_id"), "{}", err.message);
+    }
+}

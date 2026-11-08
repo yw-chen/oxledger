@@ -409,7 +409,9 @@ async fn e4_visibility_sql_index_memory_agree_with_reference() {
                 .map(|(id, _)| *id)
                 .collect();
 
-            let scope = db::load_scope(&app.pool, caller).await.unwrap();
+            let scope = db::load_scope(&mut app.pool.acquire().await.unwrap(), caller)
+                .await
+                .unwrap();
             let pred = scope.predicate();
 
             let mut qb: QueryBuilder<Postgres> =

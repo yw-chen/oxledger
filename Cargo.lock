@@ -1330,6 +1330,7 @@ dependencies = [
  "chrono",
  "hex",
  "ox-core",
+ "oxledger",
  "rmcp",
  "schemars",
  "serde",

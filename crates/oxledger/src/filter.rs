@@ -22,7 +22,8 @@
 
 use crate::custom_fields::{self, FieldRow, value_column};
 use crate::db::{self, Caller, push_pred};
-use crate::service::{App, resolve_one, user_err};
+use crate::error::{ErrorCode, api};
+use crate::service::{App, resolve_one};
 use anyhow::Result;
 use chrono::NaiveDate;
 use ox_core::Pred;
@@ -105,19 +106,19 @@ pub fn parse_input(v: &Json) -> Result<FilterInput> {
 
 fn parse_at(v: &Json, path: &str) -> Result<FilterInput> {
     let Some(obj) = v.as_object() else {
-        return Err(user_err(format!(
+        return Err(filter_err(format!(
             "{path}: expected an object like {{\"field\": .., \"op\": .., \"value\": ..}} or {{\"and\": [..]}}"
         )));
     };
     for key in ["and", "or"] {
         if let Some(list) = obj.get(key) {
             if obj.len() != 1 {
-                return Err(user_err(format!(
+                return Err(filter_err(format!(
                     "{path}: {key:?} must be the only key of its object"
                 )));
             }
             let Some(items) = list.as_array() else {
-                return Err(user_err(format!("{path}.{key}: expected an array")));
+                return Err(filter_err(format!("{path}.{key}: expected an array")));
             };
             let parts = items
                 .iter()
@@ -135,18 +136,18 @@ fn parse_at(v: &Json, path: &str) -> Result<FilterInput> {
         .keys()
         .find(|k| !["field", "op", "value"].contains(&k.as_str()))
     {
-        return Err(user_err(format!(
+        return Err(filter_err(format!(
             "{path}: unknown key {k:?} (use field, op, value, or and/or)"
         )));
     }
     let Some(field) = obj.get("field").and_then(Json::as_str) else {
-        return Err(user_err(format!(
+        return Err(filter_err(format!(
             "{path}: \"field\" (a string) is required"
         )));
     };
     let op_text = obj.get("op").and_then(Json::as_str).unwrap_or("");
     let Some(op) = OPS.iter().find(|(s, _)| *s == op_text).map(|(_, o)| *o) else {
-        return Err(user_err(format!(
+        return Err(filter_err(format!(
             "{path}: \"op\" must be one of {}",
             OPS.map(|(s, _)| s).join(", ")
         )));
@@ -156,6 +157,11 @@ fn parse_at(v: &Json, path: &str) -> Result<FilterInput> {
         op,
         value: obj.get("value").filter(|v| !v.is_null()).cloned(),
     }))
+}
+
+/// The `filter` argument cannot be used (`invalid_filter`, design 03 §3.7).
+fn filter_err(msg: impl Into<String>) -> anyhow::Error {
+    api(ErrorCode::InvalidFilter, msg)
 }
 
 // ---------------------------------------------------------------- resolve
@@ -208,9 +214,13 @@ pub async fn resolve(
     scope: &Scope,
     input: &FilterInput,
 ) -> Result<Filter> {
-    let admin = db::is_admin(&app.pool, caller).await?;
-    let readable =
-        custom_fields::readable_projects(&app.pool, caller, &scope.principal_ids).await?;
+    let admin = db::is_admin(&mut *app.pool.acquire().await?, caller).await?;
+    let readable = custom_fields::readable_projects(
+        &mut *app.pool.acquire().await?,
+        caller,
+        &scope.principal_ids,
+    )
+    .await?;
     let fields = custom_fields::list_fields(&app.pool)
         .await?
         .into_iter()
@@ -222,7 +232,7 @@ pub async fn resolve(
         fields,
     };
     let filter = resolve_at(&ctx, input).await?;
-    filter.validate().map_err(|e| user_err(e.to_string()))?;
+    filter.validate().map_err(|e| filter_err(e.to_string()))?;
     Ok(filter)
 }
 
@@ -254,7 +264,7 @@ async fn resolve_cond(ctx: &Ctx<'_>, c: &CondInput) -> Result<Filter> {
     let Some((row, gate)) = ctx.fields.get(&c.field.trim().to_lowercase()) else {
         let mut names: Vec<&str> = ctx.fields.values().map(|f| f.0.name.as_str()).collect();
         names.sort();
-        return Err(user_err(format!(
+        return Err(filter_err(format!(
             "no custom field {:?}; fields: {}",
             c.field,
             names.join(", ")
@@ -265,7 +275,7 @@ async fn resolve_cond(ctx: &Ctx<'_>, c: &CondInput) -> Result<Filter> {
         ty: row.field_type()?,
     };
     let name = row.name.as_str();
-    let bad = |msg: String| user_err(format!("field {name:?}: {msg}"));
+    let bad = |msg: String| filter_err(format!("field {name:?}: {msg}"));
     let one = |v: &Option<Json>| -> Result<Json> {
         match v {
             Some(Json::Array(_)) | None => Err(bad(format!("{:?} needs a single value", c.op))),
@@ -330,7 +340,7 @@ async fn resolve_cond(ctx: &Ctx<'_>, c: &CondInput) -> Result<Filter> {
 /// Converts one JSON value to the field's value kind.
 async fn value(ctx: &Ctx<'_>, field: Field, name: &str, x: &Json) -> Result<Value> {
     let bad = |what: &str| {
-        user_err(format!(
+        filter_err(format!(
             "field {name:?} ({}): {what}, got {x}",
             field.ty.as_str()
         ))
@@ -376,14 +386,14 @@ async fn value(ctx: &Ctx<'_>, field: Field, name: &str, x: &Json) -> Result<Valu
                     .bind(field.id)
                     .fetch_all(&ctx.app.pool)
                     .await?;
-                    Err(user_err(format!(
+                    Err(filter_err(format!(
                         "field {name:?} has no option {s:?}; options: {}",
                         labels.join(", ")
                     )))
                 }
                 _ if s.eq_ignore_ascii_case("me") => match ctx.caller.0 {
                     Some(me) => Ok(Value::Ref(me)),
-                    None => Err(user_err("\"me\" needs an authenticated caller")),
+                    None => Err(filter_err("\"me\" needs an authenticated caller")),
                 },
                 _ => Ok(Value::Ref(
                     resolve_one(ctx.app, ctx.caller, "principal", s).await?,
