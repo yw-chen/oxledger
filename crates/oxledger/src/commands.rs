@@ -49,7 +49,7 @@ pub const SYSTEM_PRINCIPAL: Uuid = Uuid::from_u128(0x0000_0000_0000_7000_8000_00
 /// `operation_requests.action` of `POST /commands`.
 pub const ACTION_COMMAND: &str = "command";
 /// How long a stored result replays (§8.7: at least 90 days).
-const RESULT_DAYS: i32 = 90;
+pub(crate) const RESULT_DAYS: i32 = 90;
 const MAX_TITLE_CHARS: usize = 255;
 const MAX_EVIDENCE: usize = 50;
 const MAX_CF_SHORT_BYTES: usize = 2000;
@@ -62,6 +62,19 @@ const MAX_DATE: (i32, u32, u32) = (2199, 12, 31);
 pub enum Mode {
     /// A person's `POST /commands` (§6.8).
     Direct,
+    /// An agent proposes or revises (§6.7 propose step 9): read only.
+    Propose,
+    /// `POST /changesets/{id}/validations` (§8.5): read only.
+    Validate,
+    /// The domain transaction of approve-and-apply (§8.6 B).
+    Apply,
+}
+
+impl Mode {
+    /// Whether this mode takes the row locks and may write.
+    pub fn locks(self) -> bool {
+        matches!(self, Mode::Direct | Mode::Apply)
+    }
 }
 
 // ---------------------------------------------------------------- input (§6.1)
@@ -558,13 +571,55 @@ struct Pre {
 
 /// A document after structure checks, with issue keys resolved to ids.
 #[derive(Debug)]
-struct Parsed {
+pub(crate) struct Parsed {
     ops: Vec<Op>,
     pre: BTreeMap<Uuid, Pre>,
     /// SHA-256 of the canonical normalized document.
-    hash: [u8; 32],
+    pub hash: [u8; 32],
     /// What the caller wrote for each issue id (for not_found messages).
     refs: BTreeMap<Uuid, String>,
+    /// The normalized document (ids for keys, canonical numbers).
+    pub norm: Json,
+}
+
+impl Parsed {
+    /// (op_id, kind) in document order.
+    pub fn op_list(&self) -> Vec<(Uuid, &'static str)> {
+        self.ops
+            .iter()
+            .map(|o| {
+                let k = match o {
+                    Op::Create { .. } => perm::OP_CREATE_ISSUE,
+                    Op::Update { .. } => perm::OP_UPDATE_FIELDS,
+                    Op::Transition { .. } => perm::OP_TRANSITION,
+                    Op::Note { .. } => perm::OP_ADD_NOTE,
+                    Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
+                };
+                (o.op_id(), k)
+            })
+            .collect()
+    }
+
+    /// Existing target issues.
+    pub fn targets(&self) -> Vec<Uuid> {
+        self.pre.keys().copied().collect()
+    }
+
+    /// Projects where an issue is created, with the tracker.
+    pub fn creates(&self) -> Vec<(usize, Uuid, Uuid)> {
+        self.ops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| match o {
+                Op::Create {
+                    project_id,
+                    tracker_id,
+                    ..
+                } => Some((i, *project_id, *tracker_id)),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Canonical JSON (§8.1): object keys sorted, arrays in order, no spaces.
@@ -605,7 +660,7 @@ pub fn canonical_json(v: &Json) -> String {
 
 /// Step 2–4: syntax, structure, issue keys. Needs the connection only to
 /// resolve keys (no locks; a key that does not resolve is `not_found`).
-async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -> Result<Parsed> {
+pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -> Result<Parsed> {
     let Json::Object(top) = raw else {
         return Err(bad("", "the body is a command document object"));
     };
@@ -937,6 +992,7 @@ async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -> Result<Pa
         pre,
         hash,
         refs,
+        norm,
     })
 }
 
@@ -1152,6 +1208,12 @@ pub(crate) fn executor(ctx: &AuthContext) -> Result<Executor> {
 }
 
 pub(crate) fn is_retryable_db(e: &anyhow::Error) -> bool {
+    #[cfg(feature = "test-support")]
+    if e.downcast_ref::<crate::changesets::faults::InjectedDeadlock>()
+        .is_some()
+    {
+        return true;
+    }
     e.chain().any(|c| {
         matches!(c.downcast_ref::<sqlx::Error>(),
             Some(sqlx::Error::Database(d)) if matches!(d.code().as_deref(), Some("40P01" | "40001")))
@@ -1411,6 +1473,30 @@ pub(crate) async fn check_deadline(
     Ok(())
 }
 
+/// Step 9 with several deadlines, each raising its own error.
+pub(crate) async fn check_deadlines(
+    conn: &mut PgConnection,
+    deadlines: &[(chrono::DateTime<chrono::Utc>, ErrorCode)],
+) -> Result<()> {
+    if deadlines.is_empty() {
+        return Ok(());
+    }
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await?;
+    for (d, code) in deadlines {
+        if now >= *d {
+            let msg = match code {
+                ErrorCode::ChangesetExpired => "the proposal expired",
+                ErrorCode::DelegationUnavailable => "the delegation expired",
+                _ => "the session expired",
+            };
+            return Err(api(*code, msg));
+        }
+    }
+    Ok(())
+}
+
 /// Step 8b: the search epoch FOR SHARE and this transaction's xid, as a token.
 pub(crate) async fn search_token(conn: &mut PgConnection) -> Result<String> {
     let (epoch, xid): (Uuid, String) = sqlx::query_as(
@@ -1533,7 +1619,96 @@ pub fn token(epoch: Uuid, xid: &str) -> String {
 
 // ---------------------------------------------------------------- evaluate
 
-/// §6.7 apply steps 5–19 (`human_direct` starts at 5).
+/// Who writes, for events, notes and field origins (§16.2).
+#[derive(Debug, Clone)]
+pub(crate) struct Attribution {
+    pub origin: &'static str,
+    pub actor_id: Uuid,
+    pub actor_kind: &'static str,
+    /// Author of new issues and notes, and their `created_on_behalf_of_id`.
+    pub author_id: Uuid,
+    pub author_on_behalf: Option<Uuid>,
+    pub request_id: Uuid,
+    pub command_execution_id: Option<Uuid>,
+    /// The `execution_refs` id (field origins, relations, undo copies).
+    pub execution_ref: Uuid,
+    pub changeset: Option<(Uuid, i32)>,
+    pub changeset_execution_id: Option<Uuid>,
+    pub proposer_id: Option<Uuid>,
+    pub approver_id: Option<Uuid>,
+    pub on_behalf_of_id: Option<Uuid>,
+    pub delegation_id: Option<Uuid>,
+    pub agent_client_id: Option<Uuid>,
+    /// Agent writes keep before/after values (§16.7).
+    pub record_changes: bool,
+}
+
+impl Attribution {
+    fn human(user: Uuid, request_id: Uuid, execution_id: Uuid) -> Self {
+        Self {
+            origin: "human_direct",
+            actor_id: user,
+            actor_kind: "user",
+            author_id: user,
+            author_on_behalf: None,
+            request_id,
+            command_execution_id: Some(execution_id),
+            execution_ref: execution_id,
+            changeset: None,
+            changeset_execution_id: None,
+            proposer_id: None,
+            approver_id: None,
+            on_behalf_of_id: None,
+            delegation_id: None,
+            agent_client_id: None,
+            record_changes: false,
+        }
+    }
+}
+
+/// What a simulation needs beyond the document (§6.7).
+pub(crate) struct EvalCtx {
+    pub mode: Mode,
+    /// Whose visibility and permissions apply.
+    pub caller: AuthContext,
+    /// A proposal's authority ceiling: replaces the caller's delegations.
+    pub ceiling: Option<BTreeMap<Uuid, perm::DelegationScope>>,
+    /// Checked at step 9, after the locks, each with the error it raises.
+    pub deadlines: Vec<(chrono::DateTime<chrono::Utc>, ErrorCode)>,
+    /// Author of new issues: (author, created_on_behalf_of). `None` = the actor.
+    pub author: Option<(Uuid, Option<Uuid>)>,
+}
+
+/// The simulated end state (steps 6–14).
+pub(crate) struct Sim {
+    work: BTreeMap<Uuid, Work>,
+    pub items: Vec<ItemResult>,
+    /// The receipt token (step 8b); only when locking.
+    pub token: Option<String>,
+}
+
+/// Errors §6.7 never stores with a proposal (steps 1–8): the caller may not
+/// do this at all, or the request is malformed. Anything else is a domain
+/// problem of the moment (step 9) and is kept as a blocked validation.
+pub(crate) fn is_rejection(e: &anyhow::Error) -> bool {
+    match crate::error::classify(e) {
+        None => true,
+        Some(a) => matches!(
+            a.code,
+            ErrorCode::ForbiddenOp
+                | ErrorCode::NotFound
+                | ErrorCode::InvalidRequest
+                | ErrorCode::Unauthenticated
+                | ErrorCode::ContextUnavailable
+                | ErrorCode::DelegationUnavailable
+                | ErrorCode::UnsupportedOperation
+                | ErrorCode::UnsupportedExecutionMode
+                | ErrorCode::TemporarilyUnavailable
+        ),
+    }
+}
+
+/// §6.7 apply steps 5–19 for `human_direct` (it starts at 5).
 async fn evaluate(
     conn: &mut PgConnection,
     caller: AuthContext,
@@ -1542,10 +1717,45 @@ async fn evaluate(
     doc: &Parsed,
     request_id: Uuid,
 ) -> Result<CommandResult> {
-    let Mode::Direct = mode;
+    debug_assert_eq!(mode, Mode::Direct);
     // Step 5: the executor and the session, FOR SHARE, still valid.
     let deadline = lock_executor(&mut *conn, who).await?;
+    let ectx = EvalCtx {
+        mode,
+        caller,
+        ceiling: None,
+        deadlines: deadline
+            .map(|d| (d, ErrorCode::Unauthenticated))
+            .into_iter()
+            .collect(),
+        author: None,
+    };
+    let sim = simulate(&mut *conn, &ectx, doc).await?;
+    let consistent_after = sim.token.clone().unwrap_or_default();
+    let execution_id = record_human_execution(
+        &mut *conn,
+        request_id,
+        who.user_id,
+        &doc.hash[..],
+        &consistent_after,
+    )
+    .await?;
+    let at = Attribution::human(who.user_id, request_id, execution_id);
+    let effects = write_effects(&mut *conn, doc, &sim, &at).await?;
+    Ok(CommandResult {
+        status: "succeeded".into(),
+        execution_id,
+        effects,
+        items: sim.items,
+        search: SearchReceipt { consistent_after },
+    })
+}
 
+/// Steps 6–14. Direct and Apply lock (and read the receipt token, and check
+/// the deadlines); Propose and Validate only read, and check preconditions
+/// after the ops so a permission problem is reported before a stale one.
+pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Parsed) -> Result<Sim> {
+    let locks = ectx.mode.locks();
     // Targets and their projects (project_id never changes, so reading it
     // before the locks is safe).
     let mut existing: BTreeSet<Uuid> = BTreeSet::new();
@@ -1587,7 +1797,9 @@ async fn evaluate(
 
     // Step 6: projects in UUID order; FOR UPDATE where an issue is created.
     for p in &projects {
-        let sql = if create_projects.contains(p) {
+        let sql = if !locks {
+            "SELECT 1 FROM projects WHERE id = $1"
+        } else if create_projects.contains(p) {
             "SELECT 1 FROM projects WHERE id = $1 FOR UPDATE"
         } else {
             "SELECT 1 FROM projects WHERE id = $1 FOR SHARE"
@@ -1602,14 +1814,15 @@ async fn evaluate(
     }
 
     // Step 7: issues FOR UPDATE in id order.
-    let rows: Vec<IssueRow> = sqlx::query_as(
+    let rows: Vec<IssueRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
                 i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
                 i.fixed_version_id, i.start_date, i.due_date, i.is_private, i.lock_version,
                 i.last_event_seq
          FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
-         WHERE i.id = ANY($1) ORDER BY i.id FOR UPDATE OF i",
-    )
+         WHERE i.id = ANY($1) ORDER BY i.id{}",
+        if locks { " FOR UPDATE OF i" } else { "" }
+    )))
     .bind(&existing)
     .fetch_all(&mut *conn)
     .await?;
@@ -1651,10 +1864,11 @@ async fn evaluate(
         }
     }
     let mut locked = Locked::default();
-    let vrows: Vec<(Uuid, Uuid, String, bool)> = sqlx::query_as(
+    let vrows: Vec<(Uuid, Uuid, String, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT id, project_id, status, deleted_at IS NOT NULL FROM versions
-         WHERE id = ANY($1) ORDER BY id FOR SHARE",
-    )
+         WHERE id = ANY($1) ORDER BY id{}",
+        if locks { " FOR SHARE" } else { "" }
+    )))
     .bind(vids.iter().copied().collect::<Vec<_>>())
     .fetch_all(&mut *conn)
     .await?;
@@ -1670,13 +1884,16 @@ async fn evaluate(
     .bind(cf_ids.iter().copied().collect::<Vec<_>>())
     .fetch_all(&mut *conn)
     .await?;
-    sqlx::query("SELECT id FROM field_defs WHERE id = ANY($1) ORDER BY id FOR SHARE")
-        .bind(cf_ids.iter().copied().collect::<Vec<_>>())
-        .execute(&mut *conn)
-        .await?;
-    let orows: Vec<(Uuid, i32, bool)> = sqlx::query_as(
-        "SELECT id, field_id, active FROM field_options WHERE id = ANY($1) ORDER BY id FOR KEY SHARE",
-    )
+    if locks {
+        sqlx::query("SELECT id FROM field_defs WHERE id = ANY($1) ORDER BY id FOR SHARE")
+            .bind(cf_ids.iter().copied().collect::<Vec<_>>())
+            .execute(&mut *conn)
+            .await?;
+    }
+    let orows: Vec<(Uuid, i32, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT id, field_id, active FROM field_options WHERE id = ANY($1) ORDER BY id{}",
+        if locks { " FOR KEY SHARE" } else { "" }
+    )))
     .bind(option_ids.iter().copied().collect::<Vec<_>>())
     .fetch_all(&mut *conn)
     .await?;
@@ -1689,14 +1906,24 @@ async fn evaluate(
     locked.priorities = prows.into_iter().map(|p| (p.0, p.1)).collect();
 
     // Step 8b: the search epoch FOR SHARE and this transaction's xid.
-    let consistent_after = search_token(&mut *conn).await?;
+    let token = if locks {
+        Some(search_token(&mut *conn).await?)
+    } else {
+        None
+    };
 
     // Step 9: deadlines, after every lock above.
-    check_deadline(&mut *conn, deadline).await?;
+    if locks {
+        check_deadlines(&mut *conn, &ectx.deadlines).await?;
+    }
 
     // Step 10: visibility (invisible and missing look the same).
-    let actor = perm::actor(&mut *conn, caller).await?;
-    let scope = db::load_scope(&mut *conn, caller).await?;
+    let mut actor = perm::actor(&mut *conn, ectx.caller).await?;
+    if let Some(c) = &ectx.ceiling {
+        // A proposal runs within the authority it was proposed under.
+        actor.delegations = Some(c.clone());
+    }
+    let scope = db::load_scope(&mut *conn, ectx.caller).await?;
     for (id, r) in &rows {
         let facts = IssueFacts {
             project_id: r.project_id,
@@ -1807,7 +2034,36 @@ async fn evaluate(
         }
     }
 
-    // Step 12: preconditions — readable fields first, then versions and values.
+    let pre = check_preconditions(doc, &work, &rules, &perms, &actor);
+    let pre = if locks {
+        pre?;
+        Ok(())
+    } else {
+        pre
+    };
+    let author = ectx
+        .author
+        .unwrap_or((actor.user_id.expect("a person or a delegator"), None));
+    let ran = run_ops(
+        &mut *conn, doc, &actor, &perms, &mut rules, &mut work, &locked, author,
+    )
+    .await;
+    let items = match (pre, ran) {
+        (_, Err(e)) if is_rejection(&e) => return Err(e),
+        (Err(p), _) => return Err(p),
+        (Ok(()), r) => r?,
+    };
+    Ok(Sim { work, items, token })
+}
+
+/// Step 12: preconditions — readable fields first, then versions and values.
+fn check_preconditions(
+    doc: &Parsed,
+    work: &BTreeMap<Uuid, Work>,
+    rules: &BTreeMap<(Uuid, Uuid), Rules>,
+    perms: &BTreeMap<Uuid, ProjectPerms>,
+    actor: &Actor,
+) -> Result<()> {
     for (id, p) in &doc.pre {
         let w = &work[id];
         let r = &rules[&(w.project_id, w.tracker_id)];
@@ -1827,7 +2083,7 @@ async fn evaluate(
                 let want = match key {
                     Key::Cf(cf) => {
                         match r.cf(cf) {
-                            Some(def) if readable(def, &actor, pp) => {}
+                            Some(def) if readable(def, actor, pp) => {}
                             _ => return Err(invalid_value(path, format!("unknown field {k:?}"))),
                         }
                         parse_cf(path, raw)?.1
@@ -1875,7 +2131,21 @@ async fn evaluate(
             }
         }
     }
+    Ok(())
+}
 
+/// Steps 13–14: every op in order on the loaded state, then the final checks.
+#[allow(clippy::too_many_arguments)]
+async fn run_ops(
+    conn: &mut PgConnection,
+    doc: &Parsed,
+    actor: &Actor,
+    perms: &BTreeMap<Uuid, ProjectPerms>,
+    rules: &mut BTreeMap<(Uuid, Uuid), Rules>,
+    work: &mut BTreeMap<Uuid, Work>,
+    locked: &Locked,
+    author_of: (Uuid, Option<Uuid>),
+) -> Result<Vec<ItemResult>> {
     // Step 13: simulate every op in order.
     let mut temps: BTreeMap<String, Uuid> = BTreeMap::new();
     let mut items: Vec<ItemResult> = Vec::new();
@@ -1976,9 +2246,9 @@ async fn evaluate(
                     Some(false) => false,
                     None => private_default,
                 };
-                load_rules(&mut *conn, &mut rules, &perms, *project_id, *tracker_id).await?;
+                load_rules(&mut *conn, rules, perms, *project_id, *tracker_id).await?;
                 let id = Uuid::now_v7();
-                let author = actor.user_id.expect("a person");
+                let (author, on_behalf) = author_of;
                 let mut values: BTreeMap<Key, Json> = BTreeMap::from([
                     (Key::Subject, Json::Null),
                     (Key::Description, json!("")),
@@ -1994,7 +2264,7 @@ async fn evaluate(
                     project_id: *project_id,
                     tracker_id: *tracker_id,
                     author_id: author,
-                    on_behalf_of: None,
+                    on_behalf_of: on_behalf,
                     is_private: private,
                     status: initial,
                     orig_values: BTreeMap::new(),
@@ -2010,11 +2280,11 @@ async fn evaluate(
                 for wr in fields {
                     let v = check_write(
                         &mut *conn,
-                        &actor,
+                        actor,
                         pp,
                         r,
                         &ro,
-                        &locked,
+                        locked,
                         &w,
                         wr,
                         None,
@@ -2073,11 +2343,11 @@ async fn evaluate(
                     let before = work[&id].values.get(&wr.key).cloned().unwrap_or(Json::Null);
                     let v = check_write(
                         &mut *conn,
-                        &actor,
+                        actor,
                         pp,
                         r,
                         &ro,
-                        &locked,
+                        locked,
                         &work[&id],
                         wr,
                         orig.as_ref(),
@@ -2133,7 +2403,7 @@ async fn evaluate(
                         lock_version: 0,
                     },
                 };
-                if !pp.attributes_editable(w.tracker_id, core.is_own(&actor)) {
+                if !pp.attributes_editable(w.tracker_id, core.is_own(actor)) {
                     return Err(fail(
                         ErrorCode::ForbiddenOp,
                         "you may not change this issue".into(),
@@ -2141,7 +2411,7 @@ async fn evaluate(
                     ));
                 }
                 // Baseline (§6.3): the status and assignee at the start.
-                let allowed = describe::allowed_transitions(&mut *conn, &actor, pp, &core).await?;
+                let allowed = describe::allowed_transitions(&mut *conn, actor, pp, &core).await?;
                 if !allowed.iter().any(|(s, _)| s == to) {
                     return Err(fail(
                         ErrorCode::InvalidTransition,
@@ -2312,7 +2582,7 @@ async fn evaluate(
             if !required || !is_empty(w.values.get(&Key::Cf(cf.id)).unwrap_or(&Json::Null)) {
                 continue;
             }
-            if readable(cf, &actor, pp) {
+            if readable(cf, actor, pp) {
                 missing.push(key);
             } else if actor.is_agent() && at_final.get(&key) == Some(&Rule::Required) {
                 // Only agents can be blocked by a field they cannot read (§5.2).
@@ -2332,16 +2602,19 @@ async fn evaluate(
             .into());
         }
     }
+    Ok(items)
+}
 
-    // Steps 15–17: writes.
-    let execution_id = record_human_execution(
-        &mut *conn,
-        request_id,
-        who.user_id,
-        &doc.hash[..],
-        &consistent_after,
-    )
-    .await?;
+/// Steps 15–17: issues, custom fields, notes, relations, events, field
+/// origins and one `lock_version` bump per issue with an effect.
+pub(crate) async fn write_effects(
+    conn: &mut PgConnection,
+    doc: &Parsed,
+    sim: &Sim,
+    at: &Attribution,
+) -> Result<Vec<Effect>> {
+    let (work, items) = (&sim.work, &sim.items);
+    let execution_id = at.execution_ref;
 
     let mut effects = Vec::new();
     // New issues in op order (keys are numbered in document order).
@@ -2375,11 +2648,13 @@ async fn evaluate(
         if w.effect {
             for (note_id, body, private) in &w.notes {
                 sqlx::query(
-                    "INSERT INTO issue_notes (id, issue_id, author_id, body, is_private) VALUES ($1,$2,$3,$4,$5)",
+                    "INSERT INTO issue_notes (id, issue_id, author_id, created_on_behalf_of_id, body, is_private)
+                     VALUES ($1,$2,$3,$4,$5,$6)",
                 )
                 .bind(note_id)
                 .bind(id)
-                .bind(who.user_id)
+                .bind(at.author_id)
+                .bind(at.author_on_behalf)
                 .bind(body)
                 .bind(private)
                 .execute(&mut *conn)
@@ -2408,16 +2683,28 @@ async fn evaluate(
             for (n, ev) in w.events.iter().enumerate() {
                 let event_id: Uuid = sqlx::query_scalar(
                     "INSERT INTO issue_events (issue_id, seq, kind, origin, actor_id, actor_kind,
-                                               operation_request_id, command_execution_id, op_id,
+                                               proposer_id, approver_id, on_behalf_of_id, delegation_id,
+                                               agent_client_id, operation_request_id, command_execution_id,
+                                               changeset_id, changeset_version, execution_id, op_id,
                                                note_id, payload)
-                     VALUES ($1, $2, $3, 'human_direct', $4, 'user', $5, $6, $7, $8, $9) RETURNING id",
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id",
                 )
                 .bind(id)
                 .bind(base + 1 + n as i64)
                 .bind(ev.kind)
-                .bind(who.user_id)
-                .bind(request_id)
-                .bind(execution_id)
+                .bind(at.origin)
+                .bind(at.actor_id)
+                .bind(at.actor_kind)
+                .bind(at.proposer_id)
+                .bind(at.approver_id)
+                .bind(at.on_behalf_of_id)
+                .bind(at.delegation_id)
+                .bind(at.agent_client_id)
+                .bind(at.request_id)
+                .bind(at.command_execution_id)
+                .bind(at.changeset.map(|c| c.0))
+                .bind(at.changeset.map(|c| c.1))
+                .bind(at.changeset_execution_id)
                 .bind(ev.op_id)
                 .bind(ev.note_id)
                 .bind(&ev.payload)
@@ -2439,6 +2726,37 @@ async fn evaluate(
                     .await?;
                 }
             }
+            if let (true, Some(o)) = (at.record_changes, w.orig.as_ref()) {
+                // Agent writes keep before/after copies for undo (§16.7).
+                let mut changed: Vec<(String, Json, Json)> = w
+                    .values
+                    .iter()
+                    .filter(|(k, v)| w.orig_values.get(*k).unwrap_or(&Json::Null) != *v)
+                    .map(|(k, v)| {
+                        (
+                            k.name(),
+                            w.orig_values.get(k).cloned().unwrap_or(Json::Null),
+                            v.clone(),
+                        )
+                    })
+                    .collect();
+                if o.status_id != w.status {
+                    changed.push(("status_id".into(), json!(o.status_id), json!(w.status)));
+                }
+                for (k, before, after) in changed {
+                    sqlx::query(
+                        "INSERT INTO execution_field_changes (execution_id, issue_id, field_key, before_value, after_value)
+                         VALUES ($1, $2, $3, $4, $5)",
+                    )
+                    .bind(execution_id)
+                    .bind(id)
+                    .bind(k)
+                    .bind(before)
+                    .bind(after)
+                    .execute(&mut *conn)
+                    .await?;
+                }
+            }
             let last = base + w.events.len() as i64;
             if w.orig.is_some() {
                 // Step 17: one UPDATE per issue with an effect (the outbox trigger fires once).
@@ -2454,13 +2772,7 @@ async fn evaluate(
         });
     }
 
-    Ok(CommandResult {
-        status: "succeeded".into(),
-        execution_id,
-        effects,
-        items,
-        search: SearchReceipt { consistent_after },
-    })
+    Ok(effects)
 }
 
 fn json_uuid_ref(v: &Json) -> Option<Uuid> {

@@ -1,0 +1,2909 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//! ChangeSets (contract 02 §8): an agent proposes a command document, its
+//! delegator reviews and approves it in the browser, and the approval runs
+//! it through the same engine as `human_direct` (§6.7 `Mode::Apply`).
+//!
+//! Approve-and-apply is three short transactions (§8.6):
+//!
+//! ```text
+//! A  changeset FOR UPDATE → operation_requests → checks → decision(approve)
+//!    + execution(queued), state approved
+//! B  changeset → execution FOR UPDATE → context → principals, session,
+//!    delegation, client FOR SHARE → projects (R and destination, UUID order)
+//!    → §6.7 steps 7–17 → application + execution succeeded + changeset
+//!    succeeded + operation request completed
+//! C  (only after a domain failure in B) changeset → execution again;
+//!    an application found → success; else execution failed and, only if
+//!    still approved at that version, changeset failed
+//! ```
+//!
+//! An execution is persisted in A before any effect, so a request that is
+//! cut off anywhere can be resent with the same Idempotency-Key and ends as
+//! zero effects or exactly one application (C-1…C-6). GET never writes.
+//!
+//! S5 leaves to S6: evidence verification (§6.7 step 7), the audience checks
+//! (steps 8, 14), quotas (§8.9), groups and the MCP tools; to S6b the queue
+//! review mode and revise-and-apply.
+
+use crate::auth::{AuthContext, PrincipalKind};
+use crate::commands::{
+    self, Attribution, CommandDoc, Effect, EvalCtx, ItemResult, Mode, Parsed, SearchReceipt,
+};
+use crate::db;
+use crate::describe::MAX_OPS;
+use crate::error::{ApiError, ErrorCode, NextAction, api, classify};
+use crate::perm::DelegationScope;
+use crate::service::{App, read_tx};
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use ox_core::IssueFacts;
+use rmcp::schemars::{self, JsonSchema};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value as Json, json};
+use sha2::{Digest, Sha256};
+use sqlx::PgConnection;
+use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
+
+pub const ACTION_PROPOSE: &str = "changeset_propose";
+pub const ACTION_REVISE: &str = "changeset_revise";
+pub const ACTION_OWNER_REVISE: &str = "changeset_owner_revise";
+pub const ACTION_CANCEL: &str = "changeset_cancel";
+pub const ACTION_REJECT: &str = "changeset_reject";
+pub const ACTION_APPROVE: &str = "approve_and_apply";
+/// `changeset_versions.audience_contract_ver` (§8.1).
+pub const AUDIENCE_CONTRACT_VER: i32 = 1;
+const COMMAND_SCHEMA_VERSION: i32 = 1;
+/// Default lifetime of a proposal, capped by the delegation (§8.2).
+const DEFAULT_DAYS: i32 = 7;
+const RETRIES: usize = 3;
+const LIST_LIMIT: i64 = 200;
+
+// ---------------------------------------------------------------- fault injection (C-1…C-6)
+
+/// Test-only fault points: a test arms a point to fail once (the request is
+/// cut off there) or to block until released (a barrier).
+#[cfg(feature = "test-support")]
+pub mod faults {
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    /// A barrier: `reached` fires when the request gets there, and it waits for `release`.
+    #[derive(Default)]
+    pub struct Gate {
+        pub reached: Notify,
+        pub release: Notify,
+    }
+
+    pub enum Action {
+        Fail,
+        Block(Arc<Gate>),
+        /// Fails like a deadlock (retryable, T-I6).
+        Deadlock,
+    }
+
+    /// The error [`Action::Deadlock`] raises; `is_retryable_db` treats it as 40P01.
+    #[derive(Debug)]
+    pub struct InjectedDeadlock;
+
+    impl std::fmt::Display for InjectedDeadlock {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("injected deadlock")
+        }
+    }
+
+    impl std::error::Error for InjectedDeadlock {}
+
+    static ARMED: Mutex<Vec<(String, Action)>> = Mutex::new(Vec::new());
+
+    /// Arms `point` for its next hit only.
+    pub fn arm(point: &str, a: Action) {
+        ARMED.lock().unwrap().push((point.to_string(), a));
+    }
+
+    pub fn clear() {
+        ARMED.lock().unwrap().clear();
+    }
+
+    pub(crate) async fn hit(point: &str) -> anyhow::Result<()> {
+        let a = {
+            let mut v = ARMED.lock().unwrap();
+            v.iter()
+                .position(|(p, _)| p == point)
+                .map(|i| v.remove(i).1)
+        };
+        match a {
+            None => Ok(()),
+            // A cut-off connection: the request's outcome is unknown.
+            Some(Action::Fail) => Err(anyhow::Error::from(sqlx::Error::PoolClosed)
+                .context(format!("fault injected at {point}"))),
+            Some(Action::Deadlock) => Err(InjectedDeadlock.into()),
+            Some(Action::Block(g)) => {
+                g.reached.notify_one();
+                g.release.notified().await;
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+async fn fault(point: &str) -> Result<()> {
+    faults::hit(point).await
+}
+
+#[cfg(not(feature = "test-support"))]
+async fn fault(_: &str) -> Result<()> {
+    Ok(())
+}
+
+// ---------------------------------------------------------------- views
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct TargetView {
+    pub id: Uuid,
+    pub key: String,
+}
+
+/// One blocking problem: which op, which code, which field (§8.4).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct Blocking {
+    pub op_id: Option<Uuid>,
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CompactValidation {
+    /// `passed`, `blocked` or `conflict`.
+    pub status: String,
+    /// At most 10.
+    pub blocking: Vec<Blocking>,
+    pub warning_codes: Vec<String>,
+}
+
+/// The compact propose / revise response (§8.4).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProposeResult {
+    pub changeset_id: Uuid,
+    pub version: i32,
+    pub proposal_hash: String,
+    pub state: String,
+    pub group_id: Option<Uuid>,
+    pub targets: Vec<TargetView>,
+    pub validation: CompactValidation,
+    pub review_url: String,
+    pub expires_at: DateTime<Utc>,
+    pub next_actions: Vec<NextAction>,
+}
+
+/// An error as the owner sees it on a failed execution or a validation.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ErrorView {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Json::is_null")]
+    pub details: Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ExecItem {
+    pub op_id: Uuid,
+    /// `applied`, `no_effect`, `failed`, `rolled_back` or `not_run`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ExecutionView {
+    pub execution_id: Uuid,
+    pub changeset_id: Uuid,
+    pub version: i32,
+    pub attempt_no: i32,
+    /// `queued`, `running`, `succeeded` or `failed`.
+    pub status: String,
+    pub error: Option<ErrorView>,
+    pub items: Vec<ExecItem>,
+    pub effects: Vec<Effect>,
+    /// Only when succeeded: the token from the domain transaction (§6.9).
+    pub search: Option<SearchReceipt>,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+/// approve-and-apply: `pending` → HTTP 202 (the execution is persisted but
+/// its result is not known yet; resend the same request).
+#[derive(Debug, Clone)]
+pub struct ApplyOutcome {
+    pub pending: bool,
+    pub execution_id: Uuid,
+    pub execution: Option<ExecutionView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangesetView {
+    pub changeset_id: Uuid,
+    pub state: String,
+    pub current_version: i32,
+    pub version: i32,
+    pub proposal_hash: String,
+    pub edit_method: String,
+    pub editor_id: Uuid,
+    pub based_on_version: Option<i32>,
+    pub proposer_id: Uuid,
+    pub on_behalf_of_id: Uuid,
+    pub context_project_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub version_created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// The normalized command document; `null` with `content_unavailable`.
+    pub proposal: Option<Json>,
+    /// `redacted`, `purged` or `not_readable`.
+    pub content_unavailable: Option<String>,
+    /// The check at creation: codes and statuses only.
+    pub validation: Option<Json>,
+    pub targets: Vec<TargetView>,
+    pub requires_human_approval: bool,
+    pub review_url: String,
+    pub last_execution: Option<ExecutionView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangesetSummary {
+    pub changeset_id: Uuid,
+    pub state: String,
+    pub current_version: i32,
+    pub title: Option<String>,
+    pub targets: Vec<TargetView>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_execution_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangesetList {
+    pub items: Vec<ChangesetSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StateView {
+    pub changeset_id: Uuid,
+    pub state: String,
+    pub current_version: i32,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OpEffect {
+    pub op_id: Uuid,
+    /// `would_change` or `no_effect`.
+    pub status: String,
+}
+
+/// `POST /changesets/{id}/validations` (§8.5).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Validation {
+    pub version: i32,
+    pub proposal_hash: String,
+    /// `passed`, `blocked` or `conflict`.
+    pub status: String,
+    pub checked_at: DateTime<Utc>,
+    /// structure, visibility, permissions, preconditions, workflow:
+    /// `passed`, `failed` or `not_checked`.
+    pub checks: BTreeMap<String, String>,
+    pub warnings: Vec<String>,
+    pub effects: Vec<OpEffect>,
+    pub error: Option<ErrorView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OperationView {
+    pub operation_id: Uuid,
+    pub action: String,
+    /// `in_progress`, `completed` or `failed`.
+    pub status: String,
+    pub changeset_id: Option<Uuid>,
+    pub version: Option<i32>,
+    pub execution: Option<ExecutionView>,
+}
+
+// ---------------------------------------------------------------- inputs
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveInput {
+    pub version: i32,
+    /// `sha256:<hex>` as returned with the version.
+    pub proposal_hash: String,
+    /// Only `detail` in S5 (`queue` and `revise_and_apply` come with S6b).
+    #[serde(default)]
+    pub review_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionInput {
+    pub version: i32,
+    pub proposal_hash: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateInput {
+    pub version: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RevisionInput {
+    pub expected_current_version: i32,
+    /// The complete new document (no deep merge, §8.8).
+    pub proposal: CommandDoc,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CancelInput {}
+
+// ---------------------------------------------------------------- rows
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct CsRow {
+    id: Uuid,
+    context_project_id: Uuid,
+    proposer_id: Uuid,
+    on_behalf_of_id: Uuid,
+    delegation_id: Option<Uuid>,
+    context_id: Option<Uuid>,
+    current_version: i32,
+    state: String,
+    created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    group_id: Option<Uuid>,
+}
+
+const CS_COLS: &str =
+    "id, context_project_id, proposer_id, on_behalf_of_id, delegation_id, context_id,
+                       current_version, state, created_at, expires_at, group_id";
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct VerRow {
+    proposal_hash: Vec<u8>,
+    authority_ceiling: Json,
+    editor_id: Uuid,
+    edit_method: String,
+    based_on_version: Option<i32>,
+    validation: Option<Json>,
+    created_at: DateTime<Utc>,
+    body: Option<Json>,
+    content_state: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ExecRow {
+    id: Uuid,
+    changeset_id: Uuid,
+    version: i32,
+    proposal_hash: Vec<u8>,
+    attempt_no: i32,
+    operation_request_id: Uuid,
+    executor_id: Uuid,
+    status: String,
+    error_code: Option<String>,
+    item_results: Option<Json>,
+    consistent_after: Option<String>,
+    created_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+}
+
+const EXEC_COLS: &str = "id, changeset_id, version, proposal_hash, attempt_no, operation_request_id,
+                         executor_id, status, error_code, item_results, consistent_after, created_at,
+                         finished_at";
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct DelegRow {
+    id: Uuid,
+    project_id: Uuid,
+    proposal_ops: Vec<String>,
+    writable_fields: Vec<String>,
+    max_ops: i32,
+    expires_at: DateTime<Utc>,
+}
+
+async fn load_cs(conn: &mut PgConnection, id: Uuid, lock: bool) -> Result<Option<CsRow>> {
+    let sql = format!(
+        "SELECT {CS_COLS} FROM changesets WHERE id = $1{}",
+        if lock { " FOR UPDATE" } else { "" }
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?)
+}
+
+async fn load_version(conn: &mut PgConnection, cs: Uuid, version: i32) -> Result<Option<VerRow>> {
+    Ok(sqlx::query_as(
+        "SELECT v.proposal_hash, v.authority_ceiling, v.editor_id, v.edit_method,
+                v.based_on_version, v.validation, v.created_at, c.body, c.state AS content_state
+         FROM changeset_versions v JOIN proposal_contents c ON c.id = v.content_id
+         WHERE v.changeset_id = $1 AND v.version = $2",
+    )
+    .bind(cs)
+    .bind(version)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+async fn load_exec(conn: &mut PgConnection, id: Uuid, lock: bool) -> Result<Option<ExecRow>> {
+    let sql = format!(
+        "SELECT {EXEC_COLS} FROM changeset_executions WHERE id = $1{}",
+        if lock { " FOR UPDATE" } else { "" }
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?)
+}
+
+fn not_found() -> anyhow::Error {
+    api(ErrorCode::NotFound, "no such changeset")
+}
+
+fn hash_str(h: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(h))
+}
+
+fn parse_hash(s: &str) -> Result<Vec<u8>> {
+    s.strip_prefix("sha256:")
+        .and_then(|h| hex::decode(h).ok())
+        .filter(|b| b.len() == 32)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "proposal_hash is \"sha256:<64 hex digits>\"",
+            )
+            .with_details(json!({"path": "proposal_hash"}))
+            .into()
+        })
+}
+
+fn review_path(id: Uuid, version: i32) -> String {
+    format!("/changesets/{id}?version={version}")
+}
+
+fn ts(t: DateTime<Utc>) -> String {
+    t.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+}
+
+async fn clock(conn: &mut PgConnection) -> Result<DateTime<Utc>> {
+    Ok(sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await?)
+}
+
+fn state_error(cs: &CsRow, applied: Option<Uuid>) -> Option<anyhow::Error> {
+    match cs.state.as_str() {
+        "succeeded" => Some(
+            ApiError::new(
+                ErrorCode::AlreadyApplied,
+                "this proposal was applied already",
+            )
+            .with_details(json!({"execution_id": applied}))
+            .into(),
+        ),
+        "rejected" | "canceled" => Some(api(
+            ErrorCode::ChangesetNotExecutable,
+            format!("the proposal was {}", cs.state),
+        )),
+        "expired" => Some(api(ErrorCode::ChangesetExpired, "the proposal expired")),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------- proposal hash (§8.1)
+
+/// Everything `proposal_hash` covers.
+pub struct HashInput<'a> {
+    /// The canonical command document (title, ops, op ids, binds,
+    /// preconditions, evidence, exec_mode).
+    pub document: &'a Json,
+    pub expires_at: DateTime<Utc>,
+    pub ceiling: &'a Json,
+    pub origin: &'a str,
+    pub proposer: Uuid,
+    pub delegation: Uuid,
+    pub context: Uuid,
+    /// (project_id, security_epoch), any order (sorted here).
+    pub sources: &'a [(Uuid, i64)],
+    pub audience_contract_ver: i32,
+}
+
+/// `SHA-256("oxledger/proposal/v1" ‖ command_schema_version ‖
+/// canonical(document and expires_at) ‖ canonical(ceiling) ‖ origin ‖ proposer
+/// ‖ delegation ‖ context ‖ canonical(sources) ‖ audience_contract_ver)`, parts
+/// joined by a newline. Canonical JSON sorts keys and keeps arrays in order; uuids
+/// are lowercase hyphenated, times UTC with microseconds, epochs decimal
+/// strings; no Unicode normalization.
+pub fn proposal_hash(h: &HashInput) -> [u8; 32] {
+    let mut sources = h.sources.to_vec();
+    sources.sort();
+    let sources = Json::Array(
+        sources
+            .iter()
+            .map(|(p, e)| json!({"project_id": p, "security_epoch": e.to_string()}))
+            .collect(),
+    );
+    let doc = json!({"document": h.document, "expires_at": ts(h.expires_at)});
+    let parts = [
+        "oxledger/proposal/v1".to_string(),
+        COMMAND_SCHEMA_VERSION.to_string(),
+        commands::canonical_json(&doc),
+        commands::canonical_json(h.ceiling),
+        h.origin.to_string(),
+        h.proposer.to_string(),
+        h.delegation.to_string(),
+        h.context.to_string(),
+        commands::canonical_json(&sources),
+        h.audience_contract_ver.to_string(),
+    ];
+    Sha256::digest(parts.join("\n")).into()
+}
+
+/// The stored form of a document: through [`CommandDoc`] (so omitted
+/// defaults and explicit defaults are the same), `exec_mode` explicit, and
+/// `is_private` of each new issue fixed to the tracker default when omitted
+/// (§6.1, T-W7).
+fn canonical_doc(norm: &Json, private_defaults: &BTreeMap<usize, bool>) -> Result<Json> {
+    let mut d: CommandDoc = serde_json::from_value(norm.clone()).map_err(|e| {
+        api(
+            ErrorCode::InvalidRequest,
+            format!("not a command document: {e}"),
+        )
+    })?;
+    d.exec_mode = Some("atomic".into());
+    for (i, op) in d.ops.iter_mut().enumerate() {
+        if let commands::OpInput::CreateIssue(c) = op
+            && !c.fields.contains_key("is_private")
+            && let Some(p) = private_defaults.get(&i)
+        {
+            c.fields.insert("is_private".into(), json!(p));
+        }
+    }
+    Ok(serde_json::to_value(d)?)
+}
+
+fn ceiling_json(d: &DelegRow) -> Json {
+    let mut ops = d.proposal_ops.clone();
+    ops.sort();
+    let mut fields = d.writable_fields.clone();
+    fields.sort();
+    json!({"projects": [{"project_id": d.project_id, "proposal_ops": ops,
+                         "writable_fields": fields, "max_ops": d.max_ops}]})
+}
+
+fn ceiling_map(c: &Json) -> BTreeMap<Uuid, DelegationScope> {
+    let strings = |v: &Json| -> BTreeSet<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    c["projects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let id = p["project_id"].as_str()?.parse().ok()?;
+            Some((
+                id,
+                DelegationScope {
+                    proposal_ops: strings(&p["proposal_ops"]),
+                    writable_fields: strings(&p["writable_fields"]),
+                    max_ops: p["max_ops"].as_i64().unwrap_or(10) as i32,
+                },
+            ))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------- validation results
+
+fn error_field(d: &Json) -> Option<String> {
+    if let Some(f) = d.get("field").and_then(Json::as_str) {
+        return Some(f.to_string());
+    }
+    if let Some(f) = d
+        .get("fields")
+        .and_then(Json::as_array)
+        .and_then(|a| a.first())
+        .and_then(Json::as_str)
+    {
+        return Some(f.to_string());
+    }
+    d.get("path")
+        .and_then(Json::as_str)
+        .and_then(|p| p.rsplit('.').next())
+        .map(String::from)
+}
+
+fn is_conflict(code: ErrorCode) -> bool {
+    matches!(code, ErrorCode::Conflict | ErrorCode::PreconditionFailed)
+}
+
+/// The stored check of a version (§6.7 step 9): codes and statuses only.
+fn stored_validation(r: &Result<commands::Sim>, at: DateTime<Utc>) -> Json {
+    match r {
+        Ok(sim) => json!({
+            "status": "passed", "checked_at": at, "blocking": [],
+            "items": sim.items.iter().map(|i| json!({"op_id": i.op_id,
+                "status": if i.status == "applied" { "would_change" } else { "no_effect" }})).collect::<Vec<_>>(),
+        }),
+        Err(e) => {
+            let a = classify(e);
+            let code = a
+                .as_ref()
+                .map_or(ErrorCode::TemporarilyUnavailable, |a| a.code);
+            let d = a.and_then(|a| a.details).unwrap_or(Json::Null);
+            let blocking = Blocking {
+                op_id: d
+                    .get("op_id")
+                    .and_then(Json::as_str)
+                    .and_then(|s| s.parse().ok()),
+                code: code.as_str().to_string(),
+                field: error_field(&d),
+            };
+            json!({
+                "status": if is_conflict(code) { "conflict" } else { "blocked" },
+                "checked_at": at, "blocking": [blocking], "items": [],
+            })
+        }
+    }
+}
+
+fn compact(v: &Json) -> CompactValidation {
+    CompactValidation {
+        status: v["status"].as_str().unwrap_or("blocked").to_string(),
+        blocking: serde_json::from_value::<Vec<Blocking>>(v["blocking"].clone())
+            .unwrap_or_default()
+            .into_iter()
+            .take(10)
+            .collect(),
+        warning_codes: Vec::new(),
+    }
+}
+
+fn next_for(status: &str) -> Vec<NextAction> {
+    match status {
+        "passed" => vec![NextAction::AskHuman],
+        "conflict" => vec![NextAction::RefreshAndRevise],
+        _ => vec![NextAction::FixInput],
+    }
+}
+
+fn error_view(e: &anyhow::Error) -> ErrorView {
+    match classify(e) {
+        Some(a) => ErrorView {
+            code: a.code.as_str().to_string(),
+            message: a.message.clone(),
+            details: a.details.clone().unwrap_or(Json::Null),
+        },
+        None => ErrorView {
+            code: ErrorCode::TemporarilyUnavailable.as_str().to_string(),
+            message: "the check could not finish".into(),
+            details: Json::Null,
+        },
+    }
+}
+
+// ---------------------------------------------------------------- visibility helpers
+
+/// Current keys of the issues in `ids` that `caller` can see.
+async fn visible_keys(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    ids: &[Uuid],
+) -> Result<BTreeMap<Uuid, String>> {
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let scope = db::load_scope(&mut *conn, caller).await?;
+    type Row = (Uuid, String, Uuid, Uuid, bool, Uuid, Option<Uuid>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT i.id, k.key, i.project_id, i.tracker_id, i.is_private, i.author_id, i.assigned_to_id
+         FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         WHERE i.id = ANY($1) AND i.archived_at IS NULL",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|r| {
+            scope.can_see(&IssueFacts {
+                project_id: r.2,
+                tracker_id: r.3,
+                is_private: r.4,
+                author_id: r.5,
+                assigned_to_id: r.6,
+            })
+        })
+        .map(|r| (r.0, r.1))
+        .collect())
+}
+
+/// Existing target issues of a stored document.
+fn body_targets(body: &Json) -> Vec<Uuid> {
+    body["preconditions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["target"]["id"].as_str()?.parse().ok())
+        .collect()
+}
+
+/// Targets as (id, key) when `caller` can see every one; `None` otherwise.
+async fn readable_targets(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    body: &Json,
+) -> Result<Option<Vec<TargetView>>> {
+    let ids = body_targets(body);
+    let keys = visible_keys(&mut *conn, caller, &ids).await?;
+    if ids.iter().any(|i| !keys.contains_key(i)) {
+        return Ok(None);
+    }
+    Ok(Some(
+        ids.into_iter()
+            .map(|id| TargetView {
+                key: keys[&id].clone(),
+                id,
+            })
+            .collect(),
+    ))
+}
+
+// ---------------------------------------------------------------- agent side
+
+struct AgentWho {
+    agent: Uuid,
+    context: Uuid,
+    delegator: Uuid,
+}
+
+/// The agent behind `caller`, re-checked now (token, context, client,
+/// delegator; §3.7).
+async fn agent_who(conn: &mut PgConnection, caller: AuthContext) -> Result<AgentWho> {
+    if caller.kind() != PrincipalKind::Agent {
+        return Err(
+            ApiError::new(ErrorCode::ForbiddenOp, "only an agent proposes")
+                .with_details(json!({"reason": "agent_only"}))
+                .into(),
+        );
+    }
+    let me = db::effective(&mut *conn, caller).await?;
+    let a = me
+        .agent
+        .ok_or_else(|| api(ErrorCode::Unauthenticated, "not an agent token"))?;
+    Ok(AgentWho {
+        agent: a.agent_principal_id,
+        context: a.context_id,
+        delegator: a.delegator_id,
+    })
+}
+
+/// The one project the document writes to (§1: one issue, a new issue, or
+/// a duplicate within one project).
+async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
+    let mut projects: BTreeSet<Uuid> = parsed.creates().iter().map(|c| c.1).collect();
+    let targets = parsed.targets();
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id, project_id FROM issues WHERE id = ANY($1) AND archived_at IS NULL",
+    )
+    .bind(&targets)
+    .fetch_all(&mut *conn)
+    .await?;
+    if rows.len() != targets.len() {
+        return Err(api(ErrorCode::NotFound, "no such issue"));
+    }
+    projects.extend(rows.iter().map(|r| r.1));
+    let mut it = projects.into_iter();
+    match (it.next(), it.next()) {
+        (Some(p), None) => Ok(p),
+        (Some(_), Some(_)) => Err(ApiError::new(
+            ErrorCode::RelationNotAllowed,
+            "a proposal writes to one project",
+        )
+        .with_details(json!({"reason": "cross_project"}))
+        .into()),
+        _ => Err(api(ErrorCode::InvalidRequest, "nothing to do")),
+    }
+}
+
+/// The new source snapshot contains the old one (R only grows, §3.8 M5).
+async fn sources_kept(conn: &mut PgConnection, cs: &CsRow, sources: &[(Uuid, i64)]) -> Result<()> {
+    let lost: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM changeset_version_source_projects s
+                        WHERE s.changeset_id = $1 AND s.version = $2
+                          AND s.project_id <> ALL($3))",
+    )
+    .bind(cs.id)
+    .bind(cs.current_version)
+    .bind(sources.iter().map(|s| s.0).collect::<Vec<_>>())
+    .fetch_one(&mut *conn)
+    .await?;
+    if lost {
+        return Err(quarantined());
+    }
+    Ok(())
+}
+
+fn quarantined() -> anyhow::Error {
+    crate::agents::quarantined()
+}
+
+fn context_closed() -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::ContextUnavailable,
+        "this work context is closed; the delegator can start a new one",
+    )
+    .with_details(json!({"kind": "closed"}))
+    .into()
+}
+
+fn delegation_gone() -> anyhow::Error {
+    api(
+        ErrorCode::DelegationUnavailable,
+        "the delegation for this project is no longer usable",
+    )
+}
+
+/// The work context FOR SHARE and active.
+async fn lock_context_row(conn: &mut PgConnection, context: Uuid) -> Result<()> {
+    let state: Option<String> =
+        sqlx::query_scalar("SELECT state FROM agent_work_contexts WHERE id = $1 FOR SHARE")
+            .bind(context)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if state.as_deref() != Some("active") {
+        return Err(context_closed());
+    }
+    Ok(())
+}
+
+/// R and the destination projects FOR SHARE (FOR UPDATE where an issue is
+/// created) in UUID order, every epoch of R as recorded (§3.8 M7). Returns
+/// the current source snapshot.
+async fn lock_sources(
+    conn: &mut PgConnection,
+    context: Uuid,
+    dest: &BTreeMap<Uuid, bool>,
+) -> Result<Vec<(Uuid, i64)>> {
+    let r: Vec<(Uuid, i64)> = sqlx::query_as(
+        "SELECT project_id, security_epoch FROM agent_context_source_projects
+         WHERE context_id = $1 ORDER BY project_id",
+    )
+    .bind(context)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut all: BTreeSet<Uuid> = r.iter().map(|x| x.0).collect();
+    all.extend(dest.keys().copied());
+    for p in all {
+        let sql = if dest.get(&p) == Some(&true) {
+            "SELECT security_epoch FROM projects WHERE id = $1 FOR UPDATE"
+        } else {
+            "SELECT security_epoch FROM projects WHERE id = $1 FOR SHARE"
+        };
+        let epoch: Option<i64> = sqlx::query_scalar(sql)
+            .bind(p)
+            .fetch_optional(&mut *conn)
+            .await?;
+        let Some(epoch) = epoch else {
+            return Err(api(ErrorCode::NotFound, "no project"));
+        };
+        if r.iter().any(|(rp, re)| *rp == p && *re != epoch) {
+            return Err(quarantined());
+        }
+    }
+    Ok(r)
+}
+
+/// Step 1 for propose / revise: context, delegation for `dest`, R.
+async fn agent_step1(
+    conn: &mut PgConnection,
+    who: &AgentWho,
+    dest: Uuid,
+    creates: bool,
+) -> Result<(DelegRow, Vec<(Uuid, i64)>)> {
+    lock_context_row(&mut *conn, who.context).await?;
+    let d: Option<DelegRow> = sqlx::query_as(
+        "SELECT id, project_id, proposal_ops, writable_fields, max_ops, expires_at FROM delegations
+         WHERE context_id = $1 AND project_id = $2 AND revoked_at IS NULL
+           AND expires_at > clock_timestamp() FOR SHARE",
+    )
+    .bind(who.context)
+    .bind(dest)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(d) = d else {
+        let ever: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND project_id = $2)",
+        )
+        .bind(who.context)
+        .bind(dest)
+        .fetch_one(&mut *conn)
+        .await?;
+        return Err(if ever {
+            delegation_gone()
+        } else {
+            api(ErrorCode::NotFound, "no project")
+        });
+    };
+    let sources = lock_sources(&mut *conn, who.context, &BTreeMap::from([(dest, creates)])).await?;
+    if !crate::agents::audience_consistent(&mut *conn, dest).await? {
+        return Err(delegation_gone());
+    }
+    Ok((d, sources))
+}
+
+/// `changeset_propose` (§8.4, §6.7 propose steps 1–10) for the agent
+/// `caller`. `spa_origin` is the canonical SPA origin for `review_url`.
+pub async fn propose(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    proposal: &Json,
+    spa_origin: &str,
+) -> Result<ProposeResult> {
+    agent_write(app, caller, operation_id, proposal, None, spa_origin).await
+}
+
+/// `changeset_revise`: a complete new document for `changeset_id`, based on
+/// `expected_current_version`.
+pub async fn revise(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    changeset_id: Uuid,
+    expected_current_version: i32,
+    proposal: &Json,
+    spa_origin: &str,
+) -> Result<ProposeResult> {
+    agent_write(
+        app,
+        caller,
+        operation_id,
+        proposal,
+        Some((changeset_id, expected_current_version)),
+        spa_origin,
+    )
+    .await
+}
+
+macro_rules! retrying {
+    ($app:expr, $tx:ident, $body:expr) => {{
+        let mut attempt = 0;
+        loop {
+            let mut $tx = $app.pool.begin().await?;
+            sqlx::query("SET LOCAL lock_timeout = '10s'")
+                .execute(&mut *$tx)
+                .await?;
+            match $body {
+                Ok(v) => {
+                    $tx.commit().await?;
+                    break Ok(v);
+                }
+                Err(e) => {
+                    drop($tx);
+                    if commands::is_retryable_db(&e) && attempt < RETRIES {
+                        attempt += 1;
+                        continue;
+                    }
+                    if commands::is_lock_timeout(&e) {
+                        break Err(api(
+                            ErrorCode::TemporarilyUnavailable,
+                            "the proposal is busy; send the same request again",
+                        ));
+                    }
+                    break Err(e);
+                }
+            }
+        }
+    }};
+}
+
+async fn agent_write(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    proposal: &Json,
+    revise: Option<(Uuid, i32)>,
+    spa_origin: &str,
+) -> Result<ProposeResult> {
+    retrying!(
+        app,
+        tx,
+        agent_write_tx(&mut tx, caller, operation_id, proposal, revise, spa_origin).await
+    )
+}
+
+async fn agent_write_tx(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    operation_id: Uuid,
+    proposal: &Json,
+    revise: Option<(Uuid, i32)>,
+    spa_origin: &str,
+) -> Result<ProposeResult> {
+    let who = agent_who(&mut *conn, caller).await?;
+    // Steps 2–4.
+    let parsed = commands::parse(&mut *conn, proposal, MAX_OPS as usize).await?;
+    let action = if revise.is_some() {
+        ACTION_REVISE
+    } else {
+        ACTION_PROPOSE
+    };
+    let payload: [u8; 32] = Sha256::digest(
+        [
+            &parsed.hash[..],
+            who.context.as_bytes(),
+            revise.map(|r| r.0).unwrap_or_default().as_bytes(),
+            &revise.map(|r| r.1).unwrap_or(0).to_be_bytes(),
+        ]
+        .concat(),
+    )
+    .into();
+    let fp = commands::fingerprint(action, &payload);
+
+    // A revision locks the ChangeSet first (the order approve-and-apply uses).
+    let base = match revise {
+        None => None,
+        Some((id, expected)) => {
+            let cs = load_cs(&mut *conn, id, true).await?.ok_or_else(not_found)?;
+            if cs.proposer_id != who.agent || cs.context_id != Some(who.context) {
+                return Err(not_found());
+            }
+            Some((cs, expected))
+        }
+    };
+
+    // Step 1 (also before a replay: a replay re-authenticates).
+    let dest = destination(&mut *conn, &parsed).await?;
+    let (deleg, sources) =
+        agent_step1(&mut *conn, &who, dest, !parsed.creates().is_empty()).await?;
+
+    let Some(request_id) =
+        commands::open_request(&mut *conn, who.agent, operation_id, action, &fp).await?
+    else {
+        let r = commands::stored_result(&mut *conn, who.agent, operation_id, action, &fp).await?;
+        let id: Uuid = r["changeset_id"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(not_found)?;
+        let v = r["version"].as_i64().unwrap_or(1) as i32;
+        return agent_view(&mut *conn, caller, id, v, spa_origin).await;
+    };
+
+    let mut old_ceiling = None;
+    if let Some((cs, expected)) = &base {
+        if let Some(e) = state_error(cs, None) {
+            return Err(e);
+        }
+        if cs.state == "approved" || cs.state == "executing" {
+            return Err(api(
+                ErrorCode::ExecutionInProgress,
+                "an approved execution is pending; it cannot be revised now",
+            ));
+        }
+        if clock(&mut *conn).await? >= cs.expires_at {
+            return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
+        }
+        if *expected != cs.current_version {
+            return Err(ApiError::new(
+                ErrorCode::VersionSuperseded,
+                "the proposal has a newer version",
+            )
+            .with_details(json!({"current_version": cs.current_version}))
+            .into());
+        }
+        if cs.delegation_id != Some(deleg.id) {
+            return Err(delegation_gone());
+        }
+        let v = load_version(&mut *conn, cs.id, cs.current_version)
+            .await?
+            .ok_or_else(not_found)?;
+        old_ceiling = Some(v.authority_ceiling);
+    }
+
+    // Step 6: the delegation's max_ops (ops and fields are checked in the simulation).
+    if parsed.op_list().len() > deleg.max_ops as usize {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            format!("the delegation allows at most {} ops", deleg.max_ops),
+        )
+        .with_details(json!({"reason": "max_ops", "max_ops": deleg.max_ops}))
+        .into());
+    }
+
+    // Steps 5, 6 and 9: the simulation as the agent. Rejections are not stored.
+    let ectx = EvalCtx {
+        mode: Mode::Propose,
+        caller,
+        ceiling: None,
+        deadlines: Vec::new(),
+        author: Some((who.agent, Some(who.delegator))),
+    };
+    let sim = commands::simulate(&mut *conn, &ectx, &parsed).await;
+    if let Err(e) = &sim
+        && commands::is_rejection(e)
+    {
+        return Err(sim.err().expect("an error"));
+    }
+    let checked_at = clock(&mut *conn).await?;
+    let validation = stored_validation(&sim, checked_at);
+
+    let ceiling = old_ceiling.unwrap_or_else(|| ceiling_json(&deleg));
+    let (cs_id, version, expires_at, edit_method, based_on) = match &base {
+        Some((cs, _)) => (
+            cs.id,
+            cs.current_version + 1,
+            cs.expires_at,
+            "agent_revise",
+            Some(cs.current_version),
+        ),
+        None => {
+            let expires_at: DateTime<Utc> = sqlx::query_scalar(
+                "SELECT LEAST(clock_timestamp() + make_interval(days => $1), $2)",
+            )
+            .bind(DEFAULT_DAYS)
+            .bind(deleg.expires_at)
+            .fetch_one(&mut *conn)
+            .await?;
+            (Uuid::now_v7(), 1, expires_at, "agent_propose", None)
+        }
+    };
+    if let Some((cs, _)) = &base {
+        sources_kept(&mut *conn, cs, &sources).await?;
+    }
+    let stored = StoreVersion {
+        cs_id,
+        version,
+        new_changeset: base.is_none(),
+        context_project_id: dest,
+        proposer: who.agent,
+        on_behalf_of: who.delegator,
+        delegation: deleg.id,
+        context: who.context,
+        expires_at,
+        ceiling: &ceiling,
+        sources: &sources,
+        editor: who.agent,
+        edit_method,
+        based_on,
+        validation: &validation,
+    };
+    let hash = store_version(&mut *conn, &parsed, &stored).await?;
+    commands::complete_request(
+        &mut *conn,
+        request_id,
+        &json!({"changeset_id": cs_id, "version": version}),
+    )
+    .await?;
+
+    let targets = visible_keys(&mut *conn, caller, &parsed.targets()).await?;
+    let status = validation["status"]
+        .as_str()
+        .unwrap_or("blocked")
+        .to_string();
+    Ok(ProposeResult {
+        changeset_id: cs_id,
+        version,
+        proposal_hash: hash_str(&hash),
+        state: "proposed".into(),
+        group_id: None,
+        targets: targets
+            .into_iter()
+            .map(|(id, key)| TargetView { id, key })
+            .collect(),
+        validation: compact(&validation),
+        review_url: format!("{spa_origin}{}", review_path(cs_id, version)),
+        expires_at,
+        next_actions: next_for(&status),
+    })
+}
+
+struct StoreVersion<'a> {
+    cs_id: Uuid,
+    version: i32,
+    new_changeset: bool,
+    context_project_id: Uuid,
+    proposer: Uuid,
+    on_behalf_of: Uuid,
+    delegation: Uuid,
+    context: Uuid,
+    expires_at: DateTime<Utc>,
+    ceiling: &'a Json,
+    sources: &'a [(Uuid, i64)],
+    editor: Uuid,
+    edit_method: &'static str,
+    based_on: Option<i32>,
+    validation: &'a Json,
+}
+
+/// Step 10: normalizes, hashes and stores a version (and the ChangeSet for
+/// version 1). Returns the proposal hash.
+async fn store_version(
+    conn: &mut PgConnection,
+    parsed: &Parsed,
+    s: &StoreVersion<'_>,
+) -> Result<[u8; 32]> {
+    let mut private_defaults = BTreeMap::new();
+    for (i, _, tracker) in parsed.creates() {
+        let p: bool = sqlx::query_scalar("SELECT private_by_default FROM trackers WHERE id = $1")
+            .bind(tracker)
+            .fetch_optional(&mut *conn)
+            .await?
+            .unwrap_or(false);
+        private_defaults.insert(i, p);
+    }
+    let body = canonical_doc(&parsed.norm, &private_defaults)?;
+    let body_sha: [u8; 32] = Sha256::digest(commands::canonical_json(&body)).into();
+    let hash = proposal_hash(&HashInput {
+        document: &body,
+        expires_at: s.expires_at,
+        ceiling: s.ceiling,
+        origin: "external_agent",
+        proposer: s.proposer,
+        delegation: s.delegation,
+        context: s.context,
+        sources: s.sources,
+        audience_contract_ver: AUDIENCE_CONTRACT_VER,
+    });
+    let dest_epoch: i64 = s
+        .sources
+        .iter()
+        .find(|x| x.0 == s.context_project_id)
+        .map(|x| x.1)
+        .ok_or_else(|| anyhow::anyhow!("the destination project is not in the source snapshot"))?;
+    if s.new_changeset {
+        sqlx::query(
+            "INSERT INTO changesets (id, origin, context_project_id, proposer_id, on_behalf_of_id,
+                                     delegation_id, context_id, current_version, state, expires_at)
+             VALUES ($1, 'external_agent', $2, $3, $4, $5, $6, 1, 'proposed', $7)",
+        )
+        .bind(s.cs_id)
+        .bind(s.context_project_id)
+        .bind(s.proposer)
+        .bind(s.on_behalf_of)
+        .bind(s.delegation)
+        .bind(s.context)
+        .bind(s.expires_at)
+        .execute(&mut *conn)
+        .await?;
+    }
+    let content: Uuid = sqlx::query_scalar(
+        "INSERT INTO proposal_contents (body, body_sha256) VALUES ($1, $2) RETURNING id",
+    )
+    .bind(&body)
+    .bind(&body_sha[..])
+    .fetch_one(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO changeset_versions (changeset_id, version, content_id, proposal_hash,
+                                         command_schema_version, exec_mode, expires_at,
+                                         authority_ceiling, security_epoch, editor_id, edit_method,
+                                         based_on_version, validation, audience_contract_ver)
+         VALUES ($1, $2, $3, $4, $5, 'atomic', $6, $7, $8, $9, $10, $11, $12, $13)",
+    )
+    .bind(s.cs_id)
+    .bind(s.version)
+    .bind(content)
+    .bind(&hash[..])
+    .bind(COMMAND_SCHEMA_VERSION)
+    .bind(s.expires_at)
+    .bind(s.ceiling)
+    .bind(dest_epoch)
+    .bind(s.editor)
+    .bind(s.edit_method)
+    .bind(s.based_on)
+    .bind(s.validation)
+    .bind(AUDIENCE_CONTRACT_VER)
+    .execute(&mut *conn)
+    .await?;
+    for (p, e) in s.sources {
+        sqlx::query(
+            "INSERT INTO changeset_version_source_projects (changeset_id, version, project_id, security_epoch)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(s.cs_id)
+        .bind(s.version)
+        .bind(p)
+        .bind(e)
+        .execute(&mut *conn)
+        .await?;
+    }
+    for (pos, (op_id, kind)) in parsed.op_list().into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO changeset_version_ops (changeset_id, version, op_id, position, kind)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(s.cs_id)
+        .bind(s.version)
+        .bind(op_id)
+        .bind(pos as i32)
+        .bind(kind)
+        .execute(&mut *conn)
+        .await?;
+    }
+    if !s.new_changeset {
+        sqlx::query("UPDATE changesets SET current_version = $2, state = 'proposed' WHERE id = $1")
+            .bind(s.cs_id)
+            .bind(s.version)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(hash)
+}
+
+/// The compact view of an agent's own version (idempotent replays).
+async fn agent_view(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    id: Uuid,
+    version: i32,
+    spa_origin: &str,
+) -> Result<ProposeResult> {
+    let cs = load_cs(&mut *conn, id, false)
+        .await?
+        .ok_or_else(not_found)?;
+    let v = load_version(&mut *conn, id, version)
+        .await?
+        .ok_or_else(not_found)?;
+    let validation = v.validation.clone().unwrap_or(Json::Null);
+    let status = validation["status"]
+        .as_str()
+        .unwrap_or("blocked")
+        .to_string();
+    let targets = match &v.body {
+        Some(b) => visible_keys(&mut *conn, caller, &body_targets(b)).await?,
+        None => BTreeMap::new(),
+    };
+    Ok(ProposeResult {
+        changeset_id: id,
+        version,
+        proposal_hash: hash_str(&v.proposal_hash),
+        state: cs.state.clone(),
+        group_id: cs.group_id,
+        targets: targets
+            .into_iter()
+            .map(|(id, key)| TargetView { id, key })
+            .collect(),
+        validation: compact(&validation),
+        review_url: format!("{spa_origin}{}", review_path(id, version)),
+        expires_at: cs.expires_at,
+        next_actions: next_for(&status),
+    })
+}
+
+// ---------------------------------------------------------------- owner side
+
+/// The person behind `caller` (any user credential for reads).
+fn owner_of(caller: &AuthContext) -> Result<Uuid> {
+    caller.user_id().ok_or_else(|| {
+        api(
+            ErrorCode::HumanSessionRequired,
+            "only the delegator, signed in to the web app, reviews proposals",
+        )
+    })
+}
+
+/// The ChangeSet when `user` is its owner; `not_found` otherwise.
+async fn load_owned(conn: &mut PgConnection, user: Uuid, id: Uuid, lock: bool) -> Result<CsRow> {
+    match load_cs(&mut *conn, id, lock).await? {
+        Some(cs) if cs.on_behalf_of_id == user => Ok(cs),
+        _ => Err(not_found()),
+    }
+}
+
+/// An execution as its owner sees it now (issues re-checked for visibility).
+async fn exec_view(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    ex: &ExecRow,
+) -> Result<ExecutionView> {
+    let stored = ex.item_results.clone().unwrap_or(Json::Null);
+    let items: Vec<ExecItem> = serde_json::from_value(stored["items"].clone()).unwrap_or_default();
+    let effects: Vec<Json> = stored["effects"].as_array().cloned().unwrap_or_default();
+    let mut ids: Vec<Uuid> = effects
+        .iter()
+        .filter_map(|e| e["issue_id"].as_str()?.parse().ok())
+        .collect();
+    ids.extend(items.iter().filter_map(|i| i.issue_id));
+    ids.sort();
+    ids.dedup();
+    let visible = visible_keys(&mut *conn, caller, &ids).await?;
+    let effects = effects
+        .iter()
+        .filter_map(|e| {
+            let id: Uuid = e["issue_id"].as_str()?.parse().ok()?;
+            Some(Effect {
+                issue_id: id,
+                key: visible.get(&id)?.clone(),
+                lock_version: e["lock_version"].as_i64()? as i32,
+                changed: e["changed"].as_bool()?,
+                created: e["created"].as_bool()?,
+            })
+        })
+        .collect();
+    let items = items
+        .into_iter()
+        .filter(|i| i.issue_id.is_none_or(|id| visible.contains_key(&id)))
+        .collect();
+    Ok(ExecutionView {
+        execution_id: ex.id,
+        changeset_id: ex.changeset_id,
+        version: ex.version,
+        attempt_no: ex.attempt_no,
+        status: ex.status.clone(),
+        error: ex.error_code.as_ref().map(|c| ErrorView {
+            code: c.clone(),
+            message: "the execution failed; nothing was changed".into(),
+            details: Json::Null,
+        }),
+        items,
+        effects,
+        search: ex.consistent_after.clone().map(|c| SearchReceipt {
+            consistent_after: c,
+        }),
+        created_at: ex.created_at,
+        finished_at: ex.finished_at,
+    })
+}
+
+async fn latest_exec(conn: &mut PgConnection, cs: Uuid) -> Result<Option<ExecRow>> {
+    let sql = format!(
+        "SELECT {EXEC_COLS} FROM changeset_executions WHERE changeset_id = $1
+         ORDER BY created_at DESC, id DESC LIMIT 1"
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(cs)
+        .fetch_optional(&mut *conn)
+        .await?)
+}
+
+/// `GET /changesets` (§4.2): the caller's proposals, newest first.
+/// `bucket = awaiting_me` (default: proposed or failed) or `all`; `state`
+/// narrows further.
+pub async fn list(
+    app: &App,
+    caller: AuthContext,
+    bucket: Option<&str>,
+    state: Option<&str>,
+) -> Result<ChangesetList> {
+    let user = owner_of(&caller)?;
+    let states: Vec<String> = match (bucket.unwrap_or("awaiting_me"), state) {
+        (_, Some(s)) => vec![s.to_string()],
+        ("awaiting_me", None) => vec!["proposed".into(), "failed".into()],
+        ("all", None) => Vec::new(),
+        (b, None) => {
+            return Err(
+                ApiError::new(ErrorCode::InvalidArgument, format!("unknown bucket {b:?}"))
+                    .with_details(json!({"path": "bucket", "allowed": ["awaiting_me", "all"]}))
+                    .into(),
+            );
+        }
+    };
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let sql = format!(
+        "SELECT {CS_COLS} FROM changesets WHERE on_behalf_of_id = $1
+           AND (cardinality($2::text[]) = 0 OR state = ANY($2))
+         ORDER BY created_at DESC, id DESC LIMIT $3"
+    );
+    let rows: Vec<CsRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(user)
+        .bind(&states)
+        .bind(LIST_LIMIT)
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut items = Vec::new();
+    for cs in rows {
+        let v = load_version(&mut tx, cs.id, cs.current_version).await?;
+        let (title, targets) = match v.as_ref().and_then(|v| v.body.clone()) {
+            Some(b) => match readable_targets(&mut tx, caller, &b).await? {
+                Some(t) => (b["title"].as_str().map(String::from), t),
+                None => (None, Vec::new()),
+            },
+            None => (None, Vec::new()),
+        };
+        let last = latest_exec(&mut tx, cs.id).await?.map(|e| e.status);
+        items.push(ChangesetSummary {
+            changeset_id: cs.id,
+            state: cs.state,
+            current_version: cs.current_version,
+            title,
+            targets,
+            created_at: cs.created_at,
+            expires_at: cs.expires_at,
+            last_execution_status: last,
+        });
+    }
+    Ok(ChangesetList { items })
+}
+
+/// `GET /changesets/{id}` and `/changesets/{id}/versions/{v}`.
+pub async fn get(
+    app: &App,
+    caller: AuthContext,
+    id: Uuid,
+    version: Option<i32>,
+) -> Result<ChangesetView> {
+    let user = owner_of(&caller)?;
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let cs = load_owned(&mut tx, user, id, false).await?;
+    let v = version.unwrap_or(cs.current_version);
+    let ver = load_version(&mut tx, id, v).await?.ok_or_else(not_found)?;
+    let (proposal, unavailable, targets) = match &ver.body {
+        None => (None, Some(ver.content_state.clone()), Vec::new()),
+        Some(b) => match readable_targets(&mut tx, caller, b).await? {
+            Some(t) => (Some(b.clone()), None, t),
+            None => (None, Some("not_readable".into()), Vec::new()),
+        },
+    };
+    let last = match latest_exec(&mut tx, id).await? {
+        Some(e) => Some(exec_view(&mut tx, caller, &e).await?),
+        None => None,
+    };
+    Ok(ChangesetView {
+        changeset_id: id,
+        state: cs.state,
+        current_version: cs.current_version,
+        version: v,
+        proposal_hash: hash_str(&ver.proposal_hash),
+        edit_method: ver.edit_method,
+        editor_id: ver.editor_id,
+        based_on_version: ver.based_on_version,
+        proposer_id: cs.proposer_id,
+        on_behalf_of_id: cs.on_behalf_of_id,
+        context_project_id: cs.context_project_id,
+        created_at: cs.created_at,
+        version_created_at: ver.created_at,
+        expires_at: cs.expires_at,
+        proposal,
+        content_unavailable: unavailable,
+        validation: ver.validation,
+        targets,
+        requires_human_approval: true,
+        review_url: review_path(id, v),
+        last_execution: last,
+    })
+}
+
+/// `POST /changesets/{id}/validations` (§8.5): apply steps 9–14 without
+/// locks or writes, as the owner within the proposal's authority ceiling.
+pub async fn validate(
+    app: &App,
+    caller: AuthContext,
+    id: Uuid,
+    input: &ValidateInput,
+) -> Result<Validation> {
+    let user = owner_of(&caller)?;
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let cs = load_owned(&mut tx, user, id, false).await?;
+    // Only something still approvable is worth a trial run (§8.5).
+    if let Some(e) = state_error(&cs, None) {
+        return Err(e);
+    }
+    if clock(&mut tx).await? >= cs.expires_at {
+        return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
+    }
+    if input.version != cs.current_version {
+        return Err(ApiError::new(
+            ErrorCode::VersionSuperseded,
+            "the proposal has a newer version",
+        )
+        .with_details(json!({"current_version": cs.current_version}))
+        .into());
+    }
+    let ver = load_version(&mut tx, id, input.version)
+        .await?
+        .ok_or_else(not_found)?;
+    let Some(body) = ver.body.clone() else {
+        return Err(api(
+            ErrorCode::ProposalUnavailable,
+            "the proposal content was removed",
+        ));
+    };
+    if readable_targets(&mut tx, caller, &body).await?.is_none() {
+        return Err(api(
+            ErrorCode::ProposalUnavailable,
+            "you can no longer read every issue this proposal changes",
+        ));
+    }
+    let parsed = commands::parse(&mut tx, &body, MAX_OPS as usize).await?;
+    let ectx = EvalCtx {
+        mode: Mode::Validate,
+        caller,
+        ceiling: Some(ceiling_map(&ver.authority_ceiling)),
+        deadlines: Vec::new(),
+        author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
+    };
+    let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
+    let checked_at = clock(&mut tx).await?;
+    let names = [
+        "structure",
+        "visibility",
+        "permissions",
+        "preconditions",
+        "workflow",
+    ];
+    let mut checks: BTreeMap<String, String> = names
+        .iter()
+        .map(|n| (n.to_string(), "passed".to_string()))
+        .collect();
+    checks.insert("audience".into(), "not_checked".into());
+    let (status, effects, error) = match &sim {
+        Ok(s) => (
+            "passed",
+            s.items
+                .iter()
+                .map(|i| OpEffect {
+                    op_id: i.op_id,
+                    status: if i.status == "applied" {
+                        "would_change"
+                    } else {
+                        "no_effect"
+                    }
+                    .into(),
+                })
+                .collect(),
+            None,
+        ),
+        Err(e) => {
+            let code = classify(e).map(|a| a.code);
+            let failed = match code {
+                Some(ErrorCode::InvalidRequest) => 0,
+                Some(ErrorCode::NotFound) => 1,
+                Some(ErrorCode::ForbiddenOp) => 2,
+                Some(c) if is_conflict(c) => 3,
+                _ => 4,
+            };
+            for (i, n) in names.iter().enumerate() {
+                let s = match i.cmp(&failed) {
+                    std::cmp::Ordering::Less => "passed",
+                    std::cmp::Ordering::Equal => "failed",
+                    std::cmp::Ordering::Greater => "not_checked",
+                };
+                checks.insert(n.to_string(), s.into());
+            }
+            (
+                if code.is_some_and(is_conflict) {
+                    "conflict"
+                } else {
+                    "blocked"
+                },
+                Vec::new(),
+                Some(error_view(e)),
+            )
+        }
+    };
+    Ok(Validation {
+        version: input.version,
+        proposal_hash: hash_str(&ver.proposal_hash),
+        status: status.into(),
+        checked_at,
+        checks,
+        warnings: Vec::new(),
+        effects,
+        error,
+    })
+}
+
+/// The browser session of the owner (decisions record it).
+fn session_executor(caller: &AuthContext) -> Result<commands::Executor> {
+    let who = commands::executor(caller)?;
+    if who.session_id.is_none() {
+        return Err(api(
+            ErrorCode::HumanSessionRequired,
+            "only a person signed in to the web app can decide on proposals",
+        ));
+    }
+    Ok(who)
+}
+
+/// A used key of `user`: same content → its request id and `result_ref`.
+async fn used_key(
+    conn: &mut PgConnection,
+    user: Uuid,
+    operation_id: Uuid,
+    action: &str,
+    fp: &[u8; 32],
+) -> Result<(Uuid, String, Option<Json>)> {
+    let (req, stored_action, stored_fp, status, result_ref, expired): (
+        Uuid,
+        String,
+        Vec<u8>,
+        String,
+        Option<Json>,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT id, action, fingerprint, status, result_ref, COALESCE(result_expires_at < now(), false)
+         FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+    )
+    .bind(user)
+    .bind(operation_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if stored_action != action || stored_fp.as_slice() != fp.as_slice() {
+        return Err(api(
+            ErrorCode::IdempotencyKeyReused,
+            "this Idempotency-Key was already used for a different request",
+        ));
+    }
+    if expired {
+        return Err(api(
+            ErrorCode::OperationResultExpired,
+            "the result of this operation is no longer kept; it is not run again",
+        ));
+    }
+    Ok((req, status, result_ref))
+}
+
+fn digest(v: &Json) -> [u8; 32] {
+    Sha256::digest(commands::canonical_json(v)).into()
+}
+
+/// `POST /changesets/{id}/reject`: the current version, by hash. Terminal (U10).
+pub async fn reject(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    id: Uuid,
+    input: &DecisionInput,
+) -> Result<StateView> {
+    let who = session_executor(&caller)?;
+    let hash = parse_hash(&input.proposal_hash)?;
+    let fp = commands::fingerprint(
+        ACTION_REJECT,
+        &digest(
+            &json!({"changeset_id": id, "version": input.version, "proposal_hash": hex::encode(&hash)}),
+        ),
+    );
+    retrying!(app, tx, async {
+        let cs = load_owned(&mut tx, who.user_id, id, true).await?;
+        if commands::open_request(&mut tx, who.user_id, operation_id, ACTION_REJECT, &fp)
+            .await?
+            .is_none()
+        {
+            used_key(&mut tx, who.user_id, operation_id, ACTION_REJECT, &fp).await?;
+            return Ok(state_view(&cs));
+        }
+        let req: Uuid = sqlx::query_scalar(
+            "SELECT id FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+        )
+        .bind(who.user_id)
+        .bind(operation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(e) = state_error(&cs, None) {
+            return Err(e);
+        }
+        if cs.state != "proposed" {
+            return Err(api(
+                ErrorCode::ChangesetNotExecutable,
+                format!("a {} proposal cannot be rejected", cs.state),
+            ));
+        }
+        check_version(&mut tx, &cs, input.version, &hash).await?;
+        let deadline = commands::lock_executor(&mut tx, &who).await?;
+        commands::check_deadlines(
+            &mut tx,
+            &deadline
+                .map(|d| (d, ErrorCode::Unauthenticated))
+                .into_iter()
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO changeset_decisions (changeset_id, version, proposal_hash, decider_id, decision, session_id)
+             VALUES ($1, $2, $3, $4, 'reject', $5)",
+        )
+        .bind(id)
+        .bind(input.version)
+        .bind(&hash)
+        .bind(who.user_id)
+        .bind(who.session_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE changesets SET state = 'rejected' WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        commands::complete_request(&mut tx, req, &json!({"changeset_id": id, "version": input.version}))
+            .await?;
+        Ok(StateView {
+            changeset_id: id,
+            state: "rejected".into(),
+            current_version: cs.current_version,
+        })
+    }
+    .await)
+}
+
+fn state_view(cs: &CsRow) -> StateView {
+    StateView {
+        changeset_id: cs.id,
+        state: cs.state.clone(),
+        current_version: cs.current_version,
+    }
+}
+
+/// Before any decision: the version is current, the hash matches, the
+/// content is there and not expired.
+async fn check_version(
+    conn: &mut PgConnection,
+    cs: &CsRow,
+    version: i32,
+    hash: &[u8],
+) -> Result<VerRow> {
+    if clock(&mut *conn).await? >= cs.expires_at {
+        return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
+    }
+    if version != cs.current_version {
+        return Err(ApiError::new(
+            ErrorCode::VersionSuperseded,
+            "the proposal has a newer version; review it again",
+        )
+        .with_details(json!({"current_version": cs.current_version}))
+        .into());
+    }
+    let v = load_version(&mut *conn, cs.id, version)
+        .await?
+        .ok_or_else(not_found)?;
+    if v.proposal_hash != hash || v.body.is_none() {
+        return Err(api(
+            ErrorCode::ApprovalInvalidated,
+            "what you reviewed is not this version any more",
+        ));
+    }
+    Ok(v)
+}
+
+/// `POST /changesets/{id}/cancel` for the owner, or `changeset_cancel` for
+/// the proposing agent: proposed, approved-but-not-started or failed →
+/// canceled; a queued execution becomes failed (`changeset_canceled`).
+pub async fn cancel(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    id: Uuid,
+) -> Result<StateView> {
+    let fp = commands::fingerprint(ACTION_CANCEL, &digest(&json!({"changeset_id": id})));
+    retrying!(
+        app,
+        tx,
+        async {
+            let (who, is_owner) = match caller.kind() {
+                PrincipalKind::Agent => (agent_who(&mut tx, caller).await?.agent, false),
+                _ => (owner_of(&caller)?, true),
+            };
+            let cs = load_cs(&mut tx, id, true).await?.ok_or_else(not_found)?;
+            let mine = if is_owner {
+                cs.on_behalf_of_id == who
+            } else {
+                cs.proposer_id == who && cs.context_id == caller.context_id()
+            };
+            if !mine {
+                return Err(not_found());
+            }
+            if !is_owner {
+                lock_context_row(&mut tx, cs.context_id.unwrap_or_default()).await?;
+            }
+            if commands::open_request(&mut tx, who, operation_id, ACTION_CANCEL, &fp)
+                .await?
+                .is_none()
+            {
+                used_key(&mut tx, who, operation_id, ACTION_CANCEL, &fp).await?;
+                return Ok(state_view(&cs));
+            }
+            let req: Uuid = sqlx::query_scalar(
+                "SELECT id FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+            )
+            .bind(who)
+            .bind(operation_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if cs.state == "succeeded" {
+                return Err(api(
+                    ErrorCode::ChangesetNotExecutable,
+                    "an applied proposal cannot be canceled",
+                ));
+            }
+            if let Some(e) = state_error(&cs, None) {
+                return Err(e);
+            }
+            end_queued(&mut tx, id, "changeset_canceled").await?;
+            sqlx::query("UPDATE changesets SET state = 'canceled' WHERE id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            commands::complete_request(&mut tx, req, &json!({"changeset_id": id})).await?;
+            Ok(StateView {
+                changeset_id: id,
+                state: "canceled".into(),
+                current_version: cs.current_version,
+            })
+        }
+        .await
+    )
+}
+
+/// Fails the queued executions of a ChangeSet (cancel, expiry) so the
+/// one-active-execution index keeps no placeholder (§8.6).
+async fn end_queued(conn: &mut PgConnection, id: Uuid, code: &str) -> Result<()> {
+    let reqs: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE changeset_executions SET status = 'failed', error_code = $2,
+                item_results = '{\"items\": [], \"effects\": []}', finished_at = clock_timestamp()
+         WHERE changeset_id = $1 AND status = 'queued' RETURNING operation_request_id",
+    )
+    .bind(id)
+    .bind(code)
+    .fetch_all(&mut *conn)
+    .await?;
+    for r in reqs {
+        end_request(&mut *conn, r).await?;
+    }
+    Ok(())
+}
+
+/// The approve request of a failed execution: finished (its result_ref
+/// already names the execution).
+async fn end_request(conn: &mut PgConnection, request: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE operation_requests SET status = 'failed',
+                result_expires_at = now() + make_interval(days => $2)
+         WHERE id = $1 AND status = 'in_progress'",
+    )
+    .bind(request)
+    .bind(commands::RESULT_DAYS)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// The background tidy-up (§8.2): expired proposals → expired, their queued
+/// executions failed. Applying checks `clock_timestamp()` itself; this only
+/// keeps the index honest. Returns how many changed.
+pub async fn expire_due(app: &App) -> Result<u64> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM changesets WHERE state IN ('proposed', 'approved', 'failed')
+           AND expires_at <= clock_timestamp() ORDER BY id",
+    )
+    .fetch_all(&app.pool)
+    .await?;
+    let mut n = 0;
+    for id in ids {
+        let changed: bool = retrying!(
+            app,
+            tx,
+            async {
+                let Some(cs) = load_cs(&mut tx, id, true).await? else {
+                    return Ok(false);
+                };
+                if !matches!(cs.state.as_str(), "proposed" | "approved" | "failed")
+                    || clock(&mut tx).await? < cs.expires_at
+                {
+                    return Ok(false);
+                }
+                end_queued(&mut tx, id, "changeset_expired").await?;
+                sqlx::query("UPDATE changesets SET state = 'expired' WHERE id = $1")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                Ok(true)
+            }
+            .await
+        )?;
+        n += changed as u64;
+    }
+    Ok(n)
+}
+
+/// `POST /changesets/{id}/revisions` (§8.5): the owner writes a new version
+/// within the original authority ceiling; origin, delegation, context,
+/// ceiling and expiry stay; the source snapshot is the current R.
+pub async fn owner_revise(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    id: Uuid,
+    input: &Json,
+) -> Result<ChangesetView> {
+    let user = owner_of(&caller)?;
+    let parsed_input: RevisionInput = serde_json::from_value(input.clone()).map_err(|e| {
+        ApiError::new(ErrorCode::InvalidRequest, format!("not a revision: {e}"))
+            .with_details(json!({"kind": "invalid_body"}))
+    })?;
+    let proposal = input["proposal"].clone();
+    let expected = parsed_input.expected_current_version;
+    let version: i32 = retrying!(app, tx, async {
+        let cs = load_owned(&mut tx, user, id, true).await?;
+        let parsed = commands::parse(&mut tx, &proposal, MAX_OPS as usize).await?;
+        let fp = commands::fingerprint(
+            ACTION_OWNER_REVISE,
+            &Sha256::digest(
+                [&parsed.hash[..], id.as_bytes(), &expected.to_be_bytes()].concat(),
+            ),
+        );
+        let context = cs.context_id.ok_or_else(not_found)?;
+        lock_context_row(&mut tx, context).await?;
+        let dest = destination(&mut tx, &parsed).await?;
+        let sources = lock_sources(
+            &mut tx,
+            context,
+            &BTreeMap::from([(dest, !parsed.creates().is_empty())]),
+        )
+        .await?;
+        if commands::open_request(&mut tx, user, operation_id, ACTION_OWNER_REVISE, &fp)
+            .await?
+            .is_none()
+        {
+            let (_, _, r) =
+                used_key(&mut tx, user, operation_id, ACTION_OWNER_REVISE, &fp).await?;
+            return Ok(r
+                .and_then(|r| r["version"].as_i64())
+                .unwrap_or(cs.current_version as i64) as i32);
+        }
+        let req: Uuid = sqlx::query_scalar(
+            "SELECT id FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+        )
+        .bind(user)
+        .bind(operation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(e) = state_error(&cs, None) {
+            return Err(e);
+        }
+        if cs.state == "approved" || cs.state == "executing" {
+            return Err(api(
+                ErrorCode::ExecutionInProgress,
+                "an approved execution is pending; it cannot be revised now",
+            ));
+        }
+        if clock(&mut tx).await? >= cs.expires_at {
+            return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
+        }
+        if expected != cs.current_version {
+            return Err(ApiError::new(
+                ErrorCode::VersionSuperseded,
+                "the proposal has a newer version",
+            )
+            .with_details(json!({"current_version": cs.current_version}))
+            .into());
+        }
+        let deleg_ok: bool = sqlx::query_scalar(
+            "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM delegations WHERE id = $1 FOR SHARE",
+        )
+        .bind(cs.delegation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !deleg_ok {
+            return Err(delegation_gone());
+        }
+        let old = load_version(&mut tx, id, cs.current_version)
+            .await?
+            .ok_or_else(not_found)?;
+        sources_kept(&mut tx, &cs, &sources).await?;
+        let ceiling = ceiling_map(&old.authority_ceiling);
+        if !ceiling.contains_key(&dest) {
+            return Err(ApiError::new(
+                ErrorCode::ForbiddenOp,
+                "the revision writes outside what the agent was allowed to propose",
+            )
+            .with_details(json!({"reason": "ceiling"}))
+            .into());
+        }
+        if parsed.op_list().len() > ceiling[&dest].max_ops as usize {
+            return Err(ApiError::new(
+                ErrorCode::ForbiddenOp,
+                "the revision has more ops than the agent was allowed",
+            )
+            .with_details(json!({"reason": "ceiling"}))
+            .into());
+        }
+        // Within the ceiling: the simulation runs with it as the delegation.
+        let ectx = EvalCtx {
+            mode: Mode::Validate,
+            caller,
+            ceiling: Some(ceiling),
+            deadlines: Vec::new(),
+            author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
+        };
+        let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
+        if let Err(e) = &sim
+            && commands::is_rejection(e)
+        {
+            return Err(sim.err().expect("an error"));
+        }
+        let checked_at = clock(&mut tx).await?;
+        let validation = stored_validation(&sim, checked_at);
+        let version = cs.current_version + 1;
+        store_version(
+            &mut tx,
+            &parsed,
+            &StoreVersion {
+                cs_id: id,
+                version,
+                new_changeset: false,
+                context_project_id: cs.context_project_id,
+                proposer: cs.proposer_id,
+                on_behalf_of: cs.on_behalf_of_id,
+                delegation: cs.delegation_id.unwrap_or_default(),
+                context,
+                expires_at: cs.expires_at,
+                ceiling: &old.authority_ceiling,
+                sources: &sources,
+                editor: user,
+                edit_method: "owner_revise",
+                based_on: Some(cs.current_version),
+                validation: &validation,
+            },
+        )
+        .await?;
+        commands::complete_request(&mut tx, req, &json!({"changeset_id": id, "version": version}))
+            .await?;
+        Ok(version)
+    }
+    .await)?;
+    get(app, caller, id, Some(version)).await
+}
+
+// ---------------------------------------------------------------- approve and apply (§8.6)
+
+enum Accepted {
+    /// Queued: run transaction B.
+    Pending(Uuid),
+    /// The key's execution is finished: answer with it.
+    Finished(Uuid),
+}
+
+/// `POST /changesets/{id}/approve-and-apply`.
+pub async fn approve_and_apply(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    id: Uuid,
+    input: &ApproveInput,
+) -> Result<ApplyOutcome> {
+    let who = session_executor(&caller)?;
+    let hash = parse_hash(&input.proposal_hash)?;
+    let review_mode = input.review_mode.clone().unwrap_or_else(|| "detail".into());
+    let fp = commands::fingerprint(
+        ACTION_APPROVE,
+        &digest(&json!({"changeset_id": id, "version": input.version,
+                        "proposal_hash": hex::encode(&hash), "review_mode": review_mode})),
+    );
+    fault("approve.before_request").await?;
+
+    // Transaction A.
+    let accepted = retrying!(
+        app,
+        tx,
+        async {
+            accept(
+                &mut tx,
+                caller,
+                &who,
+                operation_id,
+                id,
+                input.version,
+                &hash,
+                &review_mode,
+                &fp,
+            )
+            .await
+        }
+        .await
+    )?;
+    let exec_id = match accepted {
+        Accepted::Finished(e) => return finished(app, caller, e, None).await,
+        Accepted::Pending(e) => e,
+    };
+    let pending = || ApplyOutcome {
+        pending: true,
+        execution_id: exec_id,
+        execution: None,
+    };
+    if fault("approve.after_a").await.is_err() {
+        return Ok(pending());
+    }
+
+    // Transaction B, retried as the same execution on deadlocks (T-I6).
+    let mut attempt = 0;
+    // From here on the execution exists: anything that leaves its outcome
+    // unknown is 202 with where to look, never an error (§8.6).
+    let failure = loop {
+        let Ok(mut tx) = begin_apply(app).await else {
+            return Ok(pending());
+        };
+        match apply_tx(&mut tx, caller, &who, exec_id).await {
+            Ok(()) => {
+                if tx.commit().await.is_err() || fault("apply.after_commit").await.is_err() {
+                    return Ok(pending());
+                }
+                return Ok(finished(app, caller, exec_id, None)
+                    .await
+                    .unwrap_or_else(|_| pending()));
+            }
+            Err(e) => {
+                drop(tx);
+                if commands::is_retryable_db(&e) && attempt < RETRIES {
+                    attempt += 1;
+                    tracing::info!(execution = %exec_id, attempt, "apply retried after a deadlock");
+                    continue;
+                }
+                // Lock wait over budget, a cut-off request or the DB away:
+                // rolled back, still queued; the same request continues it.
+                if transient(&e) {
+                    return Ok(pending());
+                }
+                // A domain failure, or a permanent fault (a CHECK, a trigger):
+                // rolled back with zero effect, recorded as failed so the
+                // active execution does not stay queued forever.
+                if classify(&e).is_none() {
+                    tracing::error!(execution = %exec_id, error = %format!("{e:#}"), "apply failed on a database fault");
+                }
+                break e;
+            }
+        }
+    };
+    if fault("apply.before_fail_record").await.is_err() {
+        return Ok(pending());
+    }
+
+    // Transaction C.
+    let mut attempt = 0;
+    loop {
+        let Ok(mut tx) = begin_apply(app).await else {
+            return Ok(pending());
+        };
+        match record_failure(&mut tx, exec_id, &failure).await {
+            Ok(()) => {
+                if tx.commit().await.is_err() {
+                    return Ok(pending());
+                }
+                return Ok(finished(app, caller, exec_id, Some(&failure))
+                    .await
+                    .unwrap_or_else(|_| pending()));
+            }
+            Err(e) => {
+                drop(tx);
+                if commands::is_retryable_db(&e) && attempt < RETRIES {
+                    attempt += 1;
+                    continue;
+                }
+                return Ok(pending());
+            }
+        }
+    }
+}
+
+async fn begin_apply(app: &App) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut tx = app.pool.begin().await?;
+    sqlx::query("SET LOCAL lock_timeout = '10s'")
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+/// The outcome is unknown and the same request may finish it: the DB away,
+/// a cut-off connection, a lock wait over budget.
+fn transient(e: &anyhow::Error) -> bool {
+    commands::is_lock_timeout(e)
+        || classify(e).is_some_and(|a| a.code == ErrorCode::TemporarilyUnavailable)
+}
+
+/// HTTP 200 with the execution as it is now; `failure` adds the live error
+/// (with its details, for the owner) when this request recorded it.
+async fn finished(
+    app: &App,
+    caller: AuthContext,
+    exec_id: Uuid,
+    failure: Option<&anyhow::Error>,
+) -> Result<ApplyOutcome> {
+    let mut tx = read_tx(app).await?;
+    let ex = load_exec(&mut tx, exec_id, false)
+        .await?
+        .ok_or_else(not_found)?;
+    let mut view = exec_view(&mut tx, caller, &ex).await?;
+    // The live error only adds details to the recorded one; when the gap
+    // ended the execution another way (T-R12) the record wins.
+    if let (Some(f), "failed") = (failure, view.status.as_str()) {
+        let live = error_view(f);
+        if view.error.as_ref().is_none_or(|e| e.code == live.code) {
+            view.error = Some(live);
+        }
+    }
+    Ok(ApplyOutcome {
+        pending: view.status == "queued" || view.status == "running",
+        execution_id: exec_id,
+        execution: Some(view),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn accept(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &commands::Executor,
+    operation_id: Uuid,
+    id: Uuid,
+    version: i32,
+    hash: &[u8],
+    review_mode: &str,
+    fp: &[u8; 32],
+) -> Result<Accepted> {
+    let cs = load_owned(&mut *conn, who.user_id, id, true).await?;
+    let Some(request) =
+        commands::open_request(&mut *conn, who.user_id, operation_id, ACTION_APPROVE, fp).await?
+    else {
+        let (req, _, _) =
+            used_key(&mut *conn, who.user_id, operation_id, ACTION_APPROVE, fp).await?;
+        let ex: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, status FROM changeset_executions WHERE operation_request_id = $1",
+        )
+        .bind(req)
+        .fetch_optional(&mut *conn)
+        .await?;
+        return match ex {
+            Some((e, s)) if s == "succeeded" || s == "failed" => Ok(Accepted::Finished(e)),
+            Some((e, _)) => Ok(Accepted::Pending(e)),
+            None => Err(api(
+                ErrorCode::ExecutionInProgress,
+                "this operation is still running",
+            )),
+        };
+    };
+    if review_mode != "detail" {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "only review_mode \"detail\" is available",
+        )
+        .with_details(json!({"path": "review_mode", "allowed": ["detail"]}))
+        .into());
+    }
+    let applied: Option<Uuid> = sqlx::query_scalar(
+        "SELECT execution_id FROM changeset_applications WHERE changeset_id = $1 ORDER BY applied_at DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(e) = state_error(&cs, applied) {
+        return Err(e);
+    }
+    let ver = check_version(&mut *conn, &cs, version, hash).await?;
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM changeset_executions
+                        WHERE changeset_id = $1 AND status IN ('queued', 'running'))",
+    )
+    .bind(id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if active {
+        return Err(api(
+            ErrorCode::ExecutionInProgress,
+            "another approval of this proposal is running",
+        ));
+    }
+    let deadline = commands::lock_executor(&mut *conn, who).await?;
+    commands::check_deadlines(
+        &mut *conn,
+        &deadline
+            .map(|d| (d, ErrorCode::Unauthenticated))
+            .into_iter()
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    lock_context_row(&mut *conn, cs.context_id.unwrap_or_default()).await?;
+    let deleg_ok: bool = sqlx::query_scalar(
+        "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM delegations WHERE id = $1 FOR SHARE",
+    )
+    .bind(cs.delegation_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !deleg_ok {
+        return Err(delegation_gone());
+    }
+    if readable_targets(&mut *conn, caller, ver.body.as_ref().expect("checked"))
+        .await?
+        .is_none()
+    {
+        return Err(api(
+            ErrorCode::ProposalUnavailable,
+            "you can no longer read every issue this proposal changes",
+        ));
+    }
+
+    let decision: Uuid = sqlx::query_scalar(
+        "INSERT INTO changeset_decisions (changeset_id, version, proposal_hash, decider_id, decision,
+                                          session_id, review_mode)
+         VALUES ($1, $2, $3, $4, 'approve', $5, $6) RETURNING id",
+    )
+    .bind(id)
+    .bind(version)
+    .bind(hash)
+    .bind(who.user_id)
+    .bind(who.session_id)
+    .bind(review_mode)
+    .fetch_one(&mut *conn)
+    .await?;
+    let exec_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO execution_refs (id, kind) VALUES ($1, 'changeset')")
+        .bind(exec_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "INSERT INTO changeset_executions (id, changeset_id, version, proposal_hash, attempt_no,
+                                           operation_request_id, decision_id, executor_id,
+                                           executor_session_id, status)
+         SELECT $1, $2, $3, $4, COALESCE(max(attempt_no), 0) + 1, $5, $6, $7, $8, 'queued'
+         FROM changeset_executions WHERE changeset_id = $2 AND version = $3",
+    )
+    .bind(exec_id)
+    .bind(id)
+    .bind(version)
+    .bind(hash)
+    .bind(request)
+    .bind(decision)
+    .bind(who.user_id)
+    .bind(who.session_id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE changesets SET state = 'approved' WHERE id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("UPDATE operation_requests SET result_ref = $2 WHERE id = $1")
+        .bind(request)
+        .bind(json!({"changeset_id": id, "version": version, "execution_id": exec_id}))
+        .execute(&mut *conn)
+        .await?;
+    Ok(Accepted::Pending(exec_id))
+}
+
+/// Transaction B (§6.7 apply steps 1–18). `Ok` also when the execution was
+/// finished by an earlier request with the same key.
+async fn apply_tx(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &commands::Executor,
+    exec_id: Uuid,
+) -> Result<()> {
+    let cs_id: Uuid =
+        sqlx::query_scalar("SELECT changeset_id FROM changeset_executions WHERE id = $1")
+            .bind(exec_id)
+            .fetch_one(&mut *conn)
+            .await?;
+    // Steps 1–3.
+    let cs = load_cs(&mut *conn, cs_id, true)
+        .await?
+        .ok_or_else(not_found)?;
+    let ex = load_exec(&mut *conn, exec_id, true)
+        .await?
+        .ok_or_else(not_found)?;
+    if ex.executor_id != who.user_id {
+        return Err(not_found());
+    }
+    let applied: Option<Uuid> = sqlx::query_scalar(
+        "SELECT execution_id FROM changeset_applications WHERE changeset_id = $1 AND version = $2",
+    )
+    .bind(cs_id)
+    .bind(ex.version)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if applied.is_some() || ex.status == "succeeded" || ex.status == "failed" {
+        return Ok(());
+    }
+    // Step 4.
+    if cs.current_version != ex.version {
+        return Err(api(
+            ErrorCode::VersionSuperseded,
+            "the proposal was revised after the approval",
+        ));
+    }
+    let ver = load_version(&mut *conn, cs_id, ex.version)
+        .await?
+        .ok_or_else(not_found)?;
+    let Some(body) = ver.body.clone() else {
+        return Err(api(
+            ErrorCode::ApprovalInvalidated,
+            "the proposal content was removed",
+        ));
+    };
+    if ver.proposal_hash != ex.proposal_hash {
+        return Err(api(ErrorCode::ApprovalInvalidated, "the proposal changed"));
+    }
+    if cs.state != "approved" {
+        return Err(api(
+            ErrorCode::ChangesetNotExecutable,
+            format!("the proposal is {}", cs.state),
+        ));
+    }
+    // Step 4b.
+    let context = cs.context_id.ok_or_else(not_found)?;
+    lock_context_row(&mut *conn, context).await?;
+    fault("apply.before_step5").await?;
+    // Step 5: principals (id order), session, delegation, client.
+    let mut principals = vec![who.user_id, cs.proposer_id];
+    principals.sort();
+    principals.dedup();
+    let active: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM (SELECT id, status FROM principals WHERE id = ANY($1) ORDER BY id FOR SHARE) x
+         WHERE status = 'active'",
+    )
+    .bind(&principals)
+    .fetch_all(&mut *conn)
+    .await?;
+    // The approver suspended: their session no longer counts (§4.4); the
+    // agent suspended: its delegations are gone.
+    if !active.contains(&who.user_id) {
+        return Err(api(
+            ErrorCode::Unauthenticated,
+            "your account is no longer active",
+        ));
+    }
+    if !active.contains(&cs.proposer_id) {
+        return Err(delegation_gone());
+    }
+    let session_deadline = commands::lock_executor(&mut *conn, who).await?;
+    let deleg: Option<(DateTime<Utc>, bool)> = sqlx::query_as(
+        "SELECT expires_at, revoked_at IS NULL FROM delegations WHERE id = $1 FOR SHARE",
+    )
+    .bind(cs.delegation_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((deleg_expires, true)) = deleg else {
+        return Err(delegation_gone());
+    };
+    let client: Option<(Uuid, bool)> = sqlx::query_as(
+        "SELECT c.id, c.enabled FROM agent_clients c
+         JOIN agent_principals ap ON ap.agent_client_id = c.id
+         WHERE ap.agent_principal_id = $1 FOR SHARE OF c",
+    )
+    .bind(cs.proposer_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((client_id, true)) = client else {
+        return Err(delegation_gone());
+    };
+    fault("apply.after_step5").await?;
+    // Step 6: R and the destination, epochs as recorded.
+    let parsed = commands::parse(&mut *conn, &body, MAX_OPS as usize).await?;
+    let mut dest: BTreeMap<Uuid, bool> = ceiling_map(&ver.authority_ceiling)
+        .keys()
+        .map(|p| (*p, false))
+        .collect();
+    for (_, p, _) in parsed.creates() {
+        dest.insert(p, true);
+    }
+    lock_sources(&mut *conn, context, &dest).await?;
+
+    sqlx::query(
+        "UPDATE changeset_executions SET status = 'running', started_at = clock_timestamp() WHERE id = $1",
+    )
+    .bind(exec_id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE changesets SET state = 'executing' WHERE id = $1")
+        .bind(cs_id)
+        .execute(&mut *conn)
+        .await?;
+
+    // Steps 7–14, deadlines checked after the locks.
+    let mut deadlines = vec![
+        (cs.expires_at, ErrorCode::ChangesetExpired),
+        (deleg_expires, ErrorCode::DelegationUnavailable),
+    ];
+    if let Some(d) = session_deadline {
+        deadlines.push((d, ErrorCode::Unauthenticated));
+    }
+    let ectx = EvalCtx {
+        mode: Mode::Apply,
+        caller,
+        ceiling: Some(ceiling_map(&ver.authority_ceiling)),
+        deadlines,
+        author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
+    };
+    let sim = commands::simulate(&mut *conn, &ectx, &parsed).await?;
+    fault("apply.after_locks").await?;
+
+    // Steps 15–18.
+    let at = Attribution {
+        origin: "external_agent",
+        actor_id: cs.proposer_id,
+        actor_kind: "agent",
+        author_id: cs.proposer_id,
+        author_on_behalf: Some(cs.on_behalf_of_id),
+        request_id: ex.operation_request_id,
+        command_execution_id: None,
+        execution_ref: exec_id,
+        changeset: Some((cs_id, ex.version)),
+        changeset_execution_id: Some(exec_id),
+        proposer_id: Some(cs.proposer_id),
+        approver_id: Some(who.user_id),
+        on_behalf_of_id: Some(cs.on_behalf_of_id),
+        delegation_id: cs.delegation_id,
+        agent_client_id: Some(client_id),
+        record_changes: true,
+    };
+    let effects = commands::write_effects(&mut *conn, &parsed, &sim, &at).await?;
+    let token = sim.token.clone().unwrap_or_default();
+    let item_results = json!({
+        "items": sim.items.iter().map(|i: &ItemResult| json!({
+            "op_id": i.op_id, "status": i.status, "issue_id": i.issue_id})).collect::<Vec<_>>(),
+        "effects": effects.iter().map(|e| json!({
+            "issue_id": e.issue_id, "lock_version": e.lock_version,
+            "changed": e.changed, "created": e.created})).collect::<Vec<_>>(),
+    });
+    sqlx::query(
+        "INSERT INTO changeset_applications (changeset_id, version, execution_id, effect_count)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(cs_id)
+    .bind(ex.version)
+    .bind(exec_id)
+    .bind(effects.iter().filter(|e| e.changed).count() as i32)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE changeset_executions SET status = 'succeeded', item_results = $2,
+                consistent_after = $3, finished_at = clock_timestamp()
+         WHERE id = $1",
+    )
+    .bind(exec_id)
+    .bind(&item_results)
+    .bind(&token)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE changesets SET state = 'succeeded' WHERE id = $1")
+        .bind(cs_id)
+        .execute(&mut *conn)
+        .await?;
+    commands::complete_request(
+        &mut *conn,
+        ex.operation_request_id,
+        &json!({"changeset_id": cs_id, "version": ex.version, "execution_id": exec_id,
+                "consistent_after": token}),
+    )
+    .await?;
+    fault("apply.before_commit").await?;
+    Ok(())
+}
+
+/// Per-op results of a failed execution: the failing op `failed` with its
+/// code, earlier ops `rolled_back`, later ones `not_run`.
+fn failure_items(ops: &[(Uuid, i32)], e: &anyhow::Error) -> (String, Vec<ExecItem>) {
+    let a = classify(e);
+    let code = a
+        .as_ref()
+        .map_or(ErrorCode::TemporarilyUnavailable, |a| a.code)
+        .as_str()
+        .to_string();
+    let at = a
+        .and_then(|a| a.details)
+        .and_then(|d| d.get("op_index").and_then(Json::as_u64))
+        .map(|i| i as i32);
+    let items = ops
+        .iter()
+        .map(|(op_id, pos)| {
+            let (status, c) = match at {
+                Some(i) if *pos < i => ("rolled_back", None),
+                Some(i) if *pos == i => ("failed", Some(code.clone())),
+                _ => ("not_run", None),
+            };
+            ExecItem {
+                op_id: *op_id,
+                status: status.into(),
+                code: c,
+                issue_id: None,
+            }
+        })
+        .collect();
+    (code, items)
+}
+
+/// Transaction C (§8.6): record a domain failure unless the execution
+/// finished meanwhile; the ChangeSet becomes failed only if it is still
+/// approved at that version.
+async fn record_failure(conn: &mut PgConnection, exec_id: Uuid, e: &anyhow::Error) -> Result<()> {
+    let cs_id: Uuid =
+        sqlx::query_scalar("SELECT changeset_id FROM changeset_executions WHERE id = $1")
+            .bind(exec_id)
+            .fetch_one(&mut *conn)
+            .await?;
+    load_cs(&mut *conn, cs_id, true).await?;
+    let ex = load_exec(&mut *conn, exec_id, true)
+        .await?
+        .ok_or_else(not_found)?;
+    let applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM changeset_applications WHERE changeset_id = $1 AND version = $2)",
+    )
+    .bind(cs_id)
+    .bind(ex.version)
+    .fetch_one(&mut *conn)
+    .await?;
+    if applied || ex.status == "succeeded" || ex.status == "failed" {
+        return Ok(());
+    }
+    let ops: Vec<(Uuid, i32)> = sqlx::query_as(
+        "SELECT op_id, position FROM changeset_version_ops WHERE changeset_id = $1 AND version = $2
+         ORDER BY position",
+    )
+    .bind(cs_id)
+    .bind(ex.version)
+    .fetch_all(&mut *conn)
+    .await?;
+    let (code, items) = failure_items(&ops, e);
+    sqlx::query(
+        "UPDATE changeset_executions SET status = 'failed', error_code = $2, item_results = $3,
+                finished_at = clock_timestamp()
+         WHERE id = $1",
+    )
+    .bind(exec_id)
+    .bind(&code)
+    .bind(json!({"items": items, "effects": []}))
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE changesets SET state = 'failed'
+         WHERE id = $1 AND state IN ('approved', 'executing') AND current_version = $2",
+    )
+    .bind(cs_id)
+    .bind(ex.version)
+    .execute(&mut *conn)
+    .await?;
+    end_request(&mut *conn, ex.operation_request_id).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------- executions and operations
+
+/// `GET /executions/{id}`: the executor only. Never starts anything (§8.3).
+pub async fn get_execution(app: &App, caller: AuthContext, id: Uuid) -> Result<ExecutionView> {
+    let user = owner_of(&caller)?;
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let ex = load_exec(&mut tx, id, false).await?.ok_or_else(not_found)?;
+    if ex.executor_id != user {
+        return Err(not_found());
+    }
+    exec_view(&mut tx, caller, &ex).await
+}
+
+/// `GET /operations/{operation_id}`: what the caller's key did.
+pub async fn get_operation(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+) -> Result<OperationView> {
+    let user = owner_of(&caller)?;
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let row: Option<(String, String, Option<Json>, bool)> = sqlx::query_as(
+        "SELECT action, status, result_ref, COALESCE(result_expires_at < now(), false)
+         FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+    )
+    .bind(user)
+    .bind(operation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((action, status, r, expired)) = row else {
+        return Err(api(ErrorCode::NotFound, "no such operation"));
+    };
+    if expired || (status != "in_progress" && r.is_none()) {
+        return Err(api(
+            ErrorCode::OperationResultExpired,
+            "the result of this operation is no longer kept; it is not run again",
+        ));
+    }
+    let r = r.unwrap_or(Json::Null);
+    let uuid = |k: &str| r[k].as_str().and_then(|s| s.parse::<Uuid>().ok());
+    let execution = match uuid("execution_id") {
+        Some(e) if action == ACTION_APPROVE => match load_exec(&mut tx, e, false).await? {
+            Some(ex) => Some(exec_view(&mut tx, caller, &ex).await?),
+            None => None,
+        },
+        _ => None,
+    };
+    // A ChangeSet the caller no longer owns is not described.
+    let changeset_id = match uuid("changeset_id") {
+        Some(c) => load_cs(&mut tx, c, false)
+            .await?
+            .filter(|cs| cs.on_behalf_of_id == user)
+            .map(|cs| cs.id),
+        None => None,
+    };
+    Ok(OperationView {
+        operation_id,
+        action,
+        status,
+        changeset_id,
+        version: r["version"].as_i64().map(|v| v as i32),
+        execution,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fixed vector for `proposal_hash` (§8.1: the canonical rules are
+    /// versioned and tested). Changing the framing changes this value.
+    #[test]
+    fn proposal_hash_vector() {
+        let u = |n: u128| Uuid::from_u128(n);
+        let doc = json!({"command_schema_version": 1, "exec_mode": "atomic", "title": "é",
+                         "ops": [{"op_id": u(1), "kind": "add_note",
+                                  "target": {"type": "issue", "id": u(2)}, "body": "x", "is_private": false}],
+                         "preconditions": [{"target": {"type": "issue", "id": u(2)}, "lock_version": 3,
+                                            "field_values": {}}],
+                         "evidence": []});
+        let ceiling = json!({"projects": [{"project_id": u(3), "proposal_ops": ["add_note"],
+                                           "writable_fields": [], "max_ops": 10}]});
+        let t = DateTime::parse_from_rfc3339("2026-11-13T14:32:00.123456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let h = |sources: &[(Uuid, i64)], doc: &Json| {
+            hex::encode(proposal_hash(&HashInput {
+                document: doc,
+                expires_at: t,
+                ceiling: &ceiling,
+                origin: "external_agent",
+                proposer: u(4),
+                delegation: u(5),
+                context: u(6),
+                sources,
+                audience_contract_ver: 1,
+            }))
+        };
+        let a = h(&[(u(3), 2), (u(7), 1)], &doc);
+        // Source order does not matter; key order does not matter.
+        assert_eq!(a, h(&[(u(7), 1), (u(3), 2)], &doc));
+        let mut reordered: serde_json::Map<String, Json> = serde_json::Map::new();
+        for (k, v) in doc.as_object().unwrap().iter().rev() {
+            reordered.insert(k.clone(), v.clone());
+        }
+        assert_eq!(a, h(&[(u(3), 2), (u(7), 1)], &Json::Object(reordered)));
+        // No Unicode normalization: decomposed é is another proposal.
+        let mut nfd = doc.clone();
+        nfd["title"] = json!("e\u{301}");
+        assert_ne!(a, h(&[(u(3), 2), (u(7), 1)], &nfd));
+        assert_eq!(a, PROPOSAL_HASH_VECTOR, "the canonical form changed");
+    }
+
+    const PROPOSAL_HASH_VECTOR: &str =
+        "98df9a803af9c70e1cb7f12c1581adcb34eea0c72d198620bce8192be679fdad";
+
+    #[test]
+    fn failure_items_mark_ops() {
+        let e: anyhow::Error = ApiError::new(ErrorCode::InvalidTransition, "x")
+            .with_details(json!({"op_index": 1}))
+            .into();
+        let ops = [
+            (Uuid::from_u128(1), 0),
+            (Uuid::from_u128(2), 1),
+            (Uuid::from_u128(3), 2),
+        ];
+        let (code, items) = failure_items(&ops, &e);
+        assert_eq!(code, "invalid_transition");
+        let s: Vec<&str> = items.iter().map(|i| i.status.as_str()).collect();
+        assert_eq!(s, ["rolled_back", "failed", "not_run"]);
+    }
+}

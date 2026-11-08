@@ -89,6 +89,16 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/versions/{id}/events", get(version_events))
         .route("/resolve", post(resolve))
         .route("/commands", post(submit_command))
+        .route("/changesets", get(changeset_list))
+        .route("/changesets/{id}", get(changeset_get))
+        .route("/changesets/{id}/versions/{v}", get(changeset_version))
+        .route("/changesets/{id}/validations", post(changeset_validate))
+        .route("/changesets/{id}/approve-and-apply", post(changeset_apply))
+        .route("/changesets/{id}/reject", post(changeset_reject))
+        .route("/changesets/{id}/cancel", post(changeset_cancel))
+        .route("/changesets/{id}/revisions", post(changeset_revise))
+        .route("/executions/{id}", get(execution_get))
+        .route("/operations/{id}", get(operation_get))
         .route("/agent-clients", get(agent_clients))
         .route(
             "/delegations",
@@ -839,6 +849,188 @@ async fn submit_command(
     let ctx = human(&ra)?;
     let key = idempotency_key(&headers)?;
     Ok(ok(crate::commands::submit(&st.app, ctx, key, &body).await?))
+}
+
+// ---------------------------------------------------------------- changesets (S5, §8)
+
+async fn changeset_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::changesets::list(
+        &st.app,
+        ctx,
+        q.get("bucket").map(String::as_str),
+        q.get("state").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn changeset_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::changesets::get(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        None,
+    )
+    .await?))
+}
+
+async fn changeset_version(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, v)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let v: i32 = v
+        .parse()
+        .map_err(|_| ApiFailure(api(ErrorCode::NotFound, "no such version")))?;
+    Ok(ok(crate::changesets::get(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        Some(v),
+    )
+    .await?))
+}
+
+async fn changeset_validate(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::changesets::ValidateInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::changesets::validate(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+/// §8.6: 200 with the execution, or 202 while its result is not known.
+async fn changeset_apply(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::changesets::ApproveInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let out =
+        crate::changesets::approve_and_apply(&st.app, ctx, key, id_param(&id)?, &body).await?;
+    if !out.pending {
+        return Ok(ok(out.execution));
+    }
+    let mut resp = (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "data": {"execution_id": out.execution_id, "status": "queued",
+                     "client_action": "retry_same_request", "can_cancel_apply": false},
+            "meta": {"request_id": Uuid::now_v7(), "observed_at": Utc::now()},
+        })),
+    )
+        .into_response();
+    let h = resp.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&format!("/api/v1/executions/{}", out.execution_id)) {
+        h.insert(header::LOCATION, v);
+    }
+    h.insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+    Ok(resp)
+}
+
+async fn changeset_reject(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::changesets::DecisionInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::changesets::reject(
+        &st.app,
+        ctx,
+        key,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+async fn changeset_cancel(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(_body): ApiJson<crate::changesets::CancelInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::changesets::cancel(
+        &st.app,
+        ctx,
+        key,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn changeset_revise(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<serde_json::Value>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::changesets::owner_revise(
+        &st.app,
+        ctx,
+        key,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+async fn execution_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::changesets::get_execution(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn operation_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::changesets::get_operation(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
 }
 
 // ---------------------------------------------------------------- versions (S4, §17.8)

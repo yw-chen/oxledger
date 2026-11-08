@@ -84,6 +84,20 @@ pub enum ErrorCode {
     VersionInUse,
     /// A version with the same name exists in the project (R8).
     VersionNameTaken,
+    /// Not the current version of the ChangeSet.
+    VersionSuperseded,
+    /// The proposal hash does not match, or the content was redacted.
+    ApprovalInvalidated,
+    /// What was reviewed is no longer what would run (§15.3, §15.4).
+    ReviewOutdated,
+    /// This version was applied already; `details.execution_id`.
+    AlreadyApplied,
+    /// Rejected, canceled or succeeded.
+    ChangesetNotExecutable,
+    /// The delegator can no longer read the whole proposal.
+    ProposalUnavailable,
+    /// The ChangeSet expired.
+    ChangesetExpired,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -100,7 +114,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 31] = [
+    pub const ALL: [ErrorCode; 38] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -132,6 +146,13 @@ impl ErrorCode {
         Self::VersionNotOpen,
         Self::VersionInUse,
         Self::VersionNameTaken,
+        Self::VersionSuperseded,
+        Self::ApprovalInvalidated,
+        Self::ReviewOutdated,
+        Self::AlreadyApplied,
+        Self::ChangesetNotExecutable,
+        Self::ProposalUnavailable,
+        Self::ChangesetExpired,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -167,6 +188,13 @@ impl ErrorCode {
             Self::VersionNotOpen => "version_not_open",
             Self::VersionInUse => "version_in_use",
             Self::VersionNameTaken => "version_name_taken",
+            Self::VersionSuperseded => "version_superseded",
+            Self::ApprovalInvalidated => "approval_invalidated",
+            Self::ReviewOutdated => "review_outdated",
+            Self::AlreadyApplied => "already_applied",
+            Self::ChangesetNotExecutable => "changeset_not_executable",
+            Self::ProposalUnavailable => "proposal_unavailable",
+            Self::ChangesetExpired => "changeset_expired",
         }
     }
 
@@ -200,6 +228,13 @@ impl ErrorCode {
             Self::VersionNotOpen => 422,
             Self::VersionInUse => 409,
             Self::VersionNameTaken => 409,
+            Self::VersionSuperseded => 409,
+            Self::ApprovalInvalidated => 409,
+            Self::ReviewOutdated => 409,
+            Self::AlreadyApplied => 409,
+            Self::ChangesetNotExecutable => 409,
+            Self::ProposalUnavailable => 409,
+            Self::ChangesetExpired => 410,
         }
     }
 
@@ -247,6 +282,13 @@ impl ErrorCode {
             Self::VersionNotOpen => &[FixInput, AskHuman],
             Self::VersionInUse => &[AskHuman],
             Self::VersionNameTaken => &[FixInput, AskHuman],
+            Self::VersionSuperseded => &[RefreshAndRevise],
+            Self::ApprovalInvalidated => &[RefreshAndRevise],
+            Self::ReviewOutdated => &[RefreshAndRevise],
+            Self::AlreadyApplied => &[Stop],
+            Self::ChangesetNotExecutable => &[Stop],
+            Self::ProposalUnavailable => &[AskHuman, Stop],
+            Self::ChangesetExpired => &[Stop],
         }
     }
 }

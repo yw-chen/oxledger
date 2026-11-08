@@ -92,6 +92,14 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - 一份文件改同一張單多次，`lock_version` 只加 1、outbox 一則、事件依 op 順序；全部 no_effect 時什麼都不寫，但仍回 `consistent_after`。
 - 里程碑：`GET/POST /projects/{id}/versions`、`GET/PATCH/DELETE /versions/{id}`、`GET /versions/{id}/impact`、`GET /versions/{id}/events`。寫入要 `manage_versions` 與 `Idempotency-Key`；刪除是軟刪除，只有看得到的 issue 會擋。所有數字（stats、health、impact）只算呼叫者看得到的 issue。
 
+### ChangeSet（agent 提案，S5）
+
+- 流程：agent `propose`（S6 起經 MCP）→ 人在 `GET /changesets?bucket=awaiting_me` 看 → `POST /changesets/{id}/validations` 試算 → `POST /changesets/{id}/approve-and-apply`（帶 `version`、`proposal_hash`、`Idempotency-Key`）。同步套用：200 回 execution；結果未知時 202（`Location: /api/v1/executions/{id}`、`Retry-After: 2`、`client_action: retry_same_request`），用**同一個 key** 重送就好，不會套用兩次。
+- 提案只寫 ChangeSet 表，不動 issue。step 9 的問題（workflow、lock_version 衝突）會存成 `blocked`／`conflict` 給人看；權限、委派、找不到這類拒絕不存。
+- 寫入的署名：actor = agent（`actor_kind = agent`），approver／on_behalf_of = 批准的人；note 與新 issue 的作者是 agent、`created_on_behalf_of_id` = 委派人。
+- 錯誤碼：舊版本 `version_superseded`、hash 不對 `approval_invalidated`、已套用 `already_applied`、已拒絕／取消 `changeset_not_executable`、過期 `changeset_expired`（410）、目標讀不到 `proposal_unavailable`。
+- 測試用 `changesets::faults::arm(點, Action)`（只在 `test-support`）在交易 A／B／C 的邊界注入失敗、死結或閘門。
+
 ## 症狀 → 原因 → 修法
 
 | 症狀 | 原因 | 修法 |
@@ -140,6 +148,11 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | 刪除版本回 `version_in_use`，但列出的單比實際少 | 只列呼叫者看得到的 issue（R5）；看不到的 issue 不會擋，刪除後它們保留指向已刪除的版本 | 刻意的；有權限的人看得到全部 |
 | 建立專案後 INSERT `project_schedule_settings` 撞主鍵 | 0007 的 trigger 建立專案時已經插入一列 | 用 UPDATE，不要再 INSERT |
 | 並行測試（兩個請求同時改）怎麼跑都過，拿掉鎖也過 | 兩個請求其實先後執行，沒有真的競爭 | 先用另一個交易持有上游的列（例如專案 `FOR UPDATE`），讓兩個請求都卡在同一點，再放開；`s4_versions` 的 M15 測試就是這樣 |
+| agent 提案 `transition` 被當成 `invalid_transition` blocked，`allowed` 只剩目前狀態 | 委派的 `writable_fields` 沒有 `status_id`（transition 要 `transition` op 加 `status_id` 欄位） | 委派時加 `status_id` |
+| approve 回 `approval_invalidated` | `proposal_hash` 不是目前版本的 hash（或 agent 已修訂出新版本） | 重新 `GET /changesets/{id}` 取 `version` 與 `proposal_hash` |
+| 套用失敗後同一個 key 重送仍回 failed | 同 key 是 replay，回原結果 | 修好之後用**新的** key 再批准（attempt_no +1），或請 agent 修訂 |
+| 測試要改 changeset 的 `expires_at` 卻報 immutable | `changesets_guard` 不讓應用程式改到期時間 | 測試裡用 `SET session_replication_role = replica` 暫停 trigger（`s5_changesets::set_expiry`） |
+| 套用回 `delegation_unavailable`，但委派看起來還在 | agent client 被停用、委派到期或被撤銷，交易 B 會重查 | 重新啟用 client，或建立新委派後請 agent 重新提案 |
 | Python `subprocess.run(['cargo', …])` 在 Windows 報 FileNotFoundError | PATH 改了也不會影響 CreateProcess 找執行檔 | 用完整路徑 `~/.cargo/bin/cargo.exe` |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
 

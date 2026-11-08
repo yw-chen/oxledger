@@ -17,6 +17,32 @@
         ],
         "type": "object"
       },
+      "ApproveInput": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal_hash": {
+            "description": "`sha256:<hex>` as returned with the version.",
+            "type": "string"
+          },
+          "review_mode": {
+            "default": null,
+            "description": "Only `detail` in S5 (`queue` and `revise_and_apply` come with S6b).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "proposal_hash"
+        ],
+        "type": "object"
+      },
       "Assignee": {
         "properties": {
           "id": {
@@ -55,6 +81,10 @@
           "project_id",
           "assignees"
         ],
+        "type": "object"
+      },
+      "CancelInput": {
+        "additionalProperties": false,
         "type": "object"
       },
       "Candidate": {
@@ -97,6 +127,191 @@
         },
         "required": [
           "command_schema_versions"
+        ],
+        "type": "object"
+      },
+      "ChangesetList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChangesetSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ChangesetSummary": {
+        "properties": {
+          "changeset_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_execution_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TargetView"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "changeset_id",
+          "state",
+          "current_version",
+          "title",
+          "targets",
+          "created_at",
+          "expires_at",
+          "last_execution_status"
+        ],
+        "type": "object"
+      },
+      "ChangesetView": {
+        "properties": {
+          "based_on_version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "changeset_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "content_unavailable": {
+            "description": "`redacted`, `purged` or `not_readable`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "context_project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "edit_method": {
+            "type": "string"
+          },
+          "editor_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "on_behalf_of_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "proposal": {
+            "description": "The normalized command document; `null` with `content_unavailable`."
+          },
+          "proposal_hash": {
+            "type": "string"
+          },
+          "proposer_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "requires_human_approval": {
+            "type": "boolean"
+          },
+          "review_url": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TargetView"
+            },
+            "type": "array"
+          },
+          "validation": {
+            "description": "The check at creation: codes and statuses only."
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "version_created_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "changeset_id",
+          "state",
+          "current_version",
+          "version",
+          "proposal_hash",
+          "edit_method",
+          "editor_id",
+          "based_on_version",
+          "proposer_id",
+          "on_behalf_of_id",
+          "context_project_id",
+          "created_at",
+          "version_created_at",
+          "expires_at",
+          "proposal",
+          "content_unavailable",
+          "validation",
+          "targets",
+          "requires_human_approval",
+          "review_url",
+          "last_execution"
         ],
         "type": "object"
       },
@@ -336,6 +551,23 @@
           "name",
           "type",
           "value"
+        ],
+        "type": "object"
+      },
+      "DecisionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "proposal_hash": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "proposal_hash"
         ],
         "type": "object"
       },
@@ -710,8 +942,60 @@
             "const": "version_name_taken",
             "description": "A version with the same name exists in the project (R8).",
             "type": "string"
+          },
+          {
+            "const": "version_superseded",
+            "description": "Not the current version of the ChangeSet.",
+            "type": "string"
+          },
+          {
+            "const": "approval_invalidated",
+            "description": "The proposal hash does not match, or the content was redacted.",
+            "type": "string"
+          },
+          {
+            "const": "review_outdated",
+            "description": "What was reviewed is no longer what would run (§15.3, §15.4).",
+            "type": "string"
+          },
+          {
+            "const": "already_applied",
+            "description": "This version was applied already; `details.execution_id`.",
+            "type": "string"
+          },
+          {
+            "const": "changeset_not_executable",
+            "description": "Rejected, canceled or succeeded.",
+            "type": "string"
+          },
+          {
+            "const": "proposal_unavailable",
+            "description": "The delegator can no longer read the whole proposal.",
+            "type": "string"
+          },
+          {
+            "const": "changeset_expired",
+            "description": "The ChangeSet expired.",
+            "type": "string"
           }
         ]
+      },
+      "ErrorView": {
+        "description": "An error as the owner sees it on a failed execution or a validation.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": true,
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
       },
       "EventActor": {
         "properties": {
@@ -746,6 +1030,118 @@
         "required": [
           "citation_id",
           "quote"
+        ],
+        "type": "object"
+      },
+      "ExecItem": {
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issue_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "op_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "description": "`applied`, `no_effect`, `failed`, `rolled_back` or `not_run`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ExecutionView": {
+        "properties": {
+          "attempt_no": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "changeset_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/Effect"
+            },
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExecItem"
+            },
+            "type": "array"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only when succeeded: the token from the domain transaction (§6.9)."
+          },
+          "status": {
+            "description": "`queued`, `running`, `succeeded` or `failed`.",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "changeset_id",
+          "version",
+          "attempt_no",
+          "status",
+          "error",
+          "items",
+          "effects",
+          "search",
+          "created_at",
+          "finished_at"
         ],
         "type": "object"
       },
@@ -1442,6 +1838,23 @@
         ],
         "type": "string"
       },
+      "OpEffect": {
+        "properties": {
+          "op_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "description": "`would_change` or `no_effect`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op_id",
+          "status"
+        ],
+        "type": "object"
+      },
       "OpInput": {
         "oneOf": [
           {
@@ -1599,6 +2012,54 @@
           }
         ]
       },
+      "OperationView": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "changeset_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "description": "`in_progress`, `completed` or `failed`.",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "operation_id",
+          "action",
+          "status",
+          "changeset_id",
+          "version",
+          "execution"
+        ],
+        "type": "object"
+      },
       "OptionView": {
         "properties": {
           "active": {
@@ -1712,6 +2173,24 @@
         },
         "required": [
           "candidates"
+        ],
+        "type": "object"
+      },
+      "RevisionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/CommandDoc",
+            "description": "The complete new document (no deep merge, §8.8)."
+          }
+        },
+        "required": [
+          "expected_current_version",
+          "proposal"
         ],
         "type": "object"
       },
@@ -1925,6 +2404,27 @@
         ],
         "type": "object"
       },
+      "StateView": {
+        "properties": {
+          "changeset_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changeset_id",
+          "state",
+          "current_version"
+        ],
+        "type": "object"
+      },
       "TargetRef": {
         "description": "`{\"type\":\"issue\",\"id\"|\"key\"}` or `{\"type\":\"temp\",\"ref\"}`.",
         "oneOf": [
@@ -1972,6 +2472,22 @@
             "type": "object"
           }
         ]
+      },
+      "TargetView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key"
+        ],
+        "type": "object"
       },
       "Thresholds": {
         "description": "The thresholds in use (org default or the project override); a null\nvalue turns `deadline_near_incomplete` off.",
@@ -2098,6 +2614,79 @@
           "name",
           "then_required",
           "then_readonly"
+        ],
+        "type": "object"
+      },
+      "ValidateInput": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "Validation": {
+        "description": "`POST /changesets/{id}/validations` (§8.5).",
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "checks": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "structure, visibility, permissions, preconditions, workflow:\n`passed`, `failed` or `not_checked`.",
+            "type": "object"
+          },
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/OpEffect"
+            },
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposal_hash": {
+            "type": "string"
+          },
+          "status": {
+            "description": "`passed`, `blocked` or `conflict`.",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "proposal_hash",
+          "status",
+          "checked_at",
+          "checks",
+          "warnings",
+          "effects",
+          "error"
         ],
         "type": "object"
       },
@@ -3194,6 +3783,531 @@
         "x-csrf": true
       }
     },
+    "/changesets": {
+      "get": {
+        "operationId": "get_changesets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ChangesetList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Your proposals, newest first (§8). Query bucket=awaiting_me (default: proposed or failed) or all; state.",
+        "x-access": "session"
+      }
+    },
+    "/changesets/{id}": {
+      "get": {
+        "operationId": "get_changesets_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ChangesetView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "A proposal: state, its current version, the last execution (owner only).",
+        "x-access": "session"
+      }
+    },
+    "/changesets/{id}/approve-and-apply": {
+      "post": {
+        "operationId": "post_changesets_id_approve_and_apply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ExecutionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Approve and apply a version (§8.6). Header Idempotency-Key. 200 with the execution (also when it failed); 202 with Location while the result is not known: resend the same request.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/cancel": {
+      "post": {
+        "operationId": "post_changesets_id_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/StateView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Cancel a proposal not yet applied. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/reject": {
+      "post": {
+        "operationId": "post_changesets_id_reject",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/StateView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Reject the current version (final). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/revisions": {
+      "post": {
+        "operationId": "post_changesets_id_revisions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ChangesetView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Write a new version yourself within what the agent was allowed (§8.5). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/validations": {
+      "post": {
+        "operationId": "post_changesets_id_validations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Validation"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Check the current version now, without writing (§8.5).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/versions/{v}": {
+      "get": {
+        "operationId": "get_changesets_id_versions_v",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "v",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ChangesetView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One version of a proposal (owner only).",
+        "x-access": "session"
+      }
+    },
     "/commands": {
       "post": {
         "operationId": "post_commands",
@@ -3434,6 +4548,65 @@
         "x-csrf": true
       }
     },
+    "/executions/{id}": {
+      "get": {
+        "operationId": "get_executions_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ExecutionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "An execution of your approval. Never starts anything.",
+        "x-access": "session"
+      }
+    },
     "/issues/search": {
       "post": {
         "operationId": "post_issues_search",
@@ -3609,6 +4782,65 @@
           }
         },
         "summary": "What the caller can do to this issue now: editable fields, transitions, notes, duplicate (describe, dynamic).",
+        "x-access": "session"
+      }
+    },
+    "/operations/{id}": {
+      "get": {
+        "operationId": "get_operations_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/OperationView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "What one of your Idempotency-Keys did.",
         "x-access": "session"
       }
     },

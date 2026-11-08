@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod api;
 pub mod auth;
+pub mod changesets;
 pub mod commands;
 pub mod cursor;
 pub mod custom_fields;

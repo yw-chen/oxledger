@@ -6,6 +6,14 @@ export type AgentClientView = {
   name: string;
 };
 
+export type ApproveInput = {
+  /** `sha256:<hex>` as returned with the version. */
+  proposal_hash: string;
+  /** Only `detail` in S5 (`queue` and `revise_and_apply` come with S6b). */
+  review_mode?: string | null;
+  version: number;
+};
+
 export type Assignee = {
   id: string;
   /** user | group */
@@ -18,6 +26,8 @@ export type AssigneeList = {
   project_id: string;
 };
 
+export type CancelInput = Record<string, never>;
+
 export type Candidate = {
   id: string;
   kind: string;
@@ -29,6 +39,48 @@ export type Candidate = {
 export type Capabilities = {
   /** Command document versions this server accepts (§4.5). */
   command_schema_versions: Array<number>;
+};
+
+export type ChangesetList = {
+  items: Array<ChangesetSummary>;
+};
+
+export type ChangesetSummary = {
+  changeset_id: string;
+  created_at: string;
+  current_version: number;
+  expires_at: string;
+  last_execution_status: string | null;
+  state: string;
+  targets: Array<TargetView>;
+  title: string | null;
+};
+
+export type ChangesetView = {
+  based_on_version: number | null;
+  changeset_id: string;
+  /** `redacted`, `purged` or `not_readable`. */
+  content_unavailable: string | null;
+  context_project_id: string;
+  created_at: string;
+  current_version: number;
+  edit_method: string;
+  editor_id: string;
+  expires_at: string;
+  last_execution: ExecutionView | null;
+  on_behalf_of_id: string;
+  /** The normalized command document; `null` with `content_unavailable`. */
+  proposal: unknown;
+  proposal_hash: string;
+  proposer_id: string;
+  requires_human_approval: boolean;
+  review_url: string;
+  state: string;
+  targets: Array<TargetView>;
+  /** The check at creation: codes and statuses only. */
+  validation: unknown;
+  version: number;
+  version_created_at: string;
 };
 
 /** A command document, `command_schema_version = 1`. */
@@ -102,6 +154,11 @@ export type CustomFieldValue = {
   value: unknown;
 };
 
+export type DecisionInput = {
+  proposal_hash: string;
+  version: number;
+};
+
 export type DelegationBody = {
   agent_client_id: string;
   expires_in_days?: number | null;
@@ -157,7 +214,14 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired";
+
+/** An error as the owner sees it on a failed execution or a validation. */
+export type ErrorView = {
+  code: string;
+  details?: unknown;
+  message: string;
+};
 
 export type EventActor = {
   id: string;
@@ -168,6 +232,30 @@ export type EventActor = {
 export type Evidence = {
   citation_id: string;
   quote: string;
+};
+
+export type ExecItem = {
+  code?: string | null;
+  issue_id?: string | null;
+  op_id: string;
+  /** `applied`, `no_effect`, `failed`, `rolled_back` or `not_run`. */
+  status: string;
+};
+
+export type ExecutionView = {
+  attempt_no: number;
+  changeset_id: string;
+  created_at: string;
+  effects: Array<Effect>;
+  error: ErrorView | null;
+  execution_id: string;
+  finished_at: string | null;
+  items: Array<ExecItem>;
+  /** Only when succeeded: the token from the domain transaction (§6.9). */
+  search: SearchReceipt | null;
+  /** `queued`, `running`, `succeeded` or `failed`. */
+  status: string;
+  version: number;
 };
 
 export type FieldAction = {
@@ -354,6 +442,12 @@ export type NoteActions = {
 /** `ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field. */
 export type Op = "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "between" | "in" | "is_null" | "not_null";
 
+export type OpEffect = {
+  op_id: string;
+  /** `would_change` or `no_effect`. */
+  status: string;
+};
+
 export type OpInput = {
   /** A name later ops use as `{"type": "temp", "ref": …}`. */
   bind?: string | null;
@@ -385,6 +479,16 @@ export type OpInput = {
   op_id: string;
   source: TargetRef;
   target: TargetRef;
+};
+
+export type OperationView = {
+  action: string;
+  changeset_id: string | null;
+  execution: ExecutionView | null;
+  operation_id: string;
+  /** `in_progress`, `completed` or `failed`. */
+  status: string;
+  version: number | null;
 };
 
 export type OptionView = {
@@ -422,6 +526,12 @@ export type ResolveResult = {
   candidates: Array<Candidate>;
   /** When nothing matched: valid values for the requested kind. */
   valid_values?: Array<string>;
+};
+
+export type RevisionInput = {
+  expected_current_version: number;
+  /** The complete new document (no deep merge, §8.8). */
+  proposal: CommandDoc;
 };
 
 export type SearchParams = {
@@ -483,6 +593,12 @@ export type SourceProject = {
   security_epoch: number;
 };
 
+export type StateView = {
+  changeset_id: string;
+  current_version: number;
+  state: string;
+};
+
 /** `{"type":"issue","id"|"key"}` or `{"type":"temp","ref"}`. */
 export type TargetRef = {
   id?: string | null;
@@ -491,6 +607,11 @@ export type TargetRef = {
 } | {
   ref: string;
   type: "temp";
+};
+
+export type TargetView = {
+  id: string;
+  key: string;
 };
 
 /** The thresholds in use (org default or the project override); a null value turns `deadline_near_incomplete` off. */
@@ -525,6 +646,24 @@ export type TransitionAction = {
   /** Readable fields required after moving to this status. */
   then_required: Array<string>;
   to_status_id: string;
+};
+
+export type ValidateInput = {
+  version: number;
+};
+
+/** `POST /changesets/{id}/validations` (§8.5). */
+export type Validation = {
+  checked_at: string;
+  /** structure, visibility, permissions, preconditions, workflow: `passed`, `failed` or `not_checked`. */
+  checks: Record<string, string>;
+  effects: Array<OpEffect>;
+  error: ErrorView | null;
+  proposal_hash: string;
+  /** `passed`, `blocked` or `conflict`. */
+  status: string;
+  version: number;
+  warnings: Array<string>;
 };
 
 export type VersionBrief = {
@@ -642,13 +781,23 @@ export interface Endpoints {
   "GET /auth/session": { body: never; data: SessionData };
   "GET /auth/sessions": { body: never; data: Array<SessionItem> };
   "DELETE /auth/sessions/{id}": { body: never; data: Done };
+  "GET /changesets": { body: never; data: ChangesetList };
+  "GET /changesets/{id}": { body: never; data: ChangesetView };
+  "POST /changesets/{id}/approve-and-apply": { body: ApproveInput; data: ExecutionView };
+  "POST /changesets/{id}/cancel": { body: CancelInput; data: StateView };
+  "POST /changesets/{id}/reject": { body: DecisionInput; data: StateView };
+  "POST /changesets/{id}/revisions": { body: RevisionInput; data: ChangesetView };
+  "POST /changesets/{id}/validations": { body: ValidateInput; data: Validation };
+  "GET /changesets/{id}/versions/{v}": { body: never; data: ChangesetView };
   "POST /commands": { body: CommandDoc; data: CommandResult };
   "GET /delegations": { body: never; data: Array<DelegationView> };
   "POST /delegations": { body: DelegationBody; data: DelegationView };
   "POST /delegations/{id}/revoke": { body: Empty; data: Done };
+  "GET /executions/{id}": { body: never; data: ExecutionView };
   "POST /issues/search": { body: SearchParams; data: SearchResult };
   "GET /issues/{key}": { body: never; data: IssueDetail };
   "GET /issues/{key}/actions": { body: never; data: IssueActions };
+  "GET /operations/{id}": { body: never; data: OperationView };
   "GET /projects/{id}/assignees": { body: never; data: AssigneeList };
   "GET /projects/{id}/trackers/{tracker_id}/schema": { body: never; data: TrackerSchema };
   "GET /projects/{id}/versions": { body: never; data: VersionList };
