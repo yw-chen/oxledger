@@ -244,3 +244,19 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S7	新 fault 點：redact.before_derived、propose.after_sources、undo.after_projects（T-V19、T-S9、T-X22、T-D14 的屏障）	C10	—	src/redaction.rs; src/changesets.rs; src/undo.rs
 2026-11-08	S7	T-S3／T-S4：搜尋文件只有 subject、description；note（含私有）與事件不進索引，候選一律回 DB 複驗，所以遮蔽後索引更新前也拿不到舊文字	§7.5 最後一段	—	tests/s7_redaction.rs
 2026-11-08	S7	已寫進 issue 欄位或事件的文字不會因遮蔽來源 note 自動清掉（§7.5）；T-D9 只驗 execution 副本與 undo 預覽	§7.5	—	tests/s7_redaction.rs
+2026-11-08	S8	搜尋一致性只做 03 §4.2 的記憶體 frontier：每輪同一個 statement 取 H 與事件，reader reload 之後才發布 F（watch）；durable payload、藍綠重建、指標不在 S8，重啟後 F 從 0 起算（只會多等）	D1；03 §4.2	照 03 全做（含 payload 與藍綠）	src/search.rs
+2026-11-08	S8	帶 token 的等待在讀取交易之外；每個呼叫者最多 4 個、全域 1000 個等待者，超過立即回 lagging；wait_ms 0–2000 預設 1000；on_lag 預設 return	D2–D4；03 §4.3–4.4	—	src/service.rs; src/search.rs
+2026-11-08	S8	新錯誤碼 invalid_consistency_token（400）、consistency_epoch_changed（409，不可重試）、search_not_caught_up（503，可重試，retry_after_ms 500）	03 §4.11	—	src/error.rs
+2026-11-08	S8	Filter AST 內建欄位 fixed_version_id（只收 uuid；eq/ne/in/is_null）、start_date、due_date，用負的 pseudo id 與對 issues 本身的 EXISTS，ne／is_null 語意和自訂欄位一致；同名自訂欄位被遮住	D5；§17.15	另做一套內建欄位 AST	src/filter.rs
+2026-11-08	S8	search 參數 version（uuid 跨專案；名稱或 next 要 project 參數，否則 invalid_filter reason=project_scope_required）與 overdue（查詢時展開，回 meta.today）；文字語法加 version:	D6–D7；§17.15	Filter AST 的 project_id eq 也算限縮（第一切片 AST 沒有 project 欄位）	src/service.rs; src/versions.rs; src/query_syntax.rs
+2026-11-08	S8	version:next 沒有可用版本時回 invalid_filter（reason=no_next_version）；歧義回 ambiguous_reference 附 candidates	契約沒寫 none 的情況，照建議	回空結果	src/versions.rs
+2026-11-08	S8	get 的 fixed_version 回 {id, name, status, effective_date, deleted}；歷史裡已刪除的版本名稱加「（已刪除）」並帶 deleted:true	D8；§17.14	—	src/issue_view.rs
+2026-11-08	S8	委派頁提示：PolicyView.available_fields＝內建欄位中委派上限（writable_fields）與政策列都沒有的（T-V13）	D9	—	src/agents.rs
+2026-11-08	S8	T-V21：4 個工作者、固定種子、各 60 步；檢查沒有死結、只有預期的領域錯誤、最終狀態滿足 R4、R5 與同專案；R1 的競爭由 T-V4／T-V27 的閘門測試負責	D10	—	tests/s8_gate_extra.rs
+2026-11-08	S8	E4w-7：TRACE 等級全收 tracing 輸出，加上錯誤字串與 auth_events，確認看不到的內容不出現	D11	—	tests/s8_gate_extra.rs
+2026-11-08	S8	T-V23 後半：委派後拿掉委派者的 manage_versions，下一次寫入實際回 context_unavailable（role_permissions 的 trigger 讓 security_epoch +1），不是契約寫的 forbidden_op；零寫入的目的達成，照建議保留實作、契約字面列為疑點；寫入端的 manage_versions 檢查另以繞過 trigger 的測試驗到 forbidden_op	契約 T-V23；0010 security epoch	改實作讓權限檢查先於 epoch	tests/s8_gate.rs
+2026-11-09	S8	§17.15 的索引 fast field（fixed_version_id、start_date、due_date）延後：version、overdue 與 Filter AST 的日期與版本條件只在 SQL 複驗時套用；正確性不受影響，但有 q 又帶選擇性高的條件時，候選上限 8000 可能導致 truncated／complete:false	獨立驗證發現 1	S8 內補 fast field 並在 tantivy 端先過濾	src/search.rs; src/service.rs
+2026-11-09	S8	帶 token 而落後時，先在讀取交易裡執行一次請求（結果丟掉）：輸入錯誤優先回傳，不會叫呼叫者「等一下再試」；代價是落後時多跑一次查詢，而且無效請求仍會先等滿 wait_ms	獨立驗證發現 5；契約沒規定順序	等待前只驗證名稱類參數	src/service.rs
+2026-11-09	S8	版本名稱保留 next（casefold 後比對），建立與改名時回 invalid_value，details.kind=reserved_name；version:next 一律當關鍵字	獨立驗證發現 6	文字語法用引號區分名稱與關鍵字	src/versions.rs
+2026-11-09	S8	sync_round 用 tokio Mutex 一次只跑一輪（03 §4.2 單一寫入者）；rebuild 不重設 F，藍綠重建仍不在 S8	獨立驗證發現 8	用型別保證只有一條寫入路徑	src/search.rs
+2026-11-09	S8	新增 test-support 錯誤注入點 search.before_publish（在 reload 與 publish 之間），讓測試能驗證「發布前等待者不能通過」	獨立驗證發現 4	—	src/search.rs; tests/s8_gate_probes.rs

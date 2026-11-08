@@ -790,9 +790,25 @@
               "null"
             ]
           },
+          "retry_after_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "status": {
-            "description": "eventual (free text, index may lag) | not_applicable (SQL only).",
+            "description": "eventual (free text, no token) | satisfied (the token's write is in the\nindex) | lagging (it is not yet: no items) | not_applicable (SQL only).",
             "type": "string"
+          },
+          "waited_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1581,6 +1597,21 @@
           {
             "const": "search_unavailable",
             "description": "The search index is broken or its worker stopped (not ordinary lag).",
+            "type": "string"
+          },
+          {
+            "const": "invalid_consistency_token",
+            "description": "`consistent_after` is not a `c1.<epoch>.<xid>` token (03 §4.11).",
+            "type": "string"
+          },
+          {
+            "const": "consistency_epoch_changed",
+            "description": "The token's data epoch is not the current one (03 §4.3): search\nagain without it; never re-propose or ask for approval again.",
+            "type": "string"
+          },
+          {
+            "const": "search_not_caught_up",
+            "description": "`on_lag: \"error\"` and the index has not caught up; `retry_after_ms`.",
             "type": "string"
           }
         ]
@@ -3111,6 +3142,13 @@
             },
             "type": "array"
           },
+          "available_fields": {
+            "description": "Built-in fields the server supports that this delegation cannot write\nyet (T-V13: e.g. `fixed_version_id` on a delegation from before U39);\nthe delegation page offers to add them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "commands": {
             "additionalProperties": {
               "$ref": "#/components/schemas/PolicyMode"
@@ -3137,7 +3175,8 @@
           "policy_version",
           "commands",
           "fields",
-          "available_commands"
+          "available_commands",
+          "available_fields"
         ],
         "type": "object"
       },
@@ -3780,11 +3819,30 @@
         ],
         "type": "object"
       },
+      "SearchMeta": {
+        "properties": {
+          "today": {
+            "description": "The date `overdue` compared with (R10, org time zone), YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "today"
+        ],
+        "type": "object"
+      },
       "SearchParams": {
         "additionalProperties": false,
         "properties": {
           "assignee": {
             "description": "\"me\", \"none\", a user login/name, or a group name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consistent_after": {
+            "description": "A write receipt's `search.consistent_after` token: with `q`, wait until\nthe index includes that write. `search_lagging` is not a write failure:\ndo not propose again or ask for approval again; use `get` to cite what\nwas just written.",
             "type": [
               "string",
               "null"
@@ -3834,6 +3892,20 @@
               "null"
             ]
           },
+          "on_lag": {
+            "description": "\"return\" (default: `outcome: \"search_lagging\"`, no items) or \"error\"\n(`search_not_caught_up`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "overdue": {
+            "description": "true: open issues whose due_date is before today (org time zone;\n`meta.today`). Not indexed, so no reindex when the day changes.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "project": {
             "description": "Project key (e.g. \"AUTH\"), name, or alias.",
             "type": [
@@ -3868,6 +3940,22 @@
               "string",
               "null"
             ]
+          },
+          "version": {
+            "description": "Milestone (§17.15): a version id (any readable project), or — only with\n`project` — a version name or \"next\" (else `invalid_filter`,\n`reason: project_scope_required`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wait_ms": {
+            "description": "How long to wait for `consistent_after`, 0–2000 ms (default 1000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -3887,7 +3975,7 @@
       "SearchResult": {
         "properties": {
           "complete": {
-            "description": "false when `truncated`.",
+            "description": "false when `truncated` or lagging.",
             "type": "boolean"
           },
           "consistency": {
@@ -3903,6 +3991,17 @@
             },
             "type": "array"
           },
+          "meta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchMeta"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only with `overdue`."
+          },
           "next_cursor": {
             "type": [
               "string",
@@ -3910,7 +4009,7 @@
             ]
           },
           "outcome": {
-            "description": "Always \"ok\".",
+            "description": "\"ok\", or \"search_lagging\": the index has not caught up with\n`consistent_after` yet. Not a write failure and not \"nothing found\":\ndo not propose again or ask for approval again; `get` reads the write.",
             "type": "string"
           },
           "truncated": {

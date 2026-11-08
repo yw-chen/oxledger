@@ -148,7 +148,14 @@ pub struct RecentEvents {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct VersionBrief {
     pub id: Uuid,
+    /// The current name; show "（已刪除）" after it when `deleted` (§17.14).
     pub name: String,
+    /// open | locked | closed.
+    pub status: String,
+    /// YYYY-MM-DD or null.
+    pub effective_date: Option<String>,
+    /// Soft-deleted (D-11): the issue keeps pointing at it until changed.
+    pub deleted: bool,
 }
 
 /// One issue. Without `fields`, the full current detail; with `fields`, only
@@ -373,7 +380,8 @@ fn column(f: &str) -> Option<&'static str> {
         "is_private" => "i.is_private",
         "updated_at" => "i.updated_at",
         "lock_version" => "i.lock_version",
-        "fixed_version" => "fv.id AS fixed_version_id, fv.name AS fixed_version_name",
+        "fixed_version" => "fv.id AS fixed_version_id, fv.name AS fixed_version_name, fv.status AS fixed_version_status,
+             fv.effective_date AS fixed_version_date, fv.deleted_at IS NOT NULL AS fixed_version_deleted",
         _ => return None,
     })
 }
@@ -597,7 +605,16 @@ async fn get_one(
             "fixed_version" => {
                 let id: Option<Uuid> = row.try_get("fixed_version_id")?;
                 let name: Option<String> = row.try_get("fixed_version_name")?;
-                v.fixed_version = Some(id.zip(name).map(|(id, name)| VersionBrief { id, name }));
+                let status: Option<String> = row.try_get("fixed_version_status")?;
+                let date: Option<chrono::NaiveDate> = row.try_get("fixed_version_date")?;
+                let deleted: Option<bool> = row.try_get("fixed_version_deleted")?;
+                v.fixed_version = Some(id.zip(name).map(|(id, name)| VersionBrief {
+                    id,
+                    name,
+                    status: status.unwrap_or_default(),
+                    effective_date: date.map(|d| d.to_string()),
+                    deleted: deleted.unwrap_or(false),
+                }));
             }
             "is_private" => v.is_private = Some(row.try_get("is_private")?),
             "created_at" => v.created_at = Some(created),
@@ -875,11 +892,25 @@ async fn display(conn: &mut PgConnection, field: &str, v: &Json) -> Result<Json>
     let Some(id) = v.as_str().and_then(|s| s.parse::<Uuid>().ok()) else {
         return Ok(v.clone());
     };
+    if field == "fixed_version_id" {
+        // §17.14: the current name; a deleted one says so.
+        let row: Option<(String, bool)> =
+            sqlx::query_as("SELECT name, deleted_at IS NOT NULL FROM versions WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        return Ok(match row {
+            Some((name, true)) => {
+                json!({"id": id, "name": format!("{name}（已刪除）"), "deleted": true})
+            }
+            Some((name, false)) => json!({"id": id, "name": name, "deleted": false}),
+            None => json!({"id": id, "name": null}),
+        });
+    }
     let sql = match field {
         "assigned_to_id" => "SELECT name FROM principals WHERE id = $1",
         "priority_id" => "SELECT name FROM issue_priorities WHERE id = $1",
         "status_id" => "SELECT name FROM issue_statuses WHERE id = $1",
-        "fixed_version_id" => "SELECT name FROM versions WHERE id = $1",
         _ => return Ok(v.clone()),
     };
     let name: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))

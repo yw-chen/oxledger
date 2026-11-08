@@ -277,7 +277,7 @@ fn invalid_value(field: &str, msg: impl Into<String>, extra: Json) -> anyhow::Er
 }
 
 /// R10: the org time zone's date, once per transaction.
-async fn today(conn: &mut PgConnection) -> Result<NaiveDate> {
+pub(crate) async fn today(conn: &mut PgConnection) -> Result<NaiveDate> {
     Ok(
         sqlx::query_scalar("SELECT (now() AT TIME ZONE timezone)::date FROM org_settings")
             .fetch_one(&mut *conn)
@@ -499,6 +499,64 @@ async fn full_views(
             }
         })
         .collect())
+}
+
+/// Search `version:` (§17.15) inside one readable project: a name (NFC,
+/// casefolded, like R8) or `next` (§17.10). Unknown name or no next version
+/// → `invalid_filter` (`details.path`); ambiguous next →
+/// `ambiguous_reference` with the candidates.
+pub(crate) async fn resolve_for_search(
+    conn: &mut PgConnection,
+    project: Uuid,
+    text: &str,
+) -> Result<Uuid> {
+    let text = text.trim();
+    let bad = |reason: Option<&str>, msg: String| -> anyhow::Error {
+        let mut d = json!({"path": "version"});
+        if let Some(r) = reason {
+            d["reason"] = json!(r);
+        }
+        ApiError::new(ErrorCode::InvalidFilter, msg)
+            .with_details(d)
+            .into()
+    };
+    if text.eq_ignore_ascii_case("next") {
+        let today = today(&mut *conn).await?;
+        let open: Vec<VRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {VCOLS} FROM versions WHERE project_id = $1 AND deleted_at IS NULL
+               AND status = 'open' ORDER BY effective_date NULLS LAST, name_key"
+        )))
+        .bind(project)
+        .fetch_all(&mut *conn)
+        .await?;
+        let n = next_version(&open, today);
+        return match (n.outcome.as_str(), n.version) {
+            ("resolved", Some(v)) => Ok(v.id),
+            ("ambiguous", _) => Err(ApiError::new(
+                ErrorCode::AmbiguousReference,
+                "version:next is ambiguous here; name the version",
+            )
+            .with_details(json!({"path": "version", "reason": n.reason,
+                                 "candidates": n.candidates}))
+            .into()),
+            _ => Err(bad(
+                Some("no_next_version"),
+                "this project has no next version (open, dated, not overdue)".into(),
+            )),
+        };
+    }
+    let key: String = sqlx::query_scalar("SELECT casefold(normalize($1, NFC))")
+        .bind(text)
+        .fetch_one(&mut *conn)
+        .await?;
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM versions WHERE project_id = $1 AND name_key = $2 AND deleted_at IS NULL",
+    )
+    .bind(project)
+    .bind(key)
+    .fetch_optional(&mut *conn)
+    .await?;
+    id.ok_or_else(|| bad(None, format!("no version {text:?} in this project")))
 }
 
 /// §17.10 over the open, undeleted versions of a project.
@@ -857,6 +915,15 @@ async fn name_and_key(conn: &mut PgConnection, name: &str) -> Result<(String, St
             "name",
             format!("a version name is 1 to {MAX_NAME_CHARS} characters"),
             json!({}),
+        ));
+    }
+    // `version:next` is a keyword (§17.10); a version by that name could
+    // never be searched by name.
+    if k == "next" {
+        return Err(invalid_value(
+            "name",
+            "\"next\" is reserved for version:next; pick another name",
+            json!({"kind": "reserved_name"}),
         ));
     }
     Ok((n, k))

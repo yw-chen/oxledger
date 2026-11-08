@@ -10,6 +10,7 @@ use crate::error::{ApiError, ErrorCode, api};
 use crate::evidence::{self, CpText, FieldMatch, Highlight, Strength, Terms, Window};
 use crate::filter::{self, FilterInput};
 use crate::search::SearchIndex;
+use crate::search::Wait;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use ox_core::{IssueFacts, Pred};
@@ -51,7 +52,7 @@ const MAX_SEARCH_CANDIDATES: usize = 8000;
 
 // ---------------------------------------------------------------- types
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
     /// Free text (BM25 over subject and description; Chinese works without word segmentation).
@@ -66,6 +67,13 @@ pub struct SearchParams {
     pub status_category: Option<String>,
     /// "me", "none", a user login/name, or a group name.
     pub assignee: Option<String>,
+    /// Milestone (§17.15): a version id (any readable project), or — only with
+    /// `project` — a version name or "next" (else `invalid_filter`,
+    /// `reason: project_scope_required`).
+    pub version: Option<String>,
+    /// true: open issues whose due_date is before today (org time zone;
+    /// `meta.today`). Not indexed, so no reindex when the day changes.
+    pub overdue: Option<bool>,
     /// Custom field filter, e.g. {"and": [{"field": "Severity", "op": "in", "value": ["High", "Critical"]},
     /// {"field": "Estimate (h)", "op": "between", "value": [2, 8]}]}. Combined with the other filters by AND.
     #[schemars(with = "Option<FilterInput>")]
@@ -82,6 +90,16 @@ pub struct SearchParams {
     /// `key` is always returned. Default: key, subject, project, tracker, status,
     /// status_category, assignee, is_private, updated_at.
     pub fields: Option<Vec<String>>,
+    /// A write receipt's `search.consistent_after` token: with `q`, wait until
+    /// the index includes that write. `search_lagging` is not a write failure:
+    /// do not propose again or ask for approval again; use `get` to cite what
+    /// was just written.
+    pub consistent_after: Option<String>,
+    /// How long to wait for `consistent_after`, 0–2000 ms (default 1000).
+    pub wait_ms: Option<u32>,
+    /// "return" (default: `outcome: "search_lagging"`, no items) or "error"
+    /// (`search_not_caught_up`).
+    pub on_lag: Option<String>,
 }
 
 /// One line of an issue list (children of an issue).
@@ -172,17 +190,24 @@ pub struct SearchItem {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Consistency {
-    /// eventual (free text, index may lag) | not_applicable (SQL only).
+    /// eventual (free text, no token) | satisfied (the token's write is in the
+    /// index) | lagging (it is not yet: no items) | not_applicable (SQL only).
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waited_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchResult {
-    /// Always "ok".
+    /// "ok", or "search_lagging": the index has not caught up with
+    /// `consistent_after` yet. Not a write failure and not "nothing found":
+    /// do not propose again or ask for approval again; `get` reads the write.
     pub outcome: String,
-    /// false when `truncated`.
+    /// false when `truncated` or lagging.
     pub complete: bool,
     /// Only with `q`: the server stopped after ranking 8000 candidates without
     /// finding everything this page needs. More matches may exist (even if there
@@ -193,6 +218,15 @@ pub struct SearchResult {
     pub next_cursor: Option<String>,
     /// Some snippets were left out to keep the response small (the item list is still complete).
     pub evidence_truncated: bool,
+    /// Only with `overdue`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<SearchMeta>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SearchMeta {
+    /// The date `overdue` compared with (R10, org time zone), YYYY-MM-DD.
+    pub today: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -685,10 +719,127 @@ const FULL_WINDOW: usize = 160;
 const FULL_WINDOWS_PER_FIELD: usize = 2;
 
 pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<SearchResult> {
+    // Consistency first, outside the read transaction (no connection held
+    // while waiting; 03 §4.4).
+    let waited = consistency_wait(app, caller, &p).await?;
+    if let Some(Wait::Lagging { waited_ms }) = waited {
+        // An invalid request is an input error, not "wait and retry": run it
+        // once (results dropped) so its errors come back first.
+        let mut tx = read_tx(app).await?;
+        search_in(&mut tx, app, caller, p.clone()).await?;
+        tx.commit().await?;
+        if p.on_lag.as_deref() == Some("error") {
+            return Err(ApiError::new(
+                ErrorCode::SearchNotCaughtUp,
+                "the search index has not caught up with consistent_after yet",
+            )
+            .with_retry_after(LAG_RETRY_MS)
+            .into());
+        }
+        return Ok(SearchResult {
+            outcome: "search_lagging".into(),
+            complete: false,
+            truncated: false,
+            consistency: Consistency {
+                status: "lagging".into(),
+                reason: None,
+                waited_ms: Some(waited_ms),
+                retry_after_ms: Some(LAG_RETRY_MS),
+            },
+            items: Vec::new(),
+            next_cursor: None,
+            evidence_truncated: false,
+            meta: None,
+        });
+    }
     let mut tx = read_tx(app).await?;
-    let r = search_in(&mut tx, app, caller, p).await?;
+    let mut r = search_in(&mut tx, app, caller, p).await?;
     tx.commit().await?;
+    if let Some(Wait::Satisfied { waited_ms }) = waited {
+        r.consistency = Consistency {
+            status: "satisfied".into(),
+            reason: None,
+            waited_ms: Some(waited_ms),
+            retry_after_ms: None,
+        };
+    }
     Ok(r)
+}
+
+const LAG_RETRY_MS: u64 = 500;
+const MAX_WAIT_MS: u32 = 2000;
+const DEFAULT_WAIT_MS: u32 = 1000;
+
+/// Parses `c1.<data_epoch base64url>.<xid8>` (03 §4.3).
+pub fn parse_token(t: &str) -> Option<(Uuid, u64)> {
+    use base64::Engine as _;
+    let mut parts = t.split('.');
+    let (Some("c1"), Some(e), Some(x), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(e)
+        .ok()?;
+    let epoch = Uuid::from_slice(&bytes).ok()?;
+    if x.is_empty() || !x.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((epoch, x.parse().ok()?))
+}
+
+/// Validates the consistency parameters; with free text and a token, waits.
+/// `None`: no token, or SQL only (`not_applicable`, no wait).
+async fn consistency_wait(
+    app: &App,
+    caller: AuthContext,
+    p: &SearchParams,
+) -> Result<Option<Wait>> {
+    let wait_ms = p.wait_ms.unwrap_or(DEFAULT_WAIT_MS);
+    if wait_ms > MAX_WAIT_MS {
+        return Err(user_err(format!(
+            "wait_ms {wait_ms}: use 0..={MAX_WAIT_MS}"
+        )));
+    }
+    match p.on_lag.as_deref() {
+        None | Some("return") | Some("error") => {}
+        Some(other) => return Err(user_err(format!("on_lag {other:?}: use return or error"))),
+    }
+    let Some(t) = p.consistent_after.as_deref() else {
+        return Ok(None);
+    };
+    let Some((epoch, x)) = parse_token(t.trim()) else {
+        return Err(ApiError::new(
+            ErrorCode::InvalidConsistencyToken,
+            "consistent_after is not a token from a write receipt; search again without it",
+        )
+        .with_details(serde_json::json!({"path": "consistent_after"}))
+        .into());
+    };
+    let current: Uuid = sqlx::query_scalar("SELECT data_epoch FROM search_settings")
+        .fetch_one(&app.pool)
+        .await?;
+    if epoch != current {
+        return Err(api(
+            ErrorCode::ConsistencyEpochChanged,
+            "the search data was reset since this token; search again without consistent_after \
+             (the write itself is not affected)",
+        ));
+    }
+    if !p.q.as_deref().is_some_and(|q| !q.trim().is_empty()) {
+        // SQL reads its own commits (03 §4.4): not_applicable, no wait.
+        return Ok(None);
+    }
+    Ok(Some(
+        app.index
+            .wait_for(
+                caller.principal_id(),
+                x,
+                std::time::Duration::from_millis(wait_ms as u64),
+            )
+            .await,
+    ))
 }
 
 async fn search_in(
@@ -733,6 +884,7 @@ async fn search_in(
     let qhash = cursor::query_hash(&serde_json::json!({
         "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
         "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
+        "version": &p.version, "overdue": &p.overdue,
         "order": if text.is_some() { "rank" } else { "updated_desc" },
     }));
     let pos = match p.cursor.as_deref() {
@@ -756,11 +908,36 @@ async fn search_in(
 
     let mut filters: Vec<Pred> = Vec::new();
     let mut sql_extra: Vec<(&str, Uuid)> = Vec::new();
+    let mut project_id = None;
     if let Some(v) = p.project.as_deref() {
-        filters.push(Pred::ProjectIs(
-            resolve_one(&mut *conn, caller, "project", v).await?,
-        ));
+        let id = resolve_one(&mut *conn, caller, "project", v).await?;
+        project_id = Some(id);
+        filters.push(Pred::ProjectIs(id));
     }
+    if let Some(v) = p.version.as_deref() {
+        // §17.15: names and `next` exist only inside one project; ids do not.
+        let id = match Uuid::parse_str(v.trim()) {
+            Ok(id) => id,
+            Err(_) => {
+                let Some(project) = project_id else {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidFilter,
+                        "version by name or next needs exactly one project (or use the version id)",
+                    )
+                    .with_details(
+                        serde_json::json!({"path": "version", "reason": "project_scope_required"}),
+                    )
+                    .into());
+                };
+                crate::versions::resolve_for_search(&mut *conn, project, v).await?
+            }
+        };
+        sql_extra.push(("i.fixed_version_id = ", id));
+    }
+    let today = match p.overdue {
+        Some(true) => Some(crate::versions::today(&mut *conn).await?),
+        _ => None,
+    };
     if let Some(v) = p.tracker.as_deref() {
         filters.push(Pred::TrackerIn(vec![
             resolve_one(&mut *conn, caller, "tracker", v).await?,
@@ -818,6 +995,12 @@ async fn search_in(
         }
         if assignee_none {
             qb.push(" AND i.assigned_to_id IS NULL");
+        }
+        // §17.15 overdue: computed per query, never indexed.
+        if let Some(t) = today {
+            qb.push(" AND i.due_date < ")
+                .push_bind(t)
+                .push(" AND s.category <> 'done'");
         }
         // Custom fields live only in PostgreSQL.
         if let Some(f) = &custom {
@@ -1047,15 +1230,22 @@ async fn search_in(
             Some(_) => Consistency {
                 status: "eventual".into(),
                 reason: None,
+                waited_ms: None,
+                retry_after_ms: None,
             },
             None => Consistency {
                 status: "not_applicable".into(),
                 reason: Some("sql_only".into()),
+                waited_ms: None,
+                retry_after_ms: None,
             },
         },
         items,
         next_cursor,
         evidence_truncated,
+        meta: today.map(|t| SearchMeta {
+            today: t.to_string(),
+        }),
     })
 }
 

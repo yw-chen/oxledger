@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! The minimal text query syntax (design 03 §11, decided by the user for B2
-//! on 2026-11-08): `project:`, `status:`, `tracker:`, `assignee:` and free
-//! text, mapped onto the structured search parameters. Saved project tabs
+//! on 2026-11-08): `project:`, `status:`, `tracker:`, `assignee:`,
+//! `version:` (S8, contract 02 §17.15) and free text, mapped onto the
+//! structured search parameters. Saved project tabs
 //! store the normalized string (§18 R-T3); running one is an ordinary
 //! search with the opener's visibility.
 //!
 //! Grammar: terms separated by Unicode white space. A term `key:value`
-//! whose key (case-insensitive) is one of the four is a condition; the
+//! whose key (case-insensitive) is one of the keys is a condition; the
 //! value is a run of non-space characters or a `"…"` quoted string (no
 //! escapes, no `"` inside). Any other term is free text, kept in order.
 //! Each key at most once, except that `project:` may repeat only to be
@@ -15,7 +16,7 @@
 use crate::service::SearchParams;
 use serde::Serialize;
 
-pub const KEYS: &[&str] = &["project", "status", "tracker", "assignee"];
+pub const KEYS: &[&str] = &["project", "status", "tracker", "assignee", "version"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct Query {
@@ -24,6 +25,8 @@ pub struct Query {
     pub status: Option<String>,
     pub tracker: Option<String>,
     pub assignee: Option<String>,
+    /// A version name, `next`, or a version id (§17.15).
+    pub version: Option<String>,
     /// Free-text words in order.
     pub text: Vec<String>,
 }
@@ -103,6 +106,7 @@ pub fn parse(input: &str) -> Result<Query, SyntaxError> {
                 }
                 "status" => &mut q.status,
                 "tracker" => &mut q.tracker,
+                "version" => &mut q.version,
                 _ => &mut q.assignee,
             };
             if slot.is_some() {
@@ -152,6 +156,7 @@ impl Query {
             ("status", &self.status),
             ("tracker", &self.tracker),
             ("assignee", &self.assignee),
+            ("version", &self.version),
         ] {
             if let Some(v) = v {
                 parts.push(format!("{k}:{}", quote(v)));
@@ -176,11 +181,8 @@ impl Query {
             status,
             status_category,
             assignee: self.assignee.clone(),
-            filter: None,
-            limit: None,
-            cursor: None,
-            explain: None,
-            fields: None,
+            version: self.version.clone(),
+            ..Default::default()
         }
     }
 }

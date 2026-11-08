@@ -8,12 +8,21 @@
 //! * Visibility facts are indexed as raw terms so the same [`Pred`] that
 //!   becomes SQL also becomes a tantivy filter (filter before ranking).
 //! * The index follows the outbox (D11) and can always be rebuilt from SQL.
+//! * Read-your-writes (design 03 §4.1–4.3): each sync round reads the
+//!   snapshot horizon H and the outbox rows below it in one statement, and
+//!   publishes the exclusive frontier F only after the reader reloaded. A
+//!   token `c1.<epoch>.<X>` is satisfied when `X < F`. F lives in memory
+//!   (S8: no durable payload yet); after a restart it starts at 0 and moves
+//!   to H on the first round, which only makes waiters wait longer.
 
 use anyhow::{Context, Result};
 use ox_core::Pred;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use tantivy::collector::TopDocs;
 use tantivy::query::{
     AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, Occur, Query, TermQuery,
@@ -26,6 +35,14 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Te
 use uuid::Uuid;
 
 const TOKENIZER: &str = "cjk_bigram";
+/// Waiters per caller and in all (design 03 §4.3); beyond them a search with
+/// a token reports lag at once.
+pub const MAX_WAITERS_PER_CALLER: usize = 4;
+pub const MAX_WAITERS: usize = 1000;
+/// An outbox row as a sync round reads it: (id, xid8 as text, issue id).
+type OutboxEvent = (i64, String, Uuid);
+/// Outbox rows per sync round (03 §4.2).
+const SYNC_BATCH: i64 = 500;
 const NONE_TERM: &str = "none";
 
 // ---------------------------------------------------------------- tokenizer
@@ -336,6 +353,41 @@ pub struct SearchIndex {
     reader: IndexReader,
     writer: Mutex<IndexWriter>,
     f: Fields,
+    /// The published exclusive frontier F (03 §4.1): every transaction with
+    /// xid < F has its search events applied to the current reader.
+    frontier: tokio::sync::watch::Sender<u64>,
+    waiters: AtomicUsize,
+    per_caller: Mutex<HashMap<Option<Uuid>, usize>>,
+    /// One round at a time (03 §4.2 has a single writer): two concurrent
+    /// rounds could overwrite newer documents with an older snapshot.
+    round: tokio::sync::Mutex<()>,
+}
+
+/// How a wait for `X < F` ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    Satisfied { waited_ms: u64 },
+    Lagging { waited_ms: u64 },
+}
+
+/// Releases a waiter slot however the wait ends (also on cancellation).
+struct Slot<'a> {
+    index: &'a SearchIndex,
+    who: Option<Uuid>,
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.index.waiters.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(mut m) = self.index.per_caller.lock()
+            && let Some(n) = m.get_mut(&self.who)
+        {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(&self.who);
+            }
+        }
+    }
 }
 
 pub struct Hit {
@@ -399,7 +451,71 @@ impl SearchIndex {
             reader,
             writer,
             f,
+            frontier: tokio::sync::watch::Sender::new(0),
+            waiters: AtomicUsize::new(0),
+            round: tokio::sync::Mutex::new(()),
+            per_caller: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The published frontier F.
+    pub fn frontier(&self) -> u64 {
+        *self.frontier.borrow()
+    }
+
+    fn publish(&self, f: u64) {
+        self.frontier.send_if_modified(|cur| {
+            if f > *cur {
+                *cur = f;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    fn take_slot(&self, who: Option<Uuid>) -> Option<Slot<'_>> {
+        let mut m = self.per_caller.lock().ok()?;
+        let mine = m.get(&who).copied().unwrap_or(0);
+        if mine >= MAX_WAITERS_PER_CALLER {
+            return None;
+        }
+        if self.waiters.fetch_add(1, Ordering::SeqCst) >= MAX_WAITERS {
+            self.waiters.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        *m.entry(who).or_insert(0) += 1;
+        Some(Slot { index: self, who })
+    }
+
+    /// Waits at most `wait` until `x < F` (03 §4.4). All waiters share one
+    /// `watch` notification; over the waiter limits it reports lag at once.
+    pub async fn wait_for(&self, who: Option<Uuid>, x: u64, wait: Duration) -> Wait {
+        let start = Instant::now();
+        let ms = |s: Instant| s.elapsed().as_millis() as u64;
+        if x < self.frontier() {
+            return Wait::Satisfied { waited_ms: 0 };
+        }
+        if wait.is_zero() {
+            return Wait::Lagging { waited_ms: 0 };
+        }
+        let Some(_slot) = self.take_slot(who) else {
+            return Wait::Lagging { waited_ms: 0 };
+        };
+        let mut rx = self.frontier.subscribe();
+        match tokio::time::timeout(wait, rx.wait_for(|f| x < *f)).await {
+            Ok(Ok(_)) => Wait::Satisfied {
+                waited_ms: ms(start),
+            },
+            _ => Wait::Lagging {
+                waited_ms: ms(start),
+            },
+        }
+    }
+
+    /// Tests: waiters currently holding a slot.
+    pub fn waiting(&self) -> usize {
+        self.waiters.load(Ordering::SeqCst)
     }
 
     fn uuid_term(&self, field: Field, id: Uuid) -> Term {
@@ -515,23 +631,51 @@ impl SearchIndex {
         anyhow::bail!("search index did not catch up with the outbox within 20 s")
     }
 
+    /// Rounds of 03 §4.2 until the outbox below H is drained.
     pub async fn sync(&self, pool: &PgPool) -> Result<usize> {
-        const CONSUMER: &str = "search";
         let mut applied = 0;
         loop {
-            let rows: Vec<(i64, String, Uuid)> = sqlx::query_as(
-                "SELECT o.id, o.xid::text, o.entity_id FROM outbox o
-                 LEFT JOIN outbox_cursors c ON c.consumer = $1
-                 WHERE o.topic = 'issue'
-                   AND o.xid < pg_snapshot_xmin(pg_current_snapshot())
-                   AND (o.xid, o.id) > (COALESCE(c.last_xid, '0'::xid8), COALESCE(c.last_id, 0))
-                 ORDER BY o.xid, o.id LIMIT 500",
+            let (n, more) = self.sync_round(pool).await?;
+            applied += n;
+            if !more {
+                return Ok(applied);
+            }
+        }
+    }
+
+    /// One round of 03 §4.2: (rows applied, a full batch so more may follow).
+    pub async fn sync_round(&self, pool: &PgPool) -> Result<(usize, bool)> {
+        const CONSUMER: &str = "search";
+        let _round = self.round.lock().await;
+        {
+            // One statement: H and the visible events come from one snapshot,
+            // and H is there even with zero events (03 §4.2; FILTER keeps
+            // the empty case `[]`).
+            let (h, events): (String, sqlx::types::Json<Vec<OutboxEvent>>) = sqlx::query_as(
+                "WITH h AS MATERIALIZED (SELECT pg_snapshot_xmin(pg_current_snapshot()) AS h),
+                          c AS (SELECT COALESCE(max(last_xid::text), '0')::xid8 AS x,
+                                       COALESCE(max(last_id), 0) AS i
+                                FROM outbox_cursors WHERE consumer = $1),
+                          ev AS (SELECT o.id, o.xid, o.entity_id FROM outbox o, h, c
+                                 WHERE o.topic = 'issue' AND o.xid < h.h
+                                   AND (o.xid, o.id) > (c.x, c.i)
+                                 ORDER BY o.xid, o.id LIMIT $2)
+                     SELECT h.h::text,
+                            COALESCE(json_agg(json_build_array(ev.id, ev.xid::text, ev.entity_id)
+                                              ORDER BY ev.xid, ev.id)
+                                     FILTER (WHERE ev.id IS NOT NULL), '[]'::json)
+                     FROM h LEFT JOIN ev ON true GROUP BY h.h",
             )
             .bind(CONSUMER)
-            .fetch_all(pool)
+            .bind(SYNC_BATCH)
+            .fetch_one(pool)
             .await?;
+            let rows = events.0;
+            let h: u64 = h.parse().context("snapshot xmin")?;
             let Some((last_id, last_xid, _)) = rows.last().cloned() else {
-                break;
+                // Drained: everything below H is applied.
+                self.publish(h);
+                return Ok((0, false));
             };
             let mut ids: Vec<Uuid> = rows.iter().map(|r| r.2).collect();
             ids.sort();
@@ -569,7 +713,16 @@ impl SearchIndex {
                 }
                 w.commit()?;
             }
+            // Publish F only after the reader shows the documents (03 §4.2
+            // step 6): never an old searcher with a new F.
             self.reader.reload()?;
+            let full = rows.len() as i64 == SYNC_BATCH;
+            // A full batch may stop inside one xid: F' = last.xid, not +1.
+            let f_new = if full {
+                last_xid.parse().context("outbox xid")?
+            } else {
+                h
+            };
             sqlx::query(
                 "INSERT INTO outbox_cursors (consumer, last_xid, last_id) VALUES ($1, $2::xid8, $3)
                  ON CONFLICT (consumer) DO UPDATE SET last_xid = EXCLUDED.last_xid, last_id = EXCLUDED.last_id",
@@ -579,9 +732,11 @@ impl SearchIndex {
             .bind(last_id)
             .execute(pool)
             .await?;
-            applied += rows.len();
+            #[cfg(feature = "test-support")]
+            crate::changesets::faults::hit("search.before_publish").await?;
+            self.publish(f_new);
+            Ok((rows.len(), full))
         }
-        Ok(applied)
     }
 
     /// Drops everything and replays from the start of the outbox's issues.

@@ -39,6 +39,28 @@ use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
 
+// ---------------------------------------------------------------- built-in fields
+
+/// Issue columns the filter also takes (contract 02 §17.15), under
+/// pseudo field ids below zero. Their SQL keeps the custom-field shape — one
+/// `EXISTS` over `issues` itself — so `ne` and `is_null` mean the same.
+/// A custom field with one of these names is shadowed.
+pub const VERSION_FIELD: i32 = -1;
+const BUILTINS: &[(&str, i32, FieldType, &str)] = &[
+    (
+        "fixed_version_id",
+        VERSION_FIELD,
+        FieldType::List,
+        "fixed_version_id",
+    ),
+    ("start_date", -2, FieldType::Date, "start_date"),
+    ("due_date", -3, FieldType::Date, "due_date"),
+];
+
+fn builtin_column(id: i32) -> Option<&'static str> {
+    BUILTINS.iter().find(|b| b.1 == id).map(|b| b.3)
+}
+
 // ---------------------------------------------------------------- input
 
 /// Custom field filter: a condition, or `{"and": [...]}` / `{"or": [...]}` of filters.
@@ -265,20 +287,30 @@ fn resolve_at<'a, 'c: 'a>(ctx: &'a Ctx<'c>, input: &'a FilterInput) -> BoxFut<'a
 }
 
 async fn resolve_cond(ctx: &Ctx<'_>, c: &CondInput) -> Result<Filter> {
-    let Some((row, gate)) = ctx.fields.get(&c.field.trim().to_lowercase()) else {
-        let mut names: Vec<&str> = ctx.fields.values().map(|f| f.0.name.as_str()).collect();
-        names.sort();
-        return Err(filter_err(format!(
-            "no custom field {:?}; fields: {}",
-            c.field,
-            names.join(", ")
-        )));
+    let wanted = c.field.trim().to_lowercase();
+    let builtin = BUILTINS.iter().find(|b| b.0 == wanted);
+    let (field, name, gate) = match (builtin, ctx.fields.get(&wanted)) {
+        (Some(b), _) => (Field { id: b.1, ty: b.2 }, b.0, Pred::True),
+        (None, Some((row, gate))) => (
+            Field {
+                id: row.id,
+                ty: row.field_type()?,
+            },
+            row.name.as_str(),
+            gate.clone(),
+        ),
+        (None, None) => {
+            let mut names: Vec<&str> = ctx.fields.values().map(|f| f.0.name.as_str()).collect();
+            names.sort();
+            let builtins: Vec<&str> = BUILTINS.iter().map(|b| b.0).collect();
+            return Err(filter_err(format!(
+                "no custom field {:?}; fields: {}; built-in: {}",
+                c.field,
+                names.join(", "),
+                builtins.join(", ")
+            )));
+        }
     };
-    let field = Field {
-        id: row.id,
-        ty: row.field_type()?,
-    };
-    let name = row.name.as_str();
     let bad = |msg: String| filter_err(format!("field {name:?}: {msg}"));
     let one = |v: &Option<Json>| -> Result<Json> {
         match v {
@@ -338,7 +370,13 @@ async fn resolve_cond(ctx: &Ctx<'_>, c: &CondInput) -> Result<Filter> {
             }
         }
     };
-    Filter::cond_where(field, test, gate.clone()).map_err(|e| bad(e.to_string()))
+    if field.id == VERSION_FIELD && matches!(c.op, Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Between)
+    {
+        return Err(bad(
+            "versions have no order; use eq, ne, in or is_null".into()
+        ));
+    }
+    Filter::cond_where(field, test, gate).map_err(|e| bad(e.to_string()))
 }
 
 /// Converts one JSON value to the field's value kind.
@@ -349,6 +387,14 @@ async fn value(ctx: &Ctx<'_>, field: Field, name: &str, x: &Json) -> Result<Valu
             field.ty.as_str()
         ))
     };
+    if field.id == VERSION_FIELD {
+        // Ids only: names are per project (§17.15 `version:` resolves them).
+        return x
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s.trim()).ok())
+            .map(Value::Ref)
+            .ok_or_else(|| bad("expected a version id (uuid)"));
+    }
     match field.ty.kind() {
         ValueKind::Num => {
             let n = match x {
@@ -507,11 +553,21 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Filter) {
 
 /// `EXISTS (..)` for the positive form of `test` (`ne` as `=`, `is_null` as presence).
 fn push_exists(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Test) {
-    let col = value_column(field.ty.kind());
-    qb.push(format!(
-        "EXISTS (SELECT 1 FROM issue_cf cf WHERE cf.issue_id = {a}.id AND cf.field_id = {}",
-        field.id
-    ));
+    let col = match builtin_column(field.id) {
+        Some(c) => {
+            qb.push(format!(
+                "EXISTS (SELECT 1 FROM issues cf WHERE cf.id = {a}.id"
+            ));
+            c
+        }
+        None => {
+            qb.push(format!(
+                "EXISTS (SELECT 1 FROM issue_cf cf WHERE cf.issue_id = {a}.id AND cf.field_id = {}",
+                field.id
+            ));
+            value_column(field.ty.kind())
+        }
+    };
     match test {
         Test::Cmp(op, v) => {
             let sym = match op {

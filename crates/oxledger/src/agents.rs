@@ -684,17 +684,21 @@ pub struct PolicyView {
     pub fields: BTreeMap<String, PolicyMode>,
     /// Operations the server supports that this delegation does not have.
     pub available_commands: Vec<String>,
+    /// Built-in fields the server supports that this delegation cannot write
+    /// yet (T-V13: e.g. `fixed_version_id` on a delegation from before U39);
+    /// the delegation page offers to add them.
+    pub available_fields: Vec<String>,
 }
 
 async fn policy_view_in(conn: &mut PgConnection, user: Uuid, id: Uuid) -> Result<PolicyView> {
-    let policy_version: Option<i64> = sqlx::query_scalar(
-        "SELECT policy_version FROM delegations WHERE id = $1 AND delegator_user_id = $2",
+    let row: Option<(i64, Vec<String>)> = sqlx::query_as(
+        "SELECT policy_version, writable_fields FROM delegations WHERE id = $1 AND delegator_user_id = $2",
     )
     .bind(id)
     .bind(user)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some(policy_version) = policy_version else {
+    let Some((policy_version, writable)) = row else {
         return Err(api(ErrorCode::NotFound, "no such delegation"));
     };
     let p = policy::load(&mut *conn, id).await?;
@@ -703,12 +707,18 @@ async fn policy_view_in(conn: &mut PgConnection, user: Uuid, id: Uuid) -> Result
         .filter(|o| !p.commands.contains_key(**o))
         .map(|o| o.to_string())
         .collect();
+    let available_fields = BUILTIN_FIELDS
+        .iter()
+        .filter(|f| !writable.iter().any(|w| w == **f) && !p.fields.contains_key(**f))
+        .map(|f| f.to_string())
+        .collect();
     Ok(PolicyView {
         delegation_id: id,
         policy_version,
         commands: p.commands,
         fields: p.fields,
         available_commands,
+        available_fields,
     })
 }
 

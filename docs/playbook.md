@@ -173,6 +173,8 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | agent 的 cancel 沒有算進每委派 60 次／小時（驗證者 B3） | 只有 propose／revise 呼叫 `quota::record_proposal` | `changesets::cancel` 在 agent 路徑也 reserve＋record；s6_mcp 數 `agent_write_log` |
 | agent 提議建立私有 issue、人核准後，agent 的 `changeset_get`／`operation_get` 拿得到提案本文（標題、欄位值）（T-M12） | 讀取檢查只看本文裡的既有目標；`create_issue` 沒有目標，建出來的 issue 讀不到也被當成「全部讀得到」 | `filter_for_agent` 把該版本 execution 的 `item_results` 裡的 issue（`created_issues`）也算目標；讀不到就不回本文，items 只回 `{op_id, status}`（key 只在讀得到時給） |
 | 同一個脈絡委派 WEB 和 AUTH 後，WEB 的提案都被 `audience_expansion_forbidden`（cross_project） | 這是 §3.8 的規則：agent 可能讀過 AUTH，WEB 的讀者（carol）卻讀不到 AUTH | 測試要兩份委派時，先讓兩個專案讀者相同（carol 也加進 AUTH），再建脈絡；不是 bug |
+| 帶 `consistent_after` 的搜尋一直回 `search_lagging` | frontier F 只在 index worker 跑過一輪後前進；別的 database 有已分配 xid 的未結束交易也會擋住 H（03 §4.7） | 測試用 `sync`／`sync_round` 迴圈等 `frontier() > X`（`tests/s8_search_consistency.rs` 的 `catch_up`）；正式環境看已分配 xid 的最老交易 |
+| 兩個 session 同時跑測試，彼此的資料被清掉 | 測試開頭會 reset 整個測試 DB | 平行工作設 `OXLEDGER_TEST_DATABASE_URL` 指向各自的 DB（例如 `.../oxledger_test_main`），會自動建立 |
 | 測試想把 `agent_write_log` 的時間往前改，觸發 `agent_write_log is append-only` | 0012 的 trigger 禁止 UPDATE／DELETE | 直接 INSERT 帶過去的 `at`（`clock_timestamp() - make_interval(secs => …)`） |
 | 測試裡改了角色權限或成員之後，agent 的寫入回 `context_unavailable` | 0010 的 trigger 讓受影響專案 epoch +1，舊的工作脈絡失效（§3.8，正確行為） | 測試在權限／成員變更後重建脈絡：`new_context` → `delegate` → `token` |
 | 測試連續做 10 筆以上 agent 直接寫入，第 11 筆回 `rate_limited` | §16.6 每分鐘 10 筆直接寫入（`DIRECT_PER_MINUTE`） | 測試把部分寫入改成「提案＋人核准」（changeset execution 也能 undo），或分散到不同測試 |

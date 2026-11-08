@@ -214,8 +214,10 @@ export type CondInput = {
 
 export type Consistency = {
   reason?: string | null;
-  /** eventual (free text, index may lag) | not_applicable (SQL only). */
+  retry_after_ms?: number | null;
+  /** eventual (free text, no token) | satisfied (the token's write is in the index) | lagging (it is not yet: no items) | not_applicable (SQL only). */
   status: string;
+  waited_ms?: number | null;
 };
 
 export type ContextView = {
@@ -368,7 +370,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -771,6 +773,8 @@ export type PolicyMode = "direct" | "review" | "off";
 export type PolicyView = {
   /** Operations the server supports that this delegation does not have. */
   available_commands: Array<string>;
+  /** Built-in fields the server supports that this delegation cannot write yet (T-V13: e.g. `fixed_version_id` on a delegation from before U39); the delegation page offers to add them. */
+  available_fields: Array<string>;
   commands: Record<string, PolicyMode>;
   delegation_id: string;
   fields: Record<string, PolicyMode>;
@@ -958,9 +962,16 @@ export type SearchItem = {
   updated_at?: string | null;
 };
 
+export type SearchMeta = {
+  /** The date `overdue` compared with (R10, org time zone), YYYY-MM-DD. */
+  today: string;
+};
+
 export type SearchParams = {
   /** "me", "none", a user login/name, or a group name. */
   assignee?: string | null;
+  /** A write receipt's `search.consistent_after` token: with `q`, wait until the index includes that write. `search_lagging` is not a write failure: do not propose again or ask for approval again; use `get` to cite what was just written. */
+  consistent_after?: string | null;
   /** Opaque cursor from a previous `next_cursor`. */
   cursor?: string | null;
   /** With `q`: "none" (no snippets), "brief" (default: one ~60-character snippet per issue) or "full" (up to two ~160-character snippets per matching field). */
@@ -971,6 +982,10 @@ export type SearchParams = {
   filter?: FilterInput | null;
   /** Max items, default 50, max 100. */
   limit?: number | null;
+  /** "return" (default: `outcome: "search_lagging"`, no items) or "error" (`search_not_caught_up`). */
+  on_lag?: string | null;
+  /** true: open issues whose due_date is before today (org time zone; `meta.today`). Not indexed, so no reindex when the day changes. */
+  overdue?: boolean | null;
   /** Project key (e.g. "AUTH"), name, or alias. */
   project?: string | null;
   /** Free text (BM25 over subject and description; Chinese works without word segmentation). */
@@ -981,6 +996,10 @@ export type SearchParams = {
   status_category?: string | null;
   /** Tracker name or alias (e.g. "bug", "缺陷"). */
   tracker?: string | null;
+  /** Milestone (§17.15): a version id (any readable project), or — only with `project` — a version name or "next" (else `invalid_filter`, `reason: project_scope_required`). */
+  version?: string | null;
+  /** How long to wait for `consistent_after`, 0–2000 ms (default 1000). */
+  wait_ms?: number | null;
 };
 
 /** Design 03 §4.3: wait for this before expecting search to show the write. Not a proof of commit; `status` is. */
@@ -989,14 +1008,16 @@ export type SearchReceipt = {
 };
 
 export type SearchResult = {
-  /** false when `truncated`. */
+  /** false when `truncated` or lagging. */
   complete: boolean;
   consistency: Consistency;
   /** Some snippets were left out to keep the response small (the item list is still complete). */
   evidence_truncated: boolean;
   items: Array<SearchItem>;
+  /** Only with `overdue`. */
+  meta?: SearchMeta | null;
   next_cursor: string | null;
-  /** Always "ok". */
+  /** "ok", or "search_lagging": the index has not caught up with `consistent_after` yet. Not a write failure and not "nothing found": do not propose again or ask for approval again; `get` reads the write. */
   outcome: string;
   /** Only with `q`: the server stopped after ranking 8000 candidates without finding everything this page needs. More matches may exist (even if there is no `next_cursor`); narrow `q` or the filters. */
   truncated: boolean;

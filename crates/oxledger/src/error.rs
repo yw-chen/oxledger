@@ -123,6 +123,13 @@ pub enum ErrorCode {
     InvalidQuery,
     /// The search index is broken or its worker stopped (not ordinary lag).
     SearchUnavailable,
+    /// `consistent_after` is not a `c1.<epoch>.<xid>` token (03 §4.11).
+    InvalidConsistencyToken,
+    /// The token's data epoch is not the current one (03 §4.3): search
+    /// again without it; never re-propose or ask for approval again.
+    ConsistencyEpochChanged,
+    /// `on_lag: "error"` and the index has not caught up; `retry_after_ms`.
+    SearchNotCaughtUp,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -139,7 +146,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 50] = [
+    pub const ALL: [ErrorCode; 53] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -190,6 +197,9 @@ impl ErrorCode {
         Self::AgentSuspended,
         Self::InvalidQuery,
         Self::SearchUnavailable,
+        Self::InvalidConsistencyToken,
+        Self::ConsistencyEpochChanged,
+        Self::SearchNotCaughtUp,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -244,6 +254,9 @@ impl ErrorCode {
             Self::AgentSuspended => "agent_suspended",
             Self::InvalidQuery => "invalid_query",
             Self::SearchUnavailable => "search_unavailable",
+            Self::InvalidConsistencyToken => "invalid_consistency_token",
+            Self::ConsistencyEpochChanged => "consistency_epoch_changed",
+            Self::SearchNotCaughtUp => "search_not_caught_up",
         }
     }
 
@@ -296,6 +309,9 @@ impl ErrorCode {
             Self::AgentSuspended => 423,
             Self::InvalidQuery => 400,
             Self::SearchUnavailable => 503,
+            Self::InvalidConsistencyToken => 400,
+            Self::ConsistencyEpochChanged => 409,
+            Self::SearchNotCaughtUp => 503,
         }
     }
 
@@ -306,6 +322,7 @@ impl ErrorCode {
                 | Self::RateLimited
                 | Self::ExecutionInProgress
                 | Self::SearchUnavailable
+                | Self::SearchNotCaughtUp
         )
     }
 
@@ -365,6 +382,8 @@ impl ErrorCode {
             Self::AgentSuspended => &[AskHuman, Stop],
             Self::InvalidQuery => &[FixInput],
             Self::SearchUnavailable => &[WaitAndRetry],
+            Self::InvalidConsistencyToken | Self::ConsistencyEpochChanged => &[FixInput],
+            Self::SearchNotCaughtUp => &[WaitAndRetry],
         }
     }
 }
