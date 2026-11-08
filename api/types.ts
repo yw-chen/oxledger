@@ -812,6 +812,21 @@ export type ProjectHealthSettings = {
   inherit_org: boolean;
 };
 
+export type RedactInput = {
+  /** Why (1–500 characters). Never paste the original text here. */
+  reason: string;
+  /** One of `personal_data`, `confidential`, `legal`, `other`. */
+  reason_code: string;
+};
+
+export type Redacted = {
+  /** False when it was already redacted (nothing written, epoch unchanged). */
+  changed: boolean;
+  redaction_id: string | null;
+  /** The project's epoch after this call. */
+  security_epoch: number;
+};
+
 export type RepoLink = {
   full_name: string;
   is_private: boolean;
@@ -1018,8 +1033,10 @@ export type SettingEvent = {
   at: string;
   id: string;
   kind: string;
-  /** tabs: `{before, after}` (each `{tabs, default_tab, is_default}`). */
+  /** tabs: `{before, after}` (each `{tabs, default_tab, is_default}`). The string `"[已遮蔽]"` once redacted. */
   payload: unknown;
+  /** D12: the payload was redacted. */
+  redacted: boolean;
 };
 
 export type SettingEvents = {
@@ -1484,6 +1501,8 @@ export interface Endpoints {
   "GET /issues/{key}": { body: never; data: IssueDetail };
   "GET /issues/{key}/actions": { body: never; data: IssueActions };
   "GET /issues/{key}/dev": { body: never; data: IssueDev };
+  "POST /issues/{key}/events/{event_id}/redact": { body: RedactInput; data: Redacted };
+  "POST /issues/{key}/notes/{note_id}/redact": { body: RedactInput; data: Redacted };
   "GET /operations/{id}": { body: never; data: OperationView };
   "GET /org/schedule-settings": { body: never; data: OrgScheduleSettings };
   "PUT /org/schedule-settings": { body: OrgScheduleSettingsInput; data: OrgScheduleSettings };
@@ -1499,6 +1518,7 @@ export interface Endpoints {
   "GET /projects/{id}/schedule-settings": { body: never; data: ScheduleSettings };
   "PUT /projects/{id}/schedule-settings": { body: ScheduleSettingsInput; data: ScheduleSettings };
   "GET /projects/{id}/setting-events": { body: never; data: SettingEvents };
+  "POST /projects/{id}/setting-events/{event_id}/redact": { body: RedactInput; data: Redacted };
   "GET /projects/{id}/tabs": { body: never; data: TabSettings };
   "PUT /projects/{id}/tabs": { body: TabsPut; data: TabSettings };
   "POST /projects/{id}/tabs/reset": { body: TabsReset; data: TabSettings };
@@ -1512,5 +1532,6 @@ export interface Endpoints {
   "GET /versions/{id}": { body: never; data: VersionView };
   "PATCH /versions/{id}": { body: VersionPatch; data: VersionWriteResult };
   "GET /versions/{id}/events": { body: never; data: VersionEvents };
+  "POST /versions/{id}/events/{seq}/redact": { body: RedactInput; data: Redacted };
   "GET /versions/{id}/impact": { body: never; data: ImpactResult };
 }

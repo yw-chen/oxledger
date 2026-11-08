@@ -233,3 +233,14 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S6b.verify	設定事件 payload 照 §18.2：repo_linked/unlinked 帶 {link_id, repo_id, full_name}；pr_hidden/unhidden 帶 {pr_id, repo_id, number}	§18.2	只存 id	src/github/links.rs
 2026-11-08	S6b.verify	分頁列表超過 5+10 筆先回 tab_limit，不讓 DB CHECK 擋成 500	T-PT3	—	src/project_tabs.rs
 2026-11-08	S6b.verify	觀察、不修：部分 GitHub API 呼叫在持有 DB 交易／鎖時進行（refetch 與 sync_checks）。第一切片量小可接受；之後若 API 變慢會拉長鎖時間，可改成先抓再開交易比較	驗證者觀察	先抓再寫（未做）	src/github/jobs.rs; src/github/sync.rs
+2026-11-08	S7	遮蔽端點：POST /issues/{key}/notes/{note_id}/redact、/issues/{key}/events/{seq}/redact、/versions/{id}/events/{seq}/redact、/projects/{id}/setting-events/{event_id}/redact；body {reason_code, reason}；Idempotency-Key；不開 MCP 工具	契約沒定端點（C1）	—	docs/impl/s7-checklist.md C1
+2026-11-08	S7	誰能遮蔽：該專案 manage_project 或系統管理員；只限人的瀏覽器 session；15 分鐘內 step-up；只給系統管理員看的設定事件（pr_hidden/pr_unhidden、帶 pr_ids 的 github_content_revoked）只有系統管理員能遮蔽，遮蔽後仍只給管理員看（記在 redaction.admin_only）；封存專案只有系統管理員能遮蔽，其他人 not_found；issue 事件用 recent_events 回的 event_id，不用內部 seq；讀不到的 note／事件 not_found	C2、C9	—	src/redaction.rs
+2026-11-08	S7	reason_code ∈ personal_data/confidential/legal/other；reason 1–500 字、不可有控制字元（換行可）	C3	—	src/redaction.rs
+2026-11-08	S7	已遮蔽再遮蔽：成功、changed=false、不寫紀錄、不 bump epoch	C4	—	src/redaction.rs
+2026-11-08	S7	衍生副本：目的地＝P 或任一版本來源快照含 P 的 changeset，全部版本內容＋分組名稱（label 設 NULL、label_state=redacted）；execution_field_changes／execution_version_changes：改到 P 的 issue／版本，或來源快照（command 或 changeset 版本）含 P；標記為 JSON 字串 "[已遮蔽]"	C5、C6	只遮來源快照含 P 的那些版本	src/redaction.rs derived
+2026-11-08	S7	reindex 不動 issue 列（lock_version、updated_at 不變），直接寫一筆 outbox	C7	UPDATE issue 列	src/redaction.rs
+2026-11-08	S7	0017：project_setting_event_redactions（B16）＋衍生副本掃描用的 6 個索引	C8、B16	—	migrations/0017_redaction.sql
+2026-11-08	S7	撤除 GitHub 內容（§19.9）在同一交易呼叫 redaction::derived（B14 完成，T-G24 兩半都測）	B14	—	src/github/links.rs
+2026-11-08	S7	新 fault 點：redact.before_derived、propose.after_sources、undo.after_projects（T-V19、T-S9、T-X22、T-D14 的屏障）	C10	—	src/redaction.rs; src/changesets.rs; src/undo.rs
+2026-11-08	S7	T-S3／T-S4：搜尋文件只有 subject、description；note（含私有）與事件不進索引，候選一律回 DB 複驗，所以遮蔽後索引更新前也拿不到舊文字	§7.5 最後一段	—	tests/s7_redaction.rs
+2026-11-08	S7	已寫進 issue 欄位或事件的文字不會因遮蔽來源 note 自動清掉（§7.5）；T-D9 只驗 execution 副本與 undo 預覽	§7.5	—	tests/s7_redaction.rs

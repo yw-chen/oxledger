@@ -121,6 +121,9 @@ pub struct RecentNotes {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct EventView {
+    /// Opaque id (for `POST /issues/{key}/events/{event_id}/redact`); the
+    /// internal sequence number is never returned.
+    pub event_id: Uuid,
     /// created | fields_changed | status_changed | note_added | duplicate_added
     pub kind: String,
     pub at: DateTime<Utc>,
@@ -857,6 +860,7 @@ async fn recent_notes(
 
 #[derive(sqlx::FromRow)]
 struct EventRow {
+    id: Uuid,
     seq: i64,
     kind: String,
     at: DateTime<Utc>,
@@ -1013,7 +1017,7 @@ async fn visible_events(
     let mut notes: HashMap<Uuid, bool> = HashMap::new();
     loop {
         let rows: Vec<EventRow> = sqlx::query_as(
-            "SELECT e.seq, e.kind, e.at, p.name AS actor, e.payload, e.note_id,
+            "SELECT e.id, e.seq, e.kind, e.at, p.name AS actor, e.payload, e.note_id,
                     e.redaction_id IS NOT NULL AS redacted
              FROM issue_events e JOIN principals p ON p.id = e.actor_id
              WHERE e.issue_id = $1 AND ($2::bigint IS NULL OR e.seq < $2)
@@ -1077,6 +1081,7 @@ async fn visible_events(
                 return Ok((out, true));
             }
             out.push(EventView {
+                event_id: r.id,
                 kind: r.kind,
                 at: r.at,
                 actor: r.actor,

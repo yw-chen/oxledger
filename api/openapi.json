@@ -3260,6 +3260,49 @@
         ],
         "type": "object"
       },
+      "RedactInput": {
+        "properties": {
+          "reason": {
+            "description": "Why (1–500 characters). Never paste the original text here.",
+            "type": "string"
+          },
+          "reason_code": {
+            "description": "One of `personal_data`, `confidential`, `legal`, `other`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason_code",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "Redacted": {
+        "properties": {
+          "changed": {
+            "description": "False when it was already redacted (nothing written, epoch unchanged).",
+            "type": "boolean"
+          },
+          "redaction_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "security_epoch": {
+            "description": "The project's epoch after this call.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "changed",
+          "redaction_id",
+          "security_epoch"
+        ],
+        "type": "object"
+      },
       "RepoLink": {
         "properties": {
           "full_name": {
@@ -4001,7 +4044,11 @@
             "type": "string"
           },
           "payload": {
-            "description": "tabs: `{before, after}` (each `{tabs, default_tab, is_default}`)."
+            "description": "tabs: `{before, after}` (each `{tabs, default_tab, is_default}`).\nThe string `\"[已遮蔽]\"` once redacted."
+          },
+          "redacted": {
+            "description": "D12: the payload was redacted.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -4009,7 +4056,8 @@
           "at",
           "kind",
           "actor",
-          "payload"
+          "payload",
+          "redacted"
         ],
         "type": "object"
       },
@@ -8191,6 +8239,162 @@
         "x-access": "session"
       }
     },
+    "/issues/{key}/events/{event_id}/redact": {
+      "post": {
+        "operationId": "post_issues_key_events_eventid_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Redact an issue event (its payload); event_id comes from recent_events. §7.5 D12 redaction (manage_project of the project or a system administrator; human session; step-up within 15 minutes). One transaction: the project's security_epoch + 1 (agent contexts that read it are quarantined), the text replaced by [已遮蔽], a redaction record without the original, and the derived copies (every proposal content and group label of proposals to or from the project, execution before/after values). Already redacted → changed=false. reason_code: personal_data, confidential, legal, other; reason 1–500 characters, never the original text. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/issues/{key}/notes/{note_id}/redact": {
+      "post": {
+        "operationId": "post_issues_key_notes_noteid_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "note_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Redact a note (not_found when you cannot read it). §7.5 D12 redaction (manage_project of the project or a system administrator; human session; step-up within 15 minutes). One transaction: the project's security_epoch + 1 (agent contexts that read it are quarantined), the text replaced by [已遮蔽], a redaction record without the original, and the derived copies (every proposal content and group label of proposals to or from the project, execution before/after values). Already redacted → changed=false. reason_code: personal_data, confidential, legal, other; reason 1–500 characters, never the original text. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/operations/{id}": {
       "get": {
         "operationId": "get_operations_id",
@@ -9119,6 +9323,84 @@
         "x-access": "session"
       }
     },
+    "/projects/{id}/setting-events/{event_id}/redact": {
+      "post": {
+        "operationId": "post_projects_id_setting_events_eventid_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Redact a project setting event (§18.2; pr_hidden / pr_unhidden: administrators only). §7.5 D12 redaction (manage_project of the project or a system administrator; human session; step-up within 15 minutes). One transaction: the project's security_epoch + 1 (agent contexts that read it are quarantined), the text replaced by [已遮蔽], a redaction record without the original, and the derived copies (every proposal content and group label of proposals to or from the project, execution before/after values). Already redacted → changed=false. reason_code: personal_data, confidential, legal, other; reason 1–500 characters, never the original text. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/projects/{id}/tabs": {
       "get": {
         "operationId": "get_projects_id_tabs",
@@ -9938,6 +10220,84 @@
         },
         "summary": "Version history, oldest first. Query cursor, limit.",
         "x-access": "session"
+      }
+    },
+    "/versions/{id}/events/{seq}/redact": {
+      "post": {
+        "operationId": "post_versions_id_events_seq_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Redact a version event (§17.13). §7.5 D12 redaction (manage_project of the project or a system administrator; human session; step-up within 15 minutes). One transaction: the project's security_epoch + 1 (agent contexts that read it are quarantined), the text replaced by [已遮蔽], a redaction record without the original, and the derived copies (every proposal content and group label of proposals to or from the project, execution before/after values). Already redacted → changed=false. reason_code: personal_data, confidential, legal, other; reason 1–500 characters, never the original text. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
       }
     },
     "/versions/{id}/impact": {

@@ -729,8 +729,8 @@ pub async fn hide(
 /// `POST /projects/{id}/dev/revoke` (Idempotency-Key, step-up): §19.9.
 /// One transaction: project `FOR UPDATE` and `security_epoch + 1` (every
 /// agent context that read this project is quarantined) → unlink or hide
-/// → `github_content_revoked` (ids only, never titles). The derived copies
-/// of §7.5 (proposal contents, `execution_field_changes`) are S7's (B14).
+/// → the derived copies of §7.5 (proposal contents, `execution_field_changes`;
+/// S7, B14) → `github_content_revoked` (ids only, never titles).
 pub async fn revoke(
     app: &App,
     caller: AuthContext,
@@ -813,6 +813,8 @@ pub async fn revoke(
     .bind(project)
     .fetch_one(&mut *tx)
     .await?;
+    // §19.9 / §7.5: the derived copies, as for a redacted event (B14).
+    crate::redaction::derived(&mut tx, project, who.user_id).await?;
     let payload = match input.link_id {
         Some(link) => {
             unlink_locked(&mut tx, project, link, who.user_id).await?;

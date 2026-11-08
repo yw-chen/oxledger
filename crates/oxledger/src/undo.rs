@@ -33,6 +33,16 @@ use sqlx::PgConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
+#[cfg(feature = "test-support")]
+async fn fault(point: &str) -> Result<()> {
+    crate::changesets::faults::hit(point).await
+}
+
+#[cfg(not(feature = "test-support"))]
+async fn fault(_: &str) -> Result<()> {
+    Ok(())
+}
+
 /// §16.7 (U18): undo data is kept 30 days.
 pub const UNDO_DAYS: i64 = 30;
 pub const ACTION_UNDO: &str = "undo";
@@ -864,6 +874,7 @@ pub async fn apply(
             .execute(&mut *tx)
             .await?;
     }
+    fault("undo.after_projects").await?;
     sqlx::query("SELECT 1 FROM versions WHERE id = ANY($1) ORDER BY id FOR UPDATE")
         .bind(&versions)
         .execute(&mut *tx)

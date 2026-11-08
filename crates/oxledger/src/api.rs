@@ -119,6 +119,19 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(pr_hide).delete(pr_unhide),
         )
         .route("/projects/{id}/dev/revoke", post(dev_revoke))
+        .route("/issues/{key}/notes/{note_id}/redact", post(redact_note))
+        .route(
+            "/issues/{key}/events/{event_id}/redact",
+            post(redact_issue_event),
+        )
+        .route(
+            "/versions/{id}/events/{seq}/redact",
+            post(redact_version_event),
+        )
+        .route(
+            "/projects/{id}/setting-events/{event_id}/redact",
+            post(redact_setting_event),
+        )
         .route("/issues/{key}/dev", get(issue_dev))
         .route("/admin/github", get(admin_github_get).put(admin_github_put))
         .route(
@@ -1468,6 +1481,106 @@ async fn dev_revoke(
         &body,
     )
     .await?))
+}
+
+async fn redact(
+    st: &ApiState,
+    ra: &RequestAuth,
+    headers: &HeaderMap,
+    target: crate::redaction::Target,
+    body: &crate::redaction::RedactInput,
+) -> ApiResult {
+    let ctx = human(ra)?;
+    let key = idempotency_key(headers)?;
+    Ok(ok(crate::redaction::redact(
+        &st.app,
+        ctx,
+        &st.cfg.session,
+        key,
+        &target,
+        body,
+    )
+    .await?))
+}
+
+fn seq_param(s: &str) -> Result<i64, ApiFailure> {
+    s.parse::<i64>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .ok_or_else(|| ApiFailure(api(ErrorCode::NotFound, "no such event")))
+}
+
+async fn redact_note(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((key, note)): Path<(String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let note = id_param(&note)?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::Note { key, note },
+        &body,
+    )
+    .await
+}
+
+async fn redact_issue_event(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((key, event)): Path<(String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let event = id_param(&event)?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::IssueEvent { key, event },
+        &body,
+    )
+    .await
+}
+
+async fn redact_version_event(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, seq)): Path<(String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let version = id_param(&id)?;
+    let seq = seq_param(&seq)?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::VersionEvent { version, seq },
+        &body,
+    )
+    .await
+}
+
+async fn redact_setting_event(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((project, event)): Path<(String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let event = id_param(&event)?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::SettingEvent { project, event },
+        &body,
+    )
+    .await
 }
 
 async fn issue_dev(

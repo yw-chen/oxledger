@@ -24,6 +24,7 @@ pub mod policy;
 pub mod project_tabs;
 pub mod query_syntax;
 pub mod quota;
+pub mod redaction;
 pub mod registry;
 pub mod review_queue;
 pub mod search;

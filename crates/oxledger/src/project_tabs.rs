@@ -40,8 +40,11 @@ pub const ACTION_TABS_RESET: &str = "project_tabs_reset";
 const EVENTS_PAGE: i64 = 50;
 /// Kinds a project manager does not see (§18.5: the event itself tells
 /// that a PR matched an issue here).
-const ADMIN_ONLY_SQL: &str = "(e.kind IN ('pr_hidden', 'pr_unhidden')
-     OR (e.kind = 'github_content_revoked' AND e.payload ? 'pr_ids'))";
+/// A redacted one keeps the flag its redaction recorded (S7).
+pub(crate) const ADMIN_ONLY_SQL: &str = "(e.kind IN ('pr_hidden', 'pr_unhidden')
+     OR (e.kind = 'github_content_revoked' AND e.payload ? 'pr_ids')
+     OR EXISTS (SELECT 1 FROM project_setting_event_redactions r
+                WHERE r.id = e.redaction_id AND r.admin_only))";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Tab {
@@ -117,7 +120,10 @@ pub struct SettingEvent {
     pub kind: String,
     pub actor: SettingActor,
     /// tabs: `{before, after}` (each `{tabs, default_tab, is_default}`).
+    /// The string `"[已遮蔽]"` once redacted.
     pub payload: Json,
+    /// D12: the payload was redacted.
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -673,9 +679,9 @@ pub async fn events(
     if !manages && !a.is_admin {
         return Err(forbidden("the settings history needs manage_project"));
     }
-    type Row = (Uuid, DateTime<Utc>, String, Uuid, String, Json);
+    type Row = (Uuid, DateTime<Utc>, String, Uuid, String, Json, bool);
     let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT e.id, e.at, e.kind, p.id, p.name, e.payload
+        "SELECT e.id, e.at, e.kind, p.id, p.name, e.payload, e.redaction_id IS NOT NULL
          FROM project_setting_events e JOIN principals p ON p.id = e.actor_id
          WHERE e.project_id = $1 AND ($2 OR NOT {ADMIN_ONLY_SQL})
            AND ($3::timestamptz IS NULL OR (e.at, e.id) < ($3, $4))
@@ -693,13 +699,16 @@ pub async fn events(
     let items: Vec<SettingEvent> = rows
         .into_iter()
         .take(EVENTS_PAGE as usize)
-        .map(|(id, at, kind, aid, name, payload)| SettingEvent {
-            id,
-            at,
-            kind,
-            actor: SettingActor { id: aid, name },
-            payload,
-        })
+        .map(
+            |(id, at, kind, aid, name, payload, redacted)| SettingEvent {
+                id,
+                at,
+                kind,
+                actor: SettingActor { id: aid, name },
+                payload,
+                redacted,
+            },
+        )
         .collect();
     let next_cursor = more.then(|| {
         let last = items.last().unwrap();

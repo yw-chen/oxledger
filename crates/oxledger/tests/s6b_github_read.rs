@@ -627,7 +627,22 @@ async fn visibility_and_hiding() {
         0
     );
 
-    // T-G24 (epoch part): revoking a PR bumps AUTH's epoch; the agent's context is quarantined.
+    // T-G24: revoking a PR bumps AUTH's epoch (the agent's context is
+    // quarantined) and redacts AUTH's proposal contents (§7.5, S7).
+    let lv: i32 = sqlx::query_scalar("SELECT lock_version FROM issues WHERE id = $1")
+        .bind(a1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let p = oxledger::changesets::propose(
+        &e.w.app,
+        agent,
+        Uuid::now_v7(),
+        &subject_doc(a1, lv, "from the PR title"),
+        ORIGIN,
+    )
+    .await
+    .unwrap();
     let before = epoch(&pool, e.w.auth_p).await;
     let r = links::revoke(
         app,
@@ -645,6 +660,14 @@ async fn visibility_and_hiding() {
     assert_eq!(r.security_epoch, before + 1);
     let err = issue_view::get(app, agent, get(&k1)).await.unwrap_err();
     assert_eq!(code(&err), ErrorCode::ContextUnavailable, "T-G24");
+    let state: String = sqlx::query_scalar(
+        "SELECT pc.state FROM changeset_versions v JOIN proposal_contents pc ON pc.id = v.content_id WHERE v.changeset_id = $1",
+    )
+    .bind(p.changeset_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "redacted", "T-G24 derived copies");
     assert!(
         dev_of(&e, e.alice, &k1).await.is_empty(),
         "revoked PR is hidden"

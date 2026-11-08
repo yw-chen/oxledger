@@ -192,6 +192,7 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | client 測試清掉 mock 的 token 後一直 401 | 快取的 token 還沒到期 | client 遇到 401 會丟掉快取（decisions S6b.8）；token 生命週期的測試另建 client |
 | 測試裡兩個 PR 的開發卡順序和預期相反 | 同 state、同 gh_updated_at 時依 PR id（uuidv7）排序 | 斷言照建立順序，或給 PR 不同的 updated_at |
 | 屏障測試裡被擋的那一方提早完成 | fault 只在下一次經過時生效（`arm` 一次一發） | 先 `g.reached.notified().await` 再啟動另一方；放行前用 `is_finished()` 確認對方真的在等鎖 |
+| 跨專案提案在測試裡回 audience_expansion_forbidden | 讀者集合不一致（U1）：目的地的讀者不是來源每個專案讀者的子集 | 測試讓兩專案受眾一致（同一批成員），或只往受眾較窄的專案提案 |
 
 ## 設計上的防呆
 

@@ -984,6 +984,7 @@ async fn lock_sources(
             return Err(quarantined());
         }
     }
+    fault("propose.after_sources").await?;
     Ok(r)
 }
 
