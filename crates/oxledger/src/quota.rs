@@ -39,6 +39,14 @@ pub mod limits {
     pub const VERSION_CREATES_PER_HOUR: i64 = 10;
     /// §17.9a: agent writes to one version per 10 minutes (more trips the breaker).
     pub const VERSION_WRITES_PER_10_MIN: i64 = 5;
+    /// §8.9: validate per delegation per hour.
+    pub const VALIDATES_PER_HOUR: i64 = 120;
+    /// §8.9: proposal writes of one delegation running at the same time.
+    pub const CONCURRENT_PROPOSAL_WRITES: i32 = 2;
+    /// §8.9: the proposal document as sent (serialized JSON bytes).
+    pub const RAW_PAYLOAD_BYTES: usize = 768 * 1024;
+    /// §8.9: the normalized command document (canonical JSON bytes).
+    pub const NORMALIZED_BYTES: usize = 512 * 1024;
 }
 
 /// A version document's part in the counters (§17.9a).
@@ -364,4 +372,84 @@ pub async fn audience_blocked(pool: &PgPool, agent: Uuid, context: Uuid) -> Resu
         return Ok(true);
     }
     Ok(false)
+}
+
+fn too_large(what: &str, limit: usize) -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::InvalidRequest,
+        format!("the {what} is larger than {} KiB", limit / 1024),
+    )
+    .with_details(json!({"reason": "payload_too_large", "what": what, "limit_bytes": limit}))
+    .into()
+}
+
+/// §8.9: the document as the agent sent it. Measured re-serialized (the
+/// transport already parsed it), so insignificant whitespace is not counted.
+pub fn check_raw_payload(doc: &serde_json::Value) -> Result<()> {
+    if serde_json::to_vec(doc)?.len() > limits::RAW_PAYLOAD_BYTES {
+        return Err(too_large("payload", limits::RAW_PAYLOAD_BYTES));
+    }
+    Ok(())
+}
+
+/// §8.9: the normalized command document (after `commands::parse`).
+pub fn check_normalized(canonical_len: usize) -> Result<()> {
+    if canonical_len > limits::NORMALIZED_BYTES {
+        return Err(too_large("normalized document", limits::NORMALIZED_BYTES));
+    }
+    Ok(())
+}
+
+/// §8.9: at most two proposal writes of one delegation at a time. A slot is
+/// a transaction-scoped advisory lock (released at commit or rollback); a
+/// third writer is told `rate_limited` instead of waiting. Taken before the
+/// agent row lock, so two writers really do overlap up to it.
+pub async fn take_proposal_slot(conn: &mut PgConnection, delegation: Uuid) -> Result<()> {
+    for slot in 0..limits::CONCURRENT_PROPOSAL_WRITES {
+        let got: bool = sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock(hashtext('oxledger.proposal_slot.' || $1::text), $2)",
+        )
+        .bind(delegation)
+        .bind(slot)
+        .fetch_one(&mut *conn)
+        .await?;
+        if got {
+            return Ok(());
+        }
+    }
+    Err(rate_limited("concurrent_proposal_writes", 1000))
+}
+
+/// §8.9: validate, 120 per delegation per hour, reserved and recorded in
+/// its own committed transaction before the (read-only) trial run.
+pub async fn reserve_validate(
+    pool: &PgPool,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT 1 FROM agent_principals WHERE agent_principal_id = $1 FOR UPDATE")
+        .bind(agent)
+        .execute(&mut *tx)
+        .await?;
+    if count(&mut tx, BY_DELEGATION, delegation, "validate", 3600).await?
+        >= limits::VALIDATES_PER_HOUR
+    {
+        return Err(quota_exceeded(
+            "validates_per_hour",
+            limits::VALIDATES_PER_HOUR,
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+         VALUES ($1, $2, $3, 'validate')",
+    )
+    .bind(agent)
+    .bind(context)
+    .bind(delegation)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }

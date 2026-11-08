@@ -55,6 +55,7 @@ pub const ACTION_OWNER_REVISE: &str = "changeset_owner_revise";
 pub const ACTION_CANCEL: &str = "changeset_cancel";
 pub const ACTION_REJECT: &str = "changeset_reject";
 pub const ACTION_APPROVE: &str = "approve_and_apply";
+pub const ACTION_REVISE_AND_APPLY: &str = "revise_and_apply";
 /// `changeset_versions.audience_contract_ver` (§8.1).
 pub const AUDIENCE_CONTRACT_VER: i32 = crate::audience::AUDIENCE_ALGORITHM_VERSION;
 const COMMAND_SCHEMA_VERSION: i32 = 1;
@@ -266,16 +267,33 @@ pub struct ChangesetSummary {
     pub changeset_id: Uuid,
     pub state: String,
     pub current_version: i32,
+    /// The hash of `current_version` (a queue tick binds version + hash).
+    pub proposal_hash: Option<String>,
     pub title: Option<String>,
     pub targets: Vec<TargetView>,
+    pub group_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_execution_status: Option<String>,
+    /// Proposed rows only: every changed field with before and after (§15.3).
+    pub diff: Vec<crate::review_queue::DiffRow>,
+    /// `evidence_changed` when a citation no longer verifies for you.
+    pub warnings: Vec<String>,
+    pub validation: Option<SummaryValidation>,
+    /// `["detail"]`, or `["detail","queue"]` when it may be ticked.
+    pub review_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SummaryValidation {
+    pub status: String,
+    pub checked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ChangesetList {
     pub items: Vec<ChangesetSummary>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1208,6 +1226,7 @@ async fn agent_write(
     if let Some(GroupRef::Label(l)) = group {
         check_group_label(l)?;
     }
+    quota::check_raw_payload(proposal)?;
     let r = retrying!(
         app,
         tx,
@@ -1252,6 +1271,7 @@ async fn agent_write_tx(
     let who = agent_who(&mut *conn, caller).await?;
     // Steps 2–4.
     let parsed = commands::parse(&mut *conn, proposal, MAX_OPS as usize).await?;
+    quota::check_normalized(commands::canonical_json(&parsed.norm).len())?;
     let action = match (revise, submit) {
         (Some(_), _) => ACTION_REVISE,
         (None, Some(_)) => ACTION_SUBMIT,
@@ -1329,6 +1349,9 @@ async fn agent_write_tx(
 
     // §16.6: a suspended context writes nothing (reads go on).
     quota::check_not_suspended(&mut *conn, who.context).await?;
+    // §8.9: two writes per delegation at a time (replays returned above).
+    quota::take_proposal_slot(&mut *conn, deleg.id).await?;
+    fault("agent_write.after_slot").await?;
 
     let mut old_ceiling = None;
     if let Some((cs, expected)) = &base {
@@ -2084,7 +2107,11 @@ async fn filter_for_agent(
     let own = is_agent_version(&ver.edit_method);
     let ids = ver.body.as_ref().map(body_targets).unwrap_or_default();
     let visible = visible_keys(&mut *conn, caller, &ids).await?;
-    let all_readable = ids.iter().all(|i| visible.contains_key(i));
+    // §8.8 (T-M12): issues the version created are targets too.
+    let created = created_issues(&mut *conn, cs.id, version).await?;
+    let created_visible = visible_keys(&mut *conn, caller, &created).await?;
+    let all_readable = ids.iter().all(|i| visible.contains_key(i))
+        && created.iter().all(|i| created_visible.contains_key(i));
     let shows_body = own && all_readable && ver.body.is_some();
     let content_unavailable = if !own {
         Some("owner_revised".to_string())
@@ -2111,17 +2138,13 @@ async fn filter_for_agent(
     let last_execution = match latest_exec(&mut *conn, cs.id).await? {
         None => None,
         Some(e) => {
+            // §8.8: items of the agent's own version; a key only where
+            // the issue is readable (unreadable targets: {op_id, status}).
             let detail = if e.version == version {
-                shows_body
+                own && ver.body.is_some()
             } else {
                 match load_version(&mut *conn, cs.id, e.version).await? {
-                    Some(v) => {
-                        is_agent_version(&v.edit_method) && v.body.is_some() && {
-                            let t = body_targets(v.body.as_ref().expect("body"));
-                            let k = visible_keys(&mut *conn, caller, &t).await?;
-                            t.iter().all(|i| k.contains_key(i))
-                        }
-                    }
+                    Some(v) => is_agent_version(&v.edit_method) && v.body.is_some(),
                     None => false,
                 }
             };
@@ -2272,6 +2295,16 @@ pub async fn agent_validate(
     id: Uuid,
     version: i32,
 ) -> Result<AgentValidation> {
+    // §8.9: the validate quota, reserved before the trial run.
+    {
+        let mut c = app.pool.acquire().await?;
+        let cs = agent_cs(&mut c, caller, id).await?;
+        if let (Some(agent), Some(context), Some(d)) =
+            (caller.principal_id(), caller.context_id(), cs.delegation_id)
+        {
+            quota::reserve_validate(&app.pool, agent, context, d).await?;
+        }
+    }
     let mut tx = read_tx(app).await?;
     let cs = agent_cs(&mut tx, caller, id).await?;
     let ver = load_version(&mut tx, id, version)
@@ -2456,6 +2489,20 @@ async fn exec_view(
     })
 }
 
+/// Issues created by executions of `version` (from their stored items).
+async fn created_issues(conn: &mut PgConnection, cs: Uuid, version: i32) -> Result<Vec<Uuid>> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT (it->>'issue_id')::uuid
+         FROM changeset_executions e, jsonb_array_elements(e.item_results->'items') it
+         WHERE e.changeset_id = $1 AND e.version = $2 AND it ? 'issue_id'",
+    )
+    .bind(cs)
+    .bind(version)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(ids)
+}
+
 async fn latest_exec(conn: &mut PgConnection, cs: Uuid) -> Result<Option<ExecRow>> {
     let sql = format!(
         "SELECT {EXEC_COLS} FROM changeset_executions WHERE changeset_id = $1
@@ -2470,11 +2517,16 @@ async fn latest_exec(conn: &mut PgConnection, cs: Uuid) -> Result<Option<ExecRow
 /// `GET /changesets` (§4.2): the caller's proposals, newest first.
 /// `bucket = awaiting_me` (default: proposed or failed) or `all`; `state`
 /// narrows further.
+/// Rows per page of the owner's list (each proposed row is simulated).
+const OWNER_PAGE: i64 = 50;
+
 pub async fn list(
     app: &App,
     caller: AuthContext,
     bucket: Option<&str>,
     state: Option<&str>,
+    group: Option<Uuid>,
+    cursor_text: Option<&str>,
 ) -> Result<ChangesetList> {
     let user = owner_of(&caller)?;
     let states: Vec<String> = match (bucket.unwrap_or("awaiting_me"), state) {
@@ -2489,42 +2541,106 @@ pub async fn list(
             );
         }
     };
+    let qhash = crate::cursor::query_hash(&json!({"changesets": states, "group": group}));
+    let after = match cursor_text {
+        None => None,
+        Some(c) => {
+            match crate::cursor::decode(&app.pool, c, caller.principal_id(), &qhash).await? {
+                crate::cursor::Position::Keyset { t, i } => Some((t, i)),
+                _ => return Err(api(ErrorCode::InvalidCursor, "invalid cursor")),
+            }
+        }
+    };
     let mut tx = read_tx(app).await?;
     db::effective(&mut tx, caller).await?;
     let sql = format!(
         "SELECT {CS_COLS} FROM changesets WHERE on_behalf_of_id = $1
            AND (cardinality($2::text[]) = 0 OR state = ANY($2))
+           AND ($4::uuid IS NULL OR group_id = $4)
+           AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
          ORDER BY created_at DESC, id DESC LIMIT $3"
     );
-    let rows: Vec<CsRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+    let mut rows: Vec<CsRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(user)
         .bind(&states)
-        .bind(LIST_LIMIT)
+        .bind(OWNER_PAGE + 1)
+        .bind(group)
+        .bind(after.map(|a| a.0))
+        .bind(after.map(|a| a.1))
         .fetch_all(&mut *tx)
         .await?;
+    let more = rows.len() as i64 > OWNER_PAGE;
+    rows.truncate(OWNER_PAGE as usize);
+    let last = rows.last().map(|c| (c.created_at, c.id));
     let mut items = Vec::new();
     for cs in rows {
         let v = load_version(&mut tx, cs.id, cs.current_version).await?;
+        let mut diff = Vec::new();
+        let mut warnings = Vec::new();
+        let mut review_modes = vec!["detail".to_string()];
         let (title, targets) = match v.as_ref().and_then(|v| v.body.clone()) {
             Some(b) => match readable_targets(&mut tx, caller, &b).await? {
-                Some(t) => (b["title"].as_str().map(String::from), t),
+                Some(t) => {
+                    if cs.state == "proposed" {
+                        let keys: BTreeMap<Uuid, String> =
+                            t.iter().map(|x| (x.id, x.key.clone())).collect();
+                        diff = crate::review_queue::diff(&mut tx, caller, &b, &keys).await?;
+                        let status = v
+                            .as_ref()
+                            .and_then(|v| v.validation.as_ref())
+                            .and_then(|j| j["status"].as_str())
+                            .unwrap_or("blocked")
+                            .to_string();
+                        let e =
+                            crate::review_queue::eligibility(&mut tx, caller, &b, &status).await?;
+                        warnings = e.warnings.clone();
+                        review_modes = e.review_modes();
+                    }
+                    (b["title"].as_str().map(String::from), t)
+                }
                 None => (None, Vec::new()),
             },
             None => (None, Vec::new()),
         };
-        let last = latest_exec(&mut tx, cs.id).await?.map(|e| e.status);
+        let validation =
+            v.as_ref()
+                .and_then(|v| v.validation.as_ref())
+                .map(|j| SummaryValidation {
+                    status: j["status"].as_str().unwrap_or("blocked").to_string(),
+                    checked_at: serde_json::from_value(j["checked_at"].clone()).ok(),
+                });
+        let last_status = latest_exec(&mut tx, cs.id).await?.map(|e| e.status);
         items.push(ChangesetSummary {
             changeset_id: cs.id,
             state: cs.state,
             current_version: cs.current_version,
+            proposal_hash: v.as_ref().map(|v| hash_str(&v.proposal_hash)),
             title,
             targets,
+            group_id: cs.group_id,
             created_at: cs.created_at,
             expires_at: cs.expires_at,
-            last_execution_status: last,
+            last_execution_status: last_status,
+            diff,
+            warnings,
+            validation,
+            review_modes,
         });
     }
-    Ok(ChangesetList { items })
+    tx.commit().await?;
+    let next_cursor = match (more, last) {
+        (true, Some((t, i))) => Some(
+            crate::cursor::encode(
+                &app.pool,
+                caller.principal_id(),
+                &qhash,
+                crate::cursor::Position::Keyset { t, i },
+            )
+            .await?,
+        ),
+        _ => None,
+    };
+    Ok(ChangesetList { items, next_cursor })
 }
 
 /// `GET /changesets/{id}` and `/changesets/{id}/versions/{v}`.
@@ -3055,137 +3171,168 @@ pub async fn owner_revise(
     })?;
     let proposal = input["proposal"].clone();
     let expected = parsed_input.expected_current_version;
-    let version: i32 = retrying!(app, tx, async {
-        let cs = load_owned(&mut tx, user, id, true).await?;
-        let parsed = commands::parse(&mut tx, &proposal, MAX_OPS as usize).await?;
-        let fp = commands::fingerprint(
-            ACTION_OWNER_REVISE,
-            &Sha256::digest(
-                [&parsed.hash[..], id.as_bytes(), &expected.to_be_bytes()].concat(),
-            ),
-        );
-        let context = cs.context_id.ok_or_else(not_found)?;
-        lock_context_row(&mut tx, context).await?;
-        let dest = destination(&mut tx, &parsed).await?;
-        let sources = lock_sources(
-            &mut tx,
-            context,
-            &BTreeMap::from([(dest, !parsed.creates().is_empty())]),
-        )
-        .await?;
-        if commands::open_request(&mut tx, user, operation_id, ACTION_OWNER_REVISE, &fp)
-            .await?
-            .is_none()
-        {
-            let (_, _, r) =
-                used_key(&mut tx, user, operation_id, ACTION_OWNER_REVISE, &fp).await?;
-            return Ok(r
-                .and_then(|r| r["version"].as_i64())
-                .unwrap_or(cs.current_version as i64) as i32);
-        }
-        let req: Uuid = sqlx::query_scalar(
-            "SELECT id FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
-        )
-        .bind(user)
-        .bind(operation_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if let Some(e) = state_error(&cs, None) {
-            return Err(e);
-        }
-        if cs.state == "approved" || cs.state == "executing" {
-            return Err(api(
-                ErrorCode::ExecutionInProgress,
-                "an approved execution is pending; it cannot be revised now",
-            ));
-        }
-        if clock(&mut tx).await? >= cs.expires_at {
-            return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
-        }
-        if expected != cs.current_version {
-            return Err(ApiError::new(
-                ErrorCode::VersionSuperseded,
-                "the proposal has a newer version",
-            )
-            .with_details(json!({"current_version": cs.current_version}))
-            .into());
-        }
-        let deleg_ok: bool = sqlx::query_scalar(
-            "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM delegations WHERE id = $1 FOR SHARE",
-        )
-        .bind(cs.delegation_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if !deleg_ok {
-            return Err(delegation_gone());
-        }
-        let old = load_version(&mut tx, id, cs.current_version)
-            .await?
-            .ok_or_else(not_found)?;
-        sources_kept(&mut tx, &cs, &sources).await?;
-        let ceiling = ceiling_map(&old.authority_ceiling);
-        if !ceiling.contains_key(&dest) {
-            return Err(ApiError::new(
-                ErrorCode::ForbiddenOp,
-                "the revision writes outside what the agent was allowed to propose",
-            )
-            .with_details(json!({"reason": "ceiling"}))
-            .into());
-        }
-        if parsed.op_list().len() > ceiling[&dest].max_ops as usize {
-            return Err(ApiError::new(
-                ErrorCode::ForbiddenOp,
-                "the revision has more ops than the agent was allowed",
-            )
-            .with_details(json!({"reason": "ceiling"}))
-            .into());
-        }
-        // Within the ceiling: the simulation runs with it as the delegation.
-        let ectx = EvalCtx {
-            mode: Mode::Validate,
-            caller,
-            ceiling: Some(ceiling),
-            deadlines: Vec::new(),
-            author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
-        };
-        let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
-        if let Err(e) = &sim
-            && commands::is_rejection(e)
-        {
-            return Err(sim.err().expect("an error"));
-        }
-        let checked_at = clock(&mut tx).await?;
-        let validation = stored_validation(&sim, checked_at);
-        let version = cs.current_version + 1;
-        store_version(
-            &mut tx,
-            &parsed,
-            &StoreVersion {
-                group_id: cs.group_id,
-                cs_id: id,
-                version,
-                new_changeset: false,
-                context_project_id: cs.context_project_id,
-                proposer: cs.proposer_id,
-                on_behalf_of: cs.on_behalf_of_id,
-                delegation: cs.delegation_id.unwrap_or_default(),
+    let version: i32 = retrying!(
+        app,
+        tx,
+        async {
+            let cs = load_owned(&mut tx, user, id, true).await?;
+            let parsed = commands::parse(&mut tx, &proposal, MAX_OPS as usize).await?;
+            let fp = commands::fingerprint(
+                ACTION_OWNER_REVISE,
+                &Sha256::digest(
+                    [&parsed.hash[..], id.as_bytes(), &expected.to_be_bytes()].concat(),
+                ),
+            );
+            let context = cs.context_id.ok_or_else(not_found)?;
+            lock_context_row(&mut tx, context).await?;
+            let dest = destination(&mut tx, &parsed).await?;
+            let sources = lock_sources(
+                &mut tx,
                 context,
-                expires_at: cs.expires_at,
-                ceiling: &old.authority_ceiling,
-                sources: &sources,
-                editor: user,
-                edit_method: "owner_revise",
-                based_on: Some(cs.current_version),
-                validation: &validation,
-            },
-        )
-        .await?;
-        commands::complete_request(&mut tx, req, &json!({"changeset_id": id, "version": version}))
+                &BTreeMap::from([(dest, !parsed.creates().is_empty())]),
+            )
             .await?;
-        Ok(version)
-    }
-    .await)?;
+            if commands::open_request(&mut tx, user, operation_id, ACTION_OWNER_REVISE, &fp)
+                .await?
+                .is_none()
+            {
+                let (_, _, r) =
+                    used_key(&mut tx, user, operation_id, ACTION_OWNER_REVISE, &fp).await?;
+                return Ok(r
+                    .and_then(|r| r["version"].as_i64())
+                    .unwrap_or(cs.current_version as i64) as i32);
+            }
+            let req: Uuid = sqlx::query_scalar(
+                "SELECT id FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+            )
+            .bind(user)
+            .bind(operation_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let (version, _) = owner_version_in(
+                &mut tx, caller, user, &cs, &parsed, dest, &sources, expected,
+            )
+            .await?;
+            commands::complete_request(
+                &mut tx,
+                req,
+                &json!({"changeset_id": id, "version": version}),
+            )
+            .await?;
+            Ok(version)
+        }
+        .await
+    )?;
     get(app, caller, id, Some(version)).await
+}
+
+/// An owner's revision (§8.5) inside the caller's transaction: checks the
+/// state, the expected version, the delegation, the sources and the ceiling,
+/// validates and stores version `current + 1`. Returns it and its hash.
+#[allow(clippy::too_many_arguments)]
+async fn owner_version_in(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    user: Uuid,
+    cs: &CsRow,
+    parsed: &Parsed,
+    dest: Uuid,
+    sources: &[(Uuid, i64)],
+    expected: i32,
+) -> Result<(i32, [u8; 32])> {
+    let id = cs.id;
+    let context = cs.context_id.ok_or_else(not_found)?;
+    if let Some(e) = state_error(cs, None) {
+        return Err(e);
+    }
+    if cs.state == "approved" || cs.state == "executing" {
+        return Err(api(
+            ErrorCode::ExecutionInProgress,
+            "an approved execution is pending; it cannot be revised now",
+        ));
+    }
+    if clock(&mut *conn).await? >= cs.expires_at {
+        return Err(api(ErrorCode::ChangesetExpired, "the proposal expired"));
+    }
+    if expected != cs.current_version {
+        return Err(ApiError::new(
+            ErrorCode::VersionSuperseded,
+            "the proposal has a newer version",
+        )
+        .with_details(json!({"current_version": cs.current_version}))
+        .into());
+    }
+    let deleg_ok: bool = sqlx::query_scalar(
+        "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM delegations WHERE id = $1 FOR SHARE",
+    )
+    .bind(cs.delegation_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !deleg_ok {
+        return Err(delegation_gone());
+    }
+    let old = load_version(&mut *conn, id, cs.current_version)
+        .await?
+        .ok_or_else(not_found)?;
+    sources_kept(&mut *conn, cs, sources).await?;
+    let ceiling = ceiling_map(&old.authority_ceiling);
+    if !ceiling.contains_key(&dest) {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            "the revision writes outside what the agent was allowed to propose",
+        )
+        .with_details(json!({"reason": "ceiling"}))
+        .into());
+    }
+    if parsed.op_list().len() > ceiling[&dest].max_ops as usize {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            "the revision has more ops than the agent was allowed",
+        )
+        .with_details(json!({"reason": "ceiling"}))
+        .into());
+    }
+    // Within the ceiling: the simulation runs with it as the delegation.
+    let ectx = EvalCtx {
+        mode: Mode::Validate,
+        caller,
+        ceiling: Some(ceiling),
+        deadlines: Vec::new(),
+        author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
+    };
+    let sim = commands::simulate(&mut *conn, &ectx, parsed).await;
+    if let Err(e) = &sim
+        && commands::is_rejection(e)
+    {
+        return Err(sim.err().expect("an error"));
+    }
+    let checked_at = clock(&mut *conn).await?;
+    let validation = stored_validation(&sim, checked_at);
+    let version = cs.current_version + 1;
+    let hash = store_version(
+        &mut *conn,
+        parsed,
+        &StoreVersion {
+            group_id: cs.group_id,
+            cs_id: id,
+            version,
+            new_changeset: false,
+            context_project_id: cs.context_project_id,
+            proposer: cs.proposer_id,
+            on_behalf_of: cs.on_behalf_of_id,
+            delegation: cs.delegation_id.unwrap_or_default(),
+            context,
+            expires_at: cs.expires_at,
+            ceiling: &old.authority_ceiling,
+            sources,
+            editor: user,
+            edit_method: "owner_revise",
+            based_on: Some(cs.current_version),
+            validation: &validation,
+        },
+    )
+    .await?;
+    Ok((version, hash))
 }
 
 // ---------------------------------------------------------------- approve and apply (§8.6)
@@ -3239,12 +3386,23 @@ pub async fn approve_and_apply(
         Accepted::Finished(e) => return finished(app, caller, e, None).await,
         Accepted::Pending(e) => e,
     };
+    run_after_a(app, caller, &who, exec_id, "approve.after_a").await
+}
+
+/// Transactions B and C for a queued execution (§8.6).
+async fn run_after_a(
+    app: &App,
+    caller: AuthContext,
+    who: &commands::Executor,
+    exec_id: Uuid,
+    after_a: &str,
+) -> Result<ApplyOutcome> {
     let pending = || ApplyOutcome {
         pending: true,
         execution_id: exec_id,
         execution: None,
     };
-    if fault("approve.after_a").await.is_err() {
+    if fault(after_a).await.is_err() {
         return Ok(pending());
     }
 
@@ -3256,7 +3414,7 @@ pub async fn approve_and_apply(
         let Ok(mut tx) = begin_apply(app).await else {
             return Ok(pending());
         };
-        match apply_tx(&mut tx, caller, &who, exec_id).await {
+        match apply_tx(&mut tx, caller, who, exec_id).await {
             Ok(()) => {
                 if tx.commit().await.is_err() || fault("apply.after_commit").await.is_err() {
                     return Ok(pending());
@@ -3394,12 +3552,13 @@ async fn accept(
             )),
         };
     };
-    if review_mode != "detail" {
+    if review_mode != "detail" && review_mode != "queue" {
+        // `revise_and_apply` is its own endpoint.
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,
-            "only review_mode \"detail\" is available",
+            "review_mode must be \"detail\" or \"queue\"",
         )
-        .with_details(json!({"path": "review_mode", "allowed": ["detail"]}))
+        .with_details(json!({"path": "review_mode", "allowed": ["detail", "queue"]}))
         .into());
     }
     let applied: Option<Uuid> = sqlx::query_scalar(
@@ -3453,7 +3612,41 @@ async fn accept(
             "you can no longer read every issue this proposal changes",
         ));
     }
+    // §15.3: a queue approval only for what still qualifies (the whole
+    // transaction A rolls back: no decision, execution or request row).
+    if review_mode == "queue" {
+        let status = ver
+            .validation
+            .as_ref()
+            .and_then(|j| j["status"].as_str())
+            .unwrap_or("blocked")
+            .to_string();
+        let e = crate::review_queue::eligibility(
+            &mut *conn,
+            caller,
+            ver.body.as_ref().expect("checked"),
+            &status,
+        )
+        .await?;
+        if !e.queue_ok() {
+            return Err(crate::review_queue::outdated(&e));
+        }
+    }
 
+    let exec_id = queue_execution(&mut *conn, who, id, version, hash, request, review_mode).await?;
+    Ok(Accepted::Pending(exec_id))
+}
+
+/// The approval and its queued execution (end of transaction A, §8.6).
+async fn queue_execution(
+    conn: &mut PgConnection,
+    who: &commands::Executor,
+    id: Uuid,
+    version: i32,
+    hash: &[u8],
+    request: Uuid,
+    review_mode: &str,
+) -> Result<Uuid> {
     let decision: Uuid = sqlx::query_scalar(
         "INSERT INTO changeset_decisions (changeset_id, version, proposal_hash, decider_id, decision,
                                           session_id, review_mode)
@@ -3498,7 +3691,7 @@ async fn accept(
         .bind(json!({"changeset_id": id, "version": version, "execution_id": exec_id}))
         .execute(&mut *conn)
         .await?;
-    Ok(Accepted::Pending(exec_id))
+    Ok(exec_id)
 }
 
 /// Transaction B (§6.7 apply steps 1–18). `Ok` also when the execution was
@@ -3652,6 +3845,20 @@ async fn apply_tx(
         author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
     };
     let sim = commands::simulate(&mut *conn, &ectx, &parsed).await?;
+    // Step 13a: a queue approval qualifies again, evidence in the executor's scope.
+    let mode: String = sqlx::query_scalar(
+        "SELECT d.review_mode FROM changeset_decisions d
+             JOIN changeset_executions e ON e.decision_id = d.id WHERE e.id = $1",
+    )
+    .bind(exec_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if mode == "queue" {
+        let e = crate::review_queue::eligibility(&mut *conn, caller, &body, "passed").await?;
+        if !e.queue_ok() {
+            return Err(crate::review_queue::outdated(&e));
+        }
+    }
     // Step 14: the audience against this version's source snapshot (M6).
     let snapshot: Vec<Uuid> = sqlx::query_scalar(
         "SELECT project_id FROM changeset_version_source_projects
@@ -3951,4 +4158,358 @@ mod tests {
         let s: Vec<&str> = items.iter().map(|i| i.status.as_str()).collect();
         assert_eq!(s, ["rolled_back", "failed", "not_run"]);
     }
+}
+
+// ------------------------------------------- revision previews and revise-and-apply (§15.4)
+
+const PREVIEW_PURPOSE: &str = "revision_preview";
+static PREVIEW_TTL_SECS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(600);
+
+/// Tests: how long a `revision_review_token` opens (default 10 minutes).
+#[cfg(feature = "test-support")]
+pub fn set_preview_ttl_secs(secs: i64) {
+    PREVIEW_TTL_SECS.store(secs, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `POST /changesets/{id}/revision-previews`: per conflicting field, keep
+/// the issue's `current` value or the `proposed` one (default `proposed`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewInput {
+    /// The version the choices were made on (the current one).
+    pub version: i32,
+    /// `"<op_id>/<field>"` → `"current"` | `"proposed"`.
+    #[serde(default)]
+    pub choices: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RevisionPreview {
+    /// The complete revised document (every op, note and evidence).
+    pub proposal: Json,
+    pub validation: CompactValidation,
+    pub revision_review_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// `POST /changesets/{id}/revise-and-apply`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviseAndApplyInput {
+    /// The version the preview was made from.
+    pub version: i32,
+    pub expected_current_version: i32,
+    /// The document the preview returned.
+    pub proposal: CommandDoc,
+    pub revision_review_token: String,
+}
+
+/// The targets' current `lock_version`, in id order.
+async fn target_locks(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+    share: bool,
+) -> Result<BTreeMap<Uuid, i32>> {
+    let sql = if share {
+        "SELECT id, lock_version FROM issues WHERE id = ANY($1) ORDER BY id FOR SHARE"
+    } else {
+        "SELECT id, lock_version FROM issues WHERE id = ANY($1) ORDER BY id"
+    };
+    let rows: Vec<(Uuid, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.into_iter().collect())
+}
+
+fn outdated(msg: &str) -> anyhow::Error {
+    api(ErrorCode::ReviewOutdated, msg)
+}
+
+/// Applies the owner's choices to `body` and moves every precondition to
+/// the issues' current `lock_version` (the owner has seen them).
+fn revised_doc(
+    body: &Json,
+    choices: &BTreeMap<String, String>,
+    locks: &BTreeMap<Uuid, i32>,
+) -> Result<Json> {
+    let mut doc = body.clone();
+    let mut used = BTreeSet::new();
+    if let Some(ops) = doc["ops"].as_array_mut() {
+        for op in ops.iter_mut() {
+            let op_id = op["op_id"].as_str().unwrap_or_default().to_string();
+            if let Some(set) = op.get_mut("set").and_then(Json::as_object_mut) {
+                let keys: Vec<String> = set.keys().cloned().collect();
+                for k in keys {
+                    let c = format!("{op_id}/{k}");
+                    match choices.get(&c).map(String::as_str) {
+                        None | Some("proposed") => {}
+                        Some("current") => {
+                            set.remove(&k);
+                        }
+                        Some(other) => {
+                            return Err(ApiError::new(
+                                ErrorCode::InvalidArgument,
+                                format!("choice {other:?} must be current or proposed"),
+                            )
+                            .with_details(json!({"path": format!("choices.{c}"),
+                                                 "allowed": ["current", "proposed"]}))
+                            .into());
+                        }
+                    }
+                    if choices.contains_key(&c) {
+                        used.insert(c);
+                    }
+                }
+            }
+        }
+        // An update left with nothing to set is dropped.
+        ops.retain(|op| {
+            op["kind"] != "update_fields" || op["set"].as_object().is_some_and(|m| !m.is_empty())
+        });
+    }
+    if let Some(bad) = choices.keys().find(|k| !used.contains(*k)) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            format!("no field {bad:?} in this proposal"),
+        )
+        .with_details(json!({"path": format!("choices.{bad}")}))
+        .into());
+    }
+    if doc["ops"].as_array().is_none_or(Vec::is_empty) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            "keeping every current value leaves nothing to apply; reject the proposal instead",
+        )
+        .with_details(json!({"path": "choices"}))
+        .into());
+    }
+    if let Some(pre) = doc["preconditions"].as_array_mut() {
+        for p in pre.iter_mut() {
+            let id = p["target"]["id"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok());
+            if let Some(lv) = id.and_then(|i| locks.get(&i)) {
+                p["lock_version"] = json!(lv);
+            }
+            if let Some(m) = p.as_object_mut() {
+                m.remove("field_values");
+            }
+        }
+    }
+    Ok(doc)
+}
+
+pub async fn preview_revision(
+    app: &App,
+    caller: AuthContext,
+    id: Uuid,
+    input: &PreviewInput,
+) -> Result<RevisionPreview> {
+    let user = owner_of(&caller)?;
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let cs = load_owned(&mut tx, user, id, false).await?;
+    if let Some(e) = state_error(&cs, None) {
+        return Err(e);
+    }
+    if input.version != cs.current_version {
+        return Err(ApiError::new(
+            ErrorCode::VersionSuperseded,
+            "the proposal has a newer version",
+        )
+        .with_details(json!({"current_version": cs.current_version}))
+        .into());
+    }
+    let ver = load_version(&mut tx, id, cs.current_version)
+        .await?
+        .ok_or_else(not_found)?;
+    let Some(body) = ver.body.clone() else {
+        return Err(api(
+            ErrorCode::ProposalUnavailable,
+            "the proposal content was removed",
+        ));
+    };
+    if readable_targets(&mut tx, caller, &body).await?.is_none() {
+        return Err(api(
+            ErrorCode::ProposalUnavailable,
+            "you can no longer read every issue this proposal changes",
+        ));
+    }
+    let ids = body_targets(&body);
+    let locks = target_locks(&mut tx, &ids, false).await?;
+    let doc = revised_doc(&body, &input.choices, &locks)?;
+    let parsed = commands::parse(&mut tx, &doc, MAX_OPS as usize).await?;
+    let ectx = EvalCtx {
+        mode: Mode::Validate,
+        caller,
+        ceiling: Some(ceiling_map(&ver.authority_ceiling)),
+        deadlines: Vec::new(),
+        author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
+    };
+    let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
+    if let Err(e) = &sim
+        && commands::is_rejection(e)
+    {
+        return Err(sim.err().expect("an error"));
+    }
+    let at = clock(&mut tx).await?;
+    let validation = compact(&stored_validation(&sim, at));
+    tx.commit().await?;
+    let claims = json!({
+        "owner": user, "changeset_id": id, "version": cs.current_version,
+        "source_hash": hex::encode(&ver.proposal_hash),
+        "content": hex::encode(parsed.hash),
+        "locks": locks.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
+    });
+    let ttl = chrono::Duration::seconds(PREVIEW_TTL_SECS.load(std::sync::atomic::Ordering::SeqCst));
+    let (token, expires_at) = crate::cursor::seal(&app.pool, PREVIEW_PURPOSE, &claims, ttl).await?;
+    Ok(RevisionPreview {
+        proposal: parsed.norm.clone(),
+        validation,
+        revision_review_token: token,
+        expires_at,
+    })
+}
+
+/// §15.4: the owner's revision, its approval and the queued execution in one
+/// transaction A, then B and C as for approve-and-apply.
+pub async fn revise_and_apply(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    id: Uuid,
+    input: &Json,
+) -> Result<ApplyOutcome> {
+    let who = session_executor(&caller)?;
+    let user = who.user_id;
+    let parsed_input: ReviseAndApplyInput = serde_json::from_value(input.clone()).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("not a revise-and-apply: {e}"),
+        )
+        .with_details(json!({"kind": "invalid_body"}))
+    })?;
+    let proposal = input["proposal"].clone();
+    let token = parsed_input.revision_review_token.clone();
+    let accepted = retrying!(
+        app,
+        tx,
+        async {
+            let parsed = commands::parse(&mut tx, &proposal, MAX_OPS as usize).await?;
+            let fp = commands::fingerprint(
+                ACTION_REVISE_AND_APPLY,
+                &digest(&json!({"changeset_id": id, "version": parsed_input.version,
+                    "expected": parsed_input.expected_current_version,
+                    "content": hex::encode(parsed.hash),
+                    "token": hex::encode(Sha256::digest(token.as_bytes()))})),
+            );
+            // ② The key first: a known request continues without the token.
+            let Some(request) =
+                commands::open_request(&mut tx, user, operation_id, ACTION_REVISE_AND_APPLY, &fp)
+                    .await?
+            else {
+                let (req, _, _) =
+                    used_key(&mut tx, user, operation_id, ACTION_REVISE_AND_APPLY, &fp).await?;
+                let ex: Option<(Uuid, String)> = sqlx::query_as(
+                    "SELECT id, status FROM changeset_executions WHERE operation_request_id = $1",
+                )
+                .bind(req)
+                .fetch_optional(&mut *tx)
+                .await?;
+                return match ex {
+                    Some((e, s)) if s == "succeeded" || s == "failed" => Ok(Accepted::Finished(e)),
+                    Some((e, _)) => Ok(Accepted::Pending(e)),
+                    None => Err(api(
+                        ErrorCode::ExecutionInProgress,
+                        "this operation is still running",
+                    )),
+                };
+            };
+            // ③ A new request: the token, then the locks.
+            let claims = match crate::cursor::open(&app.pool, PREVIEW_PURPOSE, &token).await? {
+                crate::cursor::Opened::Valid(c) => c,
+                crate::cursor::Opened::Expired => {
+                    return Err(outdated("the preview expired; preview the revision again"));
+                }
+                crate::cursor::Opened::Invalid => {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidRequest,
+                        "revision_review_token is not a preview token",
+                    )
+                    .with_details(json!({"path": "revision_review_token"}))
+                    .into());
+                }
+            };
+            if claims["owner"] != json!(user) || claims["changeset_id"] != json!(id) {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "this preview belongs to another proposal or person",
+                )
+                .with_details(json!({"path": "revision_review_token"}))
+                .into());
+            }
+            if claims["version"] != json!(parsed_input.version)
+                || claims["content"] != json!(hex::encode(parsed.hash))
+            {
+                return Err(outdated(
+                    "the revision differs from the preview; preview it again",
+                ));
+            }
+            let cs = load_owned(&mut tx, user, id, true).await?;
+            let context = cs.context_id.ok_or_else(not_found)?;
+            lock_context_row(&mut tx, context).await?;
+            let dest = destination(&mut tx, &parsed).await?;
+            let sources = lock_sources(
+                &mut tx,
+                context,
+                &BTreeMap::from([(dest, !parsed.creates().is_empty())]),
+            )
+            .await?;
+            let src = load_version(&mut tx, id, parsed_input.version)
+                .await?
+                .ok_or_else(not_found)?;
+            if claims["source_hash"] != json!(hex::encode(&src.proposal_hash)) {
+                return Err(outdated("the proposal changed since the preview"));
+            }
+            let ids = body_targets(&parsed.norm);
+            let locks = target_locks(&mut tx, &ids, true).await?;
+            for (k, v) in &locks {
+                if claims["locks"][k.to_string()] != json!(v) {
+                    return Err(outdated(
+                        "an issue changed since the preview; preview the revision again",
+                    ));
+                }
+            }
+            // ④ The version, the approval and the execution.
+            let (version, hash) = owner_version_in(
+                &mut tx,
+                caller,
+                user,
+                &cs,
+                &parsed,
+                dest,
+                &sources,
+                parsed_input.expected_current_version,
+            )
+            .await?;
+            let exec_id = queue_execution(
+                &mut tx,
+                &who,
+                id,
+                version,
+                &hash,
+                request,
+                "revise_and_apply",
+            )
+            .await?;
+            Ok(Accepted::Pending(exec_id))
+        }
+        .await
+    )?;
+    let exec_id = match accepted {
+        Accepted::Finished(e) => return finished(app, caller, e, None).await,
+        Accepted::Pending(e) => e,
+    };
+    run_after_a(app, caller, &who, exec_id, "revise.after_a").await
 }

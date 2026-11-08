@@ -1,6 +1,207 @@
 {
   "components": {
     "schemas": {
+      "Activity": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ActivityDiff": {
+        "properties": {
+          "after": true,
+          "before": true,
+          "field": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "field",
+          "before",
+          "after"
+        ],
+        "type": "object"
+      },
+      "ActivityItem": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "diff": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityDiff"
+            },
+            "type": "array"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "`direct`, `proposal` (applied), `blocked` or `undo`.",
+            "type": "string"
+          },
+          "undoable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "at",
+          "keys",
+          "diff",
+          "undoable"
+        ],
+        "type": "object"
+      },
+      "AdminGithub": {
+        "properties": {
+          "detached_repos": {
+            "description": "Repositories the App no longer reaches through any installation.",
+            "items": {
+              "$ref": "#/components/schemas/AdminRepo"
+            },
+            "type": "array"
+          },
+          "installations": {
+            "items": {
+              "$ref": "#/components/schemas/AdminInstallation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "installations",
+          "detached_repos"
+        ],
+        "type": "object"
+      },
+      "AdminGithubPut": {
+        "additionalProperties": false,
+        "properties": {
+          "repos": {
+            "items": {
+              "$ref": "#/components/schemas/AdminRepoSetting"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "repos"
+        ],
+        "type": "object"
+      },
+      "AdminInstallation": {
+        "properties": {
+          "account_login": {
+            "type": "string"
+          },
+          "gh_installation_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "repos": {
+            "items": {
+              "$ref": "#/components/schemas/AdminRepo"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "active / suspended / deleted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "gh_installation_id",
+          "account_login",
+          "state",
+          "repos"
+        ],
+        "type": "object"
+      },
+      "AdminRepo": {
+        "properties": {
+          "full_name": {
+            "type": "string"
+          },
+          "gh_repo_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "is_private": {
+            "type": "boolean"
+          },
+          "linkable": {
+            "type": "boolean"
+          },
+          "links": {
+            "description": "Live links to projects.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "gh_repo_id",
+          "full_name",
+          "is_private",
+          "linkable",
+          "state",
+          "links"
+        ],
+        "type": "object"
+      },
+      "AdminRepoSetting": {
+        "additionalProperties": false,
+        "properties": {
+          "linkable": {
+            "type": "boolean"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "linkable"
+        ],
+        "type": "object"
+      },
       "AgentClientView": {
         "properties": {
           "id": {
@@ -14,6 +215,50 @@
         "required": [
           "id",
           "name"
+        ],
+        "type": "object"
+      },
+      "AgentSummary": {
+        "properties": {
+          "suspended": {
+            "items": {
+              "$ref": "#/components/schemas/SuspendedContext"
+            },
+            "type": "array"
+          },
+          "today": {
+            "items": {
+              "$ref": "#/components/schemas/AgentToday"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "today",
+          "suspended"
+        ],
+        "type": "object"
+      },
+      "AgentToday": {
+        "properties": {
+          "agent_principal_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "issues_changed": {
+            "description": "Distinct issues changed today that the caller can see now.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_principal_id",
+          "label",
+          "issues_changed"
         ],
         "type": "object"
       },
@@ -83,6 +328,32 @@
         ],
         "type": "object"
       },
+      "Blocking": {
+        "description": "One blocking problem: which op, which code, which field (§8.4).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "op_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "op_id",
+          "code"
+        ],
+        "type": "object"
+      },
       "CancelInput": {
         "additionalProperties": false,
         "type": "object"
@@ -137,10 +408,17 @@
               "$ref": "#/components/schemas/ChangesetSummary"
             },
             "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -158,15 +436,43 @@
             "format": "int32",
             "type": "integer"
           },
+          "diff": {
+            "description": "Proposed rows only: every changed field with before and after (§15.3).",
+            "items": {
+              "$ref": "#/components/schemas/DiffRow"
+            },
+            "type": "array"
+          },
           "expires_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "group_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "last_execution_status": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "proposal_hash": {
+            "description": "The hash of `current_version` (a queue tick binds version + hash).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review_modes": {
+            "description": "`[\"detail\"]`, or `[\"detail\",\"queue\"]` when it may be ticked.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "state": {
             "type": "string"
@@ -182,17 +488,40 @@
               "string",
               "null"
             ]
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryValidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "description": "`evidence_changed` when a citation no longer verifies for you.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "changeset_id",
           "state",
           "current_version",
+          "proposal_hash",
           "title",
           "targets",
+          "group_id",
           "created_at",
           "expires_at",
-          "last_execution_status"
+          "last_execution_status",
+          "diff",
+          "warnings",
+          "validation",
+          "review_modes"
         ],
         "type": "object"
       },
@@ -403,6 +732,33 @@
           "effects",
           "items",
           "search"
+        ],
+        "type": "object"
+      },
+      "CompactValidation": {
+        "properties": {
+          "blocking": {
+            "description": "At most 10.",
+            "items": {
+              "$ref": "#/components/schemas/Blocking"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "`passed`, `blocked` or `conflict`.",
+            "type": "string"
+          },
+          "warning_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "blocking",
+          "warning_codes"
         ],
         "type": "object"
       },
@@ -715,6 +1071,166 @@
         ],
         "type": "object"
       },
+      "DevIssue": {
+        "properties": {
+          "closed": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "merged_open": {
+            "type": "boolean"
+          },
+          "prs": {
+            "items": {
+              "$ref": "#/components/schemas/DevPr"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "subject",
+          "status",
+          "closed",
+          "merged_open",
+          "prs",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "DevPr": {
+        "properties": {
+          "accessible": {
+            "description": "false: the App can no longer read the repository; data is as of `synced_at`.",
+            "type": "boolean"
+          },
+          "ci_state": {
+            "description": "pending, success, failure; null = no checks on the current head",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hidden": {
+            "description": "Only with `include_hidden` (managers).",
+            "type": "boolean"
+          },
+          "number": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "pr_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "repo": {
+            "description": "`owner/name` as GitHub shows it now.",
+            "type": "string"
+          },
+          "review_state": {
+            "description": "none, pending, approved, changes_requested",
+            "type": "string"
+          },
+          "state": {
+            "description": "open, draft, merged, closed",
+            "type": "string"
+          },
+          "synced_at": {
+            "description": "When the link's last full sync finished (null: backfill not done).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "GitHub's text as written (R-G3).",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pr_id",
+          "repo",
+          "number",
+          "title",
+          "url",
+          "state",
+          "review_state",
+          "ci_state",
+          "updated_at",
+          "accessible",
+          "synced_at"
+        ],
+        "type": "object"
+      },
+      "DiffRow": {
+        "description": "One changed field as the queue shows it.",
+        "properties": {
+          "after": {
+            "description": "Proposed value, rendered."
+          },
+          "before": {
+            "description": "Current value, rendered (null when unset)."
+          },
+          "field": {
+            "description": "`assigned_to_id`, `status`, `cf:<id>`, …",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/DiffTarget"
+          }
+        },
+        "required": [
+          "target",
+          "field",
+          "label",
+          "before",
+          "after"
+        ],
+        "type": "object"
+      },
+      "DiffTarget": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "subject"
+        ],
+        "type": "object"
+      },
       "Done": {
         "description": "An action that returns nothing but success.",
         "properties": {
@@ -985,6 +1501,26 @@
           {
             "const": "review_outdated",
             "description": "What was reviewed is no longer what would run (§15.3, §15.4).",
+            "type": "string"
+          },
+          {
+            "const": "undo_not_applicable",
+            "description": "§16.7: nothing of the execution can be undone now (SPA only).",
+            "type": "string"
+          },
+          {
+            "const": "repo_not_linkable",
+            "description": "§19.8: the repository is unknown, not opened for linking, or the App\ncannot reach it (one shape for all three).",
+            "type": "string"
+          },
+          {
+            "const": "repo_already_linked",
+            "description": "§19.8: the project already links this repository.",
+            "type": "string"
+          },
+          {
+            "const": "repo_link_limit",
+            "description": "§19.8: the project links 20 repositories already (R-G9).",
             "type": "string"
           },
           {
@@ -1335,6 +1871,50 @@
         ],
         "description": "Custom field filter: a condition, or `{\"and\": [...]}` / `{\"or\": [...]}` of filters."
       },
+      "HealthValues": {
+        "properties": {
+          "health_at_risk_days": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health_at_risk_open_pct": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "health_at_risk_days",
+          "health_at_risk_open_pct"
+        ],
+        "type": "object"
+      },
+      "HideResult": {
+        "properties": {
+          "changed": {
+            "description": "false: it was in that state already (no event).",
+            "type": "boolean"
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "pr_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pr_id",
+          "hidden",
+          "changed"
+        ],
+        "type": "object"
+      },
       "Highlight": {
         "description": "A highlighted range of a returned `text`, in code points, half-open.",
         "properties": {
@@ -1396,6 +1976,83 @@
         "required": [
           "today",
           "impact"
+        ],
+        "type": "object"
+      },
+      "IncidentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "since"
+        ],
+        "type": "object"
+      },
+      "IncidentItem": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "automatic": {
+            "description": "Fields, notes or relations it can restore without a choice.",
+            "type": "boolean"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "needs_choice": {
+            "description": "Transitions or \"close as created by mistake\" to do one by one.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "execution_id",
+          "at",
+          "keys",
+          "automatic",
+          "needs_choice"
+        ],
+        "type": "object"
+      },
+      "IncidentPreview": {
+        "properties": {
+          "agent_principal_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "frozen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "items": {
+            "description": "Newest first: the SPA sends one undo per item, in this order.",
+            "items": {
+              "$ref": "#/components/schemas/IncidentItem"
+            },
+            "type": "array"
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_principal_id",
+          "since",
+          "frozen_at",
+          "items"
         ],
         "type": "object"
       },
@@ -1637,6 +2294,43 @@
         ],
         "type": "object"
       },
+      "IssueDev": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "merged_open": {
+            "description": "R-G5: a PR is merged while the issue is not closed (a hint; nothing\nchanges by itself).",
+            "type": "boolean"
+          },
+          "prs": {
+            "items": {
+              "$ref": "#/components/schemas/DevPr"
+            },
+            "type": "array"
+          },
+          "synced_at": {
+            "description": "The oldest `synced_at` of the PRs shown.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "More than 20 PRs: the rest are on GitHub.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "prs",
+          "truncated",
+          "merged_open",
+          "synced_at"
+        ],
+        "type": "object"
+      },
       "IssuedCredential": {
         "properties": {
           "context_id": {
@@ -1716,6 +2410,53 @@
           "max_ops",
           "max_note_bytes",
           "max_description_bytes"
+        ],
+        "type": "object"
+      },
+      "LinkInput": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id"
+        ],
+        "type": "object"
+      },
+      "LinkableRepo": {
+        "properties": {
+          "full_name": {
+            "type": "string"
+          },
+          "is_private": {
+            "type": "boolean"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "full_name",
+          "is_private"
+        ],
+        "type": "object"
+      },
+      "LinkableRepos": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LinkableRepo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
         ],
         "type": "object"
       },
@@ -2263,6 +3004,62 @@
         ],
         "type": "object"
       },
+      "OrgScheduleSettings": {
+        "properties": {
+          "health_at_risk_days": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health_at_risk_open_pct": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "health_at_risk_days",
+          "health_at_risk_open_pct",
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "OrgScheduleSettingsInput": {
+        "additionalProperties": false,
+        "description": "`PUT /org/schedule-settings` (a system administrator).",
+        "properties": {
+          "health_at_risk_days": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health_at_risk_open_pct": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
       "PasswordBody": {
         "additionalProperties": false,
         "properties": {
@@ -2367,6 +3164,29 @@
         ],
         "type": "object"
       },
+      "PreviewInput": {
+        "additionalProperties": false,
+        "description": "`POST /changesets/{id}/revision-previews`: per conflicting field, keep\nthe issue's `current` value or the `proposed` one (default `proposed`).",
+        "properties": {
+          "choices": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "`\"<op_id>/<field>\"` → `\"current\"` | `\"proposed\"`.",
+            "type": "object"
+          },
+          "version": {
+            "description": "The version the choices were made on (the current one).",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
       "PrivateChoice": {
         "properties": {
           "allowed_values": {
@@ -2384,6 +3204,135 @@
         "required": [
           "default",
           "allowed_values"
+        ],
+        "type": "object"
+      },
+      "ProjectDev": {
+        "properties": {
+          "can_manage": {
+            "description": "Whether the caller may hide PRs here (and ask for `include_hidden`).",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DevIssue"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "can_manage"
+        ],
+        "type": "object"
+      },
+      "ProjectHealthSettings": {
+        "properties": {
+          "health_at_risk_days": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health_at_risk_open_pct": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "inherit_org": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "inherit_org",
+          "health_at_risk_days",
+          "health_at_risk_open_pct"
+        ],
+        "type": "object"
+      },
+      "RepoLink": {
+        "properties": {
+          "full_name": {
+            "type": "string"
+          },
+          "is_private": {
+            "type": "boolean"
+          },
+          "link_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "linked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "paused_until": {
+            "description": "While paused by GitHub's rate limit: when it resumes.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "repo_state": {
+            "description": "accessible / inaccessible (the App lost access; data is as of `synced_at`).",
+            "type": "string"
+          },
+          "sync_state": {
+            "description": "backfilling / ok / paused",
+            "type": "string"
+          },
+          "synced_at": {
+            "description": "The last full sync (the watermark); null until the backfill finished.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "link_id",
+          "repo_id",
+          "full_name",
+          "is_private",
+          "repo_state",
+          "sync_state",
+          "synced_at",
+          "paused_until",
+          "linked_at"
+        ],
+        "type": "object"
+      },
+      "RepoLinks": {
+        "properties": {
+          "can_manage": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RepoLink"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "can_manage"
         ],
         "type": "object"
       },
@@ -2444,6 +3393,35 @@
         ],
         "type": "object"
       },
+      "ReviseAndApplyInput": {
+        "additionalProperties": false,
+        "description": "`POST /changesets/{id}/revise-and-apply`.",
+        "properties": {
+          "expected_current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/CommandDoc",
+            "description": "The document the preview returned."
+          },
+          "revision_review_token": {
+            "type": "string"
+          },
+          "version": {
+            "description": "The version the preview was made from.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "expected_current_version",
+          "proposal",
+          "revision_review_token"
+        ],
+        "type": "object"
+      },
       "RevisionInput": {
         "additionalProperties": false,
         "properties": {
@@ -2459,6 +3437,146 @@
         "required": [
           "expected_current_version",
           "proposal"
+        ],
+        "type": "object"
+      },
+      "RevisionPreview": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "proposal": {
+            "description": "The complete revised document (every op, note and evidence)."
+          },
+          "revision_review_token": {
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/CompactValidation"
+          }
+        },
+        "required": [
+          "proposal",
+          "validation",
+          "revision_review_token",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "RevokeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "link_id": {
+            "description": "Revoke a whole link (also for PRs on issues you cannot see).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pr_ids": {
+            "description": "Or these PRs (each must be on an issue of this project you can see).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Revoked": {
+        "properties": {
+          "link_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pr_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "security_epoch": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "security_epoch",
+          "link_id",
+          "pr_ids"
+        ],
+        "type": "object"
+      },
+      "ScheduleSettings": {
+        "properties": {
+          "effective": {
+            "$ref": "#/components/schemas/HealthValues"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "org": {
+            "$ref": "#/components/schemas/HealthValues"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectHealthSettings"
+          },
+          "source": {
+            "description": "`org` or `project`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective",
+          "source",
+          "org",
+          "project",
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "ScheduleSettingsInput": {
+        "additionalProperties": false,
+        "description": "`PUT /projects/{id}/schedule-settings`.",
+        "properties": {
+          "health_at_risk_days": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health_at_risk_open_pct": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "inherit_org": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lock_version",
+          "inherit_org"
         ],
         "type": "object"
       },
@@ -2850,6 +3968,72 @@
         ],
         "type": "object"
       },
+      "SettingActor": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "SettingEvent": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/SettingActor"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {
+            "description": "tabs: `{before, after}` (each `{tabs, default_tab, is_default}`)."
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "kind",
+          "actor",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "SettingEvents": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SettingEvent"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "SourceProject": {
         "properties": {
           "project_id": {
@@ -2888,6 +4072,22 @@
         ],
         "type": "object"
       },
+      "StatusOption": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "to_status_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_status_id",
+          "name"
+        ],
+        "type": "object"
+      },
       "Strength": {
         "description": "`primary`: at least one full-weight term matched. `fallback`: only\nlow-weight terms (CJK unigrams inside a run, identifier segments).",
         "enum": [
@@ -2895,6 +4095,205 @@
           "primary"
         ],
         "type": "string"
+      },
+      "SummaryValidation": {
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "checked_at"
+        ],
+        "type": "object"
+      },
+      "SuspendedContext": {
+        "properties": {
+          "agent_principal_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "context_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "context_id",
+          "agent_principal_id",
+          "reason",
+          "at"
+        ],
+        "type": "object"
+      },
+      "Tab": {
+        "properties": {
+          "hidden": {
+            "default": false,
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`;\nsaved query `q_…`; link `l_…`.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`builtin`, `query` or `link`.",
+            "type": "string"
+          },
+          "query": {
+            "description": "The normalized query (design 03 §11), `kind = query` only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "description": "The normalized https URL, `kind = link` only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "hidden"
+        ],
+        "type": "object"
+      },
+      "TabInput": {
+        "additionalProperties": false,
+        "description": "A tab as sent in a PUT: a new custom tab leaves `id` out.",
+        "properties": {
+          "hidden": {
+            "default": false,
+            "type": "boolean"
+          },
+          "id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "query": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "title"
+        ],
+        "type": "object"
+      },
+      "TabSettings": {
+        "properties": {
+          "can_manage": {
+            "description": "The caller may change them (`manage_project`, active project).",
+            "type": "boolean"
+          },
+          "default_tab": {
+            "type": "string"
+          },
+          "is_default": {
+            "description": "True until someone changes the tabs (a reset sets it back).",
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "tabs": {
+            "items": {
+              "$ref": "#/components/schemas/Tab"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tabs",
+          "default_tab",
+          "is_default",
+          "lock_version",
+          "can_manage"
+        ],
+        "type": "object"
+      },
+      "TabsPut": {
+        "additionalProperties": false,
+        "description": "`PUT /projects/{id}/tabs`: the whole list replaces the old one.",
+        "properties": {
+          "default_tab": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "tabs": {
+            "items": {
+              "$ref": "#/components/schemas/TabInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lock_version",
+          "tabs",
+          "default_tab"
+        ],
+        "type": "object"
+      },
+      "TabsReset": {
+        "additionalProperties": false,
+        "description": "`POST /projects/{id}/tabs/reset`.",
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
       },
       "TargetRef": {
         "description": "`{\"type\":\"issue\",\"id\"|\"key\"}` or `{\"type\":\"temp\",\"ref\"}`.",
@@ -3008,6 +4407,222 @@
         ],
         "type": "object"
       },
+      "Timeline": {
+        "properties": {
+          "lanes": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineLane"
+            },
+            "type": "array"
+          },
+          "range": {
+            "$ref": "#/components/schemas/TimelineRange"
+          },
+          "today": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "today",
+          "range",
+          "lanes"
+        ],
+        "type": "object"
+      },
+      "TimelineItem": {
+        "properties": {
+          "assigned_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimelinePerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flags": {
+            "description": "`overdue`, `late_for_version`, `in_closed_version`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "key": {
+            "type": "string"
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TimelineStatus"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "subject",
+          "status",
+          "assigned_to",
+          "start_date",
+          "due_date",
+          "flags"
+        ],
+        "type": "object"
+      },
+      "TimelineLane": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineItem"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "undated_count": {
+            "description": "Visible issues of the lane with neither date (not drawn).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimelineVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null`: the lane of issues without a version."
+          }
+        },
+        "required": [
+          "version",
+          "items",
+          "undated_count"
+        ],
+        "type": "object"
+      },
+      "TimelinePerson": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "TimelineRange": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "truncated_by_version": {
+            "description": "The default end was cut to 400 days; this version was the reason.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "TimelineStatus": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "is_closed": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_closed"
+        ],
+        "type": "object"
+      },
+      "TimelineVersion": {
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "effective_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health": {
+            "type": "string"
+          },
+          "health_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "effective_date",
+          "status",
+          "health",
+          "health_reasons"
+        ],
+        "type": "object"
+      },
       "TrackerSchema": {
         "description": "Static schema of an issue in a project × tracker (§5.1).",
         "properties": {
@@ -3104,6 +4719,396 @@
           "name",
           "then_required",
           "then_readonly"
+        ],
+        "type": "object"
+      },
+      "UndoChoice": {
+        "description": "Not done in a batch: a person picks (§16.7: \"轉回 X\", \"關閉為誤建\").",
+        "properties": {
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "description": "`transition_back` or `close_as_mistaken`.",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/StatusOption"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue_id",
+          "key",
+          "kind",
+          "options"
+        ],
+        "type": "object"
+      },
+      "UndoField": {
+        "properties": {
+          "after": true,
+          "before": true,
+          "current": true,
+          "field": {
+            "type": "string"
+          },
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "subreason": {
+            "description": "`version_not_open` (§17.13 L2889).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue_id",
+          "key",
+          "field",
+          "before",
+          "after",
+          "current",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "UndoInput": {
+        "additionalProperties": false,
+        "description": "What the person confirmed (§16.7 flow: preview → confirm).",
+        "properties": {
+          "skip_fields": {
+            "default": [],
+            "description": "`\"<issue_id>/<field>\"` to leave as they are.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skip_notes": {
+            "default": [],
+            "description": "Note ids not to retract.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skip_relations": {
+            "default": [],
+            "description": "Relation ids not to remove.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "transitions": {
+            "additionalProperties": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "default": {},
+            "description": "Chosen transitions per issue (from `choices`).",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "UndoNote": {
+        "properties": {
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "note_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "issue_id",
+          "key",
+          "note_id",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "UndoPreview": {
+        "properties": {
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/UndoChoice"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "execution_kind": {
+            "description": "`command` or `changeset`.",
+            "type": "string"
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/UndoField"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/UndoNote"
+            },
+            "type": "array"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/UndoRelation"
+            },
+            "type": "array"
+          },
+          "version_created": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoVersionCreate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version_fields": {
+            "items": {
+              "$ref": "#/components/schemas/UndoVersionField"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "execution_id",
+          "execution_kind",
+          "created_at",
+          "expired",
+          "fields",
+          "notes",
+          "relations",
+          "choices",
+          "version_fields"
+        ],
+        "type": "object"
+      },
+      "UndoRelation": {
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relation_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "source_key": {
+            "type": "string"
+          },
+          "target_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation_id",
+          "source_key",
+          "target_key",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "UndoResult": {
+        "properties": {
+          "consistent_after": {
+            "type": "string"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "fields_restored": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "notes_retracted": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "relations_removed": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reverts_execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "transitions": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version_deleted": {
+            "default": false,
+            "type": "boolean"
+          },
+          "version_fields_restored": {
+            "default": 0,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "reverts_execution_id",
+          "fields_restored",
+          "notes_retracted",
+          "relations_removed",
+          "transitions",
+          "version_fields_restored",
+          "version_deleted",
+          "consistent_after"
+        ],
+        "type": "object"
+      },
+      "UndoVersionCreate": {
+        "description": "The undo of `create_version`: a soft delete (§17.13).",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "`changed_since` or `in_use` (B7).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version_id",
+          "name",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "UndoVersionField": {
+        "properties": {
+          "after": true,
+          "before": true,
+          "current": true,
+          "field": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version_id",
+          "name",
+          "field",
+          "before",
+          "after",
+          "current",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "Unlinked": {
+        "properties": {
+          "changed": {
+            "description": "false: it was unlinked already (nothing changed).",
+            "type": "boolean"
+          },
+          "link_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "link_id",
+          "changed"
         ],
         "type": "object"
       },
@@ -3552,6 +5557,113 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/github": {
+      "get": {
+        "operationId": "get_admin_github",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AdminGithub"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Installations of the GitHub App and their repositories, with the linkable switch (administrators).",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_admin_github",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminGithubPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AdminGithub"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Open or close repositories for linking (administrators). Closing keeps existing links.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/agent-clients": {
       "get": {
         "operationId": "get_agent_clients",
@@ -4064,6 +6176,135 @@
         "x-csrf": true
       }
     },
+    "/agents/{id}/activity": {
+      "get": {
+        "operationId": "get_agents_id_activity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Activity"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Your agent's direct writes, applied proposals, refusals and undos, newest first (§16.10). Query from, to (RFC 3339), issue (a key). Only issues you can read now.",
+        "x-access": "session"
+      }
+    },
+    "/agents/{id}/incident-recovery/preview": {
+      "post": {
+        "operationId": "post_agents_id_incident_recovery_preview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IncidentPreview"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Freeze the list of your agent's executions since a time (§16.7): newest first, each marked automatic or needs_choice. Send one undo per item, in order; pausing the agent first is advised.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/auth/login": {
       "post": {
         "operationId": "post_auth_login",
@@ -4489,7 +6730,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Your proposals, newest first (§8). Query bucket=awaiting_me (default: proposed or failed) or all; state.",
+        "summary": "Your proposals, newest first (§8), 50 per page. Query bucket=awaiting_me (default: proposed or failed) or all; state; group (a group id); cursor. Proposed rows carry the field diff, warnings and review_modes (queue when it may be ticked, §15.3).",
         "x-access": "session"
       }
     },
@@ -4758,6 +6999,146 @@
           }
         },
         "summary": "Reject the current version (final). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/revise-and-apply": {
+      "post": {
+        "operationId": "post_changesets_id_revise_and_apply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviseAndApplyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ExecutionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Store the previewed revision as your version, approve and apply it in one step (§15.4). Header Idempotency-Key. Answers like approve-and-apply; review_outdated (409) when an issue changed since the preview.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/changesets/{id}/revision-previews": {
+      "post": {
+        "operationId": "post_changesets_id_revision_previews",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RevisionPreview"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Resolve a conflict field by field (§15.4): keep the issue's current value or the proposed one. Returns the complete revised document and a short-lived revision_review_token. Writes nothing.",
         "x-access": "session",
         "x-csrf": true
       }
@@ -5395,6 +7776,184 @@
         "x-access": "session"
       }
     },
+    "/executions/{id}/undo": {
+      "post": {
+        "operationId": "post_executions_id_undo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UndoResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/executions/{id}/undo-preview": {
+      "get": {
+        "operationId": "get_executions_id_undo_preview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UndoPreview"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "What undoing one of your agent's executions (or your undo) would restore now (§16.7): per field before, after, current and whether it can be restored (reasons changed_since, value_no_longer_valid, permission, redacted, expired); notes to retract, relations to remove, transitions to choose. Writes nothing.",
+        "x-access": "session"
+      }
+    },
+    "/home/agent-summary": {
+      "get": {
+        "operationId": "get_home_agent_summary",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AgentSummary"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The home cards (§16.10): issues each of your agents changed today (as you can see them now) and contexts the breaker suspended.",
+        "x-access": "session"
+      }
+    },
     "/issues/search": {
       "post": {
         "operationId": "post_issues_search",
@@ -5573,6 +8132,65 @@
         "x-access": "session"
       }
     },
+    "/issues/{key}/dev": {
+      "get": {
+        "operationId": "get_issues_key_dev",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IssueDev"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Pull requests of one issue (R-G9: at most 20, open then draft then the rest, newest first) with review and CI roll-ups, merged_open (R-G5) and synced_at. not_found like the issue when you cannot see it.",
+        "x-access": "session"
+      }
+    },
     "/operations/{id}": {
       "get": {
         "operationId": "get_operations_id",
@@ -5632,6 +8250,113 @@
         "x-access": "session"
       }
     },
+    "/org/schedule-settings": {
+      "get": {
+        "operationId": "get_org_schedule_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/OrgScheduleSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The organization's default health thresholds and their lock_version.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_org_schedule_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgScheduleSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/OrgScheduleSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change the organization defaults (a system administrator). Header Idempotency-Key. lock_version must match (conflict).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/projects/{id}/assignees": {
       "get": {
         "operationId": "get_projects_id_assignees",
@@ -5688,6 +8413,1032 @@
           }
         },
         "summary": "Users (and groups, when enabled) an issue in this project may be assigned to.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/dev": {
+      "get": {
+        "operationId": "get_projects_id_dev",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectDev"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The development tab: issues of this project with PRs, newest PR activity first, only issues you can see, never a total. Query filter (all, ci_failure, review, merged_open), include_hidden (managers), cursor.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/dev/prs/{pr_id}/hide": {
+      "delete": {
+        "operationId": "delete_projects_id_dev_prs_prid_hide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pr_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HideResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Show a hidden PR again (manage_project). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "post": {
+        "operationId": "post_projects_id_dev_prs_prid_hide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "pr_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HideResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Hide a PR in this project only (manage_project). Header Idempotency-Key. not_found unless the PR names an issue of this project you can see. Not a redaction: agents that read it stay valid.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/dev/revoke": {
+      "post": {
+        "operationId": "post_projects_id_dev_revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Revoked"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Revoke GitHub content (§19.9; manage_project or administrator; step-up): link_id unlinks a whole link, pr_ids hides PRs you can see. Bumps the project's security_epoch, so every agent context that read the project is quarantined. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/repos": {
+      "get": {
+        "operationId": "get_projects_id_repos",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RepoLinks"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "GitHub repositories linked to the project (§19.7): full_name, is_private, repo_state (inaccessible = the App lost access; data is as of synced_at), sync_state (backfilling, ok, paused), synced_at, paused_until.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_projects_id_repos",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RepoLink"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Link a repository (manage_project, active project). Header Idempotency-Key. repo_not_linkable (unknown, not opened, or unreachable: one shape), repo_already_linked, repo_link_limit (20). Starts with sync_state backfilling.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/repos/linkable": {
+      "get": {
+        "operationId": "get_projects_id_repos_linkable",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LinkableRepos"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Repositories you may link here (manage_project): opened by an administrator, reachable by the App, not linked yet.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/repos/{link_id}": {
+      "delete": {
+        "operationId": "delete_projects_id_repos_linkid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "link_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Unlinked"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Unlink (manage_project or administrator; works when the repository is gone or closed for linking). Header Idempotency-Key. Removes that link's refs to this project's issues only.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/schedule-settings": {
+      "get": {
+        "operationId": "get_projects_id_schedule_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ScheduleSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The health thresholds in use (§17.12): effective values, source org or project, both layers and lock_version.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_projects_id_schedule_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ScheduleSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change the project's thresholds (manage_versions). Header Idempotency-Key. lock_version must match (conflict). With inherit_org true leave both values out; otherwise send both, null turns a rule off.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/setting-events": {
+      "get": {
+        "operationId": "get_projects_id_setting_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SettingEvents"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The settings history, newest first (manage_project). PR hide/unhide and PR-based revocations are only listed for a system administrator. Query cursor.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/tabs": {
+      "get": {
+        "operationId": "get_projects_id_tabs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TabSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The project's shared tab bar (§18): built-in views, saved queries and links, the default tab, is_default, lock_version and can_manage. Project-public content.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_projects_id_tabs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TabsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TabSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the whole tab list (manage_project, active project). Header Idempotency-Key. New saved queries and links leave id out; keep the id of existing ones. invalid_value kinds: builtin_missing, duplicate_id, unknown_id, tab_limit, tab_title_taken, tab_title_invalid, tab_query_scope, tab_query_syntax (with position), tab_url_invalid, tab_default_invalid. conflict carries the current settings.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/tabs/reset": {
+      "post": {
+        "operationId": "post_projects_id_tabs_reset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TabsReset"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TabSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Back to the five built-in tabs, default timeline, is_default true (manage_project). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/tabs/{tab}/issues": {
+      "get": {
+        "operationId": "get_projects_id_tabs_tab_issues",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tab",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SearchResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Run a saved query tab as an ordinary search with your own visibility (R-T6): no stored results, no total. Query cursor.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/timeline": {
+      "get": {
+        "operationId": "get_projects_id_timeline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Timeline"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The schedule view (§17.8): one lane per version (by date, deleted ones only when you see an issue in them) plus the lane without a version. Query from, to (YYYY-MM-DD, at most 400 days; one end alone keeps the computed other), versions (ids or none), include_closed, cursor (pages one lane, 200 items). Only issues you can see count anywhere.",
         "x-access": "session"
       }
     },

@@ -143,3 +143,60 @@ pub async fn decode(
     }
     Ok(p.pos)
 }
+
+/// A sealed, short-lived token (§15.4 `revision_review_token`): the claims
+/// encrypted and authenticated with the cursor key. `purpose` separates
+/// token kinds; `ttl` is how long it opens.
+pub async fn seal(
+    pool: &PgPool,
+    purpose: &str,
+    claims: &serde_json::Value,
+    ttl: chrono::Duration,
+) -> Result<(String, DateTime<Utc>)> {
+    let exp = Utc::now() + ttl;
+    let plain = serde_json::to_vec(&serde_json::json!({
+        "purpose": purpose, "exp": exp.timestamp_millis(), "claims": claims}))?;
+    let cipher = XChaCha20Poly1305::new(&Key::from(*key(pool).await?));
+    let mut nonce = [0u8; 24];
+    rand::rng().fill_bytes(&mut nonce);
+    let sealed = cipher
+        .encrypt(&XNonce::from(nonce), plain.as_slice())
+        .map_err(|_| anyhow::anyhow!("token encryption failed"))?;
+    let mut out = nonce.to_vec();
+    out.extend(sealed);
+    Ok((auth::encode(&out), exp))
+}
+
+/// What opening a sealed token found.
+#[derive(Debug, PartialEq)]
+pub enum Opened {
+    Valid(serde_json::Value),
+    /// Authentic but past its time.
+    Expired,
+    /// Not ours, tampered with, or another purpose.
+    Invalid,
+}
+
+pub async fn open(pool: &PgPool, purpose: &str, raw: &str) -> Result<Opened> {
+    let Some(bytes) = auth::decode_bytes(raw.trim()) else {
+        return Ok(Opened::Invalid);
+    };
+    if bytes.len() < 24 + 16 || bytes.len() > 8192 {
+        return Ok(Opened::Invalid);
+    }
+    let (nonce, sealed) = bytes.split_at(24);
+    let cipher = XChaCha20Poly1305::new(&Key::from(*key(pool).await?));
+    let Ok(plain) = cipher.decrypt(&XNonce::from(<[u8; 24]>::try_from(nonce)?), sealed) else {
+        return Ok(Opened::Invalid);
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&plain) else {
+        return Ok(Opened::Invalid);
+    };
+    if v["purpose"] != purpose {
+        return Ok(Opened::Invalid);
+    }
+    if v["exp"].as_i64().unwrap_or(0) < Utc::now().timestamp_millis() {
+        return Ok(Opened::Expired);
+    }
+    Ok(Opened::Valid(v["claims"].clone()))
+}

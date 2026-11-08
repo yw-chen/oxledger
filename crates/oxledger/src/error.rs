@@ -90,6 +90,15 @@ pub enum ErrorCode {
     ApprovalInvalidated,
     /// What was reviewed is no longer what would run (§15.3, §15.4).
     ReviewOutdated,
+    /// §16.7: nothing of the execution can be undone now (SPA only).
+    UndoNotApplicable,
+    /// §19.8: the repository is unknown, not opened for linking, or the App
+    /// cannot reach it (one shape for all three).
+    RepoNotLinkable,
+    /// §19.8: the project already links this repository.
+    RepoAlreadyLinked,
+    /// §19.8: the project links 20 repositories already (R-G9).
+    RepoLinkLimit,
     /// This version was applied already; `details.execution_id`.
     AlreadyApplied,
     /// Rejected, canceled or succeeded.
@@ -130,7 +139,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 46] = [
+    pub const ALL: [ErrorCode; 50] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -165,6 +174,10 @@ impl ErrorCode {
         Self::VersionSuperseded,
         Self::ApprovalInvalidated,
         Self::ReviewOutdated,
+        Self::UndoNotApplicable,
+        Self::RepoNotLinkable,
+        Self::RepoAlreadyLinked,
+        Self::RepoLinkLimit,
         Self::AlreadyApplied,
         Self::ChangesetNotExecutable,
         Self::ProposalUnavailable,
@@ -215,6 +228,10 @@ impl ErrorCode {
             Self::VersionSuperseded => "version_superseded",
             Self::ApprovalInvalidated => "approval_invalidated",
             Self::ReviewOutdated => "review_outdated",
+            Self::UndoNotApplicable => "undo_not_applicable",
+            Self::RepoNotLinkable => "repo_not_linkable",
+            Self::RepoAlreadyLinked => "repo_already_linked",
+            Self::RepoLinkLimit => "repo_link_limit",
             Self::AlreadyApplied => "already_applied",
             Self::ChangesetNotExecutable => "changeset_not_executable",
             Self::ProposalUnavailable => "proposal_unavailable",
@@ -263,6 +280,10 @@ impl ErrorCode {
             Self::VersionSuperseded => 409,
             Self::ApprovalInvalidated => 409,
             Self::ReviewOutdated => 409,
+            Self::UndoNotApplicable => 409,
+            Self::RepoNotLinkable => 422,
+            Self::RepoAlreadyLinked => 409,
+            Self::RepoLinkLimit => 422,
             Self::AlreadyApplied => 409,
             Self::ChangesetNotExecutable => 409,
             Self::ProposalUnavailable => 409,
@@ -328,6 +349,10 @@ impl ErrorCode {
             Self::VersionSuperseded => &[RefreshAndRevise],
             Self::ApprovalInvalidated => &[RefreshAndRevise],
             Self::ReviewOutdated => &[RefreshAndRevise],
+            Self::UndoNotApplicable => &[Stop],
+            Self::RepoNotLinkable => &[FixInput, AskHuman],
+            Self::RepoAlreadyLinked => &[Stop],
+            Self::RepoLinkLimit => &[AskHuman],
             Self::AlreadyApplied => &[Stop],
             Self::ChangesetNotExecutable => &[Stop],
             Self::ProposalUnavailable => &[AskHuman, Stop],

@@ -2161,3 +2161,826 @@ pub async fn list_for_tool(
     }
     Ok(out)
 }
+
+// ---------------------------------------------------------------- undo (§17.13, S6b.5)
+
+/// A version's project, lock_version, deleted flag and field values by
+/// key (the encoding of `execution_version_changes`).
+pub(crate) async fn undo_values(
+    conn: &mut PgConnection,
+    id: Uuid,
+) -> Result<
+    Option<(
+        Uuid,
+        i32,
+        bool,
+        String,
+        std::collections::BTreeMap<String, Json>,
+    )>,
+> {
+    let Some(v) = version_row(&mut *conn, id, false).await? else {
+        return Ok(None);
+    };
+    let m = std::collections::BTreeMap::from([
+        ("name".to_string(), json!(v.name)),
+        ("description".to_string(), json!(v.description)),
+        (
+            "effective_date".to_string(),
+            json!(v.effective_date.map(|d| d.to_string())),
+        ),
+        ("status".to_string(), json!(v.status)),
+    ]);
+    Ok(Some((v.project_id, v.lock_version, v.deleted, v.name, m)))
+}
+
+/// Keys of the issues `caller` can see in the version (B7 `in_use`).
+pub(crate) async fn visible_uses(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    project: Uuid,
+    id: Uuid,
+) -> Result<Vec<String>> {
+    let scope = db::load_scope(&mut *conn, caller).await?;
+    Ok(visible_bits(&mut *conn, &scope, project, &[id])
+        .await?
+        .into_iter()
+        .map(|b| b.key)
+        .collect())
+}
+
+/// The undo of `create_version`: a soft delete with its event (the version
+/// row is already locked by the caller).
+pub(crate) async fn undo_soft_delete(
+    conn: &mut PgConnection,
+    id: Uuid,
+    at: &Attribution,
+) -> Result<()> {
+    let v = version_row(&mut *conn, id, true)
+        .await?
+        .ok_or_else(not_found)?;
+    let seq = v.last_event_seq + 1;
+    sqlx::query(
+        "UPDATE versions SET deleted_at = now(), lock_version = lock_version + 1,
+                last_event_seq = $2, updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(seq)
+    .execute(&mut *conn)
+    .await?;
+    write_event(&mut *conn, id, seq, "deleted", at, &Map::new()).await
+}
+
+// ---------------------------------------------------------------- timeline (§17.8, S6b.5)
+
+/// Issues per lane and page (§17.8 L2858).
+pub const LANE_LIMIT: usize = 200;
+/// The longest range, in days (`to - from` at most 399).
+pub const MAX_RANGE_DAYS: i64 = 400;
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct TimelineRange {
+    pub from: String,
+    pub to: String,
+    /// The default end was cut to 400 days; this version was the reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by_version: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct TimelineVersion {
+    pub id: Uuid,
+    pub name: String,
+    pub effective_date: Option<String>,
+    pub status: String,
+    pub health: String,
+    pub health_reasons: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct TimelineStatus {
+    pub id: Uuid,
+    pub name: String,
+    pub is_closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct TimelinePerson {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct TimelineItem {
+    pub key: String,
+    pub subject: String,
+    pub status: TimelineStatus,
+    pub assigned_to: Option<TimelinePerson>,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    /// `overdue`, `late_for_version`, `in_closed_version`.
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct TimelineLane {
+    /// `null`: the lane of issues without a version.
+    pub version: Option<TimelineVersion>,
+    pub items: Vec<TimelineItem>,
+    /// Visible issues of the lane with neither date (not drawn).
+    pub undated_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct Timeline {
+    pub today: String,
+    pub range: TimelineRange,
+    pub lanes: Vec<TimelineLane>,
+}
+
+fn bad_arg(path: &str, msg: impl Into<String>) -> anyhow::Error {
+    ApiError::new(ErrorCode::InvalidArgument, msg)
+        .with_details(json!({"path": path}))
+        .into()
+}
+
+fn date_arg(path: &str, v: Option<&str>) -> Result<Option<NaiveDate>> {
+    v.map(|s| {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map_err(|_| bad_arg(path, format!("{path} must be YYYY-MM-DD")))
+    })
+    .transpose()
+}
+
+/// §17.8 L2849–L2856: the default range around today and the latest open
+/// version; one given end keeps it, the other is computed.
+fn timeline_range(
+    today: NaiveDate,
+    open_dates: &[(Uuid, NaiveDate)],
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> Result<(NaiveDate, NaiveDate, Option<Uuid>)> {
+    let max = chrono::Duration::days(MAX_RANGE_DAYS - 1);
+    let latest = open_dates
+        .iter()
+        .filter(|(_, d)| *d >= today)
+        .max_by_key(|(id, d)| (*d, *id))
+        .copied();
+    let default_to = |from: NaiveDate| {
+        let to = latest
+            .map(|(_, d)| d + chrono::Duration::days(14))
+            .unwrap_or(today + chrono::Duration::days(90));
+        let to = to.max(from);
+        if to > from + max {
+            (from + max, latest.map(|l| l.0))
+        } else {
+            (to, None)
+        }
+    };
+    let (from, to, cut) = match (from, to) {
+        (Some(f), Some(t)) => (f, t, None),
+        (Some(f), None) => {
+            let (t, cut) = default_to(f);
+            (f, t, cut)
+        }
+        (None, Some(t)) => {
+            let f = (today - chrono::Duration::days(14)).min(t);
+            (f.max(t - max), t, None)
+        }
+        (None, None) => {
+            let f = today - chrono::Duration::days(14);
+            let (t, cut) = default_to(f);
+            (f, t, cut)
+        }
+    };
+    if from > to {
+        return Err(bad_arg("from", "from must not be after to"));
+    }
+    if to - from > max {
+        return Err(bad_arg(
+            "to",
+            format!("the range is at most {MAX_RANGE_DAYS} days"),
+        ));
+    }
+    Ok((from, to, cut))
+}
+
+fn lane_cursor(lane: &str, offset: usize) -> String {
+    crate::auth::encode(
+        json!({"lane": lane, "offset": offset})
+            .to_string()
+            .as_bytes(),
+    )
+}
+
+fn open_lane_cursor(raw: &str) -> Result<(String, usize)> {
+    let bad = || api(ErrorCode::InvalidCursor, "not a timeline cursor");
+    let bytes = crate::auth::decode_bytes(raw).ok_or_else(bad)?;
+    let v: Json = serde_json::from_slice(&bytes).map_err(|_| bad())?;
+    Ok((
+        v["lane"].as_str().ok_or_else(bad)?.to_string(),
+        v["offset"].as_u64().ok_or_else(bad)? as usize,
+    ))
+}
+
+/// `GET /projects/{id}/timeline?from=&to=&versions=&include_closed=&cursor=`
+/// (§17.8): read from the database within `load_scope`; an issue the
+/// caller cannot see is not counted anywhere and leaves no gap (T-V9).
+#[allow(clippy::too_many_arguments)]
+pub async fn timeline(
+    app: &App,
+    caller: AuthContext,
+    project: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    versions: Option<&str>,
+    include_closed: bool,
+    cursor: Option<&str>,
+) -> Result<Timeline> {
+    let from = date_arg("from", from)?;
+    let to = date_arg("to", to)?;
+    // `versions`: ids, or `none` = only the lane without a version (B24).
+    let wanted: Option<Vec<String>> = versions.map(|v| {
+        v.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+    let page = cursor.map(open_lane_cursor).transpose()?;
+    let mut tx = read_tx(app).await?;
+    let project = describe::visible_project(&mut tx, caller, project)
+        .await
+        .map_err(|_| not_found())?;
+    let a = access(&mut tx, caller, project).await?;
+    let today = today(&mut tx).await?;
+    let all: Vec<VRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {VCOLS} FROM versions WHERE project_id = $1
+         ORDER BY effective_date NULLS LAST, name_key"
+    )))
+    .bind(project)
+    .fetch_all(&mut *tx)
+    .await?;
+    let open_dates: Vec<(Uuid, NaiveDate)> = all
+        .iter()
+        .filter(|v| v.status == "open" && !v.deleted)
+        .filter_map(|v| v.effective_date.map(|d| (v.id, d)))
+        .collect();
+    let (from, to, cut) = timeline_range(today, &open_dates, from, to)?;
+
+    // Every visible issue of the project (dates decide where it is drawn).
+    type Row = (
+        Uuid,
+        String,
+        String,
+        Uuid,
+        bool,
+        Uuid,
+        Option<Uuid>,
+        Option<Uuid>,
+        Uuid,
+        String,
+        bool,
+        Option<NaiveDate>,
+        Option<NaiveDate>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT i.id, k.key, i.subject, i.tracker_id, i.is_private, i.author_id, i.assigned_to_id,
+                i.fixed_version_id, s.id, s.name, s.category = 'done', i.start_date, i.due_date,
+                ap.name, ap.kind
+         FROM issues i JOIN issue_statuses s ON s.id = i.status_id
+         JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         LEFT JOIN principals ap ON ap.id = i.assigned_to_id
+         WHERE i.project_id = $1 AND i.archived_at IS NULL",
+    )
+    .bind(project)
+    .fetch_all(&mut *tx)
+    .await?;
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .filter(|r| {
+            a.scope.can_see(&IssueFacts {
+                project_id: project,
+                tracker_id: r.3,
+                is_private: r.4,
+                author_id: r.5,
+                assigned_to_id: r.6,
+            })
+        })
+        .collect();
+    let bits_all = visible_bits(
+        &mut tx,
+        &a.scope,
+        project,
+        &all.iter().map(|v| v.id).collect::<Vec<_>>(),
+    )
+    .await?;
+    let t = thresholds(&mut tx, project).await?;
+
+    // Lanes: versions by date (deleted only with visible issues), then none.
+    let mut lanes_def: Vec<Option<&VRow>> = Vec::new();
+    for v in &all {
+        let has = rows.iter().any(|r| r.7 == Some(v.id));
+        if v.deleted && !has {
+            continue;
+        }
+        if !include_closed && v.status == "closed" {
+            continue;
+        }
+        if let Some(w) = &wanted
+            && !w.iter().any(|x| *x == v.id.to_string())
+        {
+            continue;
+        }
+        lanes_def.push(Some(v));
+    }
+    if wanted
+        .as_ref()
+        .is_none_or(|w| w.iter().any(|x| x == "none"))
+    {
+        lanes_def.push(None);
+    }
+    if let Some(w) = &wanted {
+        for x in w {
+            if x != "none" && !all.iter().any(|v| v.id.to_string() == *x) {
+                return Err(bad_arg(
+                    "versions",
+                    "versions takes version ids of this project or none",
+                ));
+            }
+        }
+    }
+
+    let mut lanes = Vec::new();
+    for lane in lanes_def {
+        let lane_id = lane
+            .map(|v| v.id.to_string())
+            .unwrap_or_else(|| "none".into());
+        let offset = match &page {
+            Some((l, o)) if *l == lane_id => *o,
+            Some(_) => continue, // a cursor pages one lane
+            None => 0,
+        };
+        let mine: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.7 == lane.map(|v| v.id))
+            .filter(|r| include_closed || !r.10)
+            .collect();
+        let undated_count = mine
+            .iter()
+            .filter(|r| r.11.is_none() && r.12.is_none())
+            .count() as i64;
+        let mut drawn: Vec<&&Row> = mine
+            .iter()
+            .filter(|r| r.11.is_some() || r.12.is_some())
+            .filter(|r| {
+                let s = r.11.or(r.12).unwrap();
+                let e = r.12.or(r.11).unwrap();
+                s <= to && e >= from
+            })
+            .collect();
+        drawn.sort_by(|x, y| (x.11.or(x.12), &x.1).cmp(&(y.11.or(y.12), &y.1)));
+        let total = drawn.len();
+        let items: Vec<TimelineItem> = drawn
+            .into_iter()
+            .skip(offset)
+            .take(LANE_LIMIT)
+            .map(|r| {
+                let mut flags = Vec::new();
+                if !r.10 && r.12.is_some_and(|d| d < today) {
+                    flags.push("overdue".to_string());
+                }
+                if let (Some(due), Some(v)) = (r.12, lane.and_then(|v| v.effective_date))
+                    && due > v
+                {
+                    flags.push("late_for_version".into());
+                }
+                if lane.is_some_and(|v| v.status == "closed") {
+                    flags.push("in_closed_version".into());
+                }
+                TimelineItem {
+                    key: r.1.clone(),
+                    subject: r.2.clone(),
+                    status: TimelineStatus {
+                        id: r.8,
+                        name: r.9.clone(),
+                        is_closed: r.10,
+                    },
+                    assigned_to: match (r.6, &r.13, &r.14) {
+                        (Some(id), Some(n), Some(k)) => Some(TimelinePerson {
+                            id,
+                            name: n.clone(),
+                            kind: k.clone(),
+                        }),
+                        _ => None,
+                    },
+                    start_date: r.11.map(|d| d.to_string()),
+                    due_date: r.12.map(|d| d.to_string()),
+                    flags,
+                }
+            })
+            .collect();
+        let next_cursor =
+            (offset + LANE_LIMIT < total).then(|| lane_cursor(&lane_id, offset + LANE_LIMIT));
+        let version = lane.map(|v| {
+            let vb: Vec<&Bit> = bits_all.iter().filter(|b| b.version_id == v.id).collect();
+            let (h, reasons) = health(v, &vb, today, &t);
+            TimelineVersion {
+                id: v.id,
+                name: v.name.clone(),
+                effective_date: v.effective_date.map(|d| d.to_string()),
+                status: v.status.clone(),
+                health: h,
+                health_reasons: reasons,
+                deleted: v.deleted,
+            }
+        });
+        lanes.push(TimelineLane {
+            version,
+            items,
+            undated_count,
+            next_cursor,
+        });
+    }
+    tx.commit().await?;
+    Ok(Timeline {
+        today: today.to_string(),
+        range: TimelineRange {
+            from: from.to_string(),
+            to: to.to_string(),
+            truncated_by_version: cut,
+        },
+        lanes,
+    })
+}
+
+// ---------------------------------------------------------------- schedule settings (§17.12)
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct HealthValues {
+    pub health_at_risk_days: Option<i32>,
+    pub health_at_risk_open_pct: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ProjectHealthSettings {
+    pub inherit_org: bool,
+    pub health_at_risk_days: Option<i32>,
+    pub health_at_risk_open_pct: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ScheduleSettings {
+    pub effective: HealthValues,
+    /// `org` or `project`.
+    pub source: String,
+    pub org: HealthValues,
+    pub project: ProjectHealthSettings,
+    pub lock_version: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct OrgScheduleSettings {
+    pub health_at_risk_days: Option<i32>,
+    pub health_at_risk_open_pct: Option<i32>,
+    pub lock_version: i32,
+}
+
+/// `PUT /projects/{id}/schedule-settings`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleSettingsInput {
+    pub lock_version: i32,
+    pub inherit_org: bool,
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "Option<i32>")]
+    pub health_at_risk_days: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "Option<i32>")]
+    pub health_at_risk_open_pct: Option<Option<i32>>,
+}
+
+/// `PUT /org/schedule-settings` (a system administrator).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OrgScheduleSettingsInput {
+    pub lock_version: i32,
+    pub health_at_risk_days: Option<i32>,
+    pub health_at_risk_open_pct: Option<i32>,
+}
+
+pub const ACTION_SCHEDULE_SETTINGS: &str = "schedule_settings_update";
+pub const ACTION_ORG_SCHEDULE_SETTINGS: &str = "org_schedule_settings_update";
+
+fn check_ranges(days: Option<i32>, pct: Option<i32>) -> Result<()> {
+    if days.is_some_and(|d| !(0..=90).contains(&d)) {
+        return Err(invalid_value(
+            "health_at_risk_days",
+            "0 to 90 days",
+            json!({}),
+        ));
+    }
+    if pct.is_some_and(|p| !(0..=100).contains(&p)) {
+        return Err(invalid_value(
+            "health_at_risk_open_pct",
+            "0 to 100 percent",
+            json!({}),
+        ));
+    }
+    Ok(())
+}
+
+async fn settings_in(conn: &mut PgConnection, project: Uuid) -> Result<ScheduleSettings> {
+    type Row = (
+        Option<i32>,
+        Option<i32>,
+        bool,
+        Option<i32>,
+        Option<i32>,
+        i32,
+    );
+    let (od, op, inherit, pd, pp, lv): Row = sqlx::query_as(
+        "SELECT o.health_at_risk_days, o.health_at_risk_open_pct,
+                ps.inherit_org, ps.health_at_risk_days, ps.health_at_risk_open_pct, ps.lock_version
+         FROM org_settings o JOIN project_schedule_settings ps ON ps.project_id = $1",
+    )
+    .bind(project)
+    .fetch_one(&mut *conn)
+    .await?;
+    let t = thresholds(&mut *conn, project).await?;
+    Ok(ScheduleSettings {
+        effective: HealthValues {
+            health_at_risk_days: t.at_risk_days,
+            health_at_risk_open_pct: t.at_risk_open_pct,
+        },
+        source: t.source,
+        org: HealthValues {
+            health_at_risk_days: od,
+            health_at_risk_open_pct: op,
+        },
+        project: ProjectHealthSettings {
+            inherit_org: inherit,
+            health_at_risk_days: pd,
+            health_at_risk_open_pct: pp,
+        },
+        lock_version: lv,
+    })
+}
+
+/// `GET /projects/{id}/schedule-settings`.
+pub async fn schedule_settings(
+    app: &App,
+    caller: AuthContext,
+    project: &str,
+) -> Result<ScheduleSettings> {
+    let mut tx = read_tx(app).await?;
+    let project = describe::visible_project(&mut tx, caller, project)
+        .await
+        .map_err(|_| not_found())?;
+    access(&mut tx, caller, project).await?;
+    let s = settings_in(&mut tx, project).await?;
+    tx.commit().await?;
+    Ok(s)
+}
+
+/// `PUT /projects/{id}/schedule-settings` (Idempotency-Key): `manage_versions`;
+/// `lock_version` must match (`conflict`); with `inherit_org = true` the two
+/// values must be left out; `null` turns a rule off. Only people.
+pub async fn put_schedule_settings(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    project: &str,
+    input: &ScheduleSettingsInput,
+) -> Result<ScheduleSettings> {
+    let who = commands::executor(&caller)?;
+    if input.inherit_org
+        && (input.health_at_risk_days.is_some() || input.health_at_risk_open_pct.is_some())
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "with inherit_org true, leave health_at_risk_days and health_at_risk_open_pct out",
+        )
+        .with_details(json!({"reason": "inherit_with_values"}))
+        .into());
+    }
+    if !input.inherit_org
+        && (input.health_at_risk_days.is_none() || input.health_at_risk_open_pct.is_none())
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "with inherit_org false, send both values (null turns a rule off)",
+        )
+        .with_details(json!({"reason": "values_missing"}))
+        .into());
+    }
+    let days = input.health_at_risk_days.flatten();
+    let pct = input.health_at_risk_open_pct.flatten();
+    check_ranges(days, pct)?;
+    let mut tx = app.pool.begin().await?;
+    let project = describe::visible_project(&mut tx, caller, project)
+        .await
+        .map_err(|_| not_found())?;
+    let h = hash(
+        &json!({"op": "schedule_settings", "project": project, "lock_version": input.lock_version,
+                         "inherit_org": input.inherit_org, "days": days, "pct": pct}),
+    );
+    let fp = commands::fingerprint(ACTION_SCHEDULE_SETTINGS, &h);
+    let Some(request_id) = commands::open_request(
+        &mut tx,
+        who.user_id,
+        operation_id,
+        ACTION_SCHEDULE_SETTINGS,
+        &fp,
+    )
+    .await?
+    else {
+        commands::stored_result(
+            &mut tx,
+            who.user_id,
+            operation_id,
+            ACTION_SCHEDULE_SETTINGS,
+            &fp,
+        )
+        .await?;
+        let s = settings_in(&mut tx, project).await?;
+        tx.commit().await?;
+        return Ok(s);
+    };
+    commands::lock_executor(&mut tx, &who).await?;
+    sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
+        .bind(project)
+        .execute(&mut *tx)
+        .await?;
+    let a = access(&mut tx, caller, project).await?;
+    if !a.manage || !a.writable {
+        return Err(forbidden(
+            "manage_versions",
+            "changing the health thresholds needs manage_versions",
+        ));
+    }
+    let lv: i32 = sqlx::query_scalar(
+        "SELECT lock_version FROM project_schedule_settings WHERE project_id = $1 FOR UPDATE",
+    )
+    .bind(project)
+    .fetch_one(&mut *tx)
+    .await?;
+    if lv != input.lock_version {
+        return Err(
+            ApiError::new(ErrorCode::Conflict, "the settings changed; reload them")
+                .with_details(json!({"current_lock_version": lv}))
+                .into(),
+        );
+    }
+    sqlx::query(
+        "UPDATE project_schedule_settings
+         SET inherit_org = $2, health_at_risk_days = $3, health_at_risk_open_pct = $4,
+             lock_version = lock_version + 1, updated_by = $5, updated_at = now()
+         WHERE project_id = $1",
+    )
+    .bind(project)
+    .bind(input.inherit_org)
+    .bind(if input.inherit_org { None } else { days })
+    .bind(if input.inherit_org { None } else { pct })
+    .bind(who.user_id)
+    .execute(&mut *tx)
+    .await?;
+    commands::complete_request(&mut tx, request_id, &json!({"project_id": project})).await?;
+    let s = settings_in(&mut tx, project).await?;
+    tx.commit().await?;
+    Ok(s)
+}
+
+async fn org_settings_in(conn: &mut PgConnection) -> Result<OrgScheduleSettings> {
+    let (d, p, lv): (Option<i32>, Option<i32>, i32) = sqlx::query_as(
+        "SELECT health_at_risk_days, health_at_risk_open_pct, schedule_lock_version FROM org_settings",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(OrgScheduleSettings {
+        health_at_risk_days: d,
+        health_at_risk_open_pct: p,
+        lock_version: lv,
+    })
+}
+
+/// `GET /org/schedule-settings` (anyone signed in).
+pub async fn org_schedule_settings(app: &App, caller: AuthContext) -> Result<OrgScheduleSettings> {
+    let mut tx = read_tx(app).await?;
+    db::effective(&mut tx, caller).await?;
+    let s = org_settings_in(&mut tx).await?;
+    tx.commit().await?;
+    Ok(s)
+}
+
+/// `PUT /org/schedule-settings` (a system administrator, Idempotency-Key).
+pub async fn put_org_schedule_settings(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    input: &OrgScheduleSettingsInput,
+) -> Result<OrgScheduleSettings> {
+    let who = commands::executor(&caller)?;
+    check_ranges(input.health_at_risk_days, input.health_at_risk_open_pct)?;
+    let mut tx = app.pool.begin().await?;
+    let me = db::effective(&mut tx, caller).await?;
+    if !me.is_admin || me.agent.is_some() {
+        return Err(forbidden(
+            "admin",
+            "only a system administrator changes this",
+        ));
+    }
+    let h = hash(
+        &json!({"op": "org_schedule_settings", "lock_version": input.lock_version,
+                         "days": input.health_at_risk_days, "pct": input.health_at_risk_open_pct}),
+    );
+    let fp = commands::fingerprint(ACTION_ORG_SCHEDULE_SETTINGS, &h);
+    let Some(request_id) = commands::open_request(
+        &mut tx,
+        who.user_id,
+        operation_id,
+        ACTION_ORG_SCHEDULE_SETTINGS,
+        &fp,
+    )
+    .await?
+    else {
+        commands::stored_result(
+            &mut tx,
+            who.user_id,
+            operation_id,
+            ACTION_ORG_SCHEDULE_SETTINGS,
+            &fp,
+        )
+        .await?;
+        let s = org_settings_in(&mut tx).await?;
+        tx.commit().await?;
+        return Ok(s);
+    };
+    commands::lock_executor(&mut tx, &who).await?;
+    let lv: i32 = sqlx::query_scalar("SELECT schedule_lock_version FROM org_settings FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    if lv != input.lock_version {
+        return Err(
+            ApiError::new(ErrorCode::Conflict, "the settings changed; reload them")
+                .with_details(json!({"current_lock_version": lv}))
+                .into(),
+        );
+    }
+    sqlx::query(
+        "UPDATE org_settings SET health_at_risk_days = $1, health_at_risk_open_pct = $2,
+                schedule_lock_version = schedule_lock_version + 1",
+    )
+    .bind(input.health_at_risk_days)
+    .bind(input.health_at_risk_open_pct)
+    .execute(&mut *tx)
+    .await?;
+    commands::complete_request(&mut tx, request_id, &json!({"org": true})).await?;
+    let s = org_settings_in(&mut tx).await?;
+    tx.commit().await?;
+    Ok(s)
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    /// T-V9b: every default is a legal range.
+    #[test]
+    fn default_ranges() {
+        let today = d("2026-11-08");
+        let v = Uuid::now_v7();
+        // No version.
+        let (f, t, c) = timeline_range(today, &[], None, None).unwrap();
+        assert_eq!((f, t, c), (d("2026-10-25"), d("2027-02-06"), None));
+        // Open versions only in the past.
+        let (_, t, _) = timeline_range(today, &[(v, d("2026-01-01"))], None, None).unwrap();
+        assert_eq!(t, d("2027-02-06"));
+        // A version in 2199: cut to 400 days, with the reason.
+        let (f, t, c) = timeline_range(today, &[(v, d("2199-01-01"))], None, None).unwrap();
+        assert_eq!((t - f).num_days(), 399);
+        assert_eq!(c, Some(v));
+        // A near version: +14 days.
+        let (_, t, _) = timeline_range(today, &[(v, d("2026-12-01"))], None, None).unwrap();
+        assert_eq!(t, d("2026-12-15"));
+        // One end given.
+        let (f, t, _) = timeline_range(today, &[], Some(d("2027-06-01")), None).unwrap();
+        assert!(f <= t && (t - f).num_days() <= 399);
+        let (f, t, _) = timeline_range(today, &[], None, Some(d("2020-01-01"))).unwrap();
+        assert!(f <= t && (t - f).num_days() <= 399);
+        // Errors.
+        assert!(timeline_range(today, &[], Some(d("2027-01-02")), Some(d("2027-01-01"))).is_err());
+        assert!(timeline_range(today, &[], Some(d("2026-01-01")), Some(d("2027-02-05"))).is_err());
+        assert!(timeline_range(today, &[], Some(d("2026-01-01")), Some(d("2027-02-04"))).is_ok());
+    }
+}

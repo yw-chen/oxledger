@@ -279,7 +279,8 @@ impl Reader {
                      FROM issue_notes n
                      JOIN issues i ON i.id = n.issue_id
                      JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
-                     WHERE n.id = $1 AND n.issue_id = $2 AND i.archived_at IS NULL",
+                     WHERE n.id = $1 AND n.issue_id = $2 AND i.archived_at IS NULL
+                       AND n.retracted_at IS NULL",
                 )
                 .bind(note_id)
                 .bind(issue_id)

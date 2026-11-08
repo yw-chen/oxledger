@@ -82,6 +82,10 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
     q("INSERT INTO role_permissions (role_id, permission) SELECT id, 'view_issues' FROM roles")
         .execute(&mut *tx)
         .await?;
+    // §18.4: Manager manages the project tabs (and §19 repository links).
+    q("INSERT INTO role_permissions (role_id, permission) SELECT id, 'manage_project' FROM roles WHERE name = 'Manager'")
+        .execute(&mut *tx)
+        .await?;
     // Every role may move New → In Progress → Resolved; only Manager may close.
     q("INSERT INTO workflow_transitions (tracker_id, role_id, old_status_id, new_status_id)
         SELECT t.id, r.id, o.id, n.id FROM trackers t, roles r, issue_statuses o, issue_statuses n

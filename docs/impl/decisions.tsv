@@ -165,3 +165,71 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S6 驗證	agent 的 changeset_cancel 也計入每委派 60 次／小時（取代 S6.9 只算 propose＋revise 的那列）	契約寫 propose＋revise＋cancel 共用（驗證 B3）	不算 cancel	契約 02 §8.9
 2026-11-08	S6 驗證	set_delegation_policies 先 step-up（browser_sessions FOR SHARE）再鎖 delegations	§3.7 固定鎖序	維持原順序（目前不死結）	契約 02 §3.7
 2026-11-08	S6 驗證	resolve purpose:assignee 的部分比對跳脫 % _ \	使用者輸入的萬用字元照字面比	不跳脫（只在可指派者內誤配）	—
+2026-11-08	S6b.1	佇列資格一個函式（review_queue::eligibility）供列表、交易 A、步驟 13a 共用；只收 update_fields（不含 subject、description、is_private、text 型 cf）與至多一個 transition；validation 要 passed；evidence 以檢視者範圍 exact 驗證，不是 valid 就 evidence_changed	三處不分岔；§15.3 的短欄位	各處各寫	契約 02 §15.3、§6.7 13a，checklist B10
+2026-11-08	S6b.1	交易 A 的佇列資格用存下的 validation 狀態，不重新模擬；13a 在 simulate 之後判	交易 A 不拿 issue 鎖；過期的狀態由 B 的模擬（conflict）兜住	A 也模擬	契約 02 §8.6
+2026-11-08	S6b.1	owner 列表每頁 50 筆、cursor 用 Keyset(created_at, id)，查詢 hash 含 states 與 group	每個 proposed 列都要算 diff 與資格	沿用 200 筆不分頁	checklist P1
+2026-11-08	S6b.1	approve-and-apply 的 review_mode 只收 detail、queue；revise_and_apply 回 invalid_request	revise_and_apply 走自己的端點	三種都收	契約 02 §4.2
+2026-11-08	S6b.2	revision_review_token 用 cursor 的 XChaCha 金鑰封裝 {owner, changeset_id, version, source_hash, content, locks}，purpose 隔開，預設 10 分鐘	無狀態、可驗證；過期與偽造分開回 review_outdated／invalid_request	存 DB 表	契約 02 §15.4
+2026-11-08	S6b.2	revise-and-apply 先查冪等鍵、再開 token：同鍵重送在 token 過期後仍回原 execution（T-U11）	A 已提交時 token 不能再擋重試	先驗 token	契約 02 §15.4 T-U11
+2026-11-08	S6b.2	新版本、decision（revise_and_apply）、queued execution 在同一交易 A；B、C 共用 run_after_a，故障點 revise.after_a	和 approve-and-apply 同一套 B/C	另寫一份	契約 02 §8.6
+2026-11-08	S6b.2	choices 鍵是 op_id/field，值 current 刪該欄、proposed 留；鍵不在提案裡回 invalid_argument；前置條件移到目前 lock_version	衝突頁逐欄選擇	整份接受或拒絕	契約 02 §15.4
+2026-11-08	S6b.3	validate 配額在自己的交易先保留並記一筆 kind=validate（0013 擴 CHECK），超過回 quota_exceeded（validates_per_hour）	§8.9 開始前原子保留；validate 本身是唯讀交易	在讀取交易內記	契約 02 §8.9
+2026-11-08	S6b.3	同委派同時 2 個提案寫入用兩個 transaction-scoped advisory lock 槽（pg_try_advisory_xact_lock），第 3 個回 rate_limited（retry_after_ms 1000）；在 agent row FOR UPDATE 之前拿	commit／rollback 自動釋放；放在 agent row 鎖之後就永遠只有 1 個	另開 lease 表	契約 02 §8.9
+2026-11-08	S6b.3	payload 超過 768 KiB（重新序列化量，transport 已解析，不含多餘空白）或正規化文件超過 512 KiB → invalid_request，details.reason=payload_too_large	契約沒有專用錯誤碼	新增錯誤碼	契約 02 §8.9
+2026-11-08	S6b.3	agent 回應過濾把版本 execution 建出的 issue 也算目標（T-M12）；讀不到時不回本文，items 只回 {op_id, status}	create_issue 沒有既有目標，原本被當成全部讀得到	只看本文目標	契約 02 §8.8 L1553
+2026-11-08	S6b.3	T-M20 比對時把 consistent_after 拿掉，另斷言它恰好在 succeeded 時出現	它是 agent 自己那筆寫入的搜尋一致性 token，只反映結果本身	視為差異	契約 02 §9.10 T-M20
+2026-11-08	S6b.3	T-M13 用 not_found（GET /issues/WEB-999 對 MCP get）比整個錯誤物件；rate_limited 另測 retry_after_ms	REST 的 /api/v1 不收 bearer，人類路徑沒有 agent 配額（B13）	只比 rate_limited	checklist B13
+2026-11-08	使用者	B2：R-T3 的搜尋語法採「先定最小文字語法」（project:、status:、tracker:、assignee:、自由文字），在設計 03 補一節	使用者選擇	存結構化查詢 {q, filter}	s6b-checklist B2
+2026-11-08	使用者	B17：manage_project 預設給 Manager 的 migration 會 bump 全部 epoch；接受，升級說明寫「升級後要重建 agent 工作脈絡」	使用者選擇	trigger 只對受眾權限 bump	s6b-checklist B17
+2026-11-08	使用者	S6b.8 新 crate hyper-rustls、rustls（ring）、webpki-roots、ring 同意下載，GitHub client 放在 cargo feature github 後，預設不編；測試只用 mock	使用者選擇	不下載	s6b-checklist §3.10
+2026-11-08	使用者	B1、B3–B16、B18–B30 全部照 s6b-checklist §4 的建議	使用者選擇	逐條決定	s6b-checklist §4
+2026-11-08	S6b.4	undo 只限委派者本人（agent_direct 的 on_behalf_of、changeset 的 on_behalf_of）或執行 undo 的人（undo 的 undo）；其他人一律 not_found	B6 建議	專案管理者也可	s6b-checklist B6
+2026-11-08	S6b.4	undo 的專案鎖只排序（FOR SHARE，UUID 序），不比對 epoch 值；先鎖專案、issue FOR UPDATE，之後才讀 undo 資料	B5：比 epoch 會讓任何成員變更後都不能 undo，和 T-V35 衝突	比對原 execution 的 epoch	s6b-checklist B5
+2026-11-08	S6b.4	欄位四條件：current＝after 且 issue_field_origins 仍指這次 execution（changed_since）；權限與舊值合法用 Mode::Validate 模擬單欄文件判斷（ForbiddenOp／ReadonlyField／NotFound→permission，其他→value_no_longer_valid）	重用領域驗證，不另寫規則	各欄另寫檢查	契約 02 §16.7 L2331
+2026-11-08	S6b.4	status 不當欄位還原，改成 transition_back 選項（有合法轉移回原狀態才給）；create_issue 給 close_as_mistaken（done 類狀態的合法轉移）；兩者都要人在 transitions 指定，不批次	§16.7 對照表	自動轉回	契約 02 §16.7 L2325
+2026-11-08	S6b.4	add_note 的 undo＝撤回：0014 加 retracted_at、retracted_by_execution_id、事件 note_retracted；本文在讀取時隱藏、沒有 citation；citations 把撤回的 note 當不存在；不 bump epoch；搜尋不索引 note 本文所以不用 reindex，但仍 lock_version＋1	B4 建議	刪除 note	s6b-checklist B4
+2026-11-08	S6b.4	duplicate 的 undo 刪掉該次建立的那個 issue_duplicates.id（T-D8），寫 duplicate_removed 事件與 execution_relation_changes(removed)	關係實例是 id，不是兩端	依兩端刪	契約 02 §16.7
+2026-11-08	S6b.4	子集合模擬失敗（跨欄位相依）→ 整筆 undo_not_applicable（409，next_actions stop），details.reasons 帶 dependency 與原錯誤碼	§16.7 L2371	部分寫入	s6b-checklist B3
+2026-11-08	S6b.4	事故回復 preview 回凍結清單（newest first，automatic／needs_choice），SPA 逐筆送 undo；不自動停	B27	失敗就停	s6b-checklist B27
+2026-11-08	S6b.4	活動頁「被擋」只列 audience_blocked（agent_write_log 只有時間）；摘要卡停用存 SPA 端	B8、B9	另開表	s6b-checklist B8 B9
+2026-11-08	S6b.4	30 天過期只在預覽判斷（created_at），還沒做清除工作；過期測試沒寫（command_executions append-only，測試無法改時間）	待 S8 的清除工作一起做	現在就刪列	s6b-checklist B26
+2026-11-08	S6b.5	時程 versions= 只收本專案版本 id 與 none，其他值 invalid_argument；cursor 只翻一條泳道（其他泳道不回）	B24	cursor 帶全部泳道	s6b-checklist B24
+2026-11-08	S6b.5	只帶 to 時 from = min(today−14, to)，再限制在 400 天內；只帶 from 時 to 照預設算且不小於 from	L2849–L2856 只說「另一端照算」	回錯	contract L2856
+2026-11-08	S6b.5	門檻 PUT：inherit_org=false 時兩個值都要送（null 停用），少送一個 invalid_request；範圍 0–90 天、0–100% 用 invalid_value	L2880 沒說只送一個	只送一個就沿用舊值	contract L2880
+2026-11-08	S6b.5	版本 undo：create_version 的 undo 有看得到的引用回 in_use、有人改過回 changed_since；只有看不到的引用仍軟刪除；undo 不看 agent 憑證與委派（T-V35）	B7、B5	依 epoch 擋	s6b-checklist B5 B7
+2026-11-08	S6b.6	B2：設計 03 加 §11 最小文字語法（project:/status:/tracker:/assignee:/自由文字），只是結構化參數的另一種寫法；status:open/todo/doing/done 對應 status_category	使用者決定 B2	存結構化 {q, filter}	design 03 §11
+2026-11-08	S6b.6	B17：0015 給 Manager 加 manage_project，接受全部 epoch +1；寫進 docs/impl/upgrade-notes.md	使用者決定 B17	改 trigger 排除 manage_project	docs/impl/upgrade-notes.md
+2026-11-08	S6b.6	B1：T-PT11 拆兩層：HTTP 帶 bearer 回 unauthenticated（§4.2），service 層回 human_session_required	B1 建議	HTTP 也回 human_session_required	s6b-checklist B1
+2026-11-08	S6b.6	加 GET /projects/{id}/tabs/{tab}/issues：用開啟者的可見性執行儲存的篩選（契約沒列端點，T-PT6 需要「開啟分頁」的動作）；回應同搜尋、沒有總數	R-T3、R-T6	SPA 自己把語法轉成搜尋參數	contract §18.3
+2026-11-08	S6b.6	分頁 PUT 的 invalid_value details.kind：除契約列的 7 種，另有 duplicate_id（同 id 兩次）、unknown_id（未知或已刪除的 id）、unknown_kind、not_allowed（內建帶 query/url 等）	§18.5 只說 invalid_value	全部用同一個 kind	contract §18.5
+2026-11-08	S6b.6	is_default：PUT 後一律 false（即使內容和預設相同）；reset 設回 true	§18.2「true＝從沒人改過」	比對內容	contract §18.2
+2026-11-08	S6b.6	url crate 2.x（Servo/Mozilla 維護）已在 Cargo.lock（idna 的相依），加為直接相依；用 --offline 建置，沒有下載	R-T4 WHATWG 正規化	自己寫解析	Cargo.toml
+2026-11-08	S6b.7	check_suite 只有在本 head 有 check_run 引用它時才算 CI 單位；沒有 run 的 suite 不影響 ci_state	§19.7 R-G7 以 suite 為單位，沒說無 run 的 suite	所有 suite 都算（別的 App 的空 suite 會讓 CI 永遠 pending）	contract §19.7
+2026-11-08	S6b.7	webhook 只在設定了 secret 時掛上（router_with_github 的 Some）；沒設定時該路徑不存在	§19.5 必須驗簽	沒有 secret 時回 401	contract §19.5
+2026-11-08	S6b.7	工作失敗退避 2^attempts 秒，第 5 次失敗 result=error 並清掉 payload	§19.6 說要重試但沒定次數	無限重試	contract §19.6
+2026-11-08	S6b.7	hmac 0.13（RustCrypto）已在 Cargo.lock，加為直接相依；--offline 建置，沒有下載	§19.5 HMAC-SHA256	自己實作	Cargo.toml
+2026-11-08	S6b.8	project_repo_links 加 paused_until（不在契約 DDL）：存 rate limit 的 reset 時間；resume_paused_once 到時把 paused 改回 backfilling（synced_through 為 NULL）或 ok	§19.5「依回應的 reset 時間暫停」但 DDL 沒有欄位	只放記憶體（重啟就忘）	contract §19.3 §19.5
+2026-11-08	S6b.8	GithubApi trait 不含 app_jwt／installation_token：JWT 與 token 快取是 HttpGithub 的內部；list_pulls 加 since（排序後遇到更舊的就停）	checklist §S6b.8 列的 trait 形狀	照 checklist 拆開	docs/impl/s6b-checklist.md
+2026-11-08	S6b.8	對帳 (d)「最近 7 天內合併或關閉」與回填「最近 30 天關閉」都用 PR 的 gh_updated_at 判斷（沒有存 closed_at）	§19.5 (d)、回填	另存 closed_at／merged_at 欄位	contract §19.5
+2026-11-08	S6b.8	回填與對帳遇到 Same／Ignored 的 PR 仍用已存列的標題與分支重算 refs：PR 先被別的連動存過時，新連動也拿得到 refs	R-G1 只為已鎖住的連動建 ref	只在 Applied 時重算（新連動會缺 refs）	contract §19.4
+2026-11-08	S6b.8	補送：同一 guid 只要有任何 2xx 就不補；每個 guid 最多要求一次；啟動後 60 秒才第一次補送	§19.5 補送	每筆失敗都補	contract §19.5
+2026-11-08	S6b.8	GitHub 設定三個變數要全有或全無；部分設定是啟動錯誤；設定了但建置沒有 feature github 也是啟動錯誤；OXLEDGER_GITHUB_API_URL 只有 test-support 建置接受 http://	checklist 設定、B21	部分設定時靜默停用	src/github/mod.rs
+2026-11-08	S6b.8	installation token 遇到 401 立刻丟掉快取（被撤銷時不會用到過期）	§19.2 token 只放記憶體、到期前更新	只靠到期時間	src/github/http.rs
+2026-11-08	S6b.8	保存期：sweep_once 每小時刪 7 天前的 delivery（payload 已清的 job 一起）與「最後一個連動解除超過 30 天」的 repo 的 PR、checks、statuses（refs、hidden 靠 cascade）	§19.9	放進既有 sweeper	contract §19.9
+2026-11-08	S6b.8	新 crate 只在 feature github：hyper-rustls 0.27、rustls 0.23（ring，no default features）、webpki-roots 1、ring 0.17、tokio-rustls（hyper-rustls 帶入）；hyper、hyper-util、http-body-util 已在 lock；另帶入 try-lock、want（hyper 作者）、untrusted（ring 作者）。使用者已同意下載	§3.10	reqwest、jsonwebtoken、rsa	Cargo.toml
+2026-11-08	S6b.9	解除連動、隱藏 PR 也要 Idempotency-Key（§6.8 對寫入的一般規則）；已是目標狀態 → 成功、changed=false、不寫事件	§19.7 只對 POST repos 與 hide 寫了 Idempotency-Key	DELETE 不帶 key	contract §19.7
+2026-11-08	S6b.9	include_hidden=true 給沒有 manage_project 的人 → forbidden_op（不是靜默忽略）；被隱藏的 PR 回 hidden=true	B23	靜默忽略	docs/impl/s6b-checklist.md B23
+2026-11-08	S6b.9	撤除：pr_ids 與 link_id 擇一；pr_ids 1–100 個；系統管理員只要 PR 在本專案有 ref 即可（不看可見性）；事件只存 id；衍生副本（§7.5）留給 S7（B14）	§19.7、§19.9	—	contract §19.9
+2026-11-08	S6b.9	撤除整個連動只寫 github_content_revoked（link_id），不另寫 repo_unlinked	§19.9 只列 github_content_revoked	兩個都寫	contract §19.9
+2026-11-08	S6b.9	開發分頁依「該 issue 符合 filter 的 PR 最新 gh_updated_at」新到舊排序，keyset cursor (latest, issue_id)；每頁 50 張 issue；卡片內列該 issue 全部可見 PR（不只符合 filter 的）	§19.7 沒定排序	依 key 排序	src/github/read.rs
+2026-11-08	S6b.9	issue 卡的 synced_at＝所顯示 PR 所屬連動 synced_through 的最小值；任何一個連動還沒回填完 → null	§19.7「回 synced_at」	取最大值	src/github/read.rs
+2026-11-08	S6b.9	admin PUT /admin/github 不要 Idempotency-Key（設值本身冪等）；關掉 linkable 不影響既有連動	§19.7	—	src/github/links.rs
+2026-11-08	S6b.9	B22：worker 的排程工作（resume、backfill、對帳、補送、保存期）在 pg_try_advisory_lock 下執行，一次只有一個 serve 程序做；webhook 工作仍靠 SKIP LOCKED 分給所有程序	B22	—	src/github/mod.rs
+2026-11-08	S6b.9	T-G28 只做 DB 層（pr_issue_refs → issues 的 FK 是 ON DELETE CASCADE），第一切片沒有刪除 issue 的命令	B15	—	tests/s6b_github_read.rs
+2026-11-08	S6b.verify	獨立驗證（80 突變、55 殺死）後修正：新 check_run 先 INSERT … ON CONFLICT DO NOTHING 再鎖列比較，並發插入時 completed 不會被舊的 in_progress 蓋回（R-G8）	驗證者找到的競態	—	src/github/model.rs; tests/s6b_github_ingest.rs
+2026-11-08	S6b.verify	refetch（suite/run）與 API 回補寫入前重新確認 repo accessible 且 installation active；否則不寫（§19.5）	驗證者	—	src/github/jobs.rs
+2026-11-08	S6b.verify	B29：check_suite 沒有 updated_at → 一律 refetch（webhook 與 API 回補兩條路一致）	B29	照舊比較	src/github/jobs.rs; src/github/sync.rs
+2026-11-08	S6b.verify	補送：同一 guid 在 worker 存活期間只請求一次（跨掃描）；guid 不是 UUID 就不請求（webhook 會拒，B19）	T-G21	每次掃描都重請	src/github/sync.rs
+2026-11-08	S6b.verify	設定事件 payload 照 §18.2：repo_linked/unlinked 帶 {link_id, repo_id, full_name}；pr_hidden/unhidden 帶 {pr_id, repo_id, number}	§18.2	只存 id	src/github/links.rs
+2026-11-08	S6b.verify	分頁列表超過 5+10 筆先回 tab_limit，不讓 DB CHECK 擋成 500	T-PT3	—	src/project_tabs.rs
+2026-11-08	S6b.verify	觀察、不修：部分 GitHub API 呼叫在持有 DB 交易／鎖時進行（refetch 與 sync_checks）。第一切片量小可接受；之後若 API 變慢會拉長鎖時間，可改成先抓再開交易比較	驗證者觀察	先抓再寫（未做）	src/github/jobs.rs; src/github/sync.rs

@@ -45,7 +45,7 @@ pub const GET_FIELDS: &[&str] = &[
     "last_activity_at",
     "lock_version",
 ];
-pub const INCLUDES: &[&str] = &["actions", "recent_notes", "recent_events"];
+pub const INCLUDES: &[&str] = &["actions", "recent_notes", "recent_events", "dev"];
 pub const MAX_NOTE_LIMIT: u32 = 10;
 pub const DEFAULT_NOTE_LIMIT: u32 = 5;
 pub const MAX_EVENT_LIMIT: u32 = 20;
@@ -101,6 +101,11 @@ pub struct NoteView {
     /// The body was redacted (D12); there is no citation for it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
+    /// Retracted by an undo (§16.7): the body is hidden, the note stays.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retracted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retracted_by: Option<String>,
     /// Cites the whole note (source kind issue_note).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub citation_id: Option<String>,
@@ -216,6 +221,10 @@ pub struct IssueView {
     pub recent_notes: Option<RecentNotes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_events: Option<RecentEvents>,
+    /// `include: ["dev"]`: pull requests that name this issue (§19.7), a
+    /// read-only projection that may lag GitHub by minutes (`synced_at`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dev: Option<crate::github::read::IssueDev>,
     /// get_many: left out to keep the response small; call `get` for this key.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -230,6 +239,7 @@ struct Plan {
     actions: bool,
     notes: Option<u32>,
     events: Option<u32>,
+    dev: bool,
 }
 
 fn arg_err(path: &str, msg: String, allowed: Option<&[&str]>) -> anyhow::Error {
@@ -343,6 +353,7 @@ async fn plan(conn: &mut PgConnection, caller: AuthContext, a: Ask<'_>) -> Resul
         actions: inc.contains(&"actions"),
         notes: inc.contains(&"recent_notes").then_some(note_limit),
         events: inc.contains(&"recent_events").then_some(event_limit),
+        dev: inc.contains(&"dev"),
     })
 }
 
@@ -671,7 +682,7 @@ async fn attach_blocks(
     id: Uuid,
     plan: &Plan,
 ) -> Result<()> {
-    if !plan.actions && plan.notes.is_none() && plan.events.is_none() {
+    if !plan.actions && plan.notes.is_none() && plan.events.is_none() && !plan.dev {
         return Ok(());
     }
     let (project, tracker): (Uuid, Uuid) =
@@ -693,6 +704,16 @@ async fn attach_blocks(
     if let Some(limit) = plan.events {
         let (items, truncated) = visible_events(&mut *conn, reader, caller, issue, limit).await?;
         v.recent_events = Some(RecentEvents { items, truncated });
+    }
+    if plan.dev {
+        let closed: bool = sqlx::query_scalar(
+            "SELECT s.category = 'done' FROM issues i JOIN issue_statuses s ON s.id = i.status_id
+             WHERE i.id = $1",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        v.dev = Some(crate::github::read::issue_block(&mut *conn, id, &v.key, closed).await?);
     }
     Ok(())
 }
@@ -744,6 +765,8 @@ struct NoteRow {
     is_private: bool,
     body: String,
     redacted: bool,
+    retracted_by: Option<String>,
+    retracted: bool,
 }
 
 /// Readable notes, newest first: the private-note rule is applied before the
@@ -759,8 +782,11 @@ async fn recent_notes(
     loop {
         let rows: Vec<NoteRow> = sqlx::query_as(
             "SELECT n.id, p.name AS author, n.author_id, n.created_on_behalf_of_id, n.created_at,
-                    n.is_private, n.body, n.redacted_at IS NOT NULL AS redacted
+                    n.is_private, n.body, n.redacted_at IS NOT NULL AS redacted,
+                    rp.name AS retracted_by, n.retracted_at IS NOT NULL AS retracted
              FROM issue_notes n JOIN principals p ON p.id = n.author_id
+             LEFT JOIN command_executions rx ON rx.id = n.retracted_by_execution_id
+             LEFT JOIN principals rp ON rp.id = rx.actor_id
              WHERE n.issue_id = $1
                AND ($2::timestamptz IS NULL OR (n.created_at, n.id) < ($2, $3))
              ORDER BY n.created_at DESC, n.id DESC LIMIT $4",
@@ -800,7 +826,7 @@ async fn recent_notes(
                 author: r.author,
                 created_at: r.created_at,
                 is_private: r.is_private,
-                citation_id: (!r.redacted && len > 0).then(|| {
+                citation_id: (!r.redacted && !r.retracted && len > 0).then(|| {
                     citations::cite(
                         Source::IssueNote {
                             issue_id: issue.id,
@@ -811,8 +837,10 @@ async fn recent_notes(
                         len,
                     )
                 }),
-                body: r.body,
+                body: if r.retracted { String::new() } else { r.body },
                 redacted: r.redacted,
+                retracted: r.retracted,
+                retracted_by: r.retracted_by,
             });
         }
         if n < PAGE {
@@ -1031,8 +1059,8 @@ async fn visible_events(
                         "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
                         "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
                     })),
-                    "note_added" => Some(json!({"note_id": r.note_id})),
-                    "duplicate_added" => {
+                    "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
+                    "duplicate_added" | "duplicate_removed" => {
                         let other = r.payload["other_issue_id"]
                             .as_str()
                             .and_then(|s| s.parse::<Uuid>().ok());

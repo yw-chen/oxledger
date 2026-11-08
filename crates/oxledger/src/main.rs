@@ -106,7 +106,20 @@ async fn serve() -> Result<()> {
         spa_origin: env("OXLEDGER_SPA_ORIGIN", Some(&format!("http://{bind}")))?,
         session: SessionPolicy::default(),
     };
-    let router = api::router(app, cfg);
+    let github = oxledger::github::GithubSettings::from_vars(|k| std::env::var(k).ok())?;
+    let hook = match &github {
+        Some(s) => {
+            let client = oxledger::github::client(s)?;
+            oxledger::github::spawn_worker(app.clone(), client);
+            tracing::info!(
+                "GitHub integration on (webhook at {})",
+                oxledger::github::webhook::PATH
+            );
+            Some(s.config())
+        }
+        None => None,
+    };
+    let router = api::router_with_github(app, cfg, hook);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("listening on http://{bind} (SPA API at /api/v1, MCP at /mcp)");
     axum::serve(

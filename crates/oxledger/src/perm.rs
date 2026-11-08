@@ -30,6 +30,8 @@ pub const SET_ISSUES_PRIVATE: &str = "set_issues_private";
 pub const SET_OWN_ISSUES_PRIVATE: &str = "set_own_issues_private";
 pub const MANAGE_ISSUE_RELATIONS: &str = "manage_issue_relations";
 pub const MANAGE_VERSIONS: &str = "manage_versions";
+/// §18.4: project tabs and (§19) repository links.
+pub const MANAGE_PROJECT: &str = "manage_project";
 
 /// Every permission a role may hold; the `role_permissions_known` CHECK in
 /// migration 0007 lists the same names (a test compares them).
@@ -45,6 +47,7 @@ pub const PERMISSIONS: &[&str] = &[
     SET_OWN_ISSUES_PRIVATE,
     MANAGE_ISSUE_RELATIONS,
     MANAGE_VERSIONS,
+    MANAGE_PROJECT,
 ];
 
 /// Proposal operations a delegation may allow (delegations.proposal_ops).

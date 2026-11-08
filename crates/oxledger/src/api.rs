@@ -23,7 +23,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use schemars::JsonSchema;
@@ -54,8 +54,27 @@ pub struct ApiState {
     limiter: LoginLimiter,
 }
 
-/// Builds the whole HTTP router.
+/// Builds the whole HTTP router (GitHub off: its webhook path is 404).
 pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
+    router_with_github(app, cfg, None)
+}
+
+/// The router with the GitHub webhook (§19.5) when configured. The webhook
+/// sits outside `api_guard` (B21): it has no session and no CSRF.
+pub fn router_with_github(
+    app: Arc<App>,
+    cfg: ApiConfig,
+    github: Option<crate::github::GithubConfig>,
+) -> Router {
+    let hook = github.map(|g| crate::github::webhook::routes(app.clone(), g.webhook_secret));
+    let r = base_router(app, cfg);
+    match hook {
+        Some(h) => h.merge(r),
+        None => r,
+    }
+}
+
+fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
     let state = Arc::new(ApiState {
         app: app.clone(),
         cfg,
@@ -86,6 +105,30 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
             get(version_get).patch(version_patch).delete(version_delete),
         )
         .route("/versions/{id}/impact", get(version_impact))
+        .route("/projects/{id}/timeline", get(project_timeline))
+        .route("/projects/{id}/tabs", get(tabs_get).put(tabs_put))
+        .route("/projects/{id}/tabs/reset", post(tabs_reset))
+        .route("/projects/{id}/tabs/{tab}/issues", get(tab_issues))
+        .route("/projects/{id}/setting-events", get(setting_events))
+        .route("/projects/{id}/repos", get(repos_list).post(repos_link))
+        .route("/projects/{id}/repos/linkable", get(repos_linkable))
+        .route("/projects/{id}/repos/{link_id}", delete(repos_unlink))
+        .route("/projects/{id}/dev", get(project_dev))
+        .route(
+            "/projects/{id}/dev/prs/{pr_id}/hide",
+            post(pr_hide).delete(pr_unhide),
+        )
+        .route("/projects/{id}/dev/revoke", post(dev_revoke))
+        .route("/issues/{key}/dev", get(issue_dev))
+        .route("/admin/github", get(admin_github_get).put(admin_github_put))
+        .route(
+            "/projects/{id}/schedule-settings",
+            get(schedule_settings_get).put(schedule_settings_put),
+        )
+        .route(
+            "/org/schedule-settings",
+            get(org_schedule_settings_get).put(org_schedule_settings_put),
+        )
         .route("/versions/{id}/events", get(version_events))
         .route("/resolve", post(resolve))
         .route("/commands", post(submit_command))
@@ -97,7 +140,23 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/changesets/{id}/reject", post(changeset_reject))
         .route("/changesets/{id}/cancel", post(changeset_cancel))
         .route("/changesets/{id}/revisions", post(changeset_revise))
+        .route(
+            "/changesets/{id}/revision-previews",
+            post(changeset_preview),
+        )
+        .route(
+            "/changesets/{id}/revise-and-apply",
+            post(changeset_revise_apply),
+        )
         .route("/executions/{id}", get(execution_get))
+        .route("/executions/{id}/undo-preview", get(undo_preview))
+        .route("/executions/{id}/undo", post(undo_apply))
+        .route("/agents/{id}/activity", get(agent_activity))
+        .route(
+            "/agents/{id}/incident-recovery/preview",
+            post(incident_preview),
+        )
+        .route("/home/agent-summary", get(agent_summary))
         .route("/operations/{id}", get(operation_get))
         .route("/agent-clients", get(agent_clients))
         .route(
@@ -862,11 +921,20 @@ async fn changeset_list(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
+    let group = match q.get("group") {
+        None => None,
+        Some(g) => Some(g.parse::<Uuid>().map_err(|_| {
+            ApiError::new(ErrorCode::InvalidArgument, "group must be a group id")
+                .with_details(serde_json::json!({"path": "group"}))
+        })?),
+    };
     Ok(ok(crate::changesets::list(
         &st.app,
         ctx,
         q.get("bucket").map(String::as_str),
         q.get("state").map(String::as_str),
+        group,
+        q.get("cursor").map(String::as_str),
     )
     .await?))
 }
@@ -932,8 +1000,42 @@ async fn changeset_apply(
     let key = idempotency_key(&headers)?;
     let out =
         crate::changesets::approve_and_apply(&st.app, ctx, key, id_param(&id)?, &body).await?;
+    Ok(apply_response(out))
+}
+
+async fn changeset_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::changesets::PreviewInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::changesets::preview_revision(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+async fn changeset_revise_apply(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<serde_json::Value>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let out = crate::changesets::revise_and_apply(&st.app, ctx, key, id_param(&id)?, &body).await?;
+    Ok(apply_response(out))
+}
+
+/// 200 with the execution, or 202 with where to look (§8.6).
+fn apply_response(out: crate::changesets::ApplyOutcome) -> Response {
     if !out.pending {
-        return Ok(ok(out.execution));
+        return ok(out.execution);
     }
     let mut resp = (
         StatusCode::ACCEPTED,
@@ -949,7 +1051,7 @@ async fn changeset_apply(
         h.insert(header::LOCATION, v);
     }
     h.insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
-    Ok(resp)
+    resp
 }
 
 async fn changeset_reject(
@@ -1022,6 +1124,99 @@ async fn execution_get(
     .await?))
 }
 
+// ---------------------------------------------------------------- undo (S6b.4, §16.7)
+
+fn time_param(q: &HashMap<String, String>, name: &str) -> Result<Option<DateTime<Utc>>, ApiError> {
+    match q.get(name) {
+        None => Ok(None),
+        Some(v) => DateTime::parse_from_rfc3339(v)
+            .map(|t| Some(t.with_timezone(&Utc)))
+            .map_err(|_| {
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    format!("{name} must be an RFC 3339 time"),
+                )
+                .with_details(json!({"path": name}))
+            }),
+    }
+}
+
+async fn undo_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::undo::preview(&st.app, ctx, id_param(&id)?).await?))
+}
+
+async fn undo_apply(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::undo::UndoInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::undo::apply(
+        &st.app,
+        ctx,
+        key,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IncidentInput {
+    pub since: DateTime<Utc>,
+}
+
+async fn incident_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<IncidentInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::undo::incident_preview(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        body.since,
+    )
+    .await?))
+}
+
+async fn agent_activity(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::undo::activity(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        time_param(&q, "from")?,
+        time_param(&q, "to")?,
+        q.get("issue").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn agent_summary(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::undo::summary(&st.app, ctx).await?))
+}
+
 async fn operation_get(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
@@ -1051,6 +1246,338 @@ fn int_param(q: &HashMap<String, String>, name: &str) -> Result<Option<i64>, Api
             })
         })
         .transpose()
+}
+
+// ---------------------------------------------------------------- project tabs (S6b.6, §18)
+
+async fn tabs_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::project_tabs::get(&st.app, ctx, &id).await?))
+}
+
+async fn tabs_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::project_tabs::TabsPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::project_tabs::put(
+        &st.app,
+        ctx,
+        &st.cfg.spa_origin,
+        key,
+        &id,
+        &body,
+    )
+    .await?))
+}
+
+async fn tabs_reset(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::project_tabs::TabsReset>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::project_tabs::reset(
+        &st.app, ctx, key, &id, &body,
+    )
+    .await?))
+}
+
+async fn tab_issues(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, tab)): Path<(String, String)>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::project_tabs::run_query(
+        &st.app,
+        ctx,
+        &id,
+        &tab,
+        q.get("cursor").cloned(),
+    )
+    .await?))
+}
+
+async fn setting_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::project_tabs::events(
+        &st.app,
+        ctx,
+        &id,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- GitHub (S6b.9, §19.7)
+
+fn uuid_path(s: &str, what: &str) -> Result<Uuid, ApiFailure> {
+    Uuid::parse_str(s).map_err(|_| {
+        ApiFailure(ApiError::new(ErrorCode::NotFound, format!("no such {what}")).into())
+    })
+}
+
+async fn repos_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::github::links::list(&st.app, ctx, &id).await?))
+}
+
+async fn repos_linkable(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::github::links::linkable(&st.app, ctx, &id).await?))
+}
+
+async fn repos_link(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::github::links::LinkInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::github::links::link(
+        &st.app, ctx, key, &id, &body,
+    )
+    .await?))
+}
+
+async fn repos_unlink(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, link)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let link = uuid_path(&link, "repository link")?;
+    Ok(ok(crate::github::links::unlink(
+        &st.app, ctx, key, &id, link,
+    )
+    .await?))
+}
+
+async fn project_dev(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let include_hidden = match q.get("include_hidden").map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            return Err(ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    "include_hidden is true or false",
+                )
+                .with_details(json!({"path": "include_hidden"}))
+                .into(),
+            ));
+        }
+    };
+    Ok(ok(crate::github::read::project_dev(
+        &st.app,
+        ctx,
+        &id,
+        q.get("filter").map(String::as_str).unwrap_or("all"),
+        include_hidden,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn pr_hide_set(
+    st: Arc<ApiState>,
+    ra: RequestAuth,
+    id: String,
+    pr: String,
+    headers: HeaderMap,
+    hidden: bool,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let pr = uuid_path(&pr, "pull request in this project")?;
+    Ok(ok(crate::github::links::hide(
+        &st.app, ctx, key, &id, pr, hidden,
+    )
+    .await?))
+}
+
+async fn pr_hide(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, pr)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult {
+    pr_hide_set(st, ra, id, pr, headers, true).await
+}
+
+async fn pr_unhide(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, pr)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult {
+    pr_hide_set(st, ra, id, pr, headers, false).await
+}
+
+async fn dev_revoke(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::github::links::RevokeInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::github::links::revoke(
+        &st.app,
+        ctx,
+        &st.cfg.session,
+        key,
+        &id,
+        &body,
+    )
+    .await?))
+}
+
+async fn issue_dev(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::github::read::issue_dev(&st.app, ctx, &key).await?))
+}
+
+async fn admin_github_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::github::links::admin_get(&st.app, ctx).await?))
+}
+
+async fn admin_github_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::github::links::AdminGithubPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::github::links::admin_put(&st.app, ctx, &body).await?
+    ))
+}
+
+async fn project_timeline(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let include_closed = match q.get("include_closed").map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                "include_closed is true or false",
+            )
+            .with_details(json!({"path": "include_closed"}))
+            .into());
+        }
+    };
+    Ok(ok(crate::versions::timeline(
+        &st.app,
+        ctx,
+        &id,
+        q.get("from").map(String::as_str),
+        q.get("to").map(String::as_str),
+        q.get("versions").map(String::as_str),
+        include_closed,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn schedule_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::versions::schedule_settings(&st.app, ctx, &id).await?
+    ))
+}
+
+async fn schedule_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::versions::ScheduleSettingsInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::versions::put_schedule_settings(
+        &st.app, ctx, key, &id, &body,
+    )
+    .await?))
+}
+
+async fn org_schedule_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::versions::org_schedule_settings(&st.app, ctx).await?
+    ))
+}
+
+async fn org_schedule_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::versions::OrgScheduleSettingsInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::versions::put_org_schedule_settings(
+        &st.app, ctx, key, &body,
+    )
+    .await?))
 }
 
 async fn project_versions(

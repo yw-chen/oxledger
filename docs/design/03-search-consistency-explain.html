@@ -351,6 +351,18 @@ verify_citations({items:[{citation_id, quote}], mode:"exact"|"reanchor"})
 <tr><td>Q-S10</td><td>剛建立的單要不要出現在搜尋頁</td><td>顯示獨立卡片，不冒充命中</td></tr>
 </table></div>
 
+<h2 id="syntax"><span class="n">11</span>最小文字查詢語法（2026-11-08 補）</h2>
+<p>專案分頁的「儲存的篩選」用這段語法存查詢（契約 02 §18 R-T3）。它只是結構化參數的另一種寫法，不新增搜尋能力。詳細規則見文字版 §11。</p>
+<div class="tw"><table>
+<tr><th>寫法</th><th>對應參數</th></tr>
+<tr><td><code>project:AUTH</code></td><td><code>project</code>；分頁裡必須剛好一個，而且等於本專案，沒寫由 server 補上</td></tr>
+<tr><td><code>status:open</code>／<code>todo</code>／<code>doing</code>／<code>done</code></td><td><code>status_category</code></td></tr>
+<tr><td><code>status:"In Progress"</code></td><td><code>status</code>（值有空白時用引號）</td></tr>
+<tr><td><code>tracker:bug</code>、<code>assignee:me</code></td><td><code>tracker</code>、<code>assignee</code></td></tr>
+<tr><td>其他詞（含 <code>foo:bar</code>、網址）</td><td><code>q</code>（自由文字）</td></tr>
+</table></div>
+<p>存的是正規化字串，例如 <code>status:open  login project:auth</code> 存成 <code>project:AUTH status:open login</code>。錯誤回 <code>tab_query_syntax</code>，帶字元位置。不支援 OR、NOT、括號、自訂欄位與日期條件。</p>
+
 <footer>oxledger · GPL-2.0-or-later · 設計 03。數字來自 <code>experiments/sd/results/</code>：PG 18.6 預設設定的 Docker 容器、桌機、每個查詢暖機後跑 15 次取中位數，沒有並行負載，也沒有冷快取。GPT 討論 call：20261106-224930-5016a5、20261106-230226-cb7c5b、20261106-231339-769d13、20261106-232715-02c6eb；對齊設計 02 後複審：20261107-000516-6d8293（附錄 A 第 5 輪；回饋 02 見文字版 §8.2）。</footer>
 </main>
 </body>

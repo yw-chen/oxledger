@@ -1372,6 +1372,35 @@ UX-5 的說明文字：「搜尋清單同步中，通常 1 秒內完成」。有
 - Q-S5 依賴 E6 的結果。
 - 其餘各題獨立。
 
+## 11. 最小文字查詢語法（2026-11-08 補；契約 02 §18 R-T3、s6b-checklist B2）
+
+使用者 2026-11-08 對 B2 選「先定最小文字語法」。專案分頁的「儲存的篩選」要存一段文字查詢，這一節定那段文字的語法。它只是結構化搜尋參數（§3.6 的 `project`、`status`、`status_category`、`tracker`、`assignee`、`q`）的另一種寫法，不新增搜尋能力。實作在 `crates/oxledger/src/query_syntax.rs`。
+
+**語法**
+
+- 用 Unicode 空白分開成多個詞。
+- `鍵:值` 是條件。鍵只有 `project`、`status`、`tracker`、`assignee` 四個，不分大小寫。
+  - 值是一段不含空白的字，或用 `"…"` 括起來的字串（可含空白，不支援跳脫，值裡不能有 `"`）。引號結束後必須接空白或結尾。
+  - 每個鍵最多一次。`project:` 可以重複，但會被呼叫端當成範圍錯誤拒絕（R-T3）。
+- 其他詞都是自由文字，照原順序；含 `:` 的詞（例如網址、`foo:bar`）也算自由文字。自由文字裡不能有 `"`。
+
+**對應到搜尋參數**
+
+| 條件 | 參數 |
+|---|---|
+| `project:X` | `project = X`（key、名稱或別名，照 §3.6） |
+| `status:open`、`todo`、`doing`、`done` | `status_category`（不分大小寫） |
+| `status:其他` | `status`（狀態名稱或別名） |
+| `tracker:X` | `tracker` |
+| `assignee:me`、`none`、登入名、名稱、群組名 | `assignee` |
+| 自由文字 | `q`（以單一空白接起來） |
+
+**正規化**（存進分頁的字串）：條件依 `project`、`status`、`tracker`、`assignee` 的順序，再接自由文字，用單一空白分開；值含空白時加引號。正規化字串再解析一次會得到同樣的查詢。
+
+**錯誤**：`tab_query_syntax`，`details.position` 是輸入的字元位置（從 0 起算）。錯誤情形：條件沒有值、引號沒有結束、引號後沒有空白、值的中間出現引號、同一個鍵出現兩次、自由文字含引號。
+
+**範圍外**：OR、NOT、括號、自訂欄位條件、日期條件、§17.15 的 `version:`。要用這些時改用結構化的 `filter`。
+
 ## 附錄 A · GPT 討論紀錄
 
 全部用 `mcp__plugin_aura_gpt__ask`，模型 gpt-6.1-sol，effort high，thread `oxledger-search-consistency-explain`。附檔只有 `crates/oxledger/src/search.rs` 和 `migrations/0001_init.sql`（第 1 輪），以及本文件草稿（第 4 輪）。

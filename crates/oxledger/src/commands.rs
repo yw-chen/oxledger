@@ -22,7 +22,9 @@
 //! The engine is shared: `evaluate` takes a [`Mode`]; S4 runs `Direct` for
 //! people. ChangeSets (S5) and direct agent writes (S6) reuse it.
 
-use crate::auth::{AuthContext, AuthMethod};
+use crate::auth::AuthContext;
+#[cfg(feature = "test-support")]
+use crate::auth::AuthMethod;
 use crate::db;
 use crate::describe::{
     self, CfDef, IssueCore, MAX_DESCRIPTION_BYTES, MAX_NOTE_BYTES, MAX_OPS, applicable_fields,
@@ -1898,6 +1900,128 @@ pub(crate) async fn record_human_execution(
     .execute(&mut *conn)
     .await?;
     Ok(execution_id)
+}
+
+/// An undo (§16.7): a `human_direct` execution that names what it reverts.
+pub(crate) async fn record_undo_execution(
+    conn: &mut PgConnection,
+    request_id: Uuid,
+    user_id: Uuid,
+    hash: &[u8],
+    consistent_after: &str,
+    reverts: Uuid,
+) -> Result<Uuid> {
+    let execution_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO execution_refs (id, kind) VALUES ($1, 'command')")
+        .bind(execution_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "INSERT INTO command_executions (id, operation_request_id, actor_id, origin, command_hash,
+                                         consistent_after, reverts_execution_id)
+         VALUES ($1, $2, $3, 'human_direct', $4, $5, $6)",
+    )
+    .bind(execution_id)
+    .bind(request_id)
+    .bind(user_id)
+    .bind(hash)
+    .bind(consistent_after)
+    .bind(reverts)
+    .execute(&mut *conn)
+    .await?;
+    Ok(execution_id)
+}
+
+/// Runs an undo document as `who` (steps 5–17, Mode::Direct): a
+/// `human_direct` execution with `reverts_execution_id`, keeping before and
+/// after values so the undo itself can be undone (§16.7).
+pub(crate) async fn evaluate_undo(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &Executor,
+    doc: &Parsed,
+    request_id: Uuid,
+    reverts: Uuid,
+) -> Result<CommandResult> {
+    let deadline = lock_executor(&mut *conn, who).await?;
+    let ectx = EvalCtx {
+        mode: Mode::Direct,
+        caller,
+        ceiling: None,
+        deadlines: deadline
+            .map(|d| (d, ErrorCode::Unauthenticated))
+            .into_iter()
+            .collect(),
+        author: None,
+    };
+    let sim = simulate(&mut *conn, &ectx, doc).await?;
+    let consistent_after = sim.token.clone().unwrap_or_default();
+    let execution_id = record_undo_execution(
+        &mut *conn,
+        request_id,
+        who.user_id,
+        &doc.hash[..],
+        &consistent_after,
+        reverts,
+    )
+    .await?;
+    let mut at = Attribution::human(who.user_id, request_id, execution_id);
+    at.record_changes = true;
+    let effects = write_effects(&mut *conn, doc, &sim, &at).await?;
+    Ok(CommandResult {
+        status: "succeeded".into(),
+        execution_id,
+        effects,
+        items: sim.items,
+        search: SearchReceipt { consistent_after },
+    })
+}
+
+/// A document checked as `caller` without writing (Mode::Validate).
+pub(crate) async fn check_as(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    doc: &Json,
+) -> Result<()> {
+    let parsed = parse(&mut *conn, doc, MAX_OPS as usize).await?;
+    let ectx = EvalCtx {
+        mode: Mode::Validate,
+        caller,
+        ceiling: None,
+        deadlines: Vec::new(),
+        author: None,
+    };
+    simulate(&mut *conn, &ectx, &parsed).await.map(|_| ())
+}
+
+/// An issue's current lock_version, status and field values by key name
+/// (the encoding of `execution_field_changes`).
+pub(crate) async fn current_values(
+    conn: &mut PgConnection,
+    issue: Uuid,
+) -> Result<Option<(i32, Uuid, BTreeMap<String, Json>)>> {
+    let r: Option<IssueRow> = sqlx::query_as(
+        "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
+                i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
+                i.fixed_version_id, i.start_date, i.due_date, i.is_private, i.lock_version,
+                i.last_event_seq
+         FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         WHERE i.id = $1 AND i.archived_at IS NULL",
+    )
+    .bind(issue)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(r) = r else { return Ok(None) };
+    let mut m: BTreeMap<String, Json> = r
+        .builtin()
+        .into_iter()
+        .map(|(k, v)| (k.name(), v))
+        .collect();
+    for (k, v) in load_cf_values(&mut *conn, r.id).await? {
+        m.insert(k.name(), v);
+    }
+    m.insert("status_id".into(), json!(r.status_id));
+    Ok(Some((r.lock_version, r.status_id, m)))
 }
 
 /// The key was used before (§8.7). Same content → the stored result, with
