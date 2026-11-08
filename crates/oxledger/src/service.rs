@@ -569,6 +569,7 @@ struct DetailRow {
     tracker_id: Uuid,
     status_id: Uuid,
     author_id: Uuid,
+    created_on_behalf_of_id: Option<Uuid>,
     assigned_to_id: Option<Uuid>,
     is_private: bool,
     subject: String,
@@ -608,6 +609,7 @@ async fn get_in(conn: &mut PgConnection, caller: AuthContext, key: &str) -> Resu
     }
     let row: Option<DetailRow> = sqlx::query_as(
         "SELECT i.id, ck.key AS current_key, i.project_id, i.tracker_id, i.status_id, i.author_id,
+                i.created_on_behalf_of_id,
                 i.assigned_to_id, i.is_private, i.subject, i.description,
                 p.name AS project, t.name AS tracker, s.name AS status, s.category AS status_category,
                 au.name AS author, a.name AS assignee, pk.key AS parent,
@@ -675,6 +677,7 @@ async fn get_in(conn: &mut PgConnection, caller: AuthContext, key: &str) -> Resu
                     tracker_id: row.tracker_id,
                     status_id: row.status_id,
                     author_id: row.author_id,
+                    created_on_behalf_of_id: row.created_on_behalf_of_id,
                     assigned_to_id: row.assigned_to_id,
                     is_private: row.is_private,
                     lock_version: row.lock_version,

@@ -169,6 +169,15 @@ pub async fn actor(conn: &mut PgConnection, ctx: AuthContext) -> Result<Actor> {
     })
 }
 
+/// "The issue is mine" for Redmine's `*_own_*` issue permissions (§16.2):
+/// the author is `me`, or the author is an agent that created it on behalf
+/// of `me`. For an agent, `me` is its delegator. The one function every
+/// write path and describe use; `created_on_behalf_of_id` is set only for
+/// agent authors (DB trigger), so the second case needs no kind check.
+pub fn is_own(me: Option<Uuid>, author: Uuid, created_on_behalf_of: Option<Uuid>) -> bool {
+    me.is_some_and(|u| author == u || created_on_behalf_of == Some(u))
+}
+
 /// One role's permissions: permission → trackers (`None` = all trackers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolePerms {
@@ -227,11 +236,12 @@ impl ProjectPerms {
     }
 
     /// Redmine `attributes_editable?`: `edit_issues`, or `edit_own_issues`
-    /// when the actor is the author; and the project accepts writes.
-    pub fn attributes_editable(&self, tracker: Uuid, author: Uuid, me: Option<Uuid>) -> bool {
+    /// when the issue is the actor's own ([`is_own`]); and the project
+    /// accepts writes.
+    pub fn attributes_editable(&self, tracker: Uuid, own: bool) -> bool {
         self.writable()
             && (self.allowed(EDIT_ISSUES, tracker)
-                || (self.allowed(EDIT_OWN_ISSUES, tracker) && me == Some(author)))
+                || (self.allowed(EDIT_OWN_ISSUES, tracker) && own))
     }
 
     /// Roles that *consider workflow* (`add_issues` or `edit_issues`,
@@ -393,11 +403,16 @@ mod tests {
     fn edit_own_needs_author_and_project_status_matters() {
         let (t, me, other) = (Uuid::from_u128(1), Uuid::from_u128(5), Uuid::from_u128(6));
         let mut p = pp(vec![role(9, &[(EDIT_OWN_ISSUES, None)])]);
-        assert!(p.attributes_editable(t, me, Some(me)));
-        assert!(!p.attributes_editable(t, other, Some(me)));
-        assert!(!p.attributes_editable(t, me, None));
+        assert!(p.attributes_editable(t, is_own(Some(me), me, None)));
+        assert!(!p.attributes_editable(t, is_own(Some(me), other, None)));
+        assert!(!p.attributes_editable(t, is_own(None, me, None)));
+        // An agent's issue created on behalf of `me` is mine; on behalf of
+        // someone else it is not.
+        let agent = Uuid::from_u128(7);
+        assert!(p.attributes_editable(t, is_own(Some(me), agent, Some(me))));
+        assert!(!p.attributes_editable(t, is_own(Some(me), agent, Some(other))));
         p.status = "closed".into();
-        assert!(!p.attributes_editable(t, me, Some(me)));
+        assert!(!p.attributes_editable(t, is_own(Some(me), me, None)));
         assert!(p.allowed(EDIT_OWN_ISSUES, t), "closed still reads");
         p.status = "archived".into();
         assert!(!p.allowed(EDIT_OWN_ISSUES, t));

@@ -17,7 +17,7 @@ use crate::describe;
 use crate::error::{self, ApiError, ErrorCode, api};
 use crate::mcp::{OxServer, ResolveParams};
 use crate::service::{self, App, SearchParams};
-use axum::extract::{ConnectInfo, FromRequest, Path, Request, State};
+use axum::extract::{ConnectInfo, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -77,7 +77,18 @@ pub fn router(app: Arc<App>, cfg: ApiConfig) -> Router {
             get(project_tracker_schema),
         )
         .route("/projects/{id}/assignees", get(project_assignees))
+        .route(
+            "/projects/{id}/versions",
+            get(project_versions).post(create_version),
+        )
+        .route(
+            "/versions/{id}",
+            get(version_get).patch(version_patch).delete(version_delete),
+        )
+        .route("/versions/{id}/impact", get(version_impact))
+        .route("/versions/{id}/events", get(version_events))
         .route("/resolve", post(resolve))
+        .route("/commands", post(submit_command))
         .route("/agent-clients", get(agent_clients))
         .route(
             "/delegations",
@@ -796,6 +807,170 @@ pub struct DelegationBody {
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
+}
+
+pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+
+/// The `Idempotency-Key` header: a UUID the client keeps for retries.
+fn idempotency_key(headers: &HeaderMap) -> Result<Uuid, ApiFailure> {
+    headers
+        .get(IDEMPOTENCY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| Uuid::parse_str(s.trim()).ok())
+        .ok_or_else(|| {
+            ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "an Idempotency-Key header (a uuid) is required",
+                )
+                .with_details(json!({"kind": "idempotency_key"}))
+                .into(),
+            )
+        })
+}
+
+/// `POST /commands` (§6.8): a person's command document.
+async fn submit_command(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<serde_json::Value>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::commands::submit(&st.app, ctx, key, &body).await?))
+}
+
+// ---------------------------------------------------------------- versions (S4, §17.8)
+
+type Params = Query<HashMap<String, String>>;
+
+fn int_param(q: &HashMap<String, String>, name: &str) -> Result<Option<i64>, ApiFailure> {
+    q.get(name)
+        .map(|v| {
+            v.parse::<i64>().map_err(|_| {
+                ApiFailure(api(
+                    ErrorCode::InvalidArgument,
+                    format!("{name} must be an integer"),
+                ))
+            })
+        })
+        .transpose()
+}
+
+async fn project_versions(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::versions::list(
+        &st.app,
+        ctx,
+        &id,
+        q.get("status").map(String::as_str),
+        q.get("include").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn create_version(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::versions::NewVersion>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::versions::create(&st.app, ctx, key, &id, &body).await?
+    ))
+}
+
+async fn version_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::versions::get(&st.app, ctx, id_param(&id)?).await?))
+}
+
+async fn version_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::versions::VersionPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::versions::update(
+        &st.app,
+        ctx,
+        key,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+async fn version_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let lv = int_param(&q, "lock_version")?
+        .ok_or_else(|| ApiFailure(api(ErrorCode::InvalidArgument, "lock_version is required")))?;
+    Ok(ok(crate::versions::delete(
+        &st.app,
+        ctx,
+        key,
+        id_param(&id)?,
+        lv as i32,
+    )
+    .await?))
+}
+
+async fn version_impact(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::versions::impact(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        q.get("effective_date").map(String::as_str),
+        q.get("status").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn version_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let limit = int_param(&q, "limit")?.map(|l| l.clamp(1, 1000) as u32);
+    Ok(ok(crate::versions::events(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        q.get("cursor").map(String::as_str),
+        limit,
+    )
+    .await?))
 }
 
 async fn create_delegation(

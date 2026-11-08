@@ -60,7 +60,7 @@ pub struct FieldSchema {
     /// Display name (custom fields).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// string | text | date | principal_ref | status_ref | version_ref, or a
+    /// string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a
     /// custom field type (int, float, date, string, text, list, user, bool, link).
     #[serde(rename = "type")]
     pub field_type: String,
@@ -267,6 +267,8 @@ fn builtin_fields(project: Uuid) -> Vec<Builtin> {
             None,
             Some(format!("/api/v1/projects/{project}/assignees")),
         ),
+        // Options inline (issue_priorities); a new issue gets the default.
+        ("priority_id", "priority_ref", false, None, None),
         (
             "start_date",
             "date",
@@ -292,23 +294,23 @@ fn builtin_fields(project: Uuid) -> Vec<Builtin> {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-struct CfDef {
-    id: i32,
-    name: String,
-    ftype: String,
-    is_required: bool,
-    visible: bool,
-    roles: Vec<Uuid>,
+pub(crate) struct CfDef {
+    pub id: i32,
+    pub name: String,
+    pub ftype: String,
+    pub is_required: bool,
+    pub visible: bool,
+    pub roles: Vec<Uuid>,
 }
 
 impl CfDef {
-    fn key(&self) -> String {
+    pub fn key(&self) -> String {
         format!("cf:{}", self.id)
     }
 }
 
 /// Custom fields that apply to `tracker` in `project` (D14), display order.
-async fn applicable_fields(
+pub(crate) async fn applicable_fields(
     conn: &mut PgConnection,
     project: Uuid,
     tracker: Uuid,
@@ -331,7 +333,7 @@ async fn applicable_fields(
 
 /// Same rule as `get` and filtering: visible fields for everyone; restricted
 /// ones for admins and holders of a listed role. Agents: visible only (§3.5).
-fn readable(cf: &CfDef, actor: &Actor, pp: &ProjectPerms) -> bool {
+pub(crate) fn readable(cf: &CfDef, actor: &Actor, pp: &ProjectPerms) -> bool {
     if cf.visible {
         return true;
     }
@@ -355,7 +357,7 @@ fn not_found(what: &str) -> anyhow::Error {
 
 /// A project the caller can see, by id or key. Unknown and invisible look
 /// the same.
-async fn visible_project(
+pub(crate) async fn visible_project(
     conn: &mut PgConnection,
     caller: AuthContext,
     project: &str,
@@ -448,6 +450,10 @@ async fn tracker_schema_in(
         ops
     };
 
+    let priorities: Vec<(Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, name, active FROM issue_priorities ORDER BY position, name")
+            .fetch_all(&mut *conn)
+            .await?;
     let mut fields: Vec<FieldSchema> = Vec::new();
     for (key, ty, required, constraints, options_source) in builtin_fields(project_id) {
         fields.push(FieldSchema {
@@ -457,7 +463,16 @@ async fn tracker_schema_in(
             required,
             constraints,
             options_source,
-            options: None,
+            options: (key == "priority_id").then(|| {
+                priorities
+                    .iter()
+                    .map(|(id, label, active)| OptionView {
+                        id: *id,
+                        label: label.clone(),
+                        active: *active,
+                    })
+                    .collect()
+            }),
             ops: ops_for(key),
         });
         if key == "assigned_to_id" {
@@ -565,9 +580,17 @@ pub(crate) struct IssueCore {
     pub tracker_id: Uuid,
     pub status_id: Uuid,
     pub author_id: Uuid,
+    pub created_on_behalf_of_id: Option<Uuid>,
     pub assigned_to_id: Option<Uuid>,
     pub is_private: bool,
     pub lock_version: i32,
+}
+
+impl IssueCore {
+    /// [`perm::is_own`] for this issue.
+    pub fn is_own(&self, actor: &Actor) -> bool {
+        perm::is_own(actor.user_id, self.author_id, self.created_on_behalf_of_id)
+    }
 }
 
 /// PROJECT-123; anything else cannot exist.
@@ -597,7 +620,7 @@ pub(crate) async fn visible_issue(
     }
     let row: Option<IssueCore> = sqlx::query_as(
         "SELECT i.id, ck.key, i.project_id, i.tracker_id, i.status_id, i.author_id,
-                i.assigned_to_id, i.is_private, i.lock_version
+                i.created_on_behalf_of_id, i.assigned_to_id, i.is_private, i.lock_version
          FROM issue_keys rk
          JOIN issues i ON i.id = rk.issue_id
          JOIN issue_keys ck ON ck.issue_id = i.id AND ck.is_current
@@ -642,7 +665,7 @@ pub(crate) async fn allowed_transitions(
         sqlx::query_as("SELECT id, name FROM issue_statuses ORDER BY position, name")
             .fetch_all(&mut *conn)
             .await?;
-    let editable = pp.attributes_editable(issue.tracker_id, issue.author_id, actor.user_id)
+    let editable = pp.attributes_editable(issue.tracker_id, issue.is_own(actor))
         && actor.delegation_allows(issue.project_id, perm::OP_TRANSITION, Some("status_id"));
     let roles = pp.workflow_roles();
     let ids = if editable && !roles.is_empty() {
@@ -693,7 +716,7 @@ pub(crate) async fn allowed_transitions(
 }
 
 /// Workflow field rules for (tracker, status) and the actor's workflow roles.
-async fn rules_by_status(
+pub(crate) async fn rules_by_status(
     conn: &mut PgConnection,
     tracker: Uuid,
     roles: &[Uuid],
@@ -737,7 +760,7 @@ async fn issue_actions_in(
     let (schema_version, workflow_version) = versions(&mut *conn).await?;
     let p = issue.project_id;
     let t = issue.tracker_id;
-    let attr_editable = pp.attributes_editable(t, issue.author_id, actor.user_id);
+    let attr_editable = pp.attributes_editable(t, issue.is_own(&actor));
     let roles = pp.workflow_roles();
     let rules = rules_by_status(&mut *conn, t, &roles).await?;
     let cfs = applicable_fields(&mut *conn, p, t).await?;

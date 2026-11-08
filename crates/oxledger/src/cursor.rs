@@ -33,6 +33,8 @@ pub enum Position {
     Keyset { t: DateTime<Utc>, i: Uuid },
     /// Ranked full text: how many ranked items were already returned.
     Rank { o: u32 },
+    /// Oldest first by sequence number: the last item's `seq`.
+    Seq { s: i64 },
 }
 
 #[derive(Serialize, Deserialize)]

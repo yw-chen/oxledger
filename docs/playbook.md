@@ -86,6 +86,12 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - 權限名稱只能是 `perm::PERMISSIONS` 那 11 個（DB CHECK `role_permissions_known`），新增權限要兩邊一起改。
 - 角色的 tracker 限制是**每個權限各自**的（`role_permission_trackers.permission`）；`view_issues` 全部 tracker、`edit_issues` 只有 Bug 是合法設定。
 
+### 命令與里程碑（S4）
+
+- `POST /commands`：人直接寫（human_direct）。header `Idempotency-Key` 必填（uuid）；同一個 key 重送回同一個結果（`execution_id` 相同），內容不同回 `idempotency_key_reused`，失敗不留紀錄（修好可以用同一個 key 再送）。文件格式見 `CommandDoc`（`api/types.ts`）：每張既有 issue 一定要有一條 `preconditions`（含 `lock_version`）。
+- 一份文件改同一張單多次，`lock_version` 只加 1、outbox 一則、事件依 op 順序；全部 no_effect 時什麼都不寫，但仍回 `consistent_after`。
+- 里程碑：`GET/POST /projects/{id}/versions`、`GET/PATCH/DELETE /versions/{id}`、`GET /versions/{id}/impact`、`GET /versions/{id}/events`。寫入要 `manage_versions` 與 `Idempotency-Key`；刪除是軟刪除，只有看得到的 issue 會擋。所有數字（stats、health、impact）只算呼叫者看得到的 issue。
+
 ## 症狀 → 原因 → 修法
 
 | 症狀 | 原因 | 修法 |
@@ -125,7 +131,16 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | describe／get 沒有列出某個轉移 | 轉移要：可編輯（`edit_issues` 或作者的 `edit_own_issues`，且專案 active）、角色有 add/edit（consider_workflow）、條件成立（`author`／`assignee` 看交易開始時的值）；agent 另要委派含 `transition` 與 `status_id` | 對照 `describe::allowed_transitions` |
 | `GET .../trackers/bug/schema` 回 `ambiguous_reference` | 有兩個 tracker 名稱只差大小寫 | 改用 tracker id |
 | migration 0007 失敗：`role_permissions_known` | 既有 `role_permissions` 有清單外的權限名稱 | 先刪或改名那些列；匯入 Redmine 前要先處理 |
-| 0007 之後有些 issue 的開始／到期日變成空的 | 0007 修復違反日期 CHECK 的舊資料（超出 1900–2199 清成 NULL；開始晚於到期兩端都清），原值與理由在 `migration_date_fixes` | 查那張表手動補回合理的值；S4 會把它轉成 issue 事件 |
+| 0007 之後有些 issue 的開始／到期日變成空的 | 0007 修復違反日期 CHECK 的舊資料（超出 1900–2199 清成 NULL；開始晚於到期兩端都清），原值與理由在那張 issue 的歷史（0008 起：`issue_events` kind `fields_changed`、`system_operation = 'u39_date_fix'`，payload 有 `changes` 與 `reasons`；`migration_date_fixes` 已刪） | 依事件裡的原值手動補回合理的值 |
+| `POST /commands` 回 400 `invalid_request`，`details.kind = "idempotency_key"` | 沒帶 `Idempotency-Key` 或不是 uuid | 每次「新的操作」產生一個 uuid，重試時沿用同一個 |
+| `POST /commands` 回 `invalid_request`「precondition」 | 每張既有 issue 要剛好一條 precondition（`lock_version` 必填）；新建的 temp issue 不能有 | 先 `GET /issues/{key}` 取 `lock_version` |
+| `conflict`，`details.lock_version` 比送出的大 | 讀了之後有人改過這張單 | 重新讀、確認變更還適用，再用新的 `lock_version` 送 |
+| 保留已停用的選項或已鎖定的版本卻回 `invalid_value`／`version_not_open` | 比較基準只看內建欄位時，自訂欄位原值會被當成新指定（S4 修過一次） | `check_write` 的 `orig` 要用 `Work.orig_values`（內建＋自訂）；`s4_commands` T-P6 會抓到 |
+| `version_name_taken` 但名稱看起來不一樣 | `name_key` 是 NFC＋casefold：`V2.0`／`v2.0`、組合／分解的 `é` 都算同名 | 用 `details.version_id` 那個既有版本，或換名字 |
+| 刪除版本回 `version_in_use`，但列出的單比實際少 | 只列呼叫者看得到的 issue（R5）；看不到的 issue 不會擋，刪除後它們保留指向已刪除的版本 | 刻意的；有權限的人看得到全部 |
+| 建立專案後 INSERT `project_schedule_settings` 撞主鍵 | 0007 的 trigger 建立專案時已經插入一列 | 用 UPDATE，不要再 INSERT |
+| 並行測試（兩個請求同時改）怎麼跑都過，拿掉鎖也過 | 兩個請求其實先後執行，沒有真的競爭 | 先用另一個交易持有上游的列（例如專案 `FOR UPDATE`），讓兩個請求都卡在同一點，再放開；`s4_versions` 的 M15 測試就是這樣 |
+| Python `subprocess.run(['cargo', …])` 在 Windows 報 FileNotFoundError | PATH 改了也不會影響 CreateProcess 找執行檔 | 用完整路徑 `~/.cargo/bin/cargo.exe` |
 | rustup 裝完 `cargo` 找不到 | 安裝時用了 `--no-modify-path` | 指令前加 `export PATH="$HOME/.cargo/bin:$PATH"`，或自行把 `%USERPROFILE%\.cargo\bin` 加進 PATH |
 
 ## 設計上的防呆

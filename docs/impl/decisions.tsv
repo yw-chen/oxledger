@@ -55,3 +55,30 @@ date	stage	decision	why	alternatives	source
 2026-11-08	S3	待使用者確認：agent 的 then_required／then_readonly 會列出可讀但不在 writable_fields 的欄位（不算洩漏；§5.2「委派範圍外的欄位不列」是否也套到這兩個清單）	轉移後的必填條件 agent 要知道才不會送出必失敗的提案	依 writable_fields 過濾	驗證報告 S3
 2026-11-08	S3	已知限制：describe 的 options_source（/projects/{id}/assignees、versions）是 REST，只收瀏覽器 session，agent 目前呼叫不到；S6 補 MCP 工具	REST 不收 bearer（§4.2）	現在就開 bearer	驗證報告 S3
 2026-11-08	S3	已知限制：role_permissions_known 是立即驗證的 CHECK，將來匯入含其他 Redmine 權限名稱（如 view_time_entries）會失敗；匯入功能上線前處理	1.0 前沒有正式資料	NOT VALID	驗證報告 S3
+2026-11-08	S4	human_direct 的 issue_events 同時要求 operation_request_id 與 command_execution_id（DB CHECK）	每個人的寫入都能追到同一筆 execution（undo、遮蔽、Agent 活動頁）	只要 operation_request_id	契約 02 §7.1、§16.5
+2026-11-08	S4	execution_field_changes、execution_version_changes 只在 agent 寫入時記；人寫只更新 issue_field_origins／version_field_origins	前後值副本只供 agent 的 undo 與遮蔽（§16.7），人的寫入不需要第二份值	人也記	契約 02 §16.7
+2026-11-08	S4	required 檢查只套在有欄位變更、狀態轉移或新建的 issue；只加 note 不觸發（和 Redmine 不同）	否則舊單缺必填就連 note 都加不了	每個 op 都檢查	契約 02 §6.6
+2026-11-08	S4	required 只檢查可讀欄位（加 subject）；看不到的必填欄位不擋	使用者無法補看不到的欄位	全部欄位都檢查	契約 02 §6.4 U2
+2026-11-08	S4	人的命令文件收 evidence 但不驗證	evidence 是給審閱者看的，人直接寫不需要	要求格式	契約 02 §6.1
+2026-11-08	S4	0008 把 migration_date_fixes 轉成每張 issue 一筆 fields_changed（origin import、system_operation u39_date_fix），payload 另加 reasons；轉完刪表	0007 時還沒有 issue_events；事件是唯一的歷史來源	保留報告表	契約 02 §17.2
+2026-11-08	S4	own 判斷（author 或 created_on_behalf_of）先用在權限（edit_own、set_own_private）；可見性仍只看 author／assignee，S6 一起改	可見性改動牽涉 ox-core 的謂詞與 E4 測試	現在一起改	契約 02 §16.2
+2026-11-08	S4	workflow 的 author 條件仍是 author_id = 我（不含 on_behalf_of）	S6 加 agent 寫入時再決定委派者是否算作者	現在就算	契約 02 §16.2
+2026-11-08	S4	未知與不可讀的自訂欄位回同形狀 invalid_value（unknown field）	不透露看不到的欄位存在	not_found	契約 02 §6.4
+2026-11-08	S4	test-support 建置下 executor 接受 TestUser；正式建置只接受瀏覽器 session	整合測試不必每次都登入	測試都走 REST	實作
+2026-11-08	S4	system principal 固定 id 00000000-0000-7000-8000-000000000001（name oxledger）	migration 與 seed 的事件要有 actor	每次查 kind=system	實作
+2026-11-08	S4	issue_priorities 預設值用 BEFORE INSERT trigger 補，命令引擎也明確寫入預設	seed／測試 helper 直接 INSERT issues 不必知道優先序	NOT NULL 不給預設	實作
+2026-11-08	S4	保留目前已停用的選項、已鎖定版本的原值算 no_effect：比較基準是載入時的內建＋自訂欄位值	S4 測試發現只比內建欄位，自訂欄位的原值被當成新指定	—	測試 T-P6
+2026-11-08	S4	版本名稱 name_key ＝ PostgreSQL casefold(normalize(trim, NFC))；name 存 NFC	PG18 內建，不用新增 crate；é 組合與分解視為同名	Rust unicode-normalization crate	契約 02 §17.2、D-8
+2026-11-08	S4	issue 是否結案（逾期、健康度）＝ issue_statuses.category = 'done'	第一版沒有 is_closed 欄位	新增欄位	契約 02 §17.3
+2026-11-08	S4	版本寫入的 Idempotency-Key：POST、PATCH、DELETE 都必填；replay 回目前的版本狀態，加上當初的 execution_id、changed、impact	§17.8「人的版本寫入共用 §6.8」；版本現況比當時快照有用	回當時快照	契約 02 §17.8
+2026-11-08	S4	版本 PATCH 值都沒變：changed=false、不寫事件、不加 lock_version，但仍記 execution	和命令引擎全 no_effect 的行為一致	回錯誤	契約 02 §6.9
+2026-11-08	S4	health_reasons 列出所有成立的條件，逾期版本也可能同時有 deadline_near_incomplete	§17.12「列出成立的條件」照字面	逾期時不列 near	契約 02 §17.12
+2026-11-08	S4	stats.late_for_version 計所有看得到的 issue（含已結案）；health 的 issue_late_for_version 只看未結案	flag 定義沒有未結案條件；健康度表明寫未結案	兩者都只算未結案	契約 02 §17.12
+2026-11-08	S4	impact.becomes_overdue_version ＝ 改完會是 overdue（未關閉、日期 < today、有看得到的未結案）且改之前不是	契約只給欄位名	改完是 overdue 就 true	契約 02 §17.8
+2026-11-08	S4	版本 events 的 cursor 用新的 Position::Seq；綁定呼叫者與版本 id	沿用 §4.5 cursor	用 offset	契約 02 §4.5
+2026-11-08	S4	時程視圖與 schedule-settings 端點排在 S6b（§10），S4 只用已存的門檻計算健康度	契約 §10 把「時程視圖、健康度門檻設定」列在 S6b	S4 一起做	契約 02 §10
+2026-11-08	S4	驗證修正：同文件新建的 issue（temp）做 update_fields／add_note 也要過 op 層權限（edit／edit_own、add_issue_notes），委派檢查用該 op 自己的種類	原本只檢查既有 issue，只有 add_issues 的人可以靠 temp 改欄位；S6 agent 可藉此繞過委派	—	驗證報告 S4 缺陷 1
+2026-11-08	S4	驗證修正：欄位刪除中（dropping）的錯誤延到 step 10 可見性之後才回	否則對看不到的 issue 回 invalid_value、不存在的回 not_found，可探測存在	照 step 8 原位	驗證報告 S4 缺陷 2
+2026-11-08	S4	驗證修正：版本寫入在期限檢查前取 search_settings FOR SHARE；結果帶 search.consistent_after（replay 回原 token）	§6.7 step 8b→9 順序；§6.9 成功寫入都帶回執	—	驗證報告 S4 缺陷 3、4
+2026-11-08	S4	驗證修正：新 issue 的 last_event_seq 在 INSERT 時寫入，outbox 只一則；fingerprint 前把 int／float 正規化（12.50＝12.5）	§6.9 每張一則 outbox；§16.5 fingerprint 用正規化文件	—	驗證報告 S4 缺陷 5、觀察
+2026-11-08	S4	已知缺口：own() 的 created_on_behalf_of 路徑只有 lib 單元測試；DB 層要 agent 作者，S6 補	agent 寫入在 S6 才存在	現在造假 agent 資料	驗證報告 S4 M11

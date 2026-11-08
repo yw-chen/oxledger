@@ -31,6 +31,32 @@ export type Capabilities = {
   command_schema_versions: Array<number>;
 };
 
+/** A command document, `command_schema_version = 1`. */
+export type CommandDoc = {
+  /** Always 1. */
+  command_schema_version: number;
+  /** Citations (`{citation_id, quote}`); checked for agent proposals (S6). */
+  evidence?: Array<Evidence>;
+  /** Only `"atomic"` (the default). */
+  exec_mode?: string | null;
+  /** 1–10 operations, applied in order, all or nothing. */
+  ops: Array<OpInput>;
+  /** Exactly one per existing target issue, each with `lock_version`. */
+  preconditions?: Array<Precondition>;
+  title?: string | null;
+};
+
+export type CommandResult = {
+  /** One per issue the document touched. */
+  effects: Array<Effect>;
+  execution_id: string;
+  /** One per op, in order. */
+  items: Array<ItemResult>;
+  search: SearchReceipt;
+  /** Always `succeeded` (failures are errors). */
+  status: string;
+};
+
 /** One condition on a custom field. */
 export type CondInput = {
   /** Custom field name (case-insensitive), e.g. "Severity". */
@@ -108,6 +134,15 @@ export type DuplicateActions = {
   can_propose: boolean;
 };
 
+export type Effect = {
+  /** Anything changed (fields, status, note, relation). */
+  changed: boolean;
+  created: boolean;
+  issue_id: string;
+  key: string;
+  lock_version: number;
+};
+
 export type Empty = Record<string, never>;
 
 /** The error object of §4.3 (`{"error": …}` in REST, bare in MCP). */
@@ -122,7 +157,18 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken";
+
+export type EventActor = {
+  id: string;
+  kind: string;
+  name: string;
+};
+
+export type Evidence = {
+  citation_id: string;
+  quote: string;
+};
 
 export type FieldAction = {
   /** Can be changed (for agents: can be changed in a proposal). */
@@ -148,7 +194,7 @@ export type FieldSchema = {
   options_source?: string | null;
   /** The field definition itself is required (workflow rules are per status: see the issue actions). */
   required: boolean;
-  /** string | text | date | principal_ref | status_ref | version_ref, or a custom field type (int, float, date, string, text, list, user, bool, link). */
+  /** string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a custom field type (int, float, date, string, text, list, user, bool, link). */
   type: string;
 };
 
@@ -160,6 +206,21 @@ export type FilterInput = {
   /** At least one of these must hold. */
   or: Array<FilterInput>;
 } | CondInput;
+
+/** What a date or status change touches, over visible issues only. */
+export type Impact = {
+  /** The version would turn `overdue` (it was not before). */
+  becomes_overdue_version: boolean;
+  /** Open issues whose due date is after the new version date. */
+  due_after_new_date: number;
+  /** Open issues in the version. */
+  open_issues: number;
+};
+
+export type ImpactResult = {
+  impact: Impact;
+  today: string;
+};
 
 /** What the caller can do to one issue now (§5.2). There is deliberately no `can_apply`. */
 export type IssueActions = {
@@ -223,6 +284,13 @@ export type IssuedCredential = {
   token: string;
 };
 
+export type ItemResult = {
+  issue_id: string;
+  op_id: string;
+  /** `applied` or `no_effect`. */
+  status: string;
+};
+
 export type Limits = {
   max_description_bytes: number;
   max_note_bytes: number;
@@ -258,8 +326,25 @@ export type NewContextBody = {
   fresh_context_ack: boolean;
 };
 
+/** `POST /projects/{id}/versions`. */
+export type NewVersion = {
+  description?: string | null;
+  effective_date?: string | null;
+  name: string;
+  status?: string | null;
+};
+
 /** What the caller may do next (contract 02 §14.2). A closed set; the list on an error names options, not steps to run in order. */
 export type NextAction = "fix_input" | "refresh_and_revise" | "retry_same_request" | "wait_and_retry" | "ask_human" | "stop";
+
+/** §17.10: `resolved`, `ambiguous` or `none`. */
+export type NextVersion = {
+  candidates?: Array<VersionBrief> | null;
+  outcome: string;
+  reason?: string | null;
+  undated?: Array<VersionBrief> | null;
+  version?: VersionBrief | null;
+};
 
 export type NoteActions = {
   can_add: boolean;
@@ -269,6 +354,39 @@ export type NoteActions = {
 /** `ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field. */
 export type Op = "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "between" | "in" | "is_null" | "not_null";
 
+export type OpInput = {
+  /** A name later ops use as `{"type": "temp", "ref": …}`. */
+  bind?: string | null;
+  /** `subject` (required), `description`, `is_private`, `assigned_to_id`, `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `cf:<id>`. */
+  fields: Record<string, unknown>;
+  kind: "create_issue";
+  op_id: string;
+  project_id: string;
+  tracker_id: string;
+} | {
+  kind: "update_fields";
+  op_id: string;
+  /** Field key → new value; `null` clears. */
+  set: Record<string, unknown>;
+  target: TargetRef;
+} | {
+  kind: "transition";
+  op_id: string;
+  target: TargetRef;
+  to_status_id: string;
+} | {
+  body: string;
+  is_private?: boolean;
+  kind: "add_note";
+  op_id: string;
+  target: TargetRef;
+} | {
+  kind: "duplicate_of";
+  op_id: string;
+  source: TargetRef;
+  target: TargetRef;
+};
+
 export type OptionView = {
   active: boolean;
   id: string;
@@ -277,6 +395,13 @@ export type OptionView = {
 
 export type PasswordBody = {
   password: string;
+};
+
+export type Precondition = {
+  /** Extra conditions on readable fields (normalized values). */
+  field_values?: Record<string, unknown>;
+  lock_version: number;
+  target: TargetRef;
 };
 
 export type PrivateChoice = {
@@ -320,6 +445,11 @@ export type SearchParams = {
   tracker?: string | null;
 };
 
+/** Design 03 §4.3: wait for this before expecting search to show the write. Not a proof of commit; `status` is. */
+export type SearchReceipt = {
+  consistent_after: string;
+};
+
 export type SearchResult = {
   items: Array<IssueBrief>;
   next_cursor?: string | null;
@@ -353,6 +483,24 @@ export type SourceProject = {
   security_epoch: number;
 };
 
+/** `{"type":"issue","id"|"key"}` or `{"type":"temp","ref"}`. */
+export type TargetRef = {
+  id?: string | null;
+  key?: string | null;
+  type: "issue";
+} | {
+  ref: string;
+  type: "temp";
+};
+
+/** The thresholds in use (org default or the project override); a null value turns `deadline_near_incomplete` off. */
+export type Thresholds = {
+  at_risk_days: number | null;
+  at_risk_open_pct: number | null;
+  /** `org` or `project`. */
+  source: string;
+};
+
 /** Static schema of an issue in a project × tracker (§5.1). */
 export type TrackerSchema = {
   command_schema_version: number;
@@ -377,6 +525,95 @@ export type TransitionAction = {
   /** Readable fields required after moving to this status. */
   then_required: Array<string>;
   to_status_id: string;
+};
+
+export type VersionBrief = {
+  effective_date?: string | null;
+  id: string;
+  name: string;
+  overdue?: boolean;
+};
+
+export type VersionEvent = {
+  actor: EventActor;
+  at: string;
+  /** `{field: {old, new}}`; null once redacted (D12). */
+  changes: unknown;
+  /** `created`, `updated` or `deleted`. */
+  kind: string;
+  origin: string;
+  redacted: boolean;
+  seq: number;
+};
+
+export type VersionEvents = {
+  items: Array<VersionEvent>;
+  next_cursor: string | null;
+};
+
+export type VersionList = {
+  next?: NextVersion | null;
+  /** The org time zone's date (R10). */
+  today: string;
+  versions: Array<VersionView>;
+};
+
+/** `PATCH /versions/{id}`. */
+export type VersionPatch = {
+  lock_version: number;
+  set: VersionSet;
+};
+
+/** Absent = unchanged; `effective_date: null` clears the date. */
+export type VersionSet = {
+  description?: string | null;
+  effective_date?: string | null;
+  name?: string | null;
+  status?: string | null;
+};
+
+/** Counts over the issues in the version that the caller can see. */
+export type VersionStats = {
+  closed: number;
+  /** `due_date > effective_date` of the version. */
+  late_for_version: number;
+  /** Neither a start nor a due date. */
+  no_dates: number;
+  open: number;
+  /** Open and `due_date < today`. */
+  overdue: number;
+  total: number;
+};
+
+/** A version as §17.8 shows it. `deleted` versions are only returned by `get`, never by lists or the next-version rule. */
+export type VersionView = {
+  deleted: boolean;
+  description: string;
+  /** `YYYY-MM-DD`; null = undated. */
+  effective_date: string | null;
+  /** `closed`, `no_date`, `overdue`, `at_risk` or `on_track` (§17.12). */
+  health?: string | null;
+  health_reasons?: Array<string> | null;
+  health_thresholds?: Thresholds | null;
+  id: string;
+  lock_version: number;
+  name: string;
+  project_id: string;
+  stats?: VersionStats | null;
+  /** `open`, `locked` or `closed`. */
+  status: string;
+};
+
+/** The result of a version write. A replay returns the version as it is now with the stored `execution_id`, `changed` and `impact`. */
+export type VersionWriteResult = {
+  /** False when nothing differed (no event, no `lock_version` bump). */
+  changed: boolean;
+  execution_id: string;
+  impact?: Impact | null;
+  /** §6.9: every successful write carries the receipt (the original one on replay). */
+  search: SearchReceipt;
+  today: string;
+  version: VersionView;
 };
 
 /** Success envelope (§4.3). */
@@ -405,6 +642,7 @@ export interface Endpoints {
   "GET /auth/session": { body: never; data: SessionData };
   "GET /auth/sessions": { body: never; data: Array<SessionItem> };
   "DELETE /auth/sessions/{id}": { body: never; data: Done };
+  "POST /commands": { body: CommandDoc; data: CommandResult };
   "GET /delegations": { body: never; data: Array<DelegationView> };
   "POST /delegations": { body: DelegationBody; data: DelegationView };
   "POST /delegations/{id}/revoke": { body: Empty; data: Done };
@@ -413,5 +651,12 @@ export interface Endpoints {
   "GET /issues/{key}/actions": { body: never; data: IssueActions };
   "GET /projects/{id}/assignees": { body: never; data: AssigneeList };
   "GET /projects/{id}/trackers/{tracker_id}/schema": { body: never; data: TrackerSchema };
+  "GET /projects/{id}/versions": { body: never; data: VersionList };
+  "POST /projects/{id}/versions": { body: NewVersion; data: VersionWriteResult };
   "POST /resolve": { body: ResolveParams; data: ResolveResult };
+  "DELETE /versions/{id}": { body: never; data: VersionWriteResult };
+  "GET /versions/{id}": { body: never; data: VersionView };
+  "PATCH /versions/{id}": { body: VersionPatch; data: VersionWriteResult };
+  "GET /versions/{id}/events": { body: never; data: VersionEvents };
+  "GET /versions/{id}/impact": { body: never; data: ImpactResult };
 }

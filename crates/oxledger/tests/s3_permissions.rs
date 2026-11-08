@@ -1344,6 +1344,72 @@ async fn migration_0007_repairs_dates() {
         .await
         .unwrap();
     assert_eq!(n, 1, "existing projects get a schedule settings row");
+
+    // 0008 (S4): every fixed issue gets one `fields_changed` import event with
+    // the old values and reasons, field origins, and the log table is gone.
+    run(8).await;
+    type Ev = (String, i64, String, String, Option<String>, Value);
+    let events: Vec<Ev> = sqlx::query_as(
+        "SELECT i.subject, e.seq, e.kind, e.origin, e.system_operation, e.payload
+         FROM issue_events e JOIN issues i ON i.id = e.issue_id ORDER BY 1",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        events.len(),
+        6,
+        "one event per fixed issue; 'fine' has none"
+    );
+    for (subject, seq, kind, origin, sysop, _) in &events {
+        assert_eq!(
+            (*seq, kind.as_str(), origin.as_str(), sysop.as_deref()),
+            (1, "fields_changed", "import", Some("u39_date_fix")),
+            "{subject}"
+        );
+    }
+    let order = &events.iter().find(|e| e.0 == "order").unwrap().5;
+    assert_eq!(
+        order,
+        &json!({
+            "changes": {
+                "start_date": {"old": "2026-03-01", "new": null},
+                "due_date": {"old": "2026-02-01", "new": null}
+            },
+            "reasons": {"start_date": "date_order", "due_date": "date_order"}
+        })
+    );
+    let both = &events.iter().find(|e| e.0 == "both out").unwrap().5;
+    assert_eq!(
+        both["reasons"],
+        json!({"start_date": "out_of_range", "due_date": "out_of_range"})
+    );
+    let seqs: Vec<(String, i64)> =
+        sqlx::query_as("SELECT subject, last_event_seq FROM issues ORDER BY subject")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for (s, seq) in &seqs {
+        assert_eq!(*seq, if s == "fine" { 0 } else { 1 }, "{s}");
+    }
+    let origins: i64 = sqlx::query_scalar("SELECT count(*) FROM issue_field_origins")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(origins, 8, "one per fixed field (the eight log rows above)");
+    let gone: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('migration_date_fixes')::text")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(gone, None);
+    let prio: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM issues i JOIN issue_priorities p ON p.id = i.priority_id AND p.is_default",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(prio, 7, "existing issues get the default priority");
     pool.close().await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP DATABASE {name} WITH (FORCE)"

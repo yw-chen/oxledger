@@ -100,6 +100,97 @@
         ],
         "type": "object"
       },
+      "CommandDoc": {
+        "additionalProperties": false,
+        "description": "A command document, `command_schema_version = 1`.",
+        "properties": {
+          "command_schema_version": {
+            "description": "Always 1.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence": {
+            "default": [],
+            "description": "Citations (`{citation_id, quote}`); checked for agent proposals (S6).",
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "type": "array"
+          },
+          "exec_mode": {
+            "description": "Only `\"atomic\"` (the default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ops": {
+            "description": "1–10 operations, applied in order, all or nothing.",
+            "items": {
+              "$ref": "#/components/schemas/OpInput"
+            },
+            "type": "array"
+          },
+          "preconditions": {
+            "default": [],
+            "description": "Exactly one per existing target issue, each with `lock_version`.",
+            "items": {
+              "$ref": "#/components/schemas/Precondition"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command_schema_version",
+          "ops"
+        ],
+        "type": "object"
+      },
+      "CommandResult": {
+        "properties": {
+          "effects": {
+            "description": "One per issue the document touched.",
+            "items": {
+              "$ref": "#/components/schemas/Effect"
+            },
+            "type": "array"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "items": {
+            "description": "One per op, in order.",
+            "items": {
+              "$ref": "#/components/schemas/ItemResult"
+            },
+            "type": "array"
+          },
+          "search": {
+            "$ref": "#/components/schemas/SearchReceipt"
+          },
+          "status": {
+            "description": "Always `succeeded` (failures are errors).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "execution_id",
+          "effects",
+          "items",
+          "search"
+        ],
+        "type": "object"
+      },
       "CondInput": {
         "description": "One condition on a custom field.",
         "properties": {
@@ -386,6 +477,36 @@
         ],
         "type": "object"
       },
+      "Effect": {
+        "properties": {
+          "changed": {
+            "description": "Anything changed (fields, status, note, relation).",
+            "type": "boolean"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue_id",
+          "key",
+          "lock_version",
+          "changed",
+          "created"
+        ],
+        "type": "object"
+      },
       "Empty": {
         "additionalProperties": false,
         "type": "object"
@@ -519,8 +640,114 @@
             "const": "temporarily_unavailable",
             "description": "Database or another dependency is down for a moment.",
             "type": "string"
+          },
+          {
+            "const": "conflict",
+            "description": "`lock_version` does not match; re-read and decide again.",
+            "type": "string"
+          },
+          {
+            "const": "precondition_failed",
+            "description": "A readable precondition field value does not match.",
+            "type": "string"
+          },
+          {
+            "const": "idempotency_key_reused",
+            "description": "The same operation id was used with different content.",
+            "type": "string"
+          },
+          {
+            "const": "execution_in_progress",
+            "description": "The same operation is still running.",
+            "type": "string"
+          },
+          {
+            "const": "operation_result_expired",
+            "description": "The stored result of this operation id was purged; it is not run again.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported_operation",
+            "description": "A command or field the first slice does not support.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported_execution_mode",
+            "description": "`exec_mode` other than `atomic`.",
+            "type": "string"
+          },
+          {
+            "const": "required_field_missing",
+            "description": "A required field is empty in the final state; only readable fields are named.",
+            "type": "string"
+          },
+          {
+            "const": "readonly_field",
+            "description": "Workflow or field rules do not allow changing the field.",
+            "type": "string"
+          },
+          {
+            "const": "invalid_transition",
+            "description": "Not an allowed status; `details.allowed` lists the caller's transitions.",
+            "type": "string"
+          },
+          {
+            "const": "relation_not_allowed",
+            "description": "Duplicate of itself, or across projects.",
+            "type": "string"
+          },
+          {
+            "const": "version_not_open",
+            "description": "The newly chosen version is locked or closed (§17.3 R1).",
+            "type": "string"
+          },
+          {
+            "const": "version_in_use",
+            "description": "Deleting a version still used by issues the caller can see (R5).",
+            "type": "string"
+          },
+          {
+            "const": "version_name_taken",
+            "description": "A version with the same name exists in the project (R8).",
+            "type": "string"
           }
         ]
+      },
+      "EventActor": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "citation_id": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "citation_id",
+          "quote"
+        ],
+        "type": "object"
       },
       "FieldAction": {
         "properties": {
@@ -593,7 +820,7 @@
             "type": "boolean"
           },
           "type": {
-            "description": "string | text | date | principal_ref | status_ref | version_ref, or a\ncustom field type (int, float, date, string, text, list, user, bool, link).",
+            "description": "string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a\ncustom field type (int, float, date, string, text, list, user, bool, link).",
             "type": "string"
           }
         },
@@ -642,6 +869,46 @@
           }
         ],
         "description": "Custom field filter: a condition, or `{\"and\": [...]}` / `{\"or\": [...]}` of filters."
+      },
+      "Impact": {
+        "description": "What a date or status change touches, over visible issues only.",
+        "properties": {
+          "becomes_overdue_version": {
+            "description": "The version would turn `overdue` (it was not before).",
+            "type": "boolean"
+          },
+          "due_after_new_date": {
+            "description": "Open issues whose due date is after the new version date.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "open_issues": {
+            "description": "Open issues in the version.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "open_issues",
+          "due_after_new_date",
+          "becomes_overdue_version"
+        ],
+        "type": "object"
+      },
+      "ImpactResult": {
+        "properties": {
+          "impact": {
+            "$ref": "#/components/schemas/Impact"
+          },
+          "today": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "today",
+          "impact"
+        ],
+        "type": "object"
       },
       "IssueActions": {
         "description": "What the caller can do to one issue now (§5.2). There is deliberately no\n`can_apply`.",
@@ -914,6 +1181,28 @@
         ],
         "type": "object"
       },
+      "ItemResult": {
+        "properties": {
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "op_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "description": "`applied` or `no_effect`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op_id",
+          "status",
+          "issue_id"
+        ],
+        "type": "object"
+      },
       "Limits": {
         "properties": {
           "max_description_bytes": {
@@ -1030,6 +1319,40 @@
         ],
         "type": "object"
       },
+      "NewVersion": {
+        "additionalProperties": false,
+        "description": "`POST /projects/{id}/versions`.",
+        "properties": {
+          "description": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_date": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "NextAction": {
         "description": "What the caller may do next (contract 02 §14.2). A closed set; the list\non an error names options, not steps to run in order.",
         "enum": [
@@ -1041,6 +1364,52 @@
           "stop"
         ],
         "type": "string"
+      },
+      "NextVersion": {
+        "description": "§17.10: `resolved`, `ambiguous` or `none`.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/VersionBrief"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "undated": {
+            "items": {
+              "$ref": "#/components/schemas/VersionBrief"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VersionBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "type": "object"
       },
       "NoteActions": {
         "properties": {
@@ -1073,6 +1442,163 @@
         ],
         "type": "string"
       },
+      "OpInput": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "bind": {
+                "description": "A name later ops use as `{\"type\": \"temp\", \"ref\": …}`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fields": {
+                "additionalProperties": true,
+                "description": "`subject` (required), `description`, `is_private`, `assigned_to_id`,\n`priority_id`, `fixed_version_id`, `start_date`, `due_date`, `cf:<id>`.",
+                "type": "object"
+              },
+              "kind": {
+                "const": "create_issue",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "project_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "tracker_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "project_id",
+              "tracker_id",
+              "fields"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "update_fields",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "set": {
+                "additionalProperties": true,
+                "description": "Field key → new value; `null` clears.",
+                "type": "object"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "set"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "transition",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef"
+              },
+              "to_status_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "to_status_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "is_private": {
+                "default": false,
+                "type": "boolean"
+              },
+              "kind": {
+                "const": "add_note",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "body"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`source` is the duplicate, `target` the original. Must be the only op.",
+            "properties": {
+              "kind": {
+                "const": "duplicate_of",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/components/schemas/TargetRef"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "source",
+              "target"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "OptionView": {
         "properties": {
           "active": {
@@ -1102,6 +1628,29 @@
         },
         "required": [
           "password"
+        ],
+        "type": "object"
+      },
+      "Precondition": {
+        "additionalProperties": false,
+        "properties": {
+          "field_values": {
+            "additionalProperties": true,
+            "default": {},
+            "description": "Extra conditions on readable fields (normalized values).",
+            "type": "object"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetRef"
+          }
+        },
+        "required": [
+          "target",
+          "lock_version"
         ],
         "type": "object"
       },
@@ -1241,6 +1790,18 @@
         },
         "type": "object"
       },
+      "SearchReceipt": {
+        "description": "Design 03 §4.3: wait for this before expecting search to show the write.\nNot a proof of commit; `status` is.",
+        "properties": {
+          "consistent_after": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "consistent_after"
+        ],
+        "type": "object"
+      },
       "SearchResult": {
         "properties": {
           "items": {
@@ -1364,6 +1925,83 @@
         ],
         "type": "object"
       },
+      "TargetRef": {
+        "description": "`{\"type\":\"issue\",\"id\"|\"key\"}` or `{\"type\":\"temp\",\"ref\"}`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "ref": {
+                "type": "string"
+              },
+              "type": {
+                "const": "temp",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "ref"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Thresholds": {
+        "description": "The thresholds in use (org default or the project override); a null\nvalue turns `deadline_near_incomplete` off.",
+        "properties": {
+          "at_risk_days": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "at_risk_open_pct": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "`org` or `project`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at_risk_days",
+          "at_risk_open_pct",
+          "source"
+        ],
+        "type": "object"
+      },
       "TrackerSchema": {
         "description": "Static schema of an issue in a project × tracker (§5.1).",
         "properties": {
@@ -1460,6 +2098,338 @@
           "name",
           "then_required",
           "then_readonly"
+        ],
+        "type": "object"
+      },
+      "VersionBrief": {
+        "properties": {
+          "effective_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "overdue": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "VersionEvent": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/EventActor"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "changes": {
+            "description": "`{field: {old, new}}`; null once redacted (D12)."
+          },
+          "kind": {
+            "description": "`created`, `updated` or `deleted`.",
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "at",
+          "kind",
+          "origin",
+          "actor",
+          "changes",
+          "redacted"
+        ],
+        "type": "object"
+      },
+      "VersionEvents": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VersionEvent"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "VersionList": {
+        "properties": {
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NextVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "today": {
+            "description": "The org time zone's date (R10).",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/VersionView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "today",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "VersionPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /versions/{id}`.",
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "set": {
+            "$ref": "#/components/schemas/VersionSet"
+          }
+        },
+        "required": [
+          "lock_version",
+          "set"
+        ],
+        "type": "object"
+      },
+      "VersionSet": {
+        "additionalProperties": false,
+        "description": "Absent = unchanged; `effective_date: null` clears the date.",
+        "properties": {
+          "description": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_date": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "VersionStats": {
+        "description": "Counts over the issues in the version that the caller can see.",
+        "properties": {
+          "closed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "late_for_version": {
+            "description": "`due_date > effective_date` of the version.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "no_dates": {
+            "description": "Neither a start nor a due date.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "open": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "overdue": {
+            "description": "Open and `due_date < today`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "closed",
+          "open",
+          "overdue",
+          "late_for_version",
+          "no_dates"
+        ],
+        "type": "object"
+      },
+      "VersionView": {
+        "description": "A version as §17.8 shows it. `deleted` versions are only returned by\n`get`, never by lists or the next-version rule.",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "effective_date": {
+            "description": "`YYYY-MM-DD`; null = undated.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health": {
+            "description": "`closed`, `no_date`, `overdue`, `at_risk` or `on_track` (§17.12).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "health_thresholds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Thresholds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "stats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VersionStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "description": "`open`, `locked` or `closed`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "description",
+          "effective_date",
+          "status",
+          "lock_version",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "VersionWriteResult": {
+        "description": "The result of a version write. A replay returns the version as it is now\nwith the stored `execution_id`, `changed` and `impact`.",
+        "properties": {
+          "changed": {
+            "description": "False when nothing differed (no event, no `lock_version` bump).",
+            "type": "boolean"
+          },
+          "execution_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Impact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "search": {
+            "$ref": "#/components/schemas/SearchReceipt",
+            "description": "§6.9: every successful write carries the receipt (the original one on replay)."
+          },
+          "today": {
+            "type": "string"
+          },
+          "version": {
+            "$ref": "#/components/schemas/VersionView"
+          }
+        },
+        "required": [
+          "version",
+          "changed",
+          "execution_id",
+          "today",
+          "search"
         ],
         "type": "object"
       }
@@ -2224,6 +3194,66 @@
         "x-csrf": true
       }
     },
+    "/commands": {
+      "post": {
+        "operationId": "post_commands",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandDoc"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CommandResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/delegations": {
       "get": {
         "operationId": "get_delegations",
@@ -2708,6 +3738,133 @@
         "x-access": "session"
       }
     },
+    "/projects/{id}/versions": {
+      "get": {
+        "operationId": "get_projects_id_versions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VersionList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Versions of a project (§17.8). Query status=open,locked (default), include=stats,next.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_projects_id_versions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewVersion"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VersionWriteResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Create a version (manage_versions). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/resolve": {
       "post": {
         "operationId": "post_resolve",
@@ -2766,6 +3923,309 @@
         "summary": "Name, login, key or alias to ids the caller can see.",
         "x-access": "session",
         "x-csrf": true
+      }
+    },
+    "/versions/{id}": {
+      "delete": {
+        "operationId": "delete_versions_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VersionWriteResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Soft-delete a version (manage_versions, R5). Query lock_version; header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "get": {
+        "operationId": "get_versions_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VersionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One version with stats and health over the issues you can see.",
+        "x-access": "session"
+      },
+      "patch": {
+        "operationId": "patch_versions_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VersionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VersionWriteResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change a version (manage_versions). Header Idempotency-Key; returns the impact of date or status changes.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/versions/{id}/events": {
+      "get": {
+        "operationId": "get_versions_id_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VersionEvents"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Version history, oldest first. Query cursor, limit.",
+        "x-access": "session"
+      }
+    },
+    "/versions/{id}/impact": {
+      "get": {
+        "operationId": "get_versions_id_impact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImpactResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Preview a change (manage_versions). Query effective_date (empty clears), status.",
+        "x-access": "session"
       }
     }
   },

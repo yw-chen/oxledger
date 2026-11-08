@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod api;
 pub mod auth;
+pub mod commands;
 pub mod cursor;
 pub mod custom_fields;
 pub mod db;
@@ -20,3 +21,4 @@ pub mod seed;
 pub mod service;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+pub mod versions;

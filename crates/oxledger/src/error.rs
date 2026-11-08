@@ -56,6 +56,34 @@ pub enum ErrorCode {
     RateLimited,
     /// Database or another dependency is down for a moment.
     TemporarilyUnavailable,
+    /// `lock_version` does not match; re-read and decide again.
+    Conflict,
+    /// A readable precondition field value does not match.
+    PreconditionFailed,
+    /// The same operation id was used with different content.
+    IdempotencyKeyReused,
+    /// The same operation is still running.
+    ExecutionInProgress,
+    /// The stored result of this operation id was purged; it is not run again.
+    OperationResultExpired,
+    /// A command or field the first slice does not support.
+    UnsupportedOperation,
+    /// `exec_mode` other than `atomic`.
+    UnsupportedExecutionMode,
+    /// A required field is empty in the final state; only readable fields are named.
+    RequiredFieldMissing,
+    /// Workflow or field rules do not allow changing the field.
+    ReadonlyField,
+    /// Not an allowed status; `details.allowed` lists the caller's transitions.
+    InvalidTransition,
+    /// Duplicate of itself, or across projects.
+    RelationNotAllowed,
+    /// The newly chosen version is locked or closed (§17.3 R1).
+    VersionNotOpen,
+    /// Deleting a version still used by issues the caller can see (R5).
+    VersionInUse,
+    /// A version with the same name exists in the project (R8).
+    VersionNameTaken,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -72,7 +100,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 17] = [
+    pub const ALL: [ErrorCode; 31] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -90,6 +118,20 @@ impl ErrorCode {
         Self::DelegationUnavailable,
         Self::RateLimited,
         Self::TemporarilyUnavailable,
+        Self::Conflict,
+        Self::PreconditionFailed,
+        Self::IdempotencyKeyReused,
+        Self::ExecutionInProgress,
+        Self::OperationResultExpired,
+        Self::UnsupportedOperation,
+        Self::UnsupportedExecutionMode,
+        Self::RequiredFieldMissing,
+        Self::ReadonlyField,
+        Self::InvalidTransition,
+        Self::RelationNotAllowed,
+        Self::VersionNotOpen,
+        Self::VersionInUse,
+        Self::VersionNameTaken,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -111,6 +153,20 @@ impl ErrorCode {
             Self::DelegationUnavailable => "delegation_unavailable",
             Self::RateLimited => "rate_limited",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
+            Self::Conflict => "conflict",
+            Self::PreconditionFailed => "precondition_failed",
+            Self::IdempotencyKeyReused => "idempotency_key_reused",
+            Self::ExecutionInProgress => "execution_in_progress",
+            Self::OperationResultExpired => "operation_result_expired",
+            Self::UnsupportedOperation => "unsupported_operation",
+            Self::UnsupportedExecutionMode => "unsupported_execution_mode",
+            Self::RequiredFieldMissing => "required_field_missing",
+            Self::ReadonlyField => "readonly_field",
+            Self::InvalidTransition => "invalid_transition",
+            Self::RelationNotAllowed => "relation_not_allowed",
+            Self::VersionNotOpen => "version_not_open",
+            Self::VersionInUse => "version_in_use",
+            Self::VersionNameTaken => "version_name_taken",
         }
     }
 
@@ -130,11 +186,28 @@ impl ErrorCode {
             Self::InvalidValue | Self::AmbiguousReference => 422,
             Self::RateLimited => 429,
             Self::TemporarilyUnavailable => 503,
+            Self::Conflict => 409,
+            Self::PreconditionFailed => 409,
+            Self::IdempotencyKeyReused => 409,
+            Self::ExecutionInProgress => 409,
+            Self::OperationResultExpired => 410,
+            Self::UnsupportedOperation => 422,
+            Self::UnsupportedExecutionMode => 422,
+            Self::RequiredFieldMissing => 422,
+            Self::ReadonlyField => 422,
+            Self::InvalidTransition => 422,
+            Self::RelationNotAllowed => 422,
+            Self::VersionNotOpen => 422,
+            Self::VersionInUse => 409,
+            Self::VersionNameTaken => 409,
         }
     }
 
     pub fn retryable(self) -> bool {
-        matches!(self, Self::TemporarilyUnavailable | Self::RateLimited)
+        matches!(
+            self,
+            Self::TemporarilyUnavailable | Self::RateLimited | Self::ExecutionInProgress
+        )
     }
 
     /// §14.2 table. Codes the table does not name: `invalid_credentials` →
@@ -160,6 +233,20 @@ impl ErrorCode {
             Self::AmbiguousReference => &[FixInput, AskHuman],
             Self::RateLimited => &[WaitAndRetry],
             Self::TemporarilyUnavailable => &[RetrySameRequest],
+            Self::Conflict => &[RefreshAndRevise],
+            Self::PreconditionFailed => &[RefreshAndRevise],
+            Self::IdempotencyKeyReused => &[FixInput],
+            Self::ExecutionInProgress => &[WaitAndRetry],
+            Self::OperationResultExpired => &[Stop],
+            Self::UnsupportedOperation => &[AskHuman, Stop],
+            Self::UnsupportedExecutionMode => &[AskHuman, Stop],
+            Self::RequiredFieldMissing => &[FixInput],
+            Self::ReadonlyField => &[FixInput],
+            Self::InvalidTransition => &[FixInput, AskHuman],
+            Self::RelationNotAllowed => &[AskHuman, Stop],
+            Self::VersionNotOpen => &[FixInput, AskHuman],
+            Self::VersionInUse => &[AskHuman],
+            Self::VersionNameTaken => &[FixInput, AskHuman],
         }
     }
 }
