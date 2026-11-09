@@ -79,6 +79,9 @@ pub struct FieldSchema {
     pub options: Option<Vec<OptionView>>,
     /// create | update | transition: what the caller could do with the field.
     pub ops: Vec<String>,
+    /// The field may be put in an agent delegation's `writable_fields`
+    /// (02 §3.5: agents never read or write `visible = false` custom fields).
+    pub delegable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -480,6 +483,7 @@ async fn tracker_schema_in(
                     .collect()
             }),
             ops: ops_for(key),
+            delegable: true,
         });
         if key == "assigned_to_id" {
             let ops =
@@ -497,6 +501,7 @@ async fn tracker_schema_in(
                 options_source: Some("/api/v1/issues/{key}/actions".to_string()),
                 options: None,
                 ops,
+                delegable: false,
             });
         }
     }
@@ -518,6 +523,7 @@ async fn tracker_schema_in(
         let key = cf.key();
         fields.push(FieldSchema {
             ops: ops_for(&key),
+            delegable: cf.visible,
             key,
             name: Some(cf.name.clone()),
             field_type: cf.ftype.clone(),

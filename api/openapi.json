@@ -1866,6 +1866,10 @@
       "FieldSchema": {
         "properties": {
           "constraints": true,
+          "delegable": {
+            "description": "The field may be put in an agent delegation's `writable_fields`\n(02 §3.5: agents never read or write `visible = false` custom fields).",
+            "type": "boolean"
+          },
           "key": {
             "description": "`subject`, `assigned_to_id`, … or `cf:<id>` for custom fields.",
             "type": "string"
@@ -1914,7 +1918,8 @@
           "key",
           "type",
           "required",
-          "ops"
+          "ops",
+          "delegable"
         ],
         "type": "object"
       },

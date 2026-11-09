@@ -111,6 +111,8 @@ npm run check && npm test                    # svelte-check、vitest
 npm run e2e                                  # Playwright，對真後端（會重建 oxledger_fe_e2e）
 ```
 
+E2E（`web/playwright.config.ts`）自己起後端 127.0.0.1:18082 與 SPA http://localhost:5176，不影響 18080／5174 的開發 preview；要先 `cargo build -p oxledger --features test-support`。`e2e/flows.spec.ts` 用 `e2e/agent.mjs`（MCP client）扮演 agent，token 從委派精靈的畫面讀出來。
+
 `backend.mjs` 只接受 `oxledger_fe_` 開頭的 DB 名稱（會 DROP）。四個 demo 帳號的密碼都是 `oxledger-demo-pass`（只在本機測試 DB）。Claude Code 的 preview 用 `.claude/launch.json` 的 `oxledger-backend`、`oxledger-web`。
 
 ## 症狀 → 原因 → 修法
@@ -212,6 +214,8 @@ npm run e2e                                  # Playwright，對真後端（會�
 | 前端非 GET 請求回 403 csrf_failed | Origin 不等於 `OXLEDGER_SPA_ORIGIN`，或 vite proxy 改寫了 Origin | vite 的 `/api` proxy 設 `changeOrigin:false`；頁面與 SPA_ORIGIN 用同一個 host（localhost） |
 | `POST /commands` 回 invalid_request「UUID parsing failed」 | `op_id` 必須是 UUID | 用 `newOperationId()`（crypto.randomUUID） |
 | 存自訂欄位回「a custom field value is {"<type>": value} or null」 | 自訂欄位值要帶型別：int／float 是十進位字串、date 是 YYYY-MM-DD、list／user 是 UUID 字串、bool 是布林 | 送出前用 `wireFields()` 依 schema 的 type 包裝；空值送 null |
+| 登入後應該回到 `?next=` 的頁面，卻偶爾落在首頁 | 登入頁的 `$effect` 讀了 `page.url`：`goto(next)` 換網址時 effect 重跑，這時已沒有 `next`，又導到 `/` | `next` 在元件建立時用 `untrack` 讀一次，離開只做一次（`routes/login/+page.svelte`） |
+| 委派精靈「建立委派」回「值不合法：可以用 subject…」 | 專案有 `visible = false` 的自訂欄位，精靈把它放進 `writable_fields`；契約 02 §3.5 規定 agent 不能碰這類欄位 | schema 的每個欄位多了 `delegable`；精靈只列 `delegable` 的欄位 |
 | seed-demo 後前端看不到「編輯」「新增 note」 | seed 的角色只有 view_issues／manage_project | E2E 與開發 DB 套 `web/e2e/fixture.sql`（`node web/e2e/backend.mjs reset oxledger_fe_dev` 會一起做） |
 | 用 bash heredoc 一次寫多個 .svelte 檔，結果一個都沒寫進去 | `{#if}`、`$state` 等字元讓 heredoc 解析失敗（unexpected EOF） | .svelte 檔用編輯器工具寫，不要用 heredoc |
 | `npm run dev` 時 Vite 讀不到 `../api/types.ts` | Vite 預設只允許專案根目錄 | `server.fs.allow: ['..']`，alias `$api: '../api'` |

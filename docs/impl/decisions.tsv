@@ -291,3 +291,7 @@ date	stage	decision	why	alternatives	source
 2026-11-09	P1-F6	開發分頁與 repo 連動：GitHub 文字照原文顯示；App 讀不到的 repo 顯示「資料停在 <同步時間>」；解除連動要確認	§19.7	—	src/lib/components/DevTab.svelte
 2026-11-09	P1-F6	/admin/github 只管「可連動」開關；安裝／移除 App 指引到 GitHub 操作	§19.3	在 oxledger 內做安裝流程	src/routes/admin/github/+page.svelte
 2026-11-09	P1-F6	右欄「動態」的 diff 跟活動頁一樣用專案 schema／成員／里程碑換成名稱（原本顯示 cf:2 與 {"float":"5"}）	§15.3	—	src/lib/components/Collab.svelte
+2026-11-09	P1-F7	/account 只放登入中的瀏覽器（可登出其他）與這個瀏覽器的版面；agent token 不在這裡	§3.3、§15.2	合併到委派頁	src/routes/account/+page.svelte
+2026-11-09	P1-F7	路由層錯誤頁只處理找不到網址與頁面載入失敗；API 錯誤仍就地用 ErrorBox 顯示	§15.1 錯誤就地	全域錯誤頁	src/routes/+error.svelte
+2026-11-09	P1-F7	E2E 用獨立 DB oxledger_fe_e2e 與 18082／5176，每次重建；agent 端用 e2e/agent.mjs 走 MCP，token 從精靈畫面讀	playbook：測試 DB 隔離	mock agent	web/playwright.config.ts
+2026-11-09	P1-F7	精靈的欄位清單只列 schema 標 delegable 的欄位（後端補 FieldSchema.delegable）	02 §3.5 agent 不碰 visible=false 欄位	送出後再處理錯誤	src/routes/agents/new/+page.svelte

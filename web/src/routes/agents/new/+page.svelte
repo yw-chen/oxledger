@@ -58,7 +58,7 @@
 	$effect(() => {
 		const pid = projectId;
 		if (!pid) return;
-		customFieldNames(pid)
+		customFieldNames(pid, true)
 			.then((m) => (customFields = [...m].map(([key, name]) => ({ key, name }))))
 			.catch(() => (customFields = []));
 	});

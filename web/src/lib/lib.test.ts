@@ -91,10 +91,10 @@ describe('api client', () => {
 
 describe('commands', () => {
 	const fields = [
-		{ key: 'cf:1', type: 'list', ops: [], required: false },
-		{ key: 'cf:2', type: 'float', ops: [], required: false },
-		{ key: 'cf:3', type: 'bool', ops: [], required: false },
-		{ key: 'cf:4', type: 'date', ops: [], required: false }
+		{ key: 'cf:1', type: 'list', ops: [], required: false, delegable: true },
+		{ key: 'cf:2', type: 'float', ops: [], required: false, delegable: true },
+		{ key: 'cf:3', type: 'bool', ops: [], required: false, delegable: true },
+		{ key: 'cf:4', type: 'date', ops: [], required: false, delegable: true }
 	] as FieldSchema[];
 
 	it('only sends what changed; empty means cleared', () => {

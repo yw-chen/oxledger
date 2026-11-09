@@ -443,6 +443,8 @@ export type FieldAction = {
 
 export type FieldSchema = {
   constraints?: unknown;
+  /** The field may be put in an agent delegation's `writable_fields` (02 §3.5: agents never read or write `visible = false` custom fields). */
+  delegable: boolean;
   /** `subject`, `assigned_to_id`, … or `cf:<id>` for custom fields. */
   key: string;
   /** Display name (custom fields). */

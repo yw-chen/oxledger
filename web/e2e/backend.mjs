@@ -5,12 +5,13 @@
 //   node e2e/backend.mjs reset [db]     drop + create db, seed-demo, fixture.sql,
 //                                       passwords, the "Claude Code" agent client
 //   node e2e/backend.mjs serve [db]     oxledger serve on 127.0.0.1:18080
+//   node e2e/backend.mjs reset-serve db both (Playwright's webServer)
 //                                       (SPA origin http://localhost:5174)
 //
 // Demo password for admin/alice/bob/carol: see PASSWORD below (test value).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +40,8 @@ export function reset(db = 'oxledger_fe_dev') {
 	check(db);
 	if (!existsSync(bin)) throw new Error(`build the backend first: cargo build --features test-support (${bin})`);
 	psql('postgres', `DROP DATABASE IF EXISTS ${db} WITH (FORCE);\nCREATE DATABASE ${db};\n`);
+	// The search index belongs to the dropped database; start it afresh too.
+	rmSync(join(here, '.state', `index-${db}`), { recursive: true, force: true });
 	const env = { ...process.env, DATABASE_URL: `${PG}/${db}` };
 	const keys = run(bin, ['seed-demo'], { env, cwd: root })
 		.trim()
@@ -88,7 +91,11 @@ export async function waitHealthy(ms = 60000) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	const [cmd, db] = process.argv.slice(2);
 	if (cmd === 'reset') console.log(`reset ${reset(db)}`);
-	else if (cmd === 'serve') {
+	else if (cmd === 'reset-serve') {
+		reset(db);
+		const c = serve(db);
+		c.on('exit', (code) => process.exit(code ?? 0));
+	} else if (cmd === 'serve') {
 		const c = serve(db);
 		c.on('exit', (code) => process.exit(code ?? 0));
 	} else {

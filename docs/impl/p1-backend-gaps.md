@@ -22,3 +22,6 @@
 | G16 | 未修 | MCP `get` 的 fields 不接受 `start_date`、`due_date`（agent 可以寫但讀不到） | E2E 腳本改讀 lock_version | `get` 補上這兩個欄位 |
 | G17 | 未修 | 活動頁 diff 的自訂欄位是原始型別值、欄位是 `cf:N` | 前端合併各專案 schema 換成名稱 | 和佇列 diff 用同一個 render |
 | G18 | 未修（測試） | `tests/s6_read.rs` 的 10 個測試並行時互相清掉 DB（`issue_statuses_name_key` 重複），預設 `cargo test` 會失敗並中斷後面的測試檔 | 全套用 `--test-threads=1 --no-fail-fast` 跑（153 個全過） | 這個檔加上其他檔用的序列鎖，或合併成一個測試 |
+| G19 | 已修補 | tracker schema 沒有說哪些欄位可以放進 agent 委派；精靈把 `visible = false` 的自訂欄位放進 `writable_fields`，建立委派被拒（E2E 發現：AUTH 的 Customer 欄位） | `FieldSchema` 加 `delegable`（內建欄位 true、`status_id` false、自訂欄位 = `visible`）；`tests/s3_permissions.rs` 加斷言；`api/` 重新產生 | — |
+| G20 | 未修（待查） | E2E 期間後端 log 出現 `there is already a transaction in progress` 接著 `SET TRANSACTION ISOLATION LEVEL must be called before any query`（`service::read_tx`），請求回 500；發生在提案頁連續開啟、核准、修訂（流程 4）時。用 MCP 讀取＋中途取消 240 次沒有重現 | 前端的重試與 ErrorBox 讓流程照樣完成；E2E 仍全過 | 查哪條路徑讓連線帶著未結束的交易回到連線池（候選：請求被瀏覽器換頁取消時正在 `begin()`；某處 `acquire()` 後手動開交易） |
+| G21 | 未修（環境） | Windows 上 E2E 第一次跑時 tantivy 寫索引 `PermissionDenied (os error 5)`，`index sync failed` 警告；之後的同步成功 | 不影響（搜尋走 DB 複驗） | 可能是防毒軟體鎖檔；重試或把索引目錄排除掃描。同類現象：後端全套單執行緒跑時 `s7_redaction::search_never_shows_redacted_text`、`s8_gate::t_s2_outbox_consumed_twice` 各失敗一次（索引 20 秒內沒追上），單獨重跑兩次都通過 |

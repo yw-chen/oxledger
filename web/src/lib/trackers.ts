@@ -22,12 +22,14 @@ export function listTrackers(): Promise<Candidate[]> {
 	return trackers;
 }
 
-/** `cf:<id>` → name, for every custom field the caller may update in `projectId`. */
-export async function customFieldNames(projectId: string): Promise<Map<string, string>> {
+/** `cf:<id>` → name, for every custom field the caller may update in
+ *  `projectId`; `delegableOnly`: only those an agent may be given (02 §3.5:
+ *  never `visible = false` fields). */
+export async function customFieldNames(projectId: string, delegableOnly = false): Promise<Map<string, string>> {
 	const ts = await listTrackers();
 	const schemas = await Promise.all(ts.map((t) => api('GET /projects/{id}/trackers/{tracker_id}/schema', { path: { id: projectId, tracker_id: t.id } }).catch(() => null)));
 	const out = new Map<string, string>();
-	for (const s of schemas) for (const f of s?.fields ?? []) if (f.key.startsWith('cf:') && f.ops.includes('update')) out.set(f.key, f.name ?? f.key);
+	for (const s of schemas) for (const f of s?.fields ?? []) if (f.key.startsWith('cf:') && f.ops.includes('update') && (!delegableOnly || f.delegable)) out.set(f.key, f.name ?? f.key);
 	return out;
 }
 
