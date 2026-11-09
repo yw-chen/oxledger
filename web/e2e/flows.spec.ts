@@ -8,6 +8,7 @@ import { expect, test, type Browser, type BrowserContext, type Page } from '@pla
 // @ts-expect-error plain ESM helper without types
 import { Agent } from './agent.mjs';
 import { MCP_URL } from '../playwright.config';
+import { execFileSync } from 'node:child_process';
 
 const PASSWORD = 'oxledger-demo-pass'; // test value for the oxledger_fe_* databases only
 test.describe.configure({ mode: 'serial' });
@@ -23,6 +24,9 @@ async function login(page: Page, user: string, next = '/') {
 	// Lands on `next` itself (the login page must not wander on to "/").
 	await page.waitForURL((u) => u.pathname === next.split('?')[0]);
 	await page.waitForLoadState('networkidle');
+	// …and stays there (a reactive read of `next` once sent people on to "/").
+	await page.waitForTimeout(300);
+	expect(new URL(page.url()).pathname).toBe(next.split('?')[0]);
 }
 
 /** A REST call inside the page with the session's CSRF token. */
@@ -232,4 +236,91 @@ test('不存在的網址顯示找不到頁面', async ({ browser }) => {
 	const page = await alice(browser, '/');
 	await page.goto('/no/such/page');
 	await expect(page.getByTestId('error-page')).toContainText('找不到這個頁面');
+});
+
+/** SQL on the E2E database only (GitHub data cannot come from GitHub here). */
+function sql(text: string) {
+	execFileSync('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-v', 'ON_ERROR_STOP=1', '-q', '-U', 'oxledger', '-d', 'oxledger_fe_e2e'], { input: text });
+}
+
+test('里程碑：改日期前先看影響，儲存後更新', async ({ browser }) => {
+	const page = await alice(browser, '/project/AUTH/milestones');
+	await page.getByTestId('new-milestone').click();
+	await page.locator('#ms-name').fill('E2E 里程碑');
+	await page.locator('#ms-date').fill('2026-12-20');
+	await page.getByTestId('ms-create').click();
+	const card = page.getByTestId('milestone').filter({ hasText: 'E2E 里程碑' });
+	await expect(card).toContainText('2026-12-20');
+	// AUTH-2 (due 2026-12-10) goes into it.
+	const versions = await papi(page, 'GET', '/projects/AUTH/versions');
+	const v = versions.json.data.versions.find((x: { name: string }) => x.name === 'E2E 里程碑');
+	const iss = await papi(page, 'GET', '/issues/AUTH-2');
+	const r = await papi(page, 'POST', '/commands', {
+		command_schema_version: 1,
+		ops: [{ kind: 'update_fields', op_id: uuid(), target: ref('AUTH-2'), set: { fixed_version_id: v.id } }],
+		preconditions: [{ target: ref('AUTH-2'), lock_version: iss.json.data.lock_version }]
+	});
+	expect(r.status).toBe(200);
+	await page.reload();
+	await card.getByTestId('ms-edit').click();
+	await page.locator('[data-testid=milestone-edit] input[type=date]').fill('2026-12-05');
+	await expect(page.getByTestId('impact')).toContainText('1 張的到期日會晚於新日期');
+	await page.getByTestId('ms-save').click();
+	await expect(card).toContainText('2026-12-05');
+	// The timeline draws AUTH-2 in that milestone's lane.
+	await page.goto('/project/AUTH/timeline');
+	await expect(page.getByTestId('lane').filter({ hasText: 'E2E 里程碑' })).toContainText('AUTH-2');
+});
+
+test('權限：bob 看不到里程碑與隱藏 PR 的操作，alice 看得到', async ({ browser }) => {
+	sql(`
+WITH i AS (INSERT INTO github_installations (gh_installation_id, account_login, state) VALUES (9001,'acme','active') RETURNING id)
+INSERT INTO github_repos (gh_repo_id, installation_id, full_name, is_private, linkable, state)
+SELECT 101, i.id, 'acme/auth-service', false, true, 'accessible' FROM i;
+INSERT INTO project_repo_links (project_id, repo_id, linked_by, sync_state, synced_through)
+SELECT p.id, r.id, u.id, 'ok', now() FROM projects p, github_repos r, principals u WHERE p.key='AUTH' AND r.full_name='acme/auth-service' AND u.login='alice';
+WITH p AS (INSERT INTO github_pull_requests (repo_id, number, title, head_ref, head_sha, state, review_state, ci_state, html_url, gh_updated_at, content_hash)
+  SELECT r.id, 12, 'AUTH-1 fix', 'feat/12', 'abc', 'merged', 'approved', 'success', 'https://github.com/acme/auth-service/pull/12', now(), '\\x00'
+  FROM github_repos r WHERE r.full_name='acme/auth-service' RETURNING id)
+INSERT INTO pr_issue_refs (pr_id, issue_id, project_id, link_id, sources)
+SELECT p.id, k.issue_id, k.project_id, l.id, '{title}' FROM p, issue_keys k, project_repo_links l
+WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
+`);
+	const bob = await (await browser.newContext()).newPage();
+	contexts.push(bob.context());
+	await login(bob, 'bob', '/project/AUTH/milestones');
+	await expect(bob.getByText(/組織時區/)).toBeVisible();
+	await expect(bob.getByTestId('new-milestone')).toHaveCount(0);
+	await expect(bob.getByTestId('ms-edit')).toHaveCount(0);
+	await bob.goto('/project/AUTH/dev');
+	await expect(bob.getByTestId('dev-issue').first()).toContainText('acme/auth-service#12');
+	await expect(bob.getByRole('button', { name: '隱藏' })).toHaveCount(0);
+	const page = await alice(browser, '/project/AUTH/dev');
+	const row = page.getByTestId('dev-issue').filter({ hasText: 'AUTH-1' });
+	await expect(row.getByTestId('merged-transition')).toBeVisible();
+	await row.getByRole('button', { name: '隱藏' }).click();
+	await expect(page.getByTestId('dev-issue')).toHaveCount(0);
+});
+
+test('登入的 next 只接受本站路徑', async ({ browser }) => {
+	for (const [next, want] of [
+		['//evil.example/x', '/'],
+		['/%09/evil.example', '/'],
+		['/\\evil.example', '/'],
+		['https://evil.example', '/'],
+		['/search?q=login', '/search']
+	] as const) {
+		const page = await (await browser.newContext()).newPage();
+		contexts.push(page.context());
+		await page.goto(`/login?next=${encodeURIComponent(next).replace('%2509', '%09')}`);
+		await page.fill('input[name=username]', 'alice');
+		await page.fill('input[name=password]', PASSWORD);
+		await page.click('button[type=submit]');
+		await page.waitForURL((u) => !u.pathname.startsWith('/login'));
+		await page.waitForTimeout(300);
+		const u = new URL(page.url());
+		expect(u.origin, next).toBe(new URL(page.url()).origin);
+		expect(u.host, next).toMatch(/^localhost:/);
+		expect(u.pathname, next).toBe(want);
+	}
 });

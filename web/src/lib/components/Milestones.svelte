@@ -96,7 +96,7 @@
 <div class="row" style="gap:8px;margin:8px 0">
 	<label class="row" style="gap:4px"><input type="checkbox" bind:checked={showClosed} /> 顯示已關閉</label>
 	<span style="flex:1"></span>
-	<button class="btn sm" onclick={() => (creating = !creating)} data-testid="new-milestone">新增里程碑</button>
+	{#if data?.can_manage}<button class="btn sm" onclick={() => (creating = !creating)} data-testid="new-milestone">新增里程碑</button>{/if}
 </div>
 {#if data?.next?.version}
 	<div class="hint" data-testid="next-version">下一個里程碑：<b>{data.next.version.name}</b></div>
@@ -127,7 +127,7 @@
 				{#if v.health}<span class="chip {HEALTH[v.health]?.cls ?? 'c-dim'}" data-testid="health">{HEALTH[v.health]?.label ?? v.health}</span>{/if}
 				<span style="flex:1"></span>
 				<a class="btn sm" href="/search?q={encodeURIComponent(`project:${projectKey} version:"${v.name}"`)}">看單</a>
-				<button class="btn sm" onclick={() => startEdit(v)}>改日期／狀態</button>
+				{#if data.can_manage}<button class="btn sm" onclick={() => startEdit(v)} data-testid="ms-edit">改日期／狀態</button>{/if}
 			</div>
 			{#if v.description}<div class="hint">{v.description}</div>{/if}
 			{#if v.health_reasons?.length}<div class="hint">{v.health_reasons.map((r) => HEALTH_REASON[r] ?? r).join('、')}</div>{/if}

@@ -48,7 +48,7 @@
 		<nav class="ptabs" aria-label="專案分頁" data-testid="ptabs">
 			{#each tabs.tabs.filter((t) => !t.hidden) as t (t.id)}
 				{#if t.kind === 'link' && t.url}
-					<a href={t.url} target="_blank" rel="noopener noreferrer">{t.title} ↗</a>
+					<a href={t.url} target="_blank" rel="noopener noreferrer" title="開到 {t.url}">{t.title} ↗</a>
 				{:else}
 					<a href="/project/{projectKey}/{t.id}" class:on={shownTab === t.id} onclick={() => remember(t.id, t.title)} aria-current={shownTab === t.id ? 'page' : undefined}>{t.title}</a>
 				{/if}

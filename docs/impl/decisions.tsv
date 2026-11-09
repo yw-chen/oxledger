@@ -295,3 +295,7 @@ date	stage	decision	why	alternatives	source
 2026-11-09	P1-F7	路由層錯誤頁只處理找不到網址與頁面載入失敗；API 錯誤仍就地用 ErrorBox 顯示	§15.1 錯誤就地	全域錯誤頁	src/routes/+error.svelte
 2026-11-09	P1-F7	E2E 用獨立 DB oxledger_fe_e2e 與 18082／5176，每次重建；agent 端用 e2e/agent.mjs 走 MCP，token 從精靈畫面讀	playbook：測試 DB 隔離	mock agent	web/playwright.config.ts
 2026-11-09	P1-F7	精靈的欄位清單只列 schema 標 delegable 的欄位（後端補 FieldSchema.delegable）	02 §3.5 agent 不碰 visible=false 欄位	送出後再處理錯誤	src/routes/agents/new/+page.svelte
+2026-11-09	P1-F6v	分頁設定與健康度遇到 lock_version 衝突：保留使用者的輸入，讓他選「放棄並載入最新」或（分頁）「用我的版本覆蓋」	§15.1 不丟輸入	自動重載	src/routes/project/[key]/settings/+page.svelte
+2026-11-09	P1-F6v	健康度覆寫時空欄位 = 不檢查那一項（後端 null 的語意），前端驗證 0–90 天、0–100%	後端 check_ranges	空值補組織值	src/routes/project/[key]/settings/+page.svelte
+2026-11-09	P1-F6v	時程加日期範圍與「跳過去」（里程碑前 4 週到後 2 週）	§17.12	只有預設範圍	src/lib/components/Timeline.svelte
+2026-11-09	P1-F7v	登入 next 用 new URL 解析後比對 origin（瀏覽器會吃掉 tab／換行、把 \ 當 /）	open redirect 防護	字串前綴檢查	src/routes/login/+page.svelte

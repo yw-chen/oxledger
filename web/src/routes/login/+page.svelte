@@ -10,8 +10,15 @@
 	// `next` any more, and a reactive read sent the person on to "/".
 	const target = untrack(() => {
 		const n = page.url.searchParams.get('next');
-		// Only same-site paths (no open redirect).
-		return n && n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/\\') ? n : '/';
+		if (!n || !n.startsWith('/')) return '/';
+		// Resolve it the way the browser will (tabs and newlines dropped,
+		// backslashes read as slashes): this origin only, never an open redirect.
+		try {
+			const u = new URL(n, page.url.origin);
+			return u.origin === page.url.origin ? u.pathname + u.search + u.hash : '/';
+		} catch {
+			return '/';
+		}
 	});
 	let leaving = false;
 	function leave() {

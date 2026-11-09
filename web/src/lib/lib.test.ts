@@ -192,6 +192,12 @@ describe('errors (02 §15.5)', () => {
 		expect(describeError(new Error('x'))).toMatchObject({ action: 'refresh' });
 		expect(describeError(err('context_unavailable', { kind: 'closed' })).title).toContain('已關閉');
 	});
+	it('tab settings errors say what to fix and on which row (R-T1–R-T5)', () => {
+		expect(describeError(err('invalid_value', { kind: 'tab_url_invalid', path: 'tabs[5].url' })).title).toBe('第 6 列：連結要是完整的 https 網址');
+		expect(describeError(err('invalid_value', { kind: 'tab_default_invalid', path: 'default_tab' })).title).toMatch(/^預設分頁/);
+		expect(describeError(err('invalid_value', { allowed: ['a', 'b'] })).title).toBe('值不合法；可以用：a、b');
+		expect(describeError(err('conflict')).title).not.toContain('這張單');
+	});
 	it('every error code the server can send has its own wording', async () => {
 		const src = await import('../../../api/types.ts?raw').catch(() => null);
 		const m = (src?.default as string | undefined)?.match(/export type ErrorCode =([^;]+);/);

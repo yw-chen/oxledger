@@ -62,7 +62,7 @@
 			<a class="key" href="/issue/{it.key}">{it.key}</a>
 			<b>{it.subject}</b>
 			<span class="chip c-dim">{it.status}</span>
-			{#if it.merged_open}<span class="chip c-warn">PR 已合併，單還沒關</span>{/if}
+			{#if it.merged_open}<span class="chip c-warn">PR 已合併，單還沒關</span><a class="btn sm" href="/issue/{it.key}" data-testid="merged-transition">去轉換狀態</a>{/if}
 		</div>
 		{#each it.prs as pr (pr.pr_id)}
 			<div class="row hint" style="gap:6px;margin-top:3px">

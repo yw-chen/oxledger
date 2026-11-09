@@ -25,6 +25,26 @@ function names(v: unknown): string {
 		.join('、');
 }
 
+/** Project tab settings (§18.6 R-T1–R-T5): `details.kind` → what to fix. */
+const INVALID_KIND: Record<string, string> = {
+	tab_title_invalid: '標題不能空白，也不能太長',
+	tab_title_taken: '標題和其他分頁重複',
+	tab_url_invalid: '連結要是完整的 https 網址',
+	tab_query_scope: '查詢只能查這個專案（條件要是 project:這個專案）',
+	tab_query_syntax: '查詢條件的語法有誤',
+	tab_default_invalid: '預設分頁要是沒有隱藏的時程、里程碑、議題、開發或查詢分頁',
+	tab_limit: '分頁數量超過上限',
+	builtin_missing: '內建分頁不能移除（可以隱藏）',
+	duplicate_id: '同一個分頁出現兩次',
+	unknown_id: '有分頁已經不存在，請重新載入',
+	unknown_kind: '分頁種類不正確'
+};
+/** `tabs[5].url` → 「第 6 列：」. */
+function rowOf(path: unknown): string {
+	const m = typeof path === 'string' ? /^tabs\[(\d+)\]/.exec(path) : null;
+	return m ? `第 ${Number(m[1]) + 1} 列：` : '';
+}
+
 export function describeError(e: unknown): Shown {
 	if (!(e instanceof ApiError)) return { title: '發生未預期的錯誤', changed: UNKNOWN, next: '重新整理', action: 'refresh' };
 	const d = e.details;
@@ -42,7 +62,7 @@ export function describeError(e: unknown): Shown {
 		case 'csrf_failed':
 			return { title: '安全檢查沒有通過，請重新整理頁面', changed: NOTHING, next: '重新整理', action: 'refresh' };
 		case 'conflict':
-			return { title: '這張單在你開啟之後被改過，尚未套用任何變更', changed: NOTHING, next: '檢視差異', action: 'conflict' };
+			return { title: '這筆資料在你開啟之後被別人改過，尚未套用任何變更', changed: NOTHING, next: '檢視差異', action: 'conflict' };
 		case 'precondition_failed':
 			return { title: '資料已經和預期不同，尚未套用任何變更', changed: NOTHING, next: '重新載入', action: 'refresh' };
 		case 'version_superseded':
@@ -87,6 +107,8 @@ export function describeError(e: unknown): Shown {
 		case 'not_found':
 			return { title: '找不到，或你沒有權限查看', changed: NOTHING };
 		case 'invalid_value': {
+			const why = typeof d.kind === 'string' ? INVALID_KIND[d.kind] : undefined;
+			if (why) return { title: `${rowOf(d.path)}${why}`, changed: NOTHING };
 			const allowed = names(d.allowed);
 			return { title: allowed ? `值不合法；可以用：${allowed}` : '值不合法', changed: NOTHING };
 		}

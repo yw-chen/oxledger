@@ -26,6 +26,13 @@
 	});
 	const tabId = $derived(page.params.tab ?? tabs?.default_tab ?? null);
 	const tab = $derived(tabs?.tabs.find((t) => t.id === tabId) ?? null);
+	const host = (u: string) => {
+		try {
+			return new URL(u).host;
+		} catch {
+			return u;
+		}
+	};
 </script>
 
 <svelte:head><title>{key}{tab ? `・${tab.title}` : ''}・oxledger</title></svelte:head>
@@ -50,7 +57,7 @@
 		{:else if tab.kind === 'query'}
 			<QueryTab projectId={project?.id ?? key} {tab} />
 		{:else if tab.kind === 'link' && tab.url}
-			<div class="card">這是外部連結分頁：<a href={tab.url} target="_blank" rel="noopener noreferrer">{tab.url} ↗</a></div>
+			<div class="card">這是外部連結分頁，會開到 <b>{host(tab.url)}</b>：<a href={tab.url} target="_blank" rel="noopener noreferrer">{tab.url} ↗</a></div>
 		{/if}
 	</ProjectFrame>
 {/if}

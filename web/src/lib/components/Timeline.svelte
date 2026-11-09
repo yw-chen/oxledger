@@ -12,12 +12,23 @@
 	let error = $state<unknown>(null);
 	let includeClosed = $state(false);
 	let loading = $state(false);
+	// The range (§17.12): empty = the server's default window.
+	let from = $state('');
+	let to = $state('');
+	let versionNames = $state<Record<string, string>>({});
 
 	async function load() {
 		loading = true;
 		error = null;
 		try {
-			data = await api('GET /projects/{id}/timeline', { path: { id: projectId }, query: { include_closed: includeClosed } });
+			data = await api('GET /projects/{id}/timeline', { path: { id: projectId }, query: { include_closed: includeClosed, from: from || undefined, to: to || undefined } });
+			// The server names the cutting milestone by id only (gap G22).
+			const cut = data.range.truncated_by_version;
+			if (cut && !versionNames[cut]) {
+				api('GET /projects/{id}/versions', { path: { id: projectId }, query: { status: 'open,locked,closed' } })
+					.then((l) => (versionNames = Object.fromEntries(l.versions.map((v) => [v.id, `${v.name}（${v.effective_date ?? '未定日期'}）`]))))
+					.catch(() => {});
+			}
 		} catch (e) {
 			error = e;
 		} finally {
@@ -27,8 +38,16 @@
 	$effect(() => {
 		void projectId;
 		void includeClosed;
+		void from;
+		void to;
 		load();
 	});
+	const shift = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+	/** Show the weeks around a milestone date. */
+	function jump(date: string) {
+		from = shift(date, -28);
+		to = shift(date, 14);
+	}
 
 	const DAY = 86400000;
 	const t = (d: string) => Date.parse(`${d}T00:00:00Z`);
@@ -48,8 +67,16 @@
 
 <div class="row" style="gap:8px;margin:8px 0">
 	<label class="row" style="gap:4px"><input type="checkbox" bind:checked={includeClosed} /> 包含已關閉的單</label>
-	{#if data}<span class="hint">{data.range.from} ～ {data.range.to}{data.range.truncated_by_version ? `（因里程碑 ${data.range.truncated_by_version} 截到 400 天）` : ''}・今天 {data.today}</span>{/if}
+	<label class="row" style="gap:4px">從 <input type="date" bind:value={from} aria-label="開始日期" /></label>
+	<label class="row" style="gap:4px">到 <input type="date" bind:value={to} aria-label="結束日期" /></label>
+	{#if from || to}<button class="btn sm ghost" onclick={() => { from = ''; to = ''; }}>預設範圍</button>{/if}
 </div>
+{#if data}
+	<div class="hint" data-testid="tl-range">
+		{data.range.from} ～ {data.range.to}・今天 {data.today}
+		{#if data.range.truncated_by_version}・範圍最多 400 天，最遠的里程碑 {versionNames[data.range.truncated_by_version] ?? ''} 沒有包含在內{/if}
+	</div>
+{/if}
 <ErrorBox {error} onaction={load} />
 {#if loading && !data}<div class="sync"><span class="spin"></span>載入中…</div>{/if}
 {#if data}
@@ -59,6 +86,7 @@
 				<b>{lane.version ? lane.version.name : '沒有里程碑'}</b>
 				{#if lane.version}
 					<span class="hint">{lane.version.effective_date ?? '未定日期'}</span>
+					{#if lane.version.effective_date && (lane.version.effective_date < data.range.from || lane.version.effective_date > data.range.to)}<button class="btn sm ghost" onclick={() => jump(lane.version!.effective_date!)} data-testid="tl-jump">跳過去</button>{/if}
 					<span class="chip {HEALTH[lane.version.health]?.cls ?? 'c-dim'}" title={lane.version.health_reasons.map((r) => HEALTH_REASON[r] ?? r).join('、')}>{HEALTH[lane.version.health]?.label ?? lane.version.health}</span>
 					{#if lane.version.deleted}<span class="chip c-dim">已刪除</span>{/if}
 				{/if}
@@ -79,7 +107,7 @@
 					</div>
 				</div>
 			{:else}
-				<div class="hint">這條沒有畫得出來的單。</div>
+				<div class="hint">這段期間內沒有可以畫的單（可以調整上方的日期範圍{lane.version?.effective_date ? '，或按「跳過去」' : ''}）。</div>
 			{/each}
 		</div>
 	{:else}

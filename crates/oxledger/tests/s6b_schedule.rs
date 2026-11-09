@@ -414,6 +414,10 @@ async fn timeline_view() {
     let before_list = versions::list(&w.app, dave_ctx, "WEB", None, Some("stats"))
         .await
         .unwrap();
+    // A viewer without manage_versions: the SPA hides create/change.
+    assert!(!before_list.can_manage);
+    assert!(versions::list(&w.app, a, "WEB", None, None).await.unwrap().can_manage);
+    assert!(!versions::schedule_settings(&w.app, dave_ctx, "WEB").await.unwrap().can_manage);
     let (p1, _) = mk(&w, "private between", true).await;
     place(&w, p1, Some(days(t, 2)), Some(days(t, 4)), Some(near)).await;
     let (p2, _) = mk(&w, "private undated", true).await;
@@ -576,6 +580,7 @@ async fn schedule_settings() {
 
     let s = versions::schedule_settings(&w.app, a, "WEB").await.unwrap();
     assert_eq!(s.source, "org");
+    assert!(s.can_manage);
     assert_eq!(s.effective.health_at_risk_days, Some(7));
     assert_eq!(s.effective.health_at_risk_open_pct, Some(50));
     assert_eq!(s.lock_version, 0);

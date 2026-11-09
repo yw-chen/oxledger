@@ -3772,6 +3772,10 @@
       },
       "ScheduleSettings": {
         "properties": {
+          "can_manage": {
+            "description": "The caller may change these settings (`manage_versions`).",
+            "type": "boolean"
+          },
           "effective": {
             "$ref": "#/components/schemas/HealthValues"
           },
@@ -3791,6 +3795,7 @@
           }
         },
         "required": [
+          "can_manage",
           "effective",
           "source",
           "org",
@@ -5935,6 +5940,10 @@
       },
       "VersionList": {
         "properties": {
+          "can_manage": {
+            "description": "The caller may create and change versions here (`manage_versions`);\nthe SPA hides those controls otherwise.",
+            "type": "boolean"
+          },
           "next": {
             "anyOf": [
               {
@@ -5958,6 +5967,7 @@
         },
         "required": [
           "today",
+          "can_manage",
           "versions"
         ],
         "type": "object"

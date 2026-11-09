@@ -963,6 +963,8 @@ export type Revoked = {
 };
 
 export type ScheduleSettings = {
+  /** The caller may change these settings (`manage_versions`). */
+  can_manage: boolean;
   effective: HealthValues;
   lock_version: number;
   org: HealthValues;
@@ -1523,6 +1525,8 @@ export type VersionFields = {
 };
 
 export type VersionList = {
+  /** The caller may create and change versions here (`manage_versions`); the SPA hides those controls otherwise. */
+  can_manage: boolean;
   next?: NextVersion | null;
   /** The org time zone's date (R10). */
   today: string;
