@@ -230,7 +230,22 @@ async fn render(conn: &mut PgConnection, field: &str, v: &Json) -> Result<Json> 
                     .bind(id)
                     .fetch_optional(&mut *conn)
                     .await?;
+            // A stored proposal carries custom values typed, `{"<type>": v}`
+            // (commands.rs `parse_cf`); show them like the current value.
+            let typed = v
+                .as_object()
+                .filter(|m| m.len() == 1)
+                .and_then(|m| m.values().next());
+            let v = typed.unwrap_or(v);
             match ftype.as_deref() {
+                Some("int") => v
+                    .as_str()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .map_or_else(|| v.clone(), |n| json!(n)),
+                Some("float") => v
+                    .as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map_or_else(|| v.clone(), |n| json!(n)),
                 Some("user") => principal(conn, v).await?,
                 Some("list") => match v.as_str().and_then(|s| s.parse::<Uuid>().ok()) {
                     Some(o) => {
