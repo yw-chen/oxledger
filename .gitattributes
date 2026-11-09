@@ -1,0 +1,2 @@
+# Keep LF everywhere (core.autocrlf=true on Windows was converting files to CRLF on checkout).
+* text=auto eol=lf
