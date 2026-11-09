@@ -310,3 +310,23 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	where 的值每個請求只解析一次（記憶）；內建參照欄位的 id 每種一個批次查詢；不同名稱的查詢每個 where 最多 100 個（id 不算），超過回 invalid_filter too_complex	獨立驗證 1：逐一 resolve_one 不去重，30×100 個同名值一個請求 15 秒；名稱解析走 resolve，無法便宜地批次	把 resolve 改寫成批次；限制全部值的總數	crates/oxledger/src/filter/v2.rs
 2026-11-10	M1	where 的日期限年份 1–9999，超出回 invalid_value	獨立驗證 2：chrono 收、PG 超範圍會 500	限 PG date 的完整範圍	crates/oxledger/src/filter/v2.rs
 2026-11-10	M1	cursor 上限改成 MAX_SEALED（三個 2000 bytes 字串排序值 × 6 倍跳脫的最壞情況），encode 超過就報錯	獨立驗證 4：4096 收不回伺服器自己發的 cursor	cursor 只存排序值的雜湊（無法做 keyset）；字串排序值截斷（順序會錯）	crates/oxledger/src/cursor.rs
+2026-11-10	M1	view run／preview 走 POST，cursor 在 body；分組前導排序只用 id／position	排序 cursor 最長約 37 KB（base64 約 50 KB），GET 放不下；名稱會撐大 cursor	GET 加短 cursor 表（伺服器存狀態）	crates/oxledger/src/views.rs; crates/oxledger/src/api.rs
+2026-11-10	M1	manage_public_views 不在 migration 給任何角色；seed 給 Manager	新增 role_permissions 會 bump 全部專案 epoch，agent 脈絡失效（同 0019）	0021 給 Manager 並寫進升級說明（同 0015）——待使用者決定	migrations/0021_views.sql; crates/oxledger/src/seed.rs
+2026-11-10	M1	專案視圖與綁專案的個人視圖：存檔補 project eq（放不下就不補），執行一律 AND 專案；project 條件只能是該專案	R-VD3、R-T3：專案視圖只搜該專案	只在執行時 AND（定義看不出範圍）	crates/oxledger/src/views.rs
+2026-11-10	M1	欄位鍵白名單與預設欄位；spent_hours、triage 回 unknown_field	05 §3.3 欄位表；§8 依賴倒置	先接受、執行時忽略	crates/oxledger/src/views.rs
+2026-11-10	M1	計數上限 999、整次執行共用 2 秒預算（savepoint＋statement_timeout），逾時回 null；有 q 時不算計數與合計	R-VD6、B-7；全文只看 8000 筆，數字不準	有 q 時照算候選集合	crates/oxledger/src/views.rs
+2026-11-10	M1	override.q 取代視圖的 query.q；where_and 與視圖條件 AND	編輯器預覽與搜尋框是換掉查詢文字	兩者 AND	crates/oxledger/src/views.rs
+2026-11-10	M1	看板自動欄：status 必須列出；fixed_version 無專案必須列出；assignee 依可見結果；priority 無未設定欄；done 欄只顯示 done_window_days 內更新的	05 §3.3 看板定義	status 也自動列出全部狀態	crates/oxledger/src/views.rs
+2026-11-10	M1	builtin:involving_me 執行時 OR 上「30 天內寫過事件」（內部欄位 WROTE_RECENTLY_FIELD），因此不可複製（forbidden_op not_copyable）	Filter AST 沒有這個欄位；複製出去會悄悄少一個條件	把它加成 Filter AST 欄位（等於公開新篩選語意）	crates/oxledger/src/views.rs; crates/oxledger/src/filter.rs
+2026-11-10	M1	執行時讀不到的 cf：條件／排序／分組／分欄 → invalid_filter field_unavailable；欄位與卡片欄位直接拿掉	R-VD4：不默默放寬條件；顯示欄少一欄無安全問題	欄位也報錯	crates/oxledger/src/views.rs
+2026-11-10	M1	專案分頁：新種類 view（v_）算進 10 個自訂上限；內建 board 可帶 board 視圖的 view_id；triage 預設隱藏；0021 補兩個內建分頁並 lock_version+1	R-T1、R-V1–R-V3；舊清單 PUT 應得到 conflict 而非 builtin_missing	不動 lock_version	migrations/0021_views.sql; crates/oxledger/src/project_tabs.rs
+2026-11-10	M1	POST /views 與 /views/{id}/copy 回 201；OpenAPI 以 CREATED_ROUTES 標示	契約 §3.3 寫 201；複製也是建立	全部維持 200	crates/oxledger/src/api.rs; crates/oxledger/src/openapi.rs
+2026-11-10	M1	meta.today 放 data.meta.today，同 search 的 SearchMeta	M1.1 搜尋已用這個位置，前端一致	改封套 meta（要動所有端點）	crates/oxledger/src/views.rs
+2026-11-10	M1	視圖遮蔽表建好但遮蔽端點不做；讀事件時有 redaction_id 回 [已遮蔽]	M1.2 範圍沒列 D12 視圖遮蔽端點	本階段一起做	migrations/0021_views.sql; crates/oxledger/src/views.rs
+2026-11-10	M1	agent view_list 只列委派專案的專案視圖與專案內建視圖；個人視圖與含 me 的內建不列；editable 一律 false	B-4、R-VD9	列出但執行時拒絕	crates/oxledger/src/views.rs; crates/oxledger/src/mcp.rs
+2026-11-10	M1	自訂欄位不適用的單另成「不適用」組（值 not_applicable），計數用 gate 不成立；看板上進 unmapped.issues	驗證發現未設定組顯示與計數定義不一致；R-VD6 計數要等於可見結果	併入未設定（計數要改成 NOT (gate AND EXISTS)，但看板空值欄就會收到不適用的單，拖進去等於清空一個不存在的欄位）	crates/oxledger/src/views.rs
+2026-11-10	M1	看板 unmapped 改為每個看板都有：status_count（by status）、issues、lanes_truncated	停用選項、已關閉版本、超過 30 欄上限的人與不適用的單都要有歸屬，不能無聲消失	自動加「其他」欄（拖進去沒有可寫入的值）	crates/oxledger/src/views.rs; api/openapi.json; api/types.ts
+2026-11-10	M1	自動人員欄用一個不受計數預算限制的查詢（含完成時間窗），計數預算從第一個計數開始	欄的定義不能因計數逾時而改變；項目查詢不該吃計數預算	沿用計數預算（逾時欄消失）	crates/oxledger/src/views.rs
+2026-11-10	M1	改名撞唯一索引（23505）在 savepoint 內接住並回 view_name_taken	並行建立同名時原本回 500	改名也拿 per-owner advisory lock（多一把鎖，且專案視圖要另一把）	crates/oxledger/src/views.rs
+2026-11-10	M1	copy 先查 Idempotency-Key、fingerprint 只由請求算	來源改名或刪除後同 key 重送原本回 idempotency_key_reused／not_found	保留 source_lock_version（重放依賴來源現況）	crates/oxledger/src/views.rs
+2026-11-10	M1	看不到綁定專案的個人視圖：不回 project、回 project_unavailable；執行回 invalid_view/project_unavailable	原本洩漏私有專案名稱	直接 not_found（擁有者就刪不掉自己的視圖）	crates/oxledger/src/views.rs

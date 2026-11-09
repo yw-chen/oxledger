@@ -8,7 +8,7 @@
 |---|---|---|---|
 | M1.0 前置 | 0019、0020；`perm.rs` 權限清單；`estimated_hours` 進命令引擎、describe、事件、undo、政策；`issue_field_changes` 寫入與回填；D12 遮蔽刪投影 | 既有測試全綠；`estimated_hours` 走完 02 §16.7b 對應案例；T-M1-03 | 完成（2026-11-09，全套兩輪全綠，未 commit） |
 | M1.1 Filter AST v2 | `filter.rs` 擴充成 v2（內建欄位、`me`、相對日期、`ever_in`、排序）；舊參數轉 v2；`/filter-fields`、`describe filter_fields`；`search` 收 `where` | T-M1-01…05；E4 可見性測試加 v2 隨機條件；OpenAPI 與 `api/types.ts` 重產 | 完成（2026-11-10，含獨立驗證修正；全套兩輪全綠：test-support 197 過、test-support,github 205 過；未 commit） |
-| M1.2 視圖與看板 | 0021；`/views*`；內建視圖；`run`／`preview`；看板計數；專案分頁 `view`、`board`、`triage`；MCP `view_list`、`view_run` | T-M1-06…20；前端可接列表與看板 | — |
+| M1.2 視圖與看板 | 0021；`/views*`；內建視圖；`run`／`preview`；看板計數；專案分頁 `view`、`board`、`triage`；MCP `view_list`、`view_run` | T-M1-06…20；前端可接列表與看板 | 實作完成，含獨立驗證 9 項修正（2026-11-10；`m1_2_views` 26 個、`m1_2_upgrade` 1 個測試；全套兩輪全綠：test-support 226 過、test-support,github 234 過；前端未接；未 commit） |
 | M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | — |
 | M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | — |
 | M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | — |
@@ -76,3 +76,81 @@
 | 5 測試缺口 M4：`cf_cond` 的 gate 拿掉沒被抓到 | `m1_1_custom_field_gates_in_where_and_sort`：欄位改成只適用 WEB 後 AUTH 的殘留值、只有 Lead 角色可讀的欄位在 AUTH 的值，`eq`／`in`／`not_null` 都篩不出（有無 `q`）；把 gate 換成 `Pred::True` 時測試失敗（已實測） |
 | 6 測試缺口 M9：cf 排序的 gate 拿掉沒被抓到 | 同一測試：讀不到／不適用的值當空值排最後、依 id；拿掉排序 gate 時測試失敗（已實測） |
 | 7 偶發 `custom_fields_pg::custom_field_filters_match_reference_on_pg` | 建索引前把 Acme 議題的 subject 加長，使其 BM25 分數嚴格最低，前提「有命中排在前 500 名外」不再依賴 segment 切法 |
+
+## M1.2 疑點與照建議的做法
+
+- M1.2-D1 **`run` 與 `preview` 走 POST**（契約本來就是 POST）：cursor 放在 body，不經 query string。排序 cursor 最長約 37 KB（`cursor::MAX_SEALED`），base64 後約 50 KB，GET 的 URL 長度放不下。`m1_2_http_run_with_the_longest_cursor` 經 HTTP 用三個 2000 字元的排序值加分組逐頁翻完，cursor 長度超過 36000 字元仍收得回。分組與泳道的前導排序欄只用 id／position（不用名稱），所以 cursor 仍在 `MAX_SEALED` 的 1 KB 餘裕內。
+- M1.2-D2 **`manage_public_views` 不在 0021 給任何角色**：0021 不動 `role_permissions`，所以不會 bump epoch（同 0019 的處理）。開發用 seed 給 Manager。使用者決定（2026-11-10）：M1 新權限照 Redmine 預設給內建角色，**在 M1.4 的 migration 一次給完**（Manager 拿到 `manage_public_views`），只 bump 一次 epoch。
+- M1.2-D3 **專案視圖與綁專案的個人視圖**：存檔時 `where` 頂層若沒有 `project eq <該專案>`，伺服器就補上（補了超過深度或條件數上限時不補）；執行時一律再 AND 該專案（R-T3）。條件中的 `project` 只能是該專案，否則回 `invalid_view`／`project_scope`。專案視圖不可用受限欄位（`where`、欄位、卡片欄位、排序、分組、分欄都檢查），回 `invalid_view`／`restricted_field`。
+- M1.2-D4 **欄位鍵**：列表欄位與卡片欄位可用 `key、subject、project、tracker、status、status_category、assignee、author、priority、fixed_version、is_private、start_date、due_date、created_at、updated_at、estimated_hours`，以及 `cf:<id>`（也收 `cf:<名稱>`，存成 id）。`group_by` 可用 `status、assignee、priority、tracker、fixed_version、project`，以及 list、user、bool 型自訂欄位。`lanes.by` 可用 `status、status_category、assignee、priority、fixed_version`，以及 list、user 型自訂欄位。`swimlanes.by` 可用 `assignee、priority、fixed_version、project`。`totals` 只有 `estimated_hours`。`spent_hours`、`triage` 這階段不開放，送了回 `invalid_view`／`unknown_field`（`where` 裡則是 `invalid_filter`／`unknown_field`）。
+- M1.2-D5 **預設值**：列表欄位 `key、subject、status、assignee、priority、updated_at`；卡片欄位 `key、subject、assignee、priority、due_date`；`done_window_days` 14（範圍 1–365）；`show_empty` true。上限：欄位最多 12 個、卡片欄位 8 個、欄 30 個、每欄的值 100 個、欄標題 30 字、`q` 500 字、定義 32 KB。欄沒有 id 就自動補 `l1`、`l2`…。
+- M1.2-D6 **看板「完成」欄的時間窗**：不是 done 的單一律顯示；done 的單只顯示 `updated_at` 落在最近 `done_window_days` 天內的（用 `last_n_days`，以組織時區換日）。計數也套同一條件。
+- M1.2-D7 **沒有列出 `lanes.items` 時自動產生的欄**：
+  - `status_category`：三欄（待處理、進行中、完成）。
+  - `priority`：所有啟用中的優先度，沒有「未設定」欄（priority 不會是空值）。
+  - `fixed_version`：該專案未關閉的版本，再加「未設定」。沒有綁專案時必須列出欄，否則回 `lanes_required`。
+  - `assignee` 與 user 型自訂欄位：可見結果中實際出現的人（依名稱排序），再加「未指派」／「未設定」。
+  - list 型自訂欄位：啟用中的選項，再加「未設定」。
+  - 人員欄是一個查詢（套用可見性、視圖條件與「完成」時間窗）取出的，不用計數預算，計數逾時也不會讓欄消失。
+  - 自動欄最多 30 欄（含空值欄）；值超過時只取前面的，`unmapped.lanes_truncated` 是 true。
+  - 沒有欄的值（停用的選項、已關閉的版本、超過上限的人、沒對到的狀態）以及自訂欄位不適用的單，都算進 `unmapped.issues`，不會無聲消失。
+  - `status`：一定要列出欄，否則回 `lanes_required`。
+  - 自動欄的 id 是值本身（uuid 或分類名），空值欄的 id 是 `none`。
+- M1.2-D8 **`unmapped`**（每個看板都有）：
+  - `status_count`：只在 `lanes.by = status` 時有，是全站沒對到任何欄的狀態數（狀態是全域的，不分專案）。
+  - `issues`：可見、符合視圖條件、「完成」時間窗與泳道篩選，但不在任何欄的單數。計數規則同 D9（999 上限、逾時或有 `q` 時是 `null`）。
+  - `lanes_truncated`：自動欄因 30 欄上限少列了值。
+  - agent 的 `view_run`（board）也回 `unmapped`。
+- M1.2-D9 **計數與合計**（R-VD6）：
+  - 對呼叫者看得到的單計算，最多 999；超過時回 `{"value": 999, "capped": true}`（查詢時用 LIMIT 1000）。
+  - 一次執行的所有計數與合計共用 2 秒預算，從第一個計數開始算；列表與各欄的項目查詢先跑完，不吃這個預算。每個查詢放在 savepoint 裡並設 `statement_timeout` 為剩餘時間；逾時就回 `null`（合計回 `complete: false`），已取得的列表項目照常回。
+  - `wip.exceeded` 由計數算出；計數是 `null` 時也是 `null`。
+  - `estimated_hours` 合計以兩位小數字串回傳，例如 `"18.50"`。
+  - 有全文 `q`（視圖的 `query.q` 或 `override.q`）時不算計數與合計，都回 `null`：全文搜尋最多只看 8000 筆，算出的數字不準。
+  - 測試掛勾：feature `test-support` 下的 `views::COUNT_DELAY_MS` 與 `COUNT_BUDGET_MS`。
+- M1.2-D10 **`override.q` 取代視圖自己的 `query.q`**，不是兩者 AND；`override.where_and` 與視圖條件 AND。cursor 綁定主體、視圖 id、`def` 的 hash、`where_and`、模式、lane、swimlane；`q` 本來就在搜尋的 cursor hash 裡。視圖被改後拿舊 cursor 回 `invalid_cursor`（T-M1-15）。看板的 cursor 必須同時帶 `lane`，否則回 `invalid_argument`。
+- M1.2-D11 **執行時讀不到的自訂欄位**（R-VD4）：用在 `where`、排序、分組、分欄、泳道 → `invalid_filter`／`field_unavailable`（`details.path` 指向 `def.…`）。只用在列表欄位或卡片欄位 → 直接拿掉該欄，照常執行。
+- M1.2-D12 **內建視圖**：
+  - `builtin:assigned_to_me`：指派給我（含我的群組）且狀態未完成，依到期日升冪、再依 priority 降冪。
+  - `builtin:reported_by_me`：我建立的（含 agent 代我建立的）且狀態未完成，依更新時間降冪。
+  - `builtin:involving_me`：指派給我、我建立的，或我在 30 天內寫過事件（`issue_events.actor_id` 或 `on_behalf_of_id` 是我）。最後這個條件不是 Filter AST 能表達的欄位，所以用內部欄位 `filter::WROTE_RECENTLY_FIELD` 在執行時 OR 上去。因此這個視圖不能複製，複製時回 `forbidden_op`／`not_copyable`。
+  - `builtin:project_issues:<project>`：該專案未完成的單。
+  - `builtin:project_board:<project>`：依狀態分類分三欄。
+  - 專案類內建視圖的 `<project>` 也收專案 key。
+  - 所有內建視圖都不能改，改了回 `forbidden_op`／`builtin_view`；可以複製。
+- M1.2-D13 **複製**：預設複製成個人視圖，名稱加「（副本）」；也可以指定 `scope: project`（需要 `manage_public_views`）。複製到別的專案時，會先拿掉來源的 `project eq` 條件，再由伺服器補上新專案的。事件 payload 記 `copied_from`。冪等：先查 Idempotency-Key 再讀來源，fingerprint 只由請求（來源 id、scope、project_id、name）算，所以來源改名或刪除後同 key 同內容重送，仍回當初建立的副本（201）。
+- M1.2-D14 **刪除與分頁**：
+  - 鎖的順序：project `FOR SHARE` → `project_tab_settings` `FOR SHARE` → view `FOR UPDATE`。分頁寫入是 project `FOR SHARE` → settings `FOR UPDATE` → view `FOR SHARE`，兩邊順序一致。
+  - 被分頁引用的視圖不能刪，回 `view_in_use`，`details.tabs` 是那些分頁的標題。
+  - 個人視圖不會被分頁引用，刪除不受影響。
+  - 刪除是軟刪除，`lock_version` 加 1。
+- M1.2-D15 **專案分頁**：
+  - 新分頁種類 `view`（id 前綴 `v_`），算進 10 個自訂分頁的上限。
+  - 內建 `board` 可帶選填的 `view_id`，必須指向該專案的 board 專案視圖。其他內建分頁帶 `view_id` 回 `not_allowed`。
+  - `view_id` 不是該專案、未刪除的專案視圖時回 `invalid_value`／`tab_view_invalid`。
+  - `triage` 分頁預設隱藏，可以先開；Triage 的內容到 M1.3 才有。
+  - `GET /projects/{id}/tabs/{tab}/issues` 仍只跑 query 分頁；view 分頁由前端呼叫 `POST /views/{view_id}/run`。
+- M1.2-D16 **建立回 201**：`POST /views` 照契約回 201。`POST /views/{id}/copy` 也是建立，同樣回 201；同一個 Idempotency-Key 重送也回 201。OpenAPI 用 `openapi::CREATED_ROUTES` 標示這兩條路由，`types.ts` 從 201 的回應取型別。其他端點維持 200。
+- M1.2-D17 **`meta.today`** 放在 `data.meta.today`，與 `search` 的 `SearchMeta` 相同；`meta` 封套仍是 `request_id` 與 `observed_at`。契約範例把 `today` 放在封套的 `meta`，這裡沿用 M1.1 搜尋已採用的位置（使用者 2026-11-10 確認維持）。
+- M1.2-D18 **事件與遮蔽**：
+  - `view_def_events` 記 `created`、`updated`、`deleted`，payload 是 `{before, after}`。只改到相同值時不記事件，`lock_version` 也不變。
+  - 遮蔽表（`view_def_event_redactions`、`view_defs.redacted_at`）已經建好，但遮蔽端點這階段不做（D12 的視圖遮蔽列為未完成）。
+  - 讀事件時，有 `redaction_id` 的事件 payload 回 `"[已遮蔽]"`。
+- M1.2-D19 **agent**：
+  - `view_list` 只列委派專案的專案視圖，以及每個委派專案的 `project_issues`、`project_board`。不列個人視圖，也不列含 `me` 的內建視圖；`editable` 一律是 false。
+  - `view_run` 用 agent 自己的讀取範圍執行。list 回 `search` 的 compact 列；board 回 `lanes[{id, title, count, items, next_cursor}]`。
+  - 視圖含 `me` 時回 `invalid_filter`／`me_unavailable`（R-VD9）。
+  - 個人視圖或未委派專案的視圖回 `not_found`。
+  - REST 端點都要瀏覽器 session。
+- M1.2-D20 **上限**（R-V4）：每人最多 100 個個人視圖，每個專案最多 50 個專案視圖；用 advisory lock 計數，超過回 `invalid_value`／`view_limit`。名稱 1–60 字，NFC 正規化後 casefold 比對；同一範圍內重複回 `view_name_taken`（`details.view_id`）。並行時（另一個交易剛建立或改成同名）由唯一索引擋下：建立與複製用 `ON CONFLICT DO NOTHING`，改名在 savepoint 裡更新、接住 23505，三者都回 `view_name_taken`，不會 500。
+- M1.2-D21 **分組與分欄的排序**：伺服器把分組或泳道的值放在 `sort` 前面當前導排序欄，所以同一組的項目會連在一起、可以跨頁。順序：
+  - status、tracker、priority：依 position。
+  - 版本：依 `effective_date`。
+  - 人員：依 id。這不是名稱順序（使用者 2026-11-10 確認維持；前端可自行依名稱顯示）。
+  - 專案：依 key。
+  - list 型自訂欄位：依選項 position。
+  - 空值排最後。
+  - 自訂欄位先依「適用與否」排：適用的在前；不適用的單（tracker、專案不符或讀不到）排在最後，分組值是 `"not_applicable"`、標籤「不適用」，和「未設定」（適用但沒填）分開。`groups[].count` 用同一個定義（不適用 = 欄位的 gate 不成立），所以各組計數加起來等於可見結果數。泳道也會出現「不適用」，但不能用 `swimlane=not_applicable` 單獨開啟（回 `invalid_argument`）。
+  - 回應的 `groups` 與 `swimlanes` 只列本頁出現的值。`groups[].count` 則是該組全部可見單的數量。
+- M1.2-D22 **綁專案的個人視圖，專案看不到了**（例如被移出私有專案）：`GET /views` 與 `GET /views/{id}` 不回 `project`（不洩漏名稱），改回 `project_unavailable: true`；執行回 `invalid_view`／`project_unavailable`（`details.path` 是 `project_id`）。擁有者仍可以讀、改名或刪除它。
+- M1.2-D23 **獨立驗證後補的測試**（`m1_2_views.rs`）：user 型自訂欄位自動分欄（含 HTTP，不再 500）；不適用的分組、計數與看板 `unmapped`；人員欄不受計數逾時影響、超過 29 人的歸屬；停用選項進 `unmapped`；並行改名回 `view_name_taken`；來源改名、刪除後複製重放；移出專案後的個人視圖；DELETE 的 `lock_version`；`involving_me` 的 30 天邊界（29、31 天）；執行時一律 AND 綁定專案（存檔定義沒有 `project` 條件時）；agent 不能當視圖擁有者（DB trigger，INSERT 與 UPDATE）。已關閉版本進 `unmapped` 走的是和停用選項同一段程式，沒有單獨測；「計數預算從第一個計數開始」沒有計時測試。

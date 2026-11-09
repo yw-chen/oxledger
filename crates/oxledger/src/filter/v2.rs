@@ -1667,6 +1667,23 @@ impl SortCol {
         }
     }
 
+    /// An ascending column over the search aliases (views: the group and
+    /// swimlane order), counted only where `gate` holds when one is given.
+    pub(crate) fn lead(
+        sql: impl Into<String>,
+        gate: Option<Pred>,
+        cast: &'static str,
+        nullable: bool,
+    ) -> SortCol {
+        SortCol {
+            sql: sql.into(),
+            gate: gate.filter(|g| *g != Pred::True),
+            cast,
+            nullable,
+            desc: false,
+        }
+    }
+
     /// Appends the column's expression.
     pub fn push(&self, qb: &mut QueryBuilder<Postgres>) {
         match &self.gate {
@@ -1859,7 +1876,7 @@ pub struct FilterOption {
 }
 
 /// Labels of the built-in fields (zh-TW, the SPA's language).
-fn label(field: &str) -> &'static str {
+pub(crate) fn label(field: &str) -> &'static str {
     match field {
         "project" => "專案",
         "tracker" => "類型",

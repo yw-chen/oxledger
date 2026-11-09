@@ -152,6 +152,15 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/projects/{id}/tabs/reset", post(tabs_reset))
         .route("/projects/{id}/tabs/{tab}/issues", get(tab_issues))
         .route("/projects/{id}/setting-events", get(setting_events))
+        .route("/views", get(views_list).post(views_create))
+        .route("/views/preview", post(views_preview))
+        .route(
+            "/views/{id}",
+            get(views_get).patch(views_update).delete(views_delete),
+        )
+        .route("/views/{id}/copy", post(views_copy))
+        .route("/views/{id}/run", post(views_run))
+        .route("/views/{id}/events", get(views_events))
         .route("/projects/{id}/repos", get(repos_list).post(repos_link))
         .route("/projects/{id}/repos/linkable", get(repos_linkable))
         .route("/projects/{id}/repos/{link_id}", delete(repos_unlink))
@@ -266,6 +275,14 @@ fn ok(data: impl serde::Serialize) -> Response {
         "meta": {"request_id": Uuid::now_v7(), "observed_at": Utc::now()},
     }))
     .into_response()
+}
+
+/// [`ok`] with 201 Created (design 05 §3.3: a new view; a replay of the
+/// same Idempotency-Key answers the same way).
+fn created(data: impl serde::Serialize) -> Response {
+    let mut r = ok(data);
+    *r.status_mut() = StatusCode::CREATED;
+    r
 }
 
 /// Any handler error. Domain errors become `{"error": …}` with their HTTP
@@ -1396,6 +1413,131 @@ async fn setting_events(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(crate::project_tabs::events(
+        &st.app,
+        ctx,
+        &id,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- views (design 05 §3.3, M1.2)
+
+async fn views_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let limit = int_param(&q, "limit")?.map(|l| l.clamp(1, 1000) as u32);
+    Ok(ok(crate::views::list(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+        q.get("scope").map(String::as_str),
+        q.get("cursor").map(String::as_str),
+        limit,
+    )
+    .await?))
+}
+
+async fn views_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::views::NewView>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(created(
+        crate::views::create(&st.app, ctx, key, &body).await?,
+    ))
+}
+
+async fn views_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::get(&st.app, ctx, &id).await?))
+}
+
+async fn views_update(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::views::ViewPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::views::update(&st.app, ctx, key, &id, &body).await?
+    ))
+}
+
+async fn views_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let lv = int_param(&q, "lock_version")?
+        .ok_or_else(|| ApiFailure(api(ErrorCode::InvalidArgument, "lock_version is required")))?;
+    let lv = i32::try_from(lv).map_err(|_| {
+        ApiFailure(api(
+            ErrorCode::InvalidArgument,
+            "lock_version is out of range",
+        ))
+    })?;
+    Ok(ok(crate::views::delete(&st.app, ctx, key, &id, lv).await?))
+}
+
+async fn views_copy(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::views::ViewCopy>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(created(
+        crate::views::copy(&st.app, ctx, key, &id, &body).await?,
+    ))
+}
+
+async fn views_run(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::views::RunInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::run(&st.app, ctx, &id, &body).await?))
+}
+
+async fn views_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::views::PreviewInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::preview(&st.app, ctx, &body).await?))
+}
+
+async fn views_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::events(
         &st.app,
         ctx,
         &id,

@@ -652,6 +652,21 @@
         ],
         "type": "object"
       },
+      "ColumnHead": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label"
+        ],
+        "type": "object"
+      },
       "CommandDoc": {
         "additionalProperties": false,
         "description": "A command document, `command_schema_version = 1`.",
@@ -885,6 +900,35 @@
           "closed_at",
           "source_projects",
           "changed_projects"
+        ],
+        "type": "object"
+      },
+      "Count": {
+        "description": "R-VD6: a count of visible issues, at most 999 (`capped`: more than that).",
+        "properties": {
+          "capped": {
+            "type": "boolean"
+          },
+          "value": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value",
+          "capped"
+        ],
+        "type": "object"
+      },
+      "Coverage": {
+        "properties": {
+          "truncated": {
+            "description": "Free text only: more matches than the search looks at (8000).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "truncated"
         ],
         "type": "object"
       },
@@ -1690,6 +1734,21 @@
             "const": "query_timeout",
             "description": "The query did not finish within the request's work budget (03 §5.4).",
             "type": "string"
+          },
+          {
+            "const": "invalid_view",
+            "description": "A view definition is not valid (design 05 §5): `details.path`,\n`details.reason` (`unknown_field`, `invalid_shape`, `invalid_value`,\n`kind_mismatch`, `lanes_required`, `restricted_field`,\n`project_scope`, `too_large`, `duplicate_value`).",
+            "type": "string"
+          },
+          {
+            "const": "view_name_taken",
+            "description": "Another view of the same scope has this name; `details.view_id`.",
+            "type": "string"
+          },
+          {
+            "const": "view_in_use",
+            "description": "A project tab still shows this view; `details.tabs` (tab titles).",
+            "type": "string"
           }
         ]
       },
@@ -2135,6 +2194,33 @@
         "required": [
           "id",
           "label"
+        ],
+        "type": "object"
+      },
+      "GroupHead": {
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null: not counted (out of time, or the run has free text)."
+          },
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "description": "The group's value (an id, a category, true/false), null = not set."
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "count"
         ],
         "type": "object"
       },
@@ -2666,6 +2752,62 @@
         ],
         "type": "object"
       },
+      "LaneOut": {
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunItem"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "values": {
+            "description": "The lane's values (ids, categories; null = 未設定).",
+            "items": true,
+            "type": "array"
+          },
+          "wip": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Wip"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "values",
+          "count",
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "Limits": {
         "properties": {
           "max_description_bytes": {
@@ -2881,6 +3023,42 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "NewView": {
+        "additionalProperties": false,
+        "description": "`POST /views` (Idempotency-Key).",
+        "properties": {
+          "def": {
+            "description": "The definition (design 05 §3.3); `def.kind` may be left out."
+          },
+          "kind": {
+            "description": "`list` or `board`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "1–60 characters, unique per owner (personal) or project (project).",
+            "type": "string"
+          },
+          "project_id": {
+            "default": null,
+            "description": "Project id or key: required for `project`; optional for `personal`\n(binds the view to that project; leave out for a cross-project view).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "description": "`personal` or `project` (needs manage_public_views in an active project).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "kind",
+          "name",
+          "def"
         ],
         "type": "object"
       },
@@ -3347,6 +3525,27 @@
         ],
         "type": "object"
       },
+      "PersonRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`user`, `group` or `agent`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
       "PolicyInput": {
         "additionalProperties": false,
         "description": "Per-command and per-field modes (§16.3). Keys must be inside the ceiling.",
@@ -3470,6 +3669,75 @@
         ],
         "type": "object"
       },
+      "PreviewInput2": {
+        "additionalProperties": false,
+        "description": "`POST /views/preview`: an unsaved definition, checked as it would be\nsaved with `scope` and `project_id`.",
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "def": {
+            "description": "The definition; `def.kind` is required here."
+          },
+          "lane": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "default": null,
+            "description": "`personal` (default) or `project`: which save rules apply (R-VD3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "swimlane": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "def"
+        ],
+        "type": "object"
+      },
       "PrivateChoice": {
         "properties": {
           "allowed_values": {
@@ -3540,6 +3808,26 @@
           "inherit_org",
           "health_at_risk_days",
           "health_at_risk_open_pct"
+        ],
+        "type": "object"
+      },
+      "ProjectRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name"
         ],
         "type": "object"
       },
@@ -3848,6 +4136,131 @@
           "link_id",
           "pr_ids"
         ],
+        "type": "object"
+      },
+      "RunInput": {
+        "additionalProperties": false,
+        "description": "`POST /views/{id}/run`.",
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lane": {
+            "default": null,
+            "description": "Board: only this lane (its next page with `cursor`). A board cursor\nalways comes with its lane.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "List: items per page; board: items per lane (default 50, max 100).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "swimlane": {
+            "default": null,
+            "description": "Board: only this swimlane value (an id, or `none` for 未設定).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RunItem": {
+        "properties": {
+          "card": {
+            "additionalProperties": true,
+            "description": "Board: the card fields (not `key`), plus `overdue`; shapes as `values`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "group": {
+            "description": "List with `group_by`: the item's group value."
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "swimlane": {
+            "description": "Board with swimlanes: the item's swimlane value."
+          },
+          "values": {
+            "additionalProperties": true,
+            "description": "List: one value per column (not `key`), plus `overdue`. People and\ngroups `{id, name, kind}`; status `{id, name, category}`; tracker,\npriority, version `{id, name}`; project `{id, key, name}`; list\ncustom fields `{id, label, active}`; others plain; null = not set.",
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "id",
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "RunMeta": {
+        "properties": {
+          "today": {
+            "description": "The organization's date (relative dates).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "today"
+        ],
+        "type": "object"
+      },
+      "RunOverride": {
+        "additionalProperties": false,
+        "description": "Narrowing for this run only (not saved).",
+        "properties": {
+          "q": {
+            "default": null,
+            "description": "Free text; replaces the view's own `query.q`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "where_and": {
+            "default": null,
+            "description": "A Filter AST v2 ANDed with the view's conditions."
+          }
+        },
         "type": "object"
       },
       "ScheduleSettings": {
@@ -4579,6 +4992,19 @@
         ],
         "type": "object"
       },
+      "SwimlaneHead": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": true
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "type": "object"
+      },
       "Tab": {
         "properties": {
           "hidden": {
@@ -4586,11 +5012,11 @@
             "type": "boolean"
           },
           "id": {
-            "description": "Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`;\nsaved query `q_…`; link `l_…`.",
+            "description": "Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`, `board`,\n`triage`; saved query `q_…`; link `l_…`; project view `v_…`.",
             "type": "string"
           },
           "kind": {
-            "description": "`builtin`, `query` or `link`.",
+            "description": "`builtin`, `query`, `link` or `view`.",
             "type": "string"
           },
           "query": {
@@ -4605,6 +5031,14 @@
           },
           "url": {
             "description": "The normalized https URL, `kind = link` only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_id": {
+            "description": "`kind = view`: a project view of this project (run it with `POST\n/views/{id}/run`). The built-in `board`: optional, a project board\nview shown instead of the built-in board.",
+            "format": "uuid",
             "type": [
               "string",
               "null"
@@ -4649,6 +5083,15 @@
           },
           "url": {
             "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_id": {
+            "default": null,
+            "description": "`kind = view` (required) and the built-in `board` (optional).",
+            "format": "uuid",
             "type": [
               "string",
               "null"
@@ -5058,6 +5501,26 @@
           "status",
           "health",
           "health_reasons"
+        ],
+        "type": "object"
+      },
+      "Total": {
+        "properties": {
+          "complete": {
+            "description": "false: not computed (out of time, or the run has free text).",
+            "type": "boolean"
+          },
+          "value": {
+            "description": "Decimal string with two decimals; null when not computed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "complete"
         ],
         "type": "object"
       },
@@ -5550,6 +6013,39 @@
         ],
         "type": "object"
       },
+      "Unmapped": {
+        "description": "What a board does not show (R-VD6: counts are of the visible results,\nso nothing leaves the board silently).",
+        "properties": {
+          "issues": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Visible matches (done window and swimlane applied) in no lane: a\nvalue no lane lists (a status, an inactive option, a closed version,\na person past the lane limit) or a custom field that does not apply\nto the issue. null when not counted (out of time, or free text)."
+          },
+          "lanes_truncated": {
+            "description": "Lanes made from values stopped at the lane limit (30); the issues of\nthe values left out are in `issues`.",
+            "type": "boolean"
+          },
+          "status_count": {
+            "description": "Lanes by status: statuses in no lane (their issues are not shown,\nas in Jira).",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issues",
+          "lanes_truncated"
+        ],
+        "type": "object"
+      },
       "ValidateInput": {
         "additionalProperties": false,
         "properties": {
@@ -5986,6 +6482,435 @@
         ],
         "type": "object"
       },
+      "ViewCopy": {
+        "additionalProperties": false,
+        "description": "`POST /views/{id}/copy` (Idempotency-Key): an independent new view.",
+        "properties": {
+          "name": {
+            "default": null,
+            "description": "Default: the source's name + \"（副本）\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "description": "Default: the source's project (none for the cross-project built-ins).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "default": null,
+            "description": "`personal` (default) or `project` (manage_public_views).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ViewDeleted": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "ViewDetail": {
+        "description": "`GET /views/{id}` and the result of every view write.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Personal: the owner; project: who created it (not an owner)."
+          },
+          "def": {
+            "description": "The normalized definition (design 05 §3.3): ids instead of names;\n`me`, `next` and relative dates kept dynamic."
+          },
+          "editable": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_unavailable": {
+            "description": "A personal view bound to a project the caller can no longer see\n(left it, or it became private): `project` is left out and a run is\n`invalid_view` (reason `project_unavailable`).",
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "kind",
+          "name",
+          "def",
+          "editable"
+        ],
+        "type": "object"
+      },
+      "ViewEvent": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/PersonRef"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`created`, `updated`, `deleted`.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "`{before, after}` (each `{name, def}` or null); `\"[已遮蔽]\"` once redacted."
+          },
+          "redacted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "kind",
+          "actor",
+          "payload",
+          "redacted"
+        ],
+        "type": "object"
+      },
+      "ViewEvents": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ViewEvent"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "ViewHead": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ViewList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ViewSummary"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "ViewPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /views/{id}` (Idempotency-Key): `def` replaces the whole definition.",
+        "properties": {
+          "def": {
+            "default": null
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "ViewRun": {
+        "description": "`POST /views/{id}/run`, `POST /views/preview`.",
+        "properties": {
+          "columns": {
+            "description": "List: the columns shown (custom fields the caller cannot read are left out).",
+            "items": {
+              "$ref": "#/components/schemas/ColumnHead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "groups": {
+            "description": "List with `group_by`: the groups of this page's items, in order.",
+            "items": {
+              "$ref": "#/components/schemas/GroupHead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunItem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "lanes": {
+            "items": {
+              "$ref": "#/components/schemas/LaneOut"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "meta": {
+            "$ref": "#/components/schemas/RunMeta"
+          },
+          "next_cursor": {
+            "description": "List: the next page. Board: always null (each lane has its own).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "swimlanes": {
+            "description": "Board with swimlanes: the swimlane values of the items returned.",
+            "items": {
+              "$ref": "#/components/schemas/SwimlaneHead"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "totals": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Total"
+            },
+            "description": "List with `totals`: over every visible match, not only this page.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "unmapped": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Unmapped"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Board: what no lane shows."
+          },
+          "view": {
+            "$ref": "#/components/schemas/ViewHead"
+          }
+        },
+        "required": [
+          "view",
+          "next_cursor",
+          "meta"
+        ],
+        "type": "object"
+      },
+      "ViewSummary": {
+        "description": "One entry of `GET /views` and MCP `view_list`.",
+        "properties": {
+          "editable": {
+            "description": "The caller may change it (built-in: never).",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "A uuid, or a built-in id: `builtin:assigned_to_me`,\n`builtin:reported_by_me`, `builtin:involving_me`,\n`builtin:project_issues:<project id>`, `builtin:project_board:<project id>`.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`list` or `board`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The project it is bound to (project views, project built-ins, and\npersonal views bound to one project)."
+          },
+          "project_unavailable": {
+            "description": "A personal view bound to a project the caller can no longer see\n(left it, or it became private): `project` is left out and a run is\n`invalid_view` (reason `project_unavailable`).",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "`builtin`, `personal` or `project`.",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "kind",
+          "name",
+          "editable"
+        ],
+        "type": "object"
+      },
       "WhereCond": {
         "description": "One condition. Values: ids (uuid) or names / keys / logins for project,\ntracker, priority, status, assignee, author; `{\"me\": true}` (or \"me\") for\nassignee and author (assignee also matches the caller's groups);\n`{\"next\": true}` for fixed_version (needs exactly one project);\n`\"YYYY-MM-DD\"` or `{\"rel\": \"today\", \"offset\": -3}` for dates; `within`\ntakes `{\"range\": \"this_week\"|\"last_week\"|\"next_week\"|\"this_month\"|\n\"last_month\"|\"last_n_days\"|\"next_n_days\", \"n\"?: 1–366}`; decimal strings\nfor estimated_hours; status_category `todo`/`doing`/`done`/`open`;\ncustom fields `{\"list\": \"<option id>\"}`, `{\"user\": \"<id>\"}`,\n`{\"int\": \"12\"}`, `{\"date\": \"…\"}`, … or plain values as in `filter`.",
         "properties": {
@@ -6062,6 +6987,26 @@
           "ever_in"
         ],
         "type": "string"
+      },
+      "Wip": {
+        "properties": {
+          "exceeded": {
+            "description": "null when the lane was not counted.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "max": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max",
+          "exceeded"
+        ],
+        "type": "object"
       }
     }
   },
@@ -9972,7 +10917,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "The project's shared tab bar (§18): built-in views, saved queries and links, the default tab, is_default, lock_version and can_manage. Project-public content.",
+        "summary": "The project's shared tab bar (§18): built-in views (timeline, milestones, issues, dev, plan, board, triage; triage hidden by default), saved queries, links and project views (kind view, view_id), the default tab, is_default, lock_version and can_manage. Project-public content.",
         "x-access": "session"
       },
       "put": {
@@ -10039,7 +10984,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Replace the whole tab list (manage_project, active project). Header Idempotency-Key. New saved queries and links leave id out; keep the id of existing ones. invalid_value kinds: builtin_missing, duplicate_id, unknown_id, tab_limit, tab_title_taken, tab_title_invalid, tab_query_scope, tab_query_syntax (with position), tab_url_invalid, tab_default_invalid. conflict carries the current settings.",
+        "summary": "Replace the whole tab list (manage_project, active project). Header Idempotency-Key. New saved queries, links and view tabs leave id out; keep the id of existing ones. A view tab (kind view) names a project view of this project in view_id; the built-in board may name a project board view. invalid_value kinds: builtin_missing, duplicate_id, unknown_id, tab_limit, tab_title_taken, tab_title_invalid, tab_query_scope, tab_query_syntax (with position), tab_url_invalid, tab_default_invalid, tab_view_invalid. conflict carries the current settings.",
         "x-access": "session",
         "x-csrf": true
       }
@@ -10109,7 +11054,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Back to the five built-in tabs, default timeline, is_default true (manage_project). Header Idempotency-Key.",
+        "summary": "Back to the seven built-in tabs (triage hidden), default timeline, is_default true (manage_project). Header Idempotency-Key.",
         "x-access": "session",
         "x-csrf": true
       }
@@ -10873,6 +11818,557 @@
         },
         "summary": "Preview a change (manage_versions). Query effective_date (empty clears), status.",
         "x-access": "session"
+      }
+    },
+    "/views": {
+      "get": {
+        "operationId": "get_views",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Views you can open (design 05 §3.3): built-ins (without project: assigned_to_me, reported_by_me, involving_me; with project: project_issues and project_board of that project), your personal views, and the project views of visible projects. Query project (id or key), scope (all, builtin, personal, project), cursor, limit.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_views",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewView"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Save a view. Header Idempotency-Key. scope personal (yours; project_id optional) or project (manage_public_views in an active project; project-public, no restricted fields, R-VD3). Errors: invalid_view (details.path, reason: unknown_field, invalid_shape, invalid_value, duplicate_value, kind_mismatch, lanes_required, restricted_field, project_scope, too_large), invalid_filter (in def.query.where), invalid_value (kinds view_name_invalid, view_limit, project_required, invalid_kind, invalid_scope), view_name_taken (details.view_id), forbidden_op (manage_public_views).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/views/preview": {
+      "post": {
+        "operationId": "post_views_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewInput2"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewRun"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Run an unsaved definition with the checks of saving it as scope (personal or project) in project_id. Same result as run; not saved, no Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/views/{id}": {
+      "delete": {
+        "operationId": "delete_views_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewDeleted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Delete a view (soft). Header Idempotency-Key, query lock_version (required). A project view a project tab shows is view_in_use (details.tabs: the tab titles); remove the tab first.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "get": {
+        "operationId": "get_views_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One view: uuid or built-in id (builtin:assigned_to_me, builtin:reported_by_me, builtin:involving_me, builtin:project_issues:<project>, builtin:project_board:<project>). Someone else's personal view, or a project view of a project you cannot see, is not_found.",
+        "x-access": "session"
+      },
+      "patch": {
+        "operationId": "patch_views_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Rename and/or replace the definition (def replaces the whole def; the kind stays). Header Idempotency-Key. lock_version required; conflict carries details.current and details.current_lock_version. Built-in views: forbidden_op (builtin_view). Project views: manage_public_views.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/views/{id}/copy": {
+      "post": {
+        "operationId": "post_views_id_copy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewCopy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Copy any view you can open (built-ins too, except builtin:involving_me: forbidden_op not_copyable) into a new independent personal or project view. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/views/{id}/events": {
+      "get": {
+        "operationId": "get_views_id_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewEvents"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The view's change history, newest first (whoever can open the view). Redacted events show [已遮蔽]. Query cursor.",
+        "x-access": "session"
+      }
+    },
+    "/views/{id}/run": {
+      "post": {
+        "operationId": "post_views_id_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ViewRun"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Run a view with your own visibility (K3). List: items with values, groups and totals over every visible match; board: lanes with their items, counts (at most 999, capped), wip and next_cursor (a board cursor goes with its lane). Counts and totals are null when out of the 2 s budget or with free text. override.q replaces the view's q; override.where_and narrows. A saved condition on a field you cannot read is invalid_filter (field_unavailable). POST so long cursors fit.",
+        "x-access": "session",
+        "x-csrf": true
       }
     }
   },

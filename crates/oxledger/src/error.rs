@@ -134,6 +134,15 @@ pub enum ErrorCode {
     FieldDefinitionChanged,
     /// The query did not finish within the request's work budget (03 §5.4).
     QueryTimeout,
+    /// A view definition is not valid (design 05 §5): `details.path`,
+    /// `details.reason` (`unknown_field`, `invalid_shape`, `invalid_value`,
+    /// `kind_mismatch`, `lanes_required`, `restricted_field`,
+    /// `project_scope`, `too_large`, `duplicate_value`).
+    InvalidView,
+    /// Another view of the same scope has this name; `details.view_id`.
+    ViewNameTaken,
+    /// A project tab still shows this view; `details.tabs` (tab titles).
+    ViewInUse,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -150,7 +159,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 55] = [
+    pub const ALL: [ErrorCode; 58] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -206,6 +215,9 @@ impl ErrorCode {
         Self::SearchNotCaughtUp,
         Self::FieldDefinitionChanged,
         Self::QueryTimeout,
+        Self::InvalidView,
+        Self::ViewNameTaken,
+        Self::ViewInUse,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -265,6 +277,9 @@ impl ErrorCode {
             Self::SearchNotCaughtUp => "search_not_caught_up",
             Self::FieldDefinitionChanged => "field_definition_changed",
             Self::QueryTimeout => "query_timeout",
+            Self::InvalidView => "invalid_view",
+            Self::ViewNameTaken => "view_name_taken",
+            Self::ViewInUse => "view_in_use",
         }
     }
 
@@ -322,6 +337,9 @@ impl ErrorCode {
             Self::SearchNotCaughtUp => 503,
             Self::FieldDefinitionChanged => 409,
             Self::QueryTimeout => 422,
+            Self::InvalidView => 422,
+            Self::ViewNameTaken => 409,
+            Self::ViewInUse => 409,
         }
     }
 
@@ -396,6 +414,8 @@ impl ErrorCode {
             Self::SearchNotCaughtUp => &[WaitAndRetry],
             Self::FieldDefinitionChanged => &[FixInput],
             Self::QueryTimeout => &[FixInput, AskHuman],
+            Self::InvalidView | Self::ViewNameTaken => &[FixInput],
+            Self::ViewInUse => &[AskHuman],
         }
     }
 }

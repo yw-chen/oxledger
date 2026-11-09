@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! Project tabs (contract 02 §18, U44; S6b.6): one shared tab bar per
 //! project. Built-in views can be renamed, reordered and hidden; saved
-//! queries and external links can be added. Settings are project-public
+//! queries, external links and project views (design 05 §2.3) can be added. Settings are project-public
 //! content (R-T7); a saved query runs with the opener's visibility (R-T6).
 //! People only, browser session (§18.4); agents neither read nor write.
 
@@ -22,15 +22,23 @@ use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-/// The built-in tabs and their default titles; migration 0015's
+/// The built-in tabs and their default titles; migration 0021's
 /// `project_tabs_default()` holds the same list (a test compares them).
-pub const BUILTIN: [(&str, &str); 5] = [
+/// `board` and `triage` came with design 05 M1.2 (R-T1: appended).
+pub const BUILTIN: [(&str, &str); 7] = [
     ("timeline", "時程"),
     ("milestones", "里程碑"),
     ("issues", "議題"),
     ("dev", "開發（GitHub）"),
     ("plan", "規劃（心智圖）"),
+    ("board", "看板"),
+    ("triage", "Triage"),
 ];
+/// Built-in tabs hidden by default (R-V3: a project turns Triage on first).
+pub const BUILTIN_HIDDEN: &[&str] = &["triage"];
+/// The built-in tab that may show a project board view instead of the
+/// built-in board (design 05 §3.3).
+pub const BOARD_TAB: &str = "board";
 pub const DEFAULT_TAB: &str = "timeline";
 pub const MAX_CUSTOM: usize = 10;
 pub const MAX_TITLE_CHARS: usize = 20;
@@ -48,10 +56,10 @@ pub(crate) const ADMIN_ONLY_SQL: &str = "(e.kind IN ('pr_hidden', 'pr_unhidden')
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Tab {
-    /// Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`;
-    /// saved query `q_…`; link `l_…`.
+    /// Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`, `board`,
+    /// `triage`; saved query `q_…`; link `l_…`; project view `v_…`.
     pub id: String,
-    /// `builtin`, `query` or `link`.
+    /// `builtin`, `query`, `link` or `view`.
     pub kind: String,
     pub title: String,
     #[serde(default)]
@@ -62,6 +70,11 @@ pub struct Tab {
     /// The normalized https URL, `kind = link` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// `kind = view`: a project view of this project (run it with `POST
+    /// /views/{id}/run`). The built-in `board`: optional, a project board
+    /// view shown instead of the built-in board.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -89,6 +102,9 @@ pub struct TabInput {
     pub query: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// `kind = view` (required) and the built-in `board` (optional).
+    #[serde(default)]
+    pub view_id: Option<Uuid>,
 }
 
 /// `PUT /projects/{id}/tabs`: the whole list replaces the old one.
@@ -243,6 +259,7 @@ pub async fn get(app: &App, caller: AuthContext, project: &str) -> Result<TabSet
 /// come back (§18.5: unknown ids are `invalid_value`).
 async fn validate(
     conn: &mut PgConnection,
+    project: Uuid,
     project_key: &str,
     own_origin: &str,
     old: &[Tab],
@@ -253,23 +270,24 @@ async fn validate(
     let mut title_keys: Vec<String> = Vec::new();
     let mut custom = 0usize;
     // The whole list first, so an over-long list is `tab_limit` and never
-    // reaches the table's CHECK (5–15 entries).
+    // reaches the table's CHECK (7–17 entries).
     if input.tabs.len() > BUILTIN.len() + MAX_CUSTOM {
         return Err(invalid(
             "tab_limit",
             "tabs",
-            format!("at most {MAX_CUSTOM} saved queries and links"),
+            format!("at most {MAX_CUSTOM} saved queries, links and views"),
         ));
     }
     for (n, t) in input.tabs.iter().enumerate() {
         let path = format!("tabs[{n}]");
         let id = match (t.kind.as_str(), &t.id) {
             ("builtin", Some(id)) if BUILTIN.iter().any(|(b, _)| b == id) => {
-                if t.query.is_some() || t.url.is_some() {
+                if t.query.is_some() || t.url.is_some() || (t.view_id.is_some() && id != BOARD_TAB)
+                {
                     return Err(invalid(
                         "not_allowed",
                         &path,
-                        "a built-in tab has no query or url",
+                        "a built-in tab has no query or url (only board may name a view)",
                     ));
                 }
                 id.clone()
@@ -281,17 +299,21 @@ async fn validate(
                     "not a built-in tab id",
                 ));
             }
-            (k @ ("query" | "link"), id) => {
+            (k @ ("query" | "link" | "view"), id) => {
                 custom += 1;
                 if custom > MAX_CUSTOM {
                     return Err(invalid(
                         "tab_limit",
                         "tabs",
-                        format!("at most {MAX_CUSTOM} saved queries and links"),
+                        format!("at most {MAX_CUSTOM} saved queries, links and views"),
                     ));
                 }
                 match id {
-                    None => new_id(if k == "query" { "q_" } else { "l_" }),
+                    None => new_id(match k {
+                        "query" => "q_",
+                        "link" => "l_",
+                        _ => "v_",
+                    }),
                     Some(id) if old.iter().any(|o| o.id == *id && o.kind == k) => id.clone(),
                     Some(_) => {
                         return Err(invalid(
@@ -306,7 +328,7 @@ async fn validate(
                 return Err(invalid(
                     "unknown_kind",
                     &format!("{path}.kind"),
-                    "kind is builtin, query or link",
+                    "kind is builtin, query, link or view",
                 ));
             }
         };
@@ -343,6 +365,13 @@ async fn validate(
         title_keys.push(key);
 
         let (query, url) = match t.kind.as_str() {
+            "query" | "link" if t.view_id.is_some() => {
+                return Err(invalid(
+                    "not_allowed",
+                    &path,
+                    "only a view tab (or the built-in board) names a view",
+                ));
+            }
             "query" => {
                 if t.url.is_some() {
                     return Err(invalid("not_allowed", &path, "a saved query has no url"));
@@ -369,7 +398,52 @@ async fn validate(
                     )?),
                 )
             }
+            "view" => {
+                if t.query.is_some() || t.url.is_some() {
+                    return Err(invalid(
+                        "not_allowed",
+                        &path,
+                        "a view tab has no query or url",
+                    ));
+                }
+                (None, None)
+            }
             _ => (None, None),
+        };
+        // R-V1: a live project view of this project (the board: of kind board).
+        let view_id = match (t.kind.as_str(), t.view_id) {
+            ("view", None) => {
+                return Err(invalid(
+                    "tab_view_invalid",
+                    &format!("{path}.view_id"),
+                    "a view tab needs view_id (a project view of this project)",
+                ));
+            }
+            (_, None) => None,
+            (_, Some(v)) => {
+                let kind: Option<String> = sqlx::query_scalar(
+                    "SELECT kind FROM view_defs WHERE id = $1 AND scope = 'project'
+                       AND project_id = $2 AND deleted_at IS NULL FOR SHARE",
+                )
+                .bind(v)
+                .bind(project)
+                .fetch_optional(&mut *conn)
+                .await?;
+                match kind {
+                    Some(k) if t.kind == "view" || k == "board" => Some(v),
+                    _ => {
+                        return Err(invalid(
+                            "tab_view_invalid",
+                            &format!("{path}.view_id"),
+                            if t.kind == "view" {
+                                "view_id is not a project view of this project"
+                            } else {
+                                "the board tab shows a project board view of this project"
+                            },
+                        ));
+                    }
+                }
+            }
         };
         out.push(Tab {
             id,
@@ -378,6 +452,7 @@ async fn validate(
             hidden: t.hidden,
             query,
             url,
+            view_id,
         });
     }
     for (b, _) in BUILTIN {
@@ -484,7 +559,8 @@ async fn write(
             hash(
                 &json!({"project": project, "lock_version": p.lock_version, "default_tab": p.default_tab,
                          "tabs": p.tabs.iter().map(|t| json!({"id": t.id, "kind": t.kind, "title": t.title,
-                             "hidden": t.hidden, "query": t.query, "url": t.url})).collect::<Vec<_>>()}),
+                             "hidden": t.hidden, "query": t.query, "url": t.url,
+                             "view_id": t.view_id})).collect::<Vec<_>>()}),
             ),
             p.lock_version,
         ),
@@ -537,7 +613,7 @@ async fn write(
     }
     let (tabs, default_tab, is_default, kind) = match change {
         Change::Put(p) => (
-            validate(&mut tx, &a.key, own_origin, &old_tabs, p).await?,
+            validate(&mut tx, project, &a.key, own_origin, &old_tabs, p).await?,
             p.default_tab.clone(),
             false,
             "tabs_updated",

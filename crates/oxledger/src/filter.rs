@@ -68,6 +68,10 @@ pub const PRIVATE_FIELD: i32 = -12;
 pub const CREATED_FIELD: i32 = -13;
 pub const UPDATED_FIELD: i32 = -14;
 pub const ESTIMATED_FIELD: i32 = -15;
+/// Internal only (never in `where`): the issue has an event written by one
+/// of the given principals, or by an agent on their behalf, in the last 30
+/// days (design 05 §3.3 built-in view `involving_me`). Takes `in` only.
+pub const WROTE_RECENTLY_FIELD: i32 = -16;
 
 /// v1 names of the built-in fields (contract 02 §17.15).
 const BUILTINS: &[(&str, i32, FieldType)] = &[
@@ -85,6 +89,8 @@ enum Col {
     Category,
     /// A timestamptz column compared by the org-time-zone date.
     Day(&'static str),
+    /// [`WROTE_RECENTLY_FIELD`].
+    Wrote,
 }
 
 fn builtin_col(id: i32) -> Option<Col> {
@@ -104,6 +110,7 @@ fn builtin_col(id: i32) -> Option<Col> {
         CREATED_FIELD => Col::Day("created_at"),
         UPDATED_FIELD => Col::Day("updated_at"),
         ESTIMATED_FIELD => Col::Issue("estimated_hours"),
+        WROTE_RECENTLY_FIELD => Col::Wrote,
         _ => return None,
     })
 }
@@ -980,6 +987,19 @@ fn push_builtin(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &T
             format!("(SELECT st.category FROM issue_statuses st WHERE st.id = {a}.status_id)")
         }
         Col::Day(c) => return push_day(qb, &format!("{a}.{c}"), test),
+        Col::Wrote => {
+            let Test::In(vs) = test else {
+                unreachable!("WROTE_RECENTLY_FIELD takes in only")
+            };
+            qb.push(format!(
+                "EXISTS (SELECT 1 FROM issue_events we WHERE we.issue_id = {a}.id                  AND we.at >= now() - interval '30 days' AND (we.actor_id = ANY("
+            ));
+            push_array(qb, field.ty.kind(), vs);
+            qb.push(") OR we.on_behalf_of_id = ANY(");
+            push_array(qb, field.ty.kind(), vs);
+            qb.push(")))");
+            return;
+        }
     };
     let kind = field.ty.kind();
     qb.push("(");

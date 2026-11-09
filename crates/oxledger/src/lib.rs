@@ -36,3 +36,4 @@ pub mod service;
 pub mod test_support;
 pub mod undo;
 pub mod versions;
+pub mod views;

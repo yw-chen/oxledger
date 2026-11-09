@@ -30,6 +30,7 @@ use crate::mcp::{
 };
 use crate::service::{IssueDetail, ResolveResult, SearchParams, SearchResult};
 use crate::versions::VersionList;
+use crate::views::{AgentViewRun, ViewList, ViewListParams, ViewRunParams};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +275,20 @@ pub fn tools() -> Vec<ToolDescriptor> {
             EffectClass::Read,
             schema::<VersionListParams>,
             schema::<VersionList>,
+        ),
+        agent_tool(
+            "view_list",
+            "Built-in views and the project views of delegated projects; never personal views (design 05 §4, B-4).",
+            EffectClass::Read,
+            schema::<ViewListParams>,
+            schema::<ViewList>,
+        ),
+        agent_tool(
+            "view_run",
+            "Run a project or built-in view with the agent's read scope (design 05 §4, R-VD9).",
+            EffectClass::Read,
+            schema::<ViewRunParams>,
+            schema::<AgentViewRun>,
         ),
         agent_tool(
             "command_submit",

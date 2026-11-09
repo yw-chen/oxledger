@@ -1152,11 +1152,37 @@ async fn consistency_wait(
     ))
 }
 
+/// What a saved view adds to a search (design 05 §3.3): conditions already
+/// resolved, a sort replacing `p.sort`, and what the cursor is bound to.
+#[derive(Default)]
+pub(crate) struct Extra {
+    /// The view's own conditions (its `where`, `override.where_and`): ANDed
+    /// with the request's, and looked at by probing (03 §5.4) like `where`.
+    pub chosen: Vec<Filter>,
+    /// Scope conditions (project, lane, swimlane, done window): ANDed, not probed.
+    pub fixed: Vec<Filter>,
+    /// Replaces `p.sort`: the ORDER BY columns and their normalized form.
+    pub sort: Option<(Vec<filter::v2::SortCol>, serde_json::Value)>,
+    /// Bound into the cursor's query hash (`None`: nothing added).
+    pub hash: Option<serde_json::Value>,
+}
+
 async fn search_in(
     conn: &mut PgConnection,
     app: &App,
     caller: AuthContext,
     p: SearchParams,
+) -> Result<SearchResult> {
+    search_with(conn, app, caller, p, Extra::default()).await
+}
+
+/// [`search_in`] with a view's additions, in the caller's transaction.
+pub(crate) async fn search_with(
+    conn: &mut PgConnection,
+    app: &App,
+    caller: AuthContext,
+    p: SearchParams,
+    extra: Extra,
 ) -> Result<SearchResult> {
     let scope = db::load_scope(&mut *conn, caller).await?;
     let visible = scope.predicate();
@@ -1310,9 +1336,10 @@ async fn search_in(
             Some(filter::v2::resolve(&mut *conn, caller, &scope, clock, v, project_id).await?)
         }
     };
-    let sort = match &p.sort {
-        None => None,
-        Some(keys) => {
+    let sort = match (extra.sort, &p.sort) {
+        (Some(s), _) => Some(s),
+        (None, None) => None,
+        (None, Some(keys)) => {
             let fields = if keys.iter().any(|k| k.field.trim().starts_with("cf:")) {
                 filter::readable_fields(&mut *conn, caller, &scope).await?
             } else {
@@ -1329,14 +1356,18 @@ async fn search_in(
         (true, false) => "rank",
         (false, false) => "updated_desc",
     };
-    let qhash = cursor::query_hash(&serde_json::json!({
+    let mut hashed = serde_json::json!({
         "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
         "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
         "version": &p.version, "overdue": &p.overdue,
         "where": wherev2.as_ref().map(|w| &w.normalized),
         "sort": sort.as_ref().map(|s| &s.1),
         "order": order,
-    }));
+    });
+    if let Some(h) = extra.hash {
+        hashed["extra"] = h;
+    }
+    let qhash = cursor::query_hash(&hashed);
     let pos = match opened {
         None => None,
         Some((h, _)) if h != qhash => return Err(cursor::mismatch()),
@@ -1364,6 +1395,7 @@ async fn search_in(
     let mut chosen: Vec<Filter> = Vec::new();
     chosen.extend(custom);
     chosen.extend(wherev2.map(|w| w.filter));
+    chosen.extend(extra.chosen);
     let probe = match chosen.as_slice() {
         [] => None,
         [one] => filter::probe_conditions(one),
@@ -1377,6 +1409,7 @@ async fn search_in(
         )),
     };
     let mut parts = legacy;
+    parts.extend(extra.fixed);
     parts.extend(chosen);
     let combined = match parts.len() {
         0 => None,

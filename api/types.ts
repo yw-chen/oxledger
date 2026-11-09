@@ -171,6 +171,11 @@ export type ChangesetView = {
   version_created_at: string;
 };
 
+export type ColumnHead = {
+  key: string;
+  label: string;
+};
+
 /** A command document, `command_schema_version = 1`. */
 export type CommandDoc = {
   /** Always 1. */
@@ -235,6 +240,17 @@ export type ContextView = {
   /** R: every project ever granted to this context, with the epoch recorded then. */
   source_projects: Array<SourceProject>;
   state: string;
+};
+
+/** R-VD6: a count of visible issues, at most 999 (`capped`: more than that). */
+export type Count = {
+  capped: boolean;
+  value: number;
+};
+
+export type Coverage = {
+  /** Free text only: more matches than the search looks at (8000). */
+  truncated: boolean;
 };
 
 export type Created = {
@@ -390,7 +406,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -517,6 +533,14 @@ export type FilterOption = {
   /** Projects: the key. */
   key?: string | null;
   label: string;
+};
+
+export type GroupHead = {
+  /** null: not counted (out of time, or the run has free text). */
+  count: Count | null;
+  label: string;
+  /** The group's value (an id, a category, true/false), null = not set. */
+  value: unknown;
 };
 
 export type HealthValues = {
@@ -660,6 +684,17 @@ export type ItemResult = {
   version_id?: string | null;
 };
 
+export type LaneOut = {
+  count: Count | null;
+  id: string;
+  items: Array<RunItem>;
+  next_cursor: string | null;
+  title: string;
+  /** The lane's values (ids, categories; null = 未設定). */
+  values: Array<unknown>;
+  wip?: Wip | null;
+};
+
 export type Limits = {
   max_description_bytes: number;
   max_note_bytes: number;
@@ -723,6 +758,20 @@ export type NewVersion = {
   effective_date?: string | null;
   name: string;
   status?: string | null;
+};
+
+/** `POST /views` (Idempotency-Key). */
+export type NewView = {
+  /** The definition (design 05 §3.3); `def.kind` may be left out. */
+  def: unknown;
+  /** `list` or `board`. */
+  kind: string;
+  /** 1–60 characters, unique per owner (personal) or project (project). */
+  name: string;
+  /** Project id or key: required for `project`; optional for `personal` (binds the view to that project; leave out for a cross-project view). */
+  project_id?: string | null;
+  /** `personal` or `project` (needs manage_public_views in an active project). */
+  scope: string;
 };
 
 /** What the caller may do next (contract 02 §14.2). A closed set; the list on an error names options, not steps to run in order. */
@@ -831,6 +880,13 @@ export type PasswordBody = {
   password: string;
 };
 
+export type PersonRef = {
+  id: string;
+  /** `user`, `group` or `agent`. */
+  kind: string;
+  name: string;
+};
+
 /** Per-command and per-field modes (§16.3). Keys must be inside the ceiling. */
 export type PolicyInput = {
   commands?: Record<string, PolicyMode>;
@@ -866,6 +922,20 @@ export type PreviewInput = {
   version: number;
 };
 
+/** `POST /views/preview`: an unsaved definition, checked as it would be saved with `scope` and `project_id`. */
+export type PreviewInput2 = {
+  cursor?: string | null;
+  /** The definition; `def.kind` is required here. */
+  def: unknown;
+  lane?: string | null;
+  limit?: number | null;
+  override?: RunOverride | null;
+  project_id?: string | null;
+  /** `personal` (default) or `project`: which save rules apply (R-VD3). */
+  scope?: string | null;
+  swimlane?: string | null;
+};
+
 export type PrivateChoice = {
   /** Values the caller may give explicitly. */
   allowed_values: Array<boolean>;
@@ -884,6 +954,12 @@ export type ProjectHealthSettings = {
   health_at_risk_days: number | null;
   health_at_risk_open_pct: number | null;
   inherit_org: boolean;
+};
+
+export type ProjectRef = {
+  id: string;
+  key: string;
+  name: string;
 };
 
 export type RedactInput = {
@@ -976,6 +1052,45 @@ export type Revoked = {
   link_id: string | null;
   pr_ids: Array<string>;
   security_epoch: number;
+};
+
+/** `POST /views/{id}/run`. */
+export type RunInput = {
+  cursor?: string | null;
+  /** Board: only this lane (its next page with `cursor`). A board cursor always comes with its lane. */
+  lane?: string | null;
+  /** List: items per page; board: items per lane (default 50, max 100). */
+  limit?: number | null;
+  override?: RunOverride | null;
+  /** Board: only this swimlane value (an id, or `none` for 未設定). */
+  swimlane?: string | null;
+};
+
+export type RunItem = {
+  /** Board: the card fields (not `key`), plus `overdue`; shapes as `values`. */
+  card?: Record<string, unknown> | null;
+  /** List with `group_by`: the item's group value. */
+  group?: unknown;
+  id: string;
+  key: string;
+  lock_version: number;
+  /** Board with swimlanes: the item's swimlane value. */
+  swimlane?: unknown;
+  /** List: one value per column (not `key`), plus `overdue`. People and groups `{id, name, kind}`; status `{id, name, category}`; tracker, priority, version `{id, name}`; project `{id, key, name}`; list custom fields `{id, label, active}`; others plain; null = not set. */
+  values?: Record<string, unknown> | null;
+};
+
+export type RunMeta = {
+  /** The organization's date (relative dates). */
+  today: string;
+};
+
+/** Narrowing for this run only (not saved). */
+export type RunOverride = {
+  /** Free text; replaces the view's own `query.q`. */
+  q?: string | null;
+  /** A Filter AST v2 ANDed with the view's conditions. */
+  where_and?: unknown;
 };
 
 export type ScheduleSettings = {
@@ -1181,17 +1296,24 @@ export type SuspendedContext = {
   reason: string;
 };
 
+export type SwimlaneHead = {
+  label: string;
+  value: unknown;
+};
+
 export type Tab = {
   hidden: boolean;
-  /** Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`; saved query `q_…`; link `l_…`. */
+  /** Built-in: `timeline`, `milestones`, `issues`, `dev`, `plan`, `board`, `triage`; saved query `q_…`; link `l_…`; project view `v_…`. */
   id: string;
-  /** `builtin`, `query` or `link`. */
+  /** `builtin`, `query`, `link` or `view`. */
   kind: string;
   /** The normalized query (design 03 §11), `kind = query` only. */
   query?: string | null;
   title: string;
   /** The normalized https URL, `kind = link` only. */
   url?: string | null;
+  /** `kind = view`: a project view of this project (run it with `POST /views/{id}/run`). The built-in `board`: optional, a project board view shown instead of the built-in board. */
+  view_id?: string | null;
 };
 
 /** A tab as sent in a PUT: a new custom tab leaves `id` out. */
@@ -1202,6 +1324,8 @@ export type TabInput = {
   query?: string | null;
   title: string;
   url?: string | null;
+  /** `kind = view` (required) and the built-in `board` (optional). */
+  view_id?: string | null;
 };
 
 export type TabSettings = {
@@ -1305,6 +1429,13 @@ export type TimelineVersion = {
   id: string;
   name: string;
   status: string;
+};
+
+export type Total = {
+  /** false: not computed (out of time, or the run has free text). */
+  complete: boolean;
+  /** Decimal string with two decimals; null when not computed. */
+  value: string | null;
 };
 
 /** Static schema of an issue in a project × tracker (§5.1). */
@@ -1436,6 +1567,16 @@ export type Unlinked = {
   link_id: string;
 };
 
+/** What a board does not show (R-VD6: counts are of the visible results, so nothing leaves the board silently). */
+export type Unmapped = {
+  /** Visible matches (done window and swimlane applied) in no lane: a value no lane lists (a status, an inactive option, a closed version, a person past the lane limit) or a custom field that does not apply to the issue. null when not counted (out of time, or free text). */
+  issues: Count | null;
+  /** Lanes made from values stopped at the lane limit (30); the issues of the values left out are in `issues`. */
+  lanes_truncated: boolean;
+  /** Lanes by status: statuses in no lane (their issues are not shown, as in Jira). */
+  status_count?: number | null;
+};
+
 export type ValidateInput = {
   version: number;
 };
@@ -1551,6 +1692,116 @@ export type VersionWriteResult = {
   version: VersionView;
 };
 
+/** `POST /views/{id}/copy` (Idempotency-Key): an independent new view. */
+export type ViewCopy = {
+  /** Default: the source's name + "（副本）". */
+  name?: string | null;
+  /** Default: the source's project (none for the cross-project built-ins). */
+  project_id?: string | null;
+  /** `personal` (default) or `project` (manage_public_views). */
+  scope?: string | null;
+};
+
+export type ViewDeleted = {
+  id: string;
+  lock_version: number;
+};
+
+/** `GET /views/{id}` and the result of every view write. */
+export type ViewDetail = {
+  created_at?: string | null;
+  /** Personal: the owner; project: who created it (not an owner). */
+  created_by?: PersonRef | null;
+  /** The normalized definition (design 05 §3.3): ids instead of names; `me`, `next` and relative dates kept dynamic. */
+  def: unknown;
+  editable: boolean;
+  id: string;
+  kind: string;
+  lock_version?: number | null;
+  name: string;
+  project?: ProjectRef | null;
+  /** A personal view bound to a project the caller can no longer see (left it, or it became private): `project` is left out and a run is `invalid_view` (reason `project_unavailable`). */
+  project_unavailable?: boolean;
+  scope: string;
+  updated_at?: string | null;
+  updated_by?: PersonRef | null;
+};
+
+export type ViewEvent = {
+  actor: PersonRef;
+  at: string;
+  id: string;
+  /** `created`, `updated`, `deleted`. */
+  kind: string;
+  /** `{before, after}` (each `{name, def}` or null); `"[已遮蔽]"` once redacted. */
+  payload: unknown;
+  redacted: boolean;
+};
+
+export type ViewEvents = {
+  items: Array<ViewEvent>;
+  next_cursor: string | null;
+};
+
+export type ViewHead = {
+  id: string;
+  kind: string;
+  name: string;
+};
+
+export type ViewList = {
+  items: Array<ViewSummary>;
+  next_cursor: string | null;
+};
+
+/** `PATCH /views/{id}` (Idempotency-Key): `def` replaces the whole definition. */
+export type ViewPatch = {
+  def?: unknown;
+  lock_version: number;
+  name?: string | null;
+};
+
+/** `POST /views/{id}/run`, `POST /views/preview`. */
+export type ViewRun = {
+  /** List: the columns shown (custom fields the caller cannot read are left out). */
+  columns?: Array<ColumnHead> | null;
+  coverage?: Coverage | null;
+  /** List with `group_by`: the groups of this page's items, in order. */
+  groups?: Array<GroupHead> | null;
+  items?: Array<RunItem> | null;
+  lanes?: Array<LaneOut> | null;
+  meta: RunMeta;
+  /** List: the next page. Board: always null (each lane has its own). */
+  next_cursor: string | null;
+  /** Board with swimlanes: the swimlane values of the items returned. */
+  swimlanes?: Array<SwimlaneHead> | null;
+  /** List with `totals`: over every visible match, not only this page. */
+  totals?: Record<string, Total> | null;
+  /** Board: what no lane shows. */
+  unmapped?: Unmapped | null;
+  view: ViewHead;
+};
+
+/** One entry of `GET /views` and MCP `view_list`. */
+export type ViewSummary = {
+  /** The caller may change it (built-in: never). */
+  editable: boolean;
+  /** A uuid, or a built-in id: `builtin:assigned_to_me`, `builtin:reported_by_me`, `builtin:involving_me`, `builtin:project_issues:<project id>`, `builtin:project_board:<project id>`. */
+  id: string;
+  /** `list` or `board`. */
+  kind: string;
+  lock_version?: number | null;
+  name: string;
+  /** The project it is bound to (project views, project built-ins, and personal views bound to one project). */
+  project?: ProjectRef | null;
+  /** A personal view bound to a project the caller can no longer see (left it, or it became private): `project` is left out and a run is `invalid_view` (reason `project_unavailable`). */
+  project_unavailable?: boolean;
+  /** `builtin`, `personal` or `project`. */
+  scope: string;
+  updated_at?: string | null;
+  updated_by?: PersonRef | null;
+};
+
 /** One condition. Values: ids (uuid) or names / keys / logins for project, tracker, priority, status, assignee, author; `{"me": true}` (or "me") for assignee and author (assignee also matches the caller's groups); `{"next": true}` for fixed_version (needs exactly one project); `"YYYY-MM-DD"` or `{"rel": "today", "offset": -3}` for dates; `within` takes `{"range": "this_week"|"last_week"|"next_week"|"this_month"| "last_month"|"last_n_days"|"next_n_days", "n"?: 1–366}`; decimal strings for estimated_hours; status_category `todo`/`doing`/`done`/`open`; custom fields `{"list": "<option id>"}`, `{"user": "<id>"}`, `{"int": "12"}`, `{"date": "…"}`, … or plain values as in `filter`. */
 export type WhereCond = {
   /** project, tracker, priority, status, status_category, assignee, author, fixed_version, is_private, start_date, due_date, created_at, updated_at, estimated_hours, overdue, or cf:<custom field id>. */
@@ -1571,6 +1822,12 @@ export type WhereInput = {
 
 /** `ne` and `not_in` also match issues without a value; `ever_in` (status, assignee, fixed_version) also matches past values. */
 export type WhereOp = "eq" | "ne" | "in" | "not_in" | "lt" | "le" | "gt" | "ge" | "between" | "within" | "is_null" | "not_null" | "ever_in";
+
+export type Wip = {
+  /** null when the lane was not counted. */
+  exceeded: boolean | null;
+  max: number;
+};
 
 /** Success envelope (§4.3). */
 export interface Ok<T> {
@@ -1662,4 +1919,13 @@ export interface Endpoints {
   "GET /versions/{id}/events": { body: never; data: VersionEvents };
   "POST /versions/{id}/events/{seq}/redact": { body: RedactInput; data: Redacted };
   "GET /versions/{id}/impact": { body: never; data: ImpactResult };
+  "GET /views": { body: never; data: ViewList };
+  "POST /views": { body: NewView; data: ViewDetail };
+  "POST /views/preview": { body: PreviewInput2; data: ViewRun };
+  "DELETE /views/{id}": { body: never; data: ViewDeleted };
+  "GET /views/{id}": { body: never; data: ViewDetail };
+  "PATCH /views/{id}": { body: ViewPatch; data: ViewDetail };
+  "POST /views/{id}/copy": { body: ViewCopy; data: ViewDetail };
+  "GET /views/{id}/events": { body: never; data: ViewEvents };
+  "POST /views/{id}/run": { body: RunInput; data: ViewRun };
 }

@@ -140,7 +140,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/projects/{id}/tabs",
-            "The project's shared tab bar (§18): built-in views, saved queries and links, the default tab, is_default, lock_version and can_manage. Project-public content.",
+            "The project's shared tab bar (§18): built-in views (timeline, milestones, issues, dev, plan, board, triage; triage hidden by default), saved queries, links and project views (kind view, view_id), the default tab, is_default, lock_version and can_manage. Project-public content.",
             Session,
             None,
             s::<crate::project_tabs::TabSettings>,
@@ -148,7 +148,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "PUT",
             "/projects/{id}/tabs",
-            "Replace the whole tab list (manage_project, active project). Header Idempotency-Key. New saved queries and links leave id out; keep the id of existing ones. invalid_value kinds: builtin_missing, duplicate_id, unknown_id, tab_limit, tab_title_taken, tab_title_invalid, tab_query_scope, tab_query_syntax (with position), tab_url_invalid, tab_default_invalid. conflict carries the current settings.",
+            "Replace the whole tab list (manage_project, active project). Header Idempotency-Key. New saved queries, links and view tabs leave id out; keep the id of existing ones. A view tab (kind view) names a project view of this project in view_id; the built-in board may name a project board view. invalid_value kinds: builtin_missing, duplicate_id, unknown_id, tab_limit, tab_title_taken, tab_title_invalid, tab_query_scope, tab_query_syntax (with position), tab_url_invalid, tab_default_invalid, tab_view_invalid. conflict carries the current settings.",
             Session,
             Some(s::<crate::project_tabs::TabsPut>),
             s::<crate::project_tabs::TabSettings>,
@@ -156,7 +156,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "POST",
             "/projects/{id}/tabs/reset",
-            "Back to the five built-in tabs, default timeline, is_default true (manage_project). Header Idempotency-Key.",
+            "Back to the seven built-in tabs (triage hidden), default timeline, is_default true (manage_project). Header Idempotency-Key.",
             Session,
             Some(s::<crate::project_tabs::TabsReset>),
             s::<crate::project_tabs::TabSettings>,
@@ -168,6 +168,78 @@ pub fn session_routes() -> Vec<RouteDoc> {
             Session,
             None,
             s::<crate::service::SearchResult>,
+        ),
+        r(
+            "GET",
+            "/views",
+            "Views you can open (design 05 §3.3): built-ins (without project: assigned_to_me, reported_by_me, involving_me; with project: project_issues and project_board of that project), your personal views, and the project views of visible projects. Query project (id or key), scope (all, builtin, personal, project), cursor, limit.",
+            Session,
+            None,
+            s::<crate::views::ViewList>,
+        ),
+        r(
+            "POST",
+            "/views",
+            "Save a view. Header Idempotency-Key. scope personal (yours; project_id optional) or project (manage_public_views in an active project; project-public, no restricted fields, R-VD3). Errors: invalid_view (details.path, reason: unknown_field, invalid_shape, invalid_value, duplicate_value, kind_mismatch, lanes_required, restricted_field, project_scope, too_large), invalid_filter (in def.query.where), invalid_value (kinds view_name_invalid, view_limit, project_required, invalid_kind, invalid_scope), view_name_taken (details.view_id), forbidden_op (manage_public_views).",
+            Session,
+            Some(s::<crate::views::NewView>),
+            s::<crate::views::ViewDetail>,
+        ),
+        r(
+            "POST",
+            "/views/preview",
+            "Run an unsaved definition with the checks of saving it as scope (personal or project) in project_id. Same result as run; not saved, no Idempotency-Key.",
+            Session,
+            Some(s::<crate::views::PreviewInput>),
+            s::<crate::views::ViewRun>,
+        ),
+        r(
+            "GET",
+            "/views/{id}",
+            "One view: uuid or built-in id (builtin:assigned_to_me, builtin:reported_by_me, builtin:involving_me, builtin:project_issues:<project>, builtin:project_board:<project>). Someone else's personal view, or a project view of a project you cannot see, is not_found.",
+            Session,
+            None,
+            s::<crate::views::ViewDetail>,
+        ),
+        r(
+            "PATCH",
+            "/views/{id}",
+            "Rename and/or replace the definition (def replaces the whole def; the kind stays). Header Idempotency-Key. lock_version required; conflict carries details.current and details.current_lock_version. Built-in views: forbidden_op (builtin_view). Project views: manage_public_views.",
+            Session,
+            Some(s::<crate::views::ViewPatch>),
+            s::<crate::views::ViewDetail>,
+        ),
+        r(
+            "DELETE",
+            "/views/{id}",
+            "Delete a view (soft). Header Idempotency-Key, query lock_version (required). A project view a project tab shows is view_in_use (details.tabs: the tab titles); remove the tab first.",
+            Session,
+            None,
+            s::<crate::views::ViewDeleted>,
+        ),
+        r(
+            "POST",
+            "/views/{id}/copy",
+            "Copy any view you can open (built-ins too, except builtin:involving_me: forbidden_op not_copyable) into a new independent personal or project view. Header Idempotency-Key.",
+            Session,
+            Some(s::<crate::views::ViewCopy>),
+            s::<crate::views::ViewDetail>,
+        ),
+        r(
+            "POST",
+            "/views/{id}/run",
+            "Run a view with your own visibility (K3). List: items with values, groups and totals over every visible match; board: lanes with their items, counts (at most 999, capped), wip and next_cursor (a board cursor goes with its lane). Counts and totals are null when out of the 2 s budget or with free text. override.q replaces the view's q; override.where_and narrows. A saved condition on a field you cannot read is invalid_filter (field_unavailable). POST so long cursors fit.",
+            Session,
+            Some(s::<crate::views::RunInput>),
+            s::<crate::views::ViewRun>,
+        ),
+        r(
+            "GET",
+            "/views/{id}/events",
+            "The view's change history, newest first (whoever can open the view). Redacted events show [已遮蔽]. Query cursor.",
+            Session,
+            None,
+            s::<crate::views::ViewEvents>,
         ),
         r(
             "GET",
@@ -681,6 +753,9 @@ fn path_params(path: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Routes answering 201 Created instead of 200 (design 05 §3.3).
+pub const CREATED_ROUTES: &[(&str, &str)] = &[("POST", "/views"), ("POST", "/views/{id}/copy")];
+
 /// The OpenAPI 3.1 document.
 pub fn document() -> Value {
     let mut g = generator(true);
@@ -689,12 +764,17 @@ pub fn document() -> Value {
     let mut paths = Map::new();
     for r in routes() {
         let data = (r.data)(&mut g);
+        let (status, text) = if CREATED_ROUTES.contains(&(r.method, r.path)) {
+            ("201", "Created")
+        } else {
+            ("200", "OK")
+        };
         let mut op = json!({
             "summary": r.summary,
             "operationId": operation_id(r.method, r.path),
             "x-access": format!("{:?}", r.access).to_lowercase(),
             "responses": {
-                "200": {"description": "OK", "content": {"application/json": {"schema": {
+                status: {"description": text, "content": {"application/json": {"schema": {
                     "type": "object", "required": ["data", "meta"],
                     "properties": {"data": data, "meta": {"$ref": "#/components/schemas/Meta"}}}}}},
                 "default": {"description": "Error (§4.3)", "content": {"application/json": {"schema": {
@@ -887,6 +967,11 @@ pub fn typescript(doc: &Value) -> String {
                     .unwrap_or_else(|| "never".into());
                 let data = op
                     .pointer("/responses/200/content/application~1json/schema/properties/data")
+                    .or_else(|| {
+                        op.pointer(
+                            "/responses/201/content/application~1json/schema/properties/data",
+                        )
+                    })
                     .map(ts_type)
                     .unwrap_or_else(|| "unknown".into());
                 out.push_str(&format!(
