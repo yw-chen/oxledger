@@ -76,10 +76,15 @@ pub struct DelegationView {
 pub struct ContextView {
     pub id: Uuid,
     pub agent_principal_id: Uuid,
+    /// The agent as history shows it (§16.2), e.g. `claude-code@alice`.
+    pub agent_label: String,
     pub agent_client_id: Uuid,
     pub state: String,
     pub created_at: DateTime<Utc>,
     pub closed_at: Option<DateTime<Utc>>,
+    /// Writes paused (§16.6, §16.10): when, and `manual` or the breaker's reason.
+    pub suspended_at: Option<DateTime<Utc>>,
+    pub suspension_reason: Option<String>,
     /// R: every project ever granted to this context, with the epoch recorded then.
     pub source_projects: Vec<SourceProject>,
     /// Source projects whose settings changed since (the context can no longer be used).
@@ -976,9 +981,25 @@ pub async fn list_contexts(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<Conte
         .fetch_all(&mut *conn)
         .await?;
         let changed_projects = changed_sources(&mut conn, id, false).await?;
+        let (agent_label, suspended_at, suspension_reason): (
+            String,
+            Option<DateTime<Utc>>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT p.name, c.suspended_at, c.suspension_reason
+             FROM principals p LEFT JOIN agent_context_write_controls c ON c.context_id = $2
+             WHERE p.id = $1",
+        )
+        .bind(agent)
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
         out.push(ContextView {
             id,
             agent_principal_id: agent,
+            agent_label,
+            suspended_at,
+            suspension_reason,
             agent_client_id: client,
             state,
             created_at,

@@ -100,6 +100,19 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 - 錯誤碼：舊版本 `version_superseded`、hash 不對 `approval_invalidated`、已套用 `already_applied`、已拒絕／取消 `changeset_not_executable`、過期 `changeset_expired`（410）、目標讀不到 `proposal_unavailable`。
 - 測試用 `changesets::faults::arm(點, Action)`（只在 `test-support`）在交易 A／B／C 的邊界注入失敗、死結或閘門。
 
+### 前端（web/，P1）
+
+```bash
+cd web && npm install && npx playwright install chromium   # 第一次
+node e2e/backend.mjs reset oxledger_fe_dev   # 重建開發 DB：seed-demo + e2e/fixture.sql + 測試密碼 + agent-client
+node e2e/backend.mjs serve oxledger_fe_dev   # 後端在 127.0.0.1:18080，SPA_ORIGIN=http://localhost:5174
+npm run dev                                  # http://localhost:5174（/api 代理到 18080；OX_BACKEND 可改）
+npm run check && npm test                    # svelte-check、vitest
+npm run e2e                                  # Playwright，對真後端（會重建 oxledger_fe_e2e）
+```
+
+`backend.mjs` 只接受 `oxledger_fe_` 開頭的 DB 名稱（會 DROP）。四個 demo 帳號的密碼都是 `oxledger-demo-pass`（只在本機測試 DB）。Claude Code 的 preview 用 `.claude/launch.json` 的 `oxledger-backend`、`oxledger-web`。
+
 ## 症狀 → 原因 → 修法
 
 | 症狀 | 原因 | 修法 |
@@ -195,6 +208,13 @@ op：`eq` `ne` `lt` `le` `gt` `ge` `between`（兩端含，任一端可為 null�
 | 測試裡兩個 PR 的開發卡順序和預期相反 | 同 state、同 gh_updated_at 時依 PR id（uuidv7）排序 | 斷言照建立順序，或給 PR 不同的 updated_at |
 | 屏障測試裡被擋的那一方提早完成 | fault 只在下一次經過時生效（`arm` 一次一發） | 先 `g.reached.notified().await` 再啟動另一方；放行前用 `is_finished()` 確認對方真的在等鎖 |
 | 跨專案提案在測試裡回 audience_expansion_forbidden | 讀者集合不一致（U1）：目的地的讀者不是來源每個專案讀者的子集 | 測試讓兩專案受眾一致（同一批成員），或只往受眾較窄的專案提案 |
+| 前端登入後每個請求都 401 | `__Host-ox_session` 是 Secure cookie；瀏覽器只在 https 或 localhost 這類安全來源收（用其他 host 名稱開 http 頁面會收不到；127.0.0.1 沒有逐一驗證各瀏覽器） | 一律用 `http://localhost:5174` 開（瀏覽器把 localhost 當安全來源），`OXLEDGER_SPA_ORIGIN=http://localhost:5174` |
+| 前端非 GET 請求回 403 csrf_failed | Origin 不等於 `OXLEDGER_SPA_ORIGIN`，或 vite proxy 改寫了 Origin | vite 的 `/api` proxy 設 `changeOrigin:false`；頁面與 SPA_ORIGIN 用同一個 host（localhost） |
+| `POST /commands` 回 invalid_request「UUID parsing failed」 | `op_id` 必須是 UUID | 用 `newOperationId()`（crypto.randomUUID） |
+| 存自訂欄位回「a custom field value is {"<type>": value} or null」 | 自訂欄位值要帶型別：int／float 是十進位字串、date 是 YYYY-MM-DD、list／user 是 UUID 字串、bool 是布林 | 送出前用 `wireFields()` 依 schema 的 type 包裝；空值送 null |
+| seed-demo 後前端看不到「編輯」「新增 note」 | seed 的角色只有 view_issues／manage_project | E2E 與開發 DB 套 `web/e2e/fixture.sql`（`node web/e2e/backend.mjs reset oxledger_fe_dev` 會一起做） |
+| 用 bash heredoc 一次寫多個 .svelte 檔，結果一個都沒寫進去 | `{#if}`、`$state` 等字元讓 heredoc 解析失敗（unexpected EOF） | .svelte 檔用編輯器工具寫，不要用 heredoc |
+| `npm run dev` 時 Vite 讀不到 `../api/types.ts` | Vite 預設只允許專案根目錄 | `server.fs.allow: ['..']`，alias `$api: '../api'` |
 
 ## 設計上的防呆
 

@@ -267,6 +267,22 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "GET",
+            "/projects",
+            "The projects whose issues you can see (the read scope of search), ordered by key.",
+            Session,
+            None,
+            s::<Vec<crate::api::ProjectItem>>,
+        ),
+        r(
+            "GET",
+            "/issues/{key}/view",
+            "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). not_found for invisible and missing issues alike.",
+            Session,
+            None,
+            s::<crate::issue_view::SpaIssue>,
+        ),
+        r(
+            "GET",
             "/issues/{key}/dev",
             "Pull requests of one issue (R-G9: at most 20, open then draft then the rest, newest first) with review and CI roll-ups, merged_open (R-G5) and synced_at. not_found like the issue when you cannot see it.",
             Session,

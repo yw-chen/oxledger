@@ -407,6 +407,75 @@ pub async fn get(app: &App, caller: AuthContext, p: GetParams) -> Result<IssueVi
     Ok(v)
 }
 
+/// The issue page of the SPA (`GET /issues/{key}/view`, P1 gap G1): every
+/// `get` field plus the full detail (dates, author, children, custom fields,
+/// allowed statuses) and the ids an edit form sends back, read in one
+/// transaction so the parts agree.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SpaIssue {
+    #[serde(flatten)]
+    pub view: IssueView,
+    /// The current project key (the key prefix).
+    pub project_key: String,
+    pub project_id: Uuid,
+    pub tracker_id: Uuid,
+    pub status_id: Uuid,
+    pub assigned_to_id: Option<Uuid>,
+    pub priority_id: Option<Uuid>,
+}
+
+pub async fn spa_view(
+    app: &App,
+    caller: AuthContext,
+    key: &str,
+    include: Option<Vec<String>>,
+    note_limit: Option<u32>,
+    event_limit: Option<u32>,
+) -> Result<SpaIssue> {
+    let mut tx = read_tx(app).await?;
+    // The full detail first: it does the visibility check (not_found alike).
+    let (id, d) = service::get_in(&mut tx, caller, key).await?;
+    let fields: Vec<String> = GET_FIELDS.iter().map(|f| f.to_string()).collect();
+    let mut reader = Reader::new(&mut tx, caller).await?;
+    let plan = plan(
+        &mut tx,
+        caller,
+        Ask {
+            fields: Some(&fields),
+            citations: None,
+            include: include.as_ref(),
+            note_limit,
+            event_limit,
+        },
+    )
+    .await?;
+    let mut v = get_one(&mut tx, &mut reader, caller, &d.key, &plan).await?;
+    v.author = Some(d.author);
+    v.parent = Some(d.parent);
+    v.children = Some(d.children);
+    v.start_date = Some(d.start_date);
+    v.due_date = Some(d.due_date);
+    v.allowed_statuses = Some(d.allowed_statuses);
+    v.custom_fields = Some(d.custom_fields);
+    let ids: (String, Uuid, Uuid, Uuid, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+        "SELECT p.key, i.project_id, i.tracker_id, i.status_id, i.assigned_to_id, i.priority_id
+         FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(SpaIssue {
+        view: v,
+        project_key: ids.0,
+        project_id: ids.1,
+        tracker_id: ids.2,
+        status_id: ids.3,
+        assigned_to_id: ids.4,
+        priority_id: ids.5,
+    })
+}
+
 /// One `get_many` result: the issue, or the error for that key alone.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetManyItem {

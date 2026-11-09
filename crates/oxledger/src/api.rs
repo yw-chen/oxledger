@@ -91,6 +91,8 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/issues/search", post(issues_search))
         .route("/issues/{key}", get(issue_get))
         .route("/issues/{key}/actions", get(issue_actions))
+        .route("/issues/{key}/view", get(issue_view_get))
+        .route("/projects", get(projects_list))
         .route(
             "/projects/{id}/trackers/{tracker_id}/schema",
             get(project_tracker_schema),
@@ -872,6 +874,72 @@ pub struct Created {
 }
 
 // ---------------------------------------------------------------- agents
+
+/// One project the caller can see (P1 gap G2: the SPA's navigation).
+#[derive(Serialize, JsonSchema, sqlx::FromRow)]
+pub struct ProjectItem {
+    pub id: Uuid,
+    /// The issue key prefix, e.g. `AUTH`.
+    pub key: String,
+    pub name: String,
+}
+
+/// `GET /projects`: the projects whose issues the caller may see (the same
+/// read scope as search), by key.
+async fn projects_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let mut tx = service::read_tx(&st.app).await?;
+    let scope = crate::db::load_scope(&mut tx, ctx).await?;
+    let ids: Vec<Uuid> = scope.project_ids().collect();
+    let items: Vec<ProjectItem> =
+        sqlx::query_as("SELECT id, key, name FROM projects WHERE id = ANY($1) ORDER BY key")
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(ok(items))
+}
+
+/// `GET /issues/{key}/view?include=actions,recent_notes,recent_events,dev&note_limit=&event_limit=`:
+/// every `get` field, the full detail, the ids an edit form needs and the
+/// optional blocks (P1 gap G1).
+async fn issue_view_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let limit = |name: &str| -> Result<Option<u32>, ApiFailure> {
+        match q.get(name) {
+            None => Ok(None),
+            Some(v) => v.parse::<u32>().map(Some).map_err(|_| {
+                ApiError::new(ErrorCode::InvalidArgument, format!("{name} is a number"))
+                    .with_details(json!({"path": name}))
+                    .into()
+            }),
+        }
+    };
+    let include = q.get("include").map(|v| {
+        v.split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>()
+    });
+    Ok(ok(crate::issue_view::spa_view(
+        &st.app,
+        ctx,
+        &key,
+        include,
+        limit("note_limit")?,
+        limit("event_limit")?,
+    )
+    .await?))
+}
 
 async fn agent_clients(
     State(st): State<Arc<ApiState>>,
