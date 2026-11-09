@@ -1961,6 +1961,108 @@
         ],
         "type": "object"
       },
+      "FilterFieldInfo": {
+        "properties": {
+          "definition_version": {
+            "description": "Custom fields: moves when the type, unit or options change.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "dynamic": {
+            "description": "Dynamic values besides ids: `me` ({\"me\": true}), `next`\n({\"next\": true}, one project only), `rel` ({\"rel\": \"today\",\n\"offset\": n}), `range` (within).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "field": {
+            "description": "The `field` of a `where` condition.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "ops": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "options": {
+            "description": "Small option sets, listed here.",
+            "items": {
+              "$ref": "#/components/schemas/FilterOption"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "options_source": {
+            "description": "Larger sets: where to look values up (`GET …/assignees`, `GET\n…/versions`, or `POST /api/v1/resolve` across projects).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restricted": {
+            "description": "Custom fields: true for a field with `visible = false` (only readers\nsee it; it cannot be used in project views).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "ref | principal | enum | bool | date | datetime | number, or a custom\nfield type (int, float, date, string, text, list, user, bool, link).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "type",
+          "label",
+          "ops"
+        ],
+        "type": "object"
+      },
+      "FilterFields": {
+        "description": "What can be filtered and sorted (`GET /filter-fields`, MCP `describe`\nscope `filter_fields`; design 05 §3.2).",
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FilterFieldInfo"
+            },
+            "type": "array"
+          },
+          "sortable": {
+            "description": "`sort` keys: the built-in ones and sortable custom fields.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "today": {
+            "description": "The organization's date (R10), YYYY-MM-DD: what relative dates mean now.",
+            "type": "string"
+          },
+          "week_start": {
+            "description": "First day of `this_week`: 1 = Monday … 7 = Sunday.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "today",
+          "week_start",
+          "fields",
+          "sortable"
+        ],
+        "type": "object"
+      },
       "FilterInput": {
         "anyOf": [
           {
@@ -1998,6 +2100,43 @@
           }
         ],
         "description": "Custom field filter: a condition, or `{\"and\": [...]}` / `{\"or\": [...]}` of filters."
+      },
+      "FilterOption": {
+        "properties": {
+          "active": {
+            "description": "Priorities and list options: inactive ones still match old values.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "category": {
+            "description": "Statuses: todo | doing | done.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The value to send (an id, or the enum value).",
+            "type": "string"
+          },
+          "key": {
+            "description": "Projects: the key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
       },
       "HealthValues": {
         "properties": {
@@ -3934,7 +4073,7 @@
       "SearchMeta": {
         "properties": {
           "today": {
-            "description": "The date `overdue` compared with (R10, org time zone), YYYY-MM-DD.",
+            "description": "The date `overdue` and relative dates were computed with (R10, org\ntime zone), YYYY-MM-DD.",
             "type": "string"
           }
         },
@@ -4032,6 +4171,16 @@
               "null"
             ]
           },
+          "sort": {
+            "description": "Order by up to 3 fields (then id): updated_at, created_at, due_date,\nstart_date, priority, status, key, estimated_hours, cf:<id>. Default:\nupdated_at desc without `q`, relevance with `q` (`rank` is still the\nrelevance position when `sort` is given).",
+            "items": {
+              "$ref": "#/components/schemas/SortInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "status": {
             "description": "Exact status name or alias.",
             "type": [
@@ -4068,6 +4217,17 @@
               "integer",
               "null"
             ]
+          },
+          "where": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WhereInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Filter AST v2 (design 05 §3.2) over built-in fields (project, tracker,\npriority, status, status_category, assignee, author, fixed_version,\nis_private, start_date, due_date, created_at, updated_at,\nestimated_hours, overdue) and custom fields (`cf:<id>`), e.g.\n{\"and\": [{\"field\": \"status_category\", \"op\": \"in\", \"value\": [\"todo\", \"doing\"]},\n{\"field\": \"assignee\", \"op\": \"eq\", \"value\": {\"me\": true}},\n{\"field\": \"due_date\", \"op\": \"within\", \"value\": {\"range\": \"next_n_days\", \"n\": 7}}]}.\nANDed with the other parameters. Errors: `invalid_filter` with\n`details.path` and `details.reason` (unknown_field, unknown_value,\ntoo_complex, unsupported_op, invalid_value, invalid_shape,\nproject_scope_required, me_unavailable)."
           }
         },
         "type": "object"
@@ -4104,15 +4264,7 @@
             "type": "array"
           },
           "meta": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SearchMeta"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Only with `overdue`."
+            "$ref": "#/components/schemas/SearchMeta"
           },
           "next_cursor": {
             "type": [
@@ -4136,7 +4288,8 @@
           "consistency",
           "items",
           "next_cursor",
-          "evidence_truncated"
+          "evidence_truncated",
+          "meta"
         ],
         "type": "object"
       },
@@ -4290,6 +4443,32 @@
         "required": [
           "items",
           "next_cursor"
+        ],
+        "type": "object"
+      },
+      "SortDir": {
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "type": "string"
+      },
+      "SortInput": {
+        "additionalProperties": false,
+        "description": "One sort key (design 05 §3.2).",
+        "properties": {
+          "dir": {
+            "$ref": "#/components/schemas/SortDir",
+            "default": "asc",
+            "description": "asc (default) or desc. Missing values come last either way."
+          },
+          "field": {
+            "description": "updated_at, created_at, due_date, start_date, priority, status, key,\nestimated_hours, or cf:<id> of an int, float, date, string or list\nfield (list: by option position).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
         ],
         "type": "object"
       },
@@ -5806,6 +5985,83 @@
           "search"
         ],
         "type": "object"
+      },
+      "WhereCond": {
+        "description": "One condition. Values: ids (uuid) or names / keys / logins for project,\ntracker, priority, status, assignee, author; `{\"me\": true}` (or \"me\") for\nassignee and author (assignee also matches the caller's groups);\n`{\"next\": true}` for fixed_version (needs exactly one project);\n`\"YYYY-MM-DD\"` or `{\"rel\": \"today\", \"offset\": -3}` for dates; `within`\ntakes `{\"range\": \"this_week\"|\"last_week\"|\"next_week\"|\"this_month\"|\n\"last_month\"|\"last_n_days\"|\"next_n_days\", \"n\"?: 1–366}`; decimal strings\nfor estimated_hours; status_category `todo`/`doing`/`done`/`open`;\ncustom fields `{\"list\": \"<option id>\"}`, `{\"user\": \"<id>\"}`,\n`{\"int\": \"12\"}`, `{\"date\": \"…\"}`, … or plain values as in `filter`.",
+        "properties": {
+          "field": {
+            "description": "project, tracker, priority, status, status_category, assignee, author,\nfixed_version, is_private, start_date, due_date, created_at,\nupdated_at, estimated_hours, overdue, or cf:<custom field id>.",
+            "type": "string"
+          },
+          "op": {
+            "$ref": "#/components/schemas/WhereOp"
+          },
+          "value": {
+            "description": "eq/ne/lt/le/gt/ge: one value; in/not_in/ever_in: an array;\nbetween: [min, max] (inclusive, either may be null); within: a range\nobject; is_null/not_null: omit."
+          }
+        },
+        "required": [
+          "field",
+          "op"
+        ],
+        "type": "object"
+      },
+      "WhereInput": {
+        "anyOf": [
+          {
+            "properties": {
+              "and": {
+                "description": "All of these must hold.",
+                "items": {
+                  "$ref": "#/components/schemas/WhereInput"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "and"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "or": {
+                "description": "At least one of these must hold.",
+                "items": {
+                  "$ref": "#/components/schemas/WhereInput"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "or"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/WhereCond"
+          }
+        ],
+        "description": "Filter AST v2 (design 05 §3.2): a condition, or `{\"and\": [...]}` /\n`{\"or\": [...]}` of filters. At most 3 levels of and/or, 30 conditions,\n100 values per list, 100 different names (ids do not count) and 16 KiB."
+      },
+      "WhereOp": {
+        "description": "`ne` and `not_in` also match issues without a value; `ever_in` (status,\nassignee, fixed_version) also matches past values.",
+        "enum": [
+          "eq",
+          "ne",
+          "in",
+          "not_in",
+          "lt",
+          "le",
+          "gt",
+          "ge",
+          "between",
+          "within",
+          "is_null",
+          "not_null",
+          "ever_in"
+        ],
+        "type": "string"
       }
     }
   },
@@ -8161,6 +8417,55 @@
           }
         },
         "summary": "What undoing one of your agent's executions (or your undo) would restore now (§16.7): per field before, after, current and whether it can be restored (reasons changed_since, value_no_longer_valid, permission, redacted, expired); notes to retract, relations to remove, transitions to choose. Writes nothing.",
+        "x-access": "session"
+      }
+    },
+    "/filter-fields": {
+      "get": {
+        "operationId": "get_filter_fields",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FilterFields"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "What search's `where` and `sort` take (design 05 §3.2): fields, ops, options or options_source, dynamic values, sortable keys, today and week_start. Query project=<id or key> limits to one project (unknown or invisible → not_found).",
         "x-access": "session"
       }
     },

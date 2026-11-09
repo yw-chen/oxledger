@@ -294,3 +294,19 @@ date	stage	decision	why	alternatives	source
 2026-11-09	M1	GET /issues/{key}（IssueDetail）與 MCP get／get_many 的 fields 加 estimated_hours；/auth/session capabilities 加 command_features，M1.0 只有 ["estimated_hours"]，其他各階段加入	05 §3.1（審查 R11）、§4.1、§3.10	等 M1.4 一起加 spent_hours；capabilities 一次列出全部四項	src/service.rs; src/issue_view.rs; src/api.rs
 2026-11-09	M1	describe 的 estimated_hours：type decimal，constraints {min "0", max "99999.99", max_decimals 2}；委派 BUILTIN_FIELDS 加 estimated_hours，既有委派不自動加入、available_fields 會列出	05 §3.10.3、§4.3；02 §16.3 規則 1	type number	src/describe.rs; src/agents.rs
 2026-11-09	M1	estimated_hours 的語法檢查自己做、不設長度上限：去掉前導零與小數尾零後才判範圍（>5 位整數 out_of_range）與小數位（>2 too_many_decimals）	獨立驗證 D-1：借用 canonical_number 的 20／10 位上限會讓「1.00000000000」被拒、超長值回錯誤種類	沿用 canonical_number 的長度上限	src/commands.rs
+2026-11-10	M1	內建欄位改成直接比欄位（不再用 EXISTS 自我連接），否定寫成 IS NOT TRUE；ever_in = 目前值或 issue_field_changes 的 old_ref/new_ref 在集合內，只收 status/assignee/fixed_version	05 §3.2；同一個編譯器、語意不變；沒有值的議題也算「不等於」	保留 EXISTS 形狀	crates/ox-core/src/filter.rs; crates/oxledger/src/filter.rs
+2026-11-10	M1	pred_prefilter 只把 project/tracker/assignee/非私有轉成 Pred 縮小 tantivy 候選，其他條件放行後以 SQL 重查	index_prefilter 必須是超集；E4 有 q／無 q 一致	把所有條件都推到索引	crates/oxledger/src/filter.rs
+2026-11-10	M1	舊參數轉成內建條件和 where AND；舊參數錯誤碼不變，只有 where 回 invalid_filter 新原因；探測只看 v1 filter 與 where	契約「舊參數轉 v2」；不改既有用戶端看到的錯誤	舊參數也改回 invalid_filter	crates/oxledger/src/service.rs
+2026-11-10	M1	舊參數 assignee=me 也包含呼叫者的群組	舊參數轉 v2，v2 的 assignee me 依 05 §3.2 含群組	舊參數維持只比對本人	crates/oxledger/src/service.rs
+2026-11-10	M1	author me 也比對 created_on_behalf_of_id	agent 代我建立的議題算我建立的	只比 author_id	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	meta.today 每個 search 回應都有；舊參數 overdue=false 照舊不篩選；where overdue eq false 是補集	05 §3.2「meta.today 一定有」	只有 overdue 時才有 meta	crates/oxledger/src/service.rs; crates/oxledger/tests/s8_versions_search.rs
+2026-11-10	M1	last_n_days = [今天−n, 今天]、next_n_days = [今天, 今天+n]；created_at/updated_at 依組織時區日期比較；fixed_version next 用 versions 的真時鐘	Redmine >t- / <t+；02 §17.3 R10	n 天不含今天	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	invalid_filter 的 reason 補 unsupported_op、invalid_value、invalid_shape；details.path 是 JSON 路徑	05 錯誤表沒列格式錯誤的原因；前端需要定位	全部歸 invalid_request	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	cf:<名稱> 也收；值收有型別的 {"list": id} 等或 v1 單純值；estimated_hours 收字串或 JSON 數字	相容 v1 寫法	只收 cf:<id> 與有型別值	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	排序：最多 3 key，dir 預設 asc，空值兩方向都最後，id 補在最後且方向跟最後一個 key；錯誤回 invalid_argument（path sort[n].field）	05 §3.2 只規定 key 與上限	空值依方向前後；錯誤回 invalid_filter	crates/oxledger/src/filter/v2.rs; crates/oxledger/src/service.rs
+2026-11-10	M1	q + sort：候選長到 8000 收齊所有命中再排序，rank 仍是相關度名次	任何命中都可能排第一；沿用既有 8000 上限與 evidence_truncated	只排前 N 個候選	crates/oxledger/src/service.rs
+2026-11-10	M1	cursor 加 Position::Sort，上限 1024→4096 bytes（之後改成 MAX_SEALED，見下一筆 cursor 決定）；擁有者與期限先查，查詢雜湊（含正規化 where/sort）在解析後比對	三個排序值放不進 1KB；別人的 cursor 不能先洩漏參數錯誤	排序時不給 cursor	crates/oxledger/src/cursor.rs; crates/oxledger/src/service.rs
+2026-11-10	M1	/filter-fields：label zh-TW；未指定專案時人員欄位 options_source 是 POST /api/v1/resolve；看不到的專案 not_found；triage/spent_hours 不列	05 §3.2 範例；§8 依賴倒置	未指定專案時不給 options_source	crates/oxledger/src/filter/v2.rs; crates/oxledger/src/api.rs; crates/oxledger/src/describe.rs
+2026-11-10	M1	where 的值每個請求只解析一次（記憶）；內建參照欄位的 id 每種一個批次查詢；不同名稱的查詢每個 where 最多 100 個（id 不算），超過回 invalid_filter too_complex	獨立驗證 1：逐一 resolve_one 不去重，30×100 個同名值一個請求 15 秒；名稱解析走 resolve，無法便宜地批次	把 resolve 改寫成批次；限制全部值的總數	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	where 的日期限年份 1–9999，超出回 invalid_value	獨立驗證 2：chrono 收、PG 超範圍會 500	限 PG date 的完整範圍	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	cursor 上限改成 MAX_SEALED（三個 2000 bytes 字串排序值 × 6 倍跳脫的最壞情況），encode 超過就報錯	獨立驗證 4：4096 收不回伺服器自己發的 cursor	cursor 只存排序值的雜湊（無法做 keyset）；字串排序值截斷（順序會錯）	crates/oxledger/src/cursor.rs

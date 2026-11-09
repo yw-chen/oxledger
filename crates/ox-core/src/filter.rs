@@ -192,6 +192,12 @@ pub enum Test {
         max: Option<Value>,
     },
     In(Vec<Value>),
+    /// The complement of `In` (like `ne` of `eq`): true when no value is in the set.
+    NotIn(Vec<Value>),
+    /// Built-in reference fields only (design 05 §3.2): the current value is
+    /// in the set, or the issue's history (`issue_field_changes`) has it as
+    /// an old or new value.
+    EverIn(Vec<Value>),
     IsNull,
     NotNull,
 }
@@ -272,10 +278,22 @@ impl Filter {
     }
 
     /// Evaluates against one issue: its visibility facts and custom values (`get(field_id)`).
+    /// `EverIn` sees only the current value here; see [`Filter::eval_with`].
     pub fn eval<'v>(&self, facts: &IssueFacts, get: &dyn Fn(i32) -> Option<&'v Value>) -> bool {
+        self.eval_with(facts, get, &|_| Vec::new())
+    }
+
+    /// [`Filter::eval`] with the issue's past values of a field (`history(field_id)`,
+    /// old and new values of its changes) for `EverIn`.
+    pub fn eval_with<'v>(
+        &self,
+        facts: &IssueFacts,
+        get: &dyn Fn(i32) -> Option<&'v Value>,
+        history: &dyn Fn(i32) -> Vec<Value>,
+    ) -> bool {
         match self {
-            Filter::And(fs) => fs.iter().all(|f| f.eval(facts, get)),
-            Filter::Or(fs) => fs.iter().any(|f| f.eval(facts, get)),
+            Filter::And(fs) => fs.iter().all(|f| f.eval_with(facts, get, history)),
+            Filter::Or(fs) => fs.iter().any(|f| f.eval_with(facts, get, history)),
             Filter::Cond {
                 field,
                 test,
@@ -305,6 +323,14 @@ impl Filter {
                                 .is_none_or(|m| ord(m).is_some_and(|o| o.is_le()))
                     }
                     Test::In(xs) => xs.iter().any(|x| ord(x).is_some_and(|o| o.is_eq())),
+                    Test::NotIn(xs) => !xs.iter().any(|x| ord(x).is_some_and(|o| o.is_eq())),
+                    Test::EverIn(xs) => {
+                        xs.iter().any(|x| ord(x).is_some_and(|o| o.is_eq()))
+                            || (e
+                                && history(field.id).iter().any(|h| {
+                                    xs.iter().any(|x| h.compare(x).is_some_and(|o| o.is_eq()))
+                                }))
+                    }
                     Test::IsNull => e && v.is_none(),
                     Test::NotNull => v.is_some(),
                 }
@@ -385,7 +411,10 @@ fn check_cond(field: Field, test: &Test) -> Result<(), FilterError> {
                 .chain(max)
                 .try_for_each(|v| check_value(field, v))
         }
-        Test::In(vs) => {
+        Test::EverIn(_) if field.id > 0 || field.ty.kind() != ValueKind::Ref => {
+            Err(unsupported("ever_in (built-in reference fields only)"))
+        }
+        Test::In(vs) | Test::NotIn(vs) | Test::EverIn(vs) => {
             if vs.is_empty() || vs.len() > MAX_IN_VALUES {
                 return Err(FilterError::BadValue {
                     field: field.id,
@@ -620,6 +649,37 @@ mod tests {
             Filter::Or(vec![deep]).validate(),
             Err(FilterError::TooLarge)
         );
+    }
+
+    #[test]
+    fn not_in_and_ever_in() {
+        const STATUS: Field = Field {
+            id: -7,
+            ty: FieldType::List,
+        };
+        let (a, b, z) = (
+            Value::Ref(Uuid::from_u128(1)),
+            Value::Ref(Uuid::from_u128(2)),
+            Value::Ref(Uuid::from_u128(3)),
+        );
+        let not_in = c(STATUS, Test::NotIn(vec![a.clone(), b.clone()]));
+        assert!(!eval(&not_in, &[(-7, a.clone())]));
+        assert!(eval(&not_in, &[(-7, z.clone())]));
+        assert!(eval(&not_in, &[]), "not_in includes issues without a value");
+        let ever = c(STATUS, Test::EverIn(vec![a.clone()]));
+        let now_c = [(-7, z.clone())];
+        let m: HashMap<i32, Value> = now_c.iter().cloned().collect();
+        let get = |id: i32| m.get(&id);
+        assert!(
+            !ever.eval(&facts(), &get),
+            "eval sees only the current value"
+        );
+        assert!(ever.eval_with(&facts(), &get, &|_| vec![a.clone(), b.clone()]));
+        assert!(!ever.eval_with(&facts(), &get, &|_| vec![b.clone()]));
+        assert!(eval(&ever, &[(-7, a.clone())]));
+        // Custom fields have no history projection (05 B-20).
+        assert!(Filter::cond(SEV, Test::EverIn(vec![a.clone()])).is_err());
+        assert!(Filter::cond(STATUS, Test::NotIn(vec![])).is_err());
     }
 
     #[test]

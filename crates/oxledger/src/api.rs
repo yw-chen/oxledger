@@ -130,6 +130,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/auth/sessions", get(list_sessions))
         .route("/auth/sessions/{id}", delete(revoke_session))
         .route("/issues/search", post(issues_search))
+        .route("/filter-fields", get(filter_fields))
         .route("/issues/{key}", get(issue_get))
         .route("/issues/{key}/actions", get(issue_actions))
         .route(
@@ -800,6 +801,20 @@ async fn issues_search(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(service::search(&st.app, ctx, p).await?))
+}
+
+async fn filter_fields(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::filter::v2::filter_fields(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+    )
+    .await?))
 }
 
 async fn issue_get(

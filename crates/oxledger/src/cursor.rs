@@ -24,6 +24,15 @@ use uuid::Uuid;
 /// How long a cursor stays valid.
 pub const CURSOR_TTL: chrono::Duration = chrono::Duration::hours(24);
 const VERSION: u8 = 1;
+/// The longest sort value: a `string`/`link` custom field holds at most 2000
+/// bytes (0002 CHECK `octet_length(v_text) <= 2000`); `text` fields are not
+/// sortable.
+const MAX_SORT_VALUE: usize = 2000;
+/// The largest sealed cursor accepted, so that every cursor the server
+/// issues opens again: nonce and tag, 1 KiB for the rest of the payload, and
+/// three sort values (design 05 §3.2) of `MAX_SORT_VALUE` bytes where every
+/// byte is a control character JSON escapes as `\u00XX` (6 bytes).
+pub const MAX_SEALED: usize = 24 + 16 + 1024 + 3 * 6 * MAX_SORT_VALUE;
 
 /// Where the next page starts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,6 +44,9 @@ pub enum Position {
     Rank { o: u32 },
     /// Oldest first by sequence number: the last item's `seq`.
     Seq { s: i64 },
+    /// An explicit sort (design 05 §3.2): the last item's sort values (as
+    /// text, `None` = missing) and its id.
+    Sort { k: Vec<Option<String>>, i: Uuid },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,6 +124,12 @@ pub async fn encode(
         .map_err(|_| anyhow::anyhow!("cursor encryption failed"))?;
     let mut out = nonce.to_vec();
     out.extend(sealed);
+    // Never hand out a cursor `unseal_position` would refuse.
+    anyhow::ensure!(
+        out.len() <= MAX_SEALED,
+        "cursor of {} bytes exceeds MAX_SEALED",
+        out.len()
+    );
     Ok(auth::encode(&out))
 }
 
@@ -128,8 +146,23 @@ pub async fn decode(
     principal: Option<Uuid>,
     hash: &str,
 ) -> Result<Position> {
+    let (h, pos) = unseal_position(pool, raw, principal).await?;
+    if h != hash {
+        return Err(invalid());
+    }
+    Ok(pos)
+}
+
+/// [`decode`] without the query check: the cursor's query hash and
+/// position, for a caller that checks the hash once it knows the query
+/// (still `invalid_cursor` for another principal, tampering or expiry).
+pub async fn unseal_position(
+    pool: &PgPool,
+    raw: &str,
+    principal: Option<Uuid>,
+) -> Result<(String, Position)> {
     let bytes = auth::decode_bytes(raw.trim()).ok_or_else(invalid)?;
-    if bytes.len() < 24 + 16 || bytes.len() > 1024 {
+    if bytes.len() < 24 + 16 || bytes.len() > MAX_SEALED {
         return Err(invalid());
     }
     let (nonce, sealed) = bytes.split_at(24);
@@ -138,10 +171,15 @@ pub async fn decode(
         .decrypt(&XNonce::from(<[u8; 24]>::try_from(nonce)?), sealed)
         .map_err(|_| invalid())?;
     let p: Payload = serde_json::from_slice(&plain).map_err(|_| invalid())?;
-    if p.v != VERSION || p.p != principal || p.h != hash || p.e < Utc::now().timestamp() {
+    if p.v != VERSION || p.p != principal || p.e < Utc::now().timestamp() {
         return Err(invalid());
     }
-    Ok(p.pos)
+    Ok((p.h, p.pos))
+}
+
+/// `invalid_cursor` (a cursor of another query).
+pub fn mismatch() -> anyhow::Error {
+    invalid()
 }
 
 /// A sealed, short-lived token (§15.4 `revision_review_token`): the claims

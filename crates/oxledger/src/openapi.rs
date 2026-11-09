@@ -123,6 +123,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "GET",
+            "/filter-fields",
+            "What search's `where` and `sort` take (design 05 §3.2): fields, ops, options or options_source, dynamic values, sortable keys, today and week_start. Query project=<id or key> limits to one project (unknown or invisible → not_found).",
+            Session,
+            None,
+            s::<crate::filter::v2::FilterFields>,
+        ),
+        r(
+            "GET",
             "/projects/{id}/versions",
             "Versions of a project (§17.8). Query status=open,locked (default), include=stats,next.",
             Session,

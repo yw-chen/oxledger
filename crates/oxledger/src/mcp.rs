@@ -309,7 +309,7 @@ impl OxServer {}
 impl OxServer {
     #[tool(
         name = "search",
-        description = "Find issues the caller can see. Combine structured filters (project, tracker, status, status_category, assignee), a custom field `filter` (conditions eq/ne/lt/le/gt/ge/between/in/is_null/not_null on fields by name, nested with and/or) and optional free text `q`. Returns one line per issue (choose columns with `fields`), newest first, or by relevance when `q` is given: then each item has `rank`, `match` and `evidence` snippets of the current text with a `citation_id` (explain: none|brief|full, default brief). Quote `evidence.text` unchanged with its `citation_id`. `next_cursor` pages. Use `resolve` first if unsure of a name.",
+        description = "Find issues the caller can see. Combine structured filters (project, tracker, status, status_category, assignee), a custom field `filter` (conditions eq/ne/lt/le/gt/ge/between/in/is_null/not_null on fields by name, nested with and/or), a `where` filter over built-in and custom fields (see describe scope filter_fields; {\"me\": true} is not available to agents), `sort` and optional free text `q`. Returns one line per issue (choose columns with `fields`), newest first, or by relevance when `q` is given: then each item has `rank`, `match` and `evidence` snippets of the current text with a `citation_id` (explain: none|brief|full, default brief). Quote `evidence.text` unchanged with its `citation_id`. `next_cursor` pages. Use `resolve` first if unsure of a name.",
         annotations(read_only_hint = true)
     )]
     async fn search(
@@ -408,7 +408,7 @@ impl OxServer {
 
     #[tool(
         name = "describe",
-        description = "Before writing, ask what is possible. scope=project_tracker with `project` (key or id) and `tracker` (name or id): the fields of that issue type, their types and options, which ops you could use, creation rules, limits and what this version does not support. scope=issue_actions with `issue_key`: which fields you can change now, the statuses you can move it to (with the fields required or read-only afterwards), notes and duplicate. Only what you may read or propose is listed; nothing here authorizes a write.",
+        description = "Before writing, ask what is possible. scope=project_tracker with `project` (key or id) and `tracker` (name or id): the fields of that issue type, their types and options, which ops you could use, creation rules, limits and what this version does not support. scope=issue_actions with `issue_key`: which fields you can change now, the statuses you can move it to (with the fields required or read-only afterwards), notes and duplicate. scope=filter_fields (optional `project`): what search's `where` and `sort` take (fields, ops, options, today). Only what you may read or propose is listed; nothing here authorizes a write.",
         annotations(read_only_hint = true)
     )]
     async fn describe(

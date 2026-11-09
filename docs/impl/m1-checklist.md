@@ -7,7 +7,7 @@
 | 階段 | 內容 | 完成標準 | 狀態 |
 |---|---|---|---|
 | M1.0 前置 | 0019、0020；`perm.rs` 權限清單；`estimated_hours` 進命令引擎、describe、事件、undo、政策；`issue_field_changes` 寫入與回填；D12 遮蔽刪投影 | 既有測試全綠；`estimated_hours` 走完 02 §16.7b 對應案例；T-M1-03 | 完成（2026-11-09，全套兩輪全綠，未 commit） |
-| M1.1 Filter AST v2 | `filter.rs` 擴充成 v2（內建欄位、`me`、相對日期、`ever_in`、排序）；舊參數轉 v2；`/filter-fields`、`describe filter_fields`；`search` 收 `where` | T-M1-01…05；E4 可見性測試加 v2 隨機條件；OpenAPI 與 `api/types.ts` 重產 | — |
+| M1.1 Filter AST v2 | `filter.rs` 擴充成 v2（內建欄位、`me`、相對日期、`ever_in`、排序）；舊參數轉 v2；`/filter-fields`、`describe filter_fields`；`search` 收 `where` | T-M1-01…05；E4 可見性測試加 v2 隨機條件；OpenAPI 與 `api/types.ts` 重產 | 完成（2026-11-10，含獨立驗證修正；全套兩輪全綠：test-support 197 過、test-support,github 205 過；未 commit） |
 | M1.2 視圖與看板 | 0021；`/views*`；內建視圖；`run`／`preview`；看板計數；專案分頁 `view`、`board`、`triage`；MCP `view_list`、`view_run` | T-M1-06…20；前端可接列表與看板 | — |
 | M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | — |
 | M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | — |
@@ -42,3 +42,37 @@
 | D-1 `estimated_hours()` 借用 `canonical_number` 的長度上限，超長輸入回 `invalid_request` | 自己做十進位語法檢查，去掉不算數的零後才判範圍與小數位；四個案例加進單元測試與 `m1_0_estimated_hours` |
 | M3 0020 回填沒在有資料時跑過 | `tests/m1_0_upgrade.rs`：暫時資料庫 `<測試 DB>_upg`，用 `db::MIGRATOR.run_to(18)` 跑 0001–0018 的原檔，灌舊資料（created、fields_changed 含 cf 與一般欄位、status_changed、duplicate_added／removed、只改 subject、一筆已遮蔽事件），再 `run` 跑 0019、0020 原檔，驗回填結果、遮蔽事件不回填、epoch 不變；用完刪掉資料庫 |
 | M9 0019 的 NOT VALID 分支沒測 | 同一個升級測試先放一筆 `manage_versions` 限定 tracker 的列：升級成功、`convalidated = false`、既有列與 tracker 列保留、新的違反列仍被拒絕 |
+
+## M1.1 疑點與照建議的做法
+
+程式：`crates/ox-core/src/filter.rs`（`Test::NotIn`、`Test::EverIn`、`eval_with`）、`crates/oxledger/src/filter.rs`（內建欄位 id −1…−15 與 `push_builtin`、`pred_prefilter`）、`crates/oxledger/src/filter/v2.rs`（`where` 解析與解析成 `Filter`、時鐘、排序、`filter_fields`）、`service.rs`（`search_in` 改寫）、`cursor.rs`（`Position::Sort`）。測試：`tests/m1_1_filter.rs`（T-M1-01…05、排序分頁、`author me`、`filter_fields`）、`tests/visibility_e4.rs`（每個世界、每個 viewer 4 個隨機 `where`，有無 `q` 各跑一次）。
+
+- M1.1-D1 **SQL 編譯器仍只有一個**：內建欄位不再用「EXISTS 自我連接」，改成直接比欄位（`i.status_id`、`c.category`、日期欄位）；語意不變，自訂欄位維持 EXISTS＋字面 field id 的形狀。否定（`ne`、`not_in`）寫成 `IS NOT TRUE`，所以沒有值的議題也算「不等於」（05 §3.2）。`ever_in` = 目前值在集合內，或 `issue_field_changes` 的 `old_ref`／`new_ref` 在集合內；只收 status、assignee、fixed_version，自訂欄位不收（沒有投影，05 B-20）。
+- M1.1-D2 **索引端仍是超集**：`index_prefilter`（版本與日期）不變；新加的 `pred_prefilter` 只把 project／tracker／assignee／非私有這幾種條件轉成 `Pred` 給 tantivy 縮小候選，其他條件一律放行，最後都以 SQL 重新檢查。E4 隨機測試有 `q` 與無 `q` 的結果一致。
+- M1.1-D3 **舊參數轉成內建條件**，和 `where` AND 起來走同一個編譯器；探測（S0／S2，D14）只看 v1 `filter` 與 `where` 的自訂欄位部分，和之前一樣。舊參數的錯誤碼不變（`invalid_argument`；`version` 仍是 `invalid_filter`／`project_scope_required`），只有 `where` 回新的 `invalid_filter` 原因。
+- M1.1-D4 **舊參數 `assignee=me` 也包含呼叫者所屬群組**：契約要求舊參數轉 v2，v2 的 `assignee me` 依 05 §3.2 包含群組。這是行為改變（之前只比對本人）；`assignee=<群組名>` 不變。
+- M1.1-D5 **`author me`** 也比對 `created_on_behalf_of_id`（agent 代我建立的議題算「我建立的」）；`ne`／`not_in` 是兩者都不是我。
+- M1.1-D6 **`overdue`**：`where` 的 `overdue eq true` = 到期日早於今天且狀態分類是 todo／doing；`eq false` 是它的補集（沒有到期日、到期日 ≥ 今天、或已完成）。舊參數 `overdue=false` 照舊不篩選。`meta.today` 現在每個回應都有（契約「一定有」），既有 `s8_versions_search` 的「沒有 overdue 就沒有 meta」改成「一定有」。
+- M1.1-D7 **相對日期**：`last_n_days` = [今天−n, 今天]、`next_n_days` = [今天, 今天+n]（照 Redmine `>t-`／`<t+`，共 n+1 天）；`this_week` 依 `org_settings.week_start`；`created_at`／`updated_at` 用組織時區的日期比較（`[d 00:00, d+1 00:00)` 換成時區時間）。「今天」每個請求取一次。測試用 feature `test-support` 下的 `filter::v2::TEST_NOW` 固定時間；`fixed_version {"next": true}` 用的是 `versions` 既有的今天（真時鐘），沒接 `TEST_NOW`。
+- M1.1-D8 **`invalid_filter` 的 `details.reason` 多了三種**：`unsupported_op`（欄位不收這個 op，或 op 名稱不認得）、`invalid_value`（值的型別或格式錯，例如日期、`within` 範圍、`me` 用在非人員欄位）、`invalid_shape`（不是 `{field, op, value}` 或 `{and|or: [...]}`、多了鍵）。05 附錄的錯誤表只列了 `field_unavailable`、`too_complex`、`unknown_field`、`unknown_value`、`project_scope_required`（加 R-VD9 的 `me_unavailable`），這三種是照建議補的；`details.path` 是 JSON 路徑（`where.and[1].value`）。
+- M1.1-D9 **看不到 = 不存在**：專案 id 依呼叫者可見性檢查，版本 id 依所屬專案可見性；其他參照（tracker、status、priority、principal）只檢查存在。讀不到的自訂欄位（`cf:<id>` 或 `cf:<名稱>`）和不存在的欄位同一個 `unknown_field`，錯誤訊息只重複輸入。排序引用讀不到的自訂欄位也和不存在的一樣（`invalid_argument`）。
+- M1.1-D10 **自訂欄位寫法**：`cf:<id>` 之外也收 `cf:<名稱>`（不分大小寫）；值可以是有型別的 `{"list": "<option id>"}`、`{"int": "12"}`…，或和 v1 一樣的單純值；list 選項必須屬於該欄位。
+- M1.1-D11 **`estimated_hours`** 的值收十進位字串，也收 JSON 數字，都用 `canonical_number` 正規化。
+- M1.1-D12 **`tracker`／`priority` 收 `is_null`**：照 05 §3.2 的 op 表（目前兩者都不可能是空值，結果一定是空集合）。
+- M1.1-D13 **排序**：最多 3 個 key；`dir` 預設 `asc`；空值在兩個方向都排最後；最後補 `id`，方向跟最後一個 key；`key` 依專案 key 再依編號（`WEB-2` 在 `WEB-10` 前）；list 依選項 position；受限欄位用欄位 gate 包住（讀不到的議題當空值）。錯誤（未知 key、超過 3 個）回 `invalid_argument`，`details.path = "sort[n].field"`。明確指定 `updated_at desc` 與預設順序相同。
+- M1.1-D14 **有 `q` 又有 `sort`**：要知道所有命中才能排序，所以候選清單一路長到 8000（既有上限），超過就照舊回 `evidence_truncated`；`rank` 仍是相關度名次。
+- M1.1-D15 **cursor**：新增 `Position::Sort{k, i}`（排序值與 id）；上限從 1024 bytes 放寬到 `cursor::MAX_SEALED`（三個最長排序值的最壞情況，見下方獨立驗證後的修正第 4 項）。cursor 的擁有者與期限先檢查（別人的 cursor 一律 `invalid_cursor`，不先回參數錯誤），查詢雜湊（含正規化後的 `where` 與 `sort`）在解析參數之後比對；換了 `where` 或 `sort` → `invalid_cursor`。
+- M1.1-D16 **`/filter-fields`**：`label` 用 zh-TW；`project` 選項只列看得到的專案；`assignee`／`author`／user 型自訂欄位在指定專案時 `options_source = "GET /api/v1/projects/{key}/assignees"`，沒指定專案時是 `"POST /api/v1/resolve"`；`fixed_version` 只在指定專案時有 `options_source`；指定專案時只列在該專案可能適用的自訂欄位；`restricted`（`visible = false`）與 `definition_version` 只有自訂欄位有；`triage`、`spent_hours` 不列（送了回 `unknown_field`）。專案不存在或看不到 → `not_found`。MCP `describe {"scope": "filter_fields", "project"?}` 回同一份，帶 `tracker` 或 `issue_key` 回 `invalid_argument`。
+- M1.1-D17 **T-M1-03 經 Filter 重跑**：`m1_1_filter::t_m1_03_ever_in_after_redaction` 走 `where {"field": "status", "op": "ever_in"}`，遮蔽 A→B 後仍因 `created` 命中、兩筆都遮蔽後不命中、Doing 仍由 Doing→Done 命中；有 `q` 時結果相同。
+
+## M1.1 獨立驗證後的修正（2026-11-10）
+
+| 項目 | 處理 |
+|---|---|
+| 1（中）`in` 的每個值逐一 `resolve_one`、不去重：30 條件 × 100 個同名狀態一個請求 15 秒 | 每個請求記住已解析的值（同一個名稱或 id 只查一次）；內建參照欄位的 id 先一次批次查（每種一個查詢）；不同名稱的查詢每個 `where` 最多 `MAX_NAME_LOOKUPS = 100` 個，超過回 `invalid_filter`／`too_complex`（id 不算）。測試 `m1_1_value_lookups_are_bounded`：30×100 個同名、3×100 個同 id、3×100 個不同 id 都 < 1 秒；100 個不同名稱可用，101 個回 `too_complex` |
+| 2（低）`"-5000-01-01"` 等 chrono 收、PG 超範圍 → 500 | 日期限年份 1–9999，否則 `invalid_value`（`m1_1_dates_out_of_range_and_unknown_version_names`，含 `created_at`） |
+| 3（低）`fixed_version` 名稱不存在時 details 沒有 reason | `remap` 把沒有 reason 的 `invalid_filter` 也當成 `unknown_value`（同一測試） |
+| 4（中低）4096 bytes 上限收不回伺服器自己發的排序 cursor | 上限改成 `cursor::MAX_SEALED` = 24 + 16 + 1024 + 3 × 6 × 2000（三個 2000 bytes 字串值、每 byte 跳脫成 `\u00XX` 的最壞情況），`encode` 超過就報內部錯誤而不是發出收不回的 cursor；測試 `m1_1_cursor_with_the_longest_sort_values` 用 1999 個控制字元或 `"` 的值、1～3 個排序鍵逐頁翻完 |
+| 5 測試缺口 M4：`cf_cond` 的 gate 拿掉沒被抓到 | `m1_1_custom_field_gates_in_where_and_sort`：欄位改成只適用 WEB 後 AUTH 的殘留值、只有 Lead 角色可讀的欄位在 AUTH 的值，`eq`／`in`／`not_null` 都篩不出（有無 `q`）；把 gate 換成 `Pred::True` 時測試失敗（已實測） |
+| 6 測試缺口 M9：cf 排序的 gate 拿掉沒被抓到 | 同一測試：讀不到／不適用的值當空值排最後、依 id；拿掉排序 gate 時測試失敗（已實測） |
+| 7 偶發 `custom_fields_pg::custom_field_filters_match_reference_on_pg` | 建索引前把 Acme 議題的 subject 加長，使其 BM25 分數嚴格最低，前提「有命中排在前 500 名外」不再依賴 segment 切法 |

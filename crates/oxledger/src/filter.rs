@@ -40,26 +40,153 @@ use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
 
+pub mod v2;
+
 // ---------------------------------------------------------------- built-in fields
 
-/// Issue columns the filter also takes (contract 02 §17.15), under
-/// pseudo field ids below zero. Their SQL keeps the custom-field shape — one
-/// `EXISTS` over `issues` itself — so `ne` and `is_null` mean the same.
-/// A custom field with one of these names is shadowed.
+/// Issue columns the filter also takes (contract 02 §17.15 for v1, design
+/// 05 §3.2 for v2), under pseudo field ids below zero. They compile to plain
+/// column tests on the issue row with the same semantics as custom fields
+/// (`ne` / `not_in` are complements and keep missing values, `is_null` is
+/// "no value"); their gate is always `Pred::True`.
+/// A custom field with one of the v1 names is shadowed in v1 filters.
 pub const VERSION_FIELD: i32 = -1;
-const BUILTINS: &[(&str, i32, FieldType, &str)] = &[
-    (
-        "fixed_version_id",
-        VERSION_FIELD,
-        FieldType::List,
-        "fixed_version_id",
-    ),
-    ("start_date", -2, FieldType::Date, "start_date"),
-    ("due_date", -3, FieldType::Date, "due_date"),
+pub const START_FIELD: i32 = -2;
+pub const DUE_FIELD: i32 = -3;
+pub const PROJECT_FIELD: i32 = -4;
+pub const TRACKER_FIELD: i32 = -5;
+pub const PRIORITY_FIELD: i32 = -6;
+pub const STATUS_FIELD: i32 = -7;
+/// `issue_statuses.category` of the issue's status: text `todo|doing|done`.
+pub const CATEGORY_FIELD: i32 = -8;
+pub const ASSIGNEE_FIELD: i32 = -9;
+pub const AUTHOR_FIELD: i32 = -10;
+/// `created_on_behalf_of_id`: set when the author is an agent (02 §16.2).
+pub const ON_BEHALF_FIELD: i32 = -11;
+pub const PRIVATE_FIELD: i32 = -12;
+/// Timestamps compared by their date in the organization's time zone.
+pub const CREATED_FIELD: i32 = -13;
+pub const UPDATED_FIELD: i32 = -14;
+pub const ESTIMATED_FIELD: i32 = -15;
+
+/// v1 names of the built-in fields (contract 02 §17.15).
+const BUILTINS: &[(&str, i32, FieldType)] = &[
+    ("fixed_version_id", VERSION_FIELD, FieldType::List),
+    ("start_date", START_FIELD, FieldType::Date),
+    ("due_date", DUE_FIELD, FieldType::Date),
 ];
 
-fn builtin_column(id: i32) -> Option<&'static str> {
-    BUILTINS.iter().find(|b| b.1 == id).map(|b| b.3)
+/// How a built-in field reads from the issue row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Col {
+    /// `<alias>.<column>`.
+    Issue(&'static str),
+    /// The status's category.
+    Category,
+    /// A timestamptz column compared by the org-time-zone date.
+    Day(&'static str),
+}
+
+fn builtin_col(id: i32) -> Option<Col> {
+    Some(match id {
+        VERSION_FIELD => Col::Issue("fixed_version_id"),
+        START_FIELD => Col::Issue("start_date"),
+        DUE_FIELD => Col::Issue("due_date"),
+        PROJECT_FIELD => Col::Issue("project_id"),
+        TRACKER_FIELD => Col::Issue("tracker_id"),
+        PRIORITY_FIELD => Col::Issue("priority_id"),
+        STATUS_FIELD => Col::Issue("status_id"),
+        CATEGORY_FIELD => Col::Category,
+        ASSIGNEE_FIELD => Col::Issue("assigned_to_id"),
+        AUTHOR_FIELD => Col::Issue("author_id"),
+        ON_BEHALF_FIELD => Col::Issue("created_on_behalf_of_id"),
+        PRIVATE_FIELD => Col::Issue("is_private"),
+        CREATED_FIELD => Col::Day("created_at"),
+        UPDATED_FIELD => Col::Day("updated_at"),
+        ESTIMATED_FIELD => Col::Issue("estimated_hours"),
+        _ => return None,
+    })
+}
+
+/// The `issue_field_changes.field_key` of a field with history (`ever_in`).
+pub(crate) fn history_key(id: i32) -> Option<&'static str> {
+    Some(match id {
+        STATUS_FIELD => "status_id",
+        ASSIGNEE_FIELD => "assigned_to_id",
+        VERSION_FIELD => "fixed_version_id",
+        PRIORITY_FIELD => "priority_id",
+        _ => return None,
+    })
+}
+
+/// The field type of a built-in field id.
+pub fn builtin_type(id: i32) -> Option<FieldType> {
+    builtin_col(id)?;
+    Some(match id {
+        START_FIELD | DUE_FIELD | CREATED_FIELD | UPDATED_FIELD => FieldType::Date,
+        CATEGORY_FIELD => FieldType::String,
+        PRIVATE_FIELD => FieldType::Bool,
+        ESTIMATED_FIELD => FieldType::Float,
+        _ => FieldType::List,
+    })
+}
+
+/// A validated condition on a built-in field (gate `Pred::True`).
+pub fn builtin_cond(id: i32, test: Test) -> Result<Filter> {
+    let Some(ty) = builtin_type(id) else {
+        anyhow::bail!("no built-in field {id}");
+    };
+    if matches!(test, Test::EverIn(_)) && history_key(id).is_none() {
+        anyhow::bail!("built-in field {id} has no history");
+    }
+    Ok(Filter::cond(Field { id, ty }, test)?)
+}
+
+/// The visibility-style part of a resolved filter that the search index can
+/// apply as well (project, tracker, assignee, not private): always implied
+/// by the filter, so `visible AND pred_prefilter(f)` is a superset of what
+/// the SQL keeps. Anything else is `Pred::True`.
+pub fn pred_prefilter(f: &Filter) -> Pred {
+    match f {
+        Filter::And(ps) => Pred::And(ps.iter().map(pred_prefilter).collect()).simplify(),
+        Filter::Or(ps) => {
+            let parts: Vec<Pred> = ps.iter().map(pred_prefilter).collect();
+            if parts.is_empty() || parts.contains(&Pred::True) {
+                Pred::True
+            } else {
+                Pred::Or(parts).simplify()
+            }
+        }
+        Filter::Cond {
+            field,
+            test,
+            applies,
+        } => {
+            if *applies != Pred::True {
+                return Pred::True;
+            }
+            let refs: Option<Vec<Uuid>> = match test {
+                Test::Cmp(Cmp::Eq, Value::Ref(u)) => Some(vec![*u]),
+                Test::In(vs) => vs
+                    .iter()
+                    .map(|v| match v {
+                        Value::Ref(u) => Some(*u),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => None,
+            };
+            match (field.id, refs, test) {
+                (PROJECT_FIELD, Some(ids), _) => {
+                    Pred::Or(ids.into_iter().map(Pred::ProjectIs).collect()).simplify()
+                }
+                (TRACKER_FIELD, Some(ids), _) => Pred::TrackerIn(ids),
+                (ASSIGNEE_FIELD, Some(ids), _) => Pred::AssigneeIn(ids),
+                (PRIVATE_FIELD, _, Test::Cmp(Cmp::Eq, Value::Bool(false))) => Pred::NotPrivate,
+                _ => Pred::True,
+            }
+        }
+    }
 }
 
 /// The index-side pre-filter for a resolved filter (§17.15 fast fields):
@@ -120,8 +247,8 @@ fn cond_prefilter(id: i32, test: &Test, ungated: bool) -> IxFilter {
         };
     }
     let field = match id {
-        -2 => DateField::Start,
-        -3 => DateField::Due,
+        START_FIELD => DateField::Start,
+        DUE_FIELD => DateField::Due,
         _ => return IxFilter::All,
     };
     let d = |v: &Value| match v {
@@ -166,6 +293,7 @@ fn cond_prefilter(id: i32, test: &Test, ungated: bool) -> IxFilter {
         }
         Test::IsNull => IxFilter::DateNull(field),
         Test::NotNull => IxFilter::Not(Box::new(IxFilter::DateNull(field))),
+        Test::NotIn(_) | Test::EverIn(_) => IxFilter::All,
     }
 }
 
@@ -753,10 +881,18 @@ pub fn push_filter_shaped(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Fil
             field,
             test,
             applies,
+        } if field.id < 0 => {
+            debug_assert_eq!(*applies, Pred::True, "built-in fields are never gated");
+            push_builtin(qb, a, *field, test);
+        }
+        Filter::Cond {
+            field,
+            test,
+            applies,
         } => {
-            // ne is the complement of eq; is_null needs E but no value.
+            // ne / not_in are complements; is_null needs E but no value.
             let (outer_not, inner_not) = match test {
-                Test::Cmp(Cmp::Ne, _) => (true, false),
+                Test::Cmp(Cmp::Ne, _) | Test::NotIn(_) => (true, false),
                 Test::IsNull => (false, true),
                 _ => (false, false),
             };
@@ -784,21 +920,11 @@ pub fn push_filter_shaped(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Fil
 
 /// `EXISTS (..)` for the positive form of `test` (`ne` as `=`, `is_null` as presence).
 fn push_exists(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Test, shape: Shape) {
-    let col = match builtin_column(field.id) {
-        Some(c) => {
-            qb.push(format!(
-                "EXISTS (SELECT 1 FROM issues cf WHERE cf.id = {a}.id"
-            ));
-            c
-        }
-        None => {
-            qb.push(format!(
-                "EXISTS (SELECT 1 FROM issue_cf cf WHERE cf.issue_id = {a}.id AND cf.field_id = {}",
-                field.id
-            ));
-            value_column(field.ty.kind())
-        }
-    };
+    qb.push(format!(
+        "EXISTS (SELECT 1 FROM issue_cf cf WHERE cf.issue_id = {a}.id AND cf.field_id = {}",
+        field.id
+    ));
+    let col = value_column(field.ty.kind());
     push_value_test(qb, col, field, test);
     if shape == Shape::S2 {
         qb.push(" OFFSET 0");
@@ -830,7 +956,8 @@ fn push_value_test(qb: &mut QueryBuilder<Postgres>, col: &str, field: Field, tes
                 push_value(qb, v);
             }
         }
-        Test::In(vs) => {
+        // not_in is the outer NOT of in; ever_in never reaches a custom field.
+        Test::In(vs) | Test::NotIn(vs) | Test::EverIn(vs) => {
             qb.push(format!(" AND cf.{col} = ANY("));
             push_array(qb, field.ty.kind(), vs);
             qb.push(")");
@@ -839,6 +966,161 @@ fn push_value_test(qb: &mut QueryBuilder<Postgres>, col: &str, field: Field, tes
             qb.push(format!(" AND cf.{col} IS NOT NULL"));
         }
     }
+}
+
+/// A built-in field's condition as a test on the issue row (parenthesized).
+/// Positive tests may be NULL for a missing value, which only ever meets
+/// AND / OR; the complements are written `IS NOT TRUE` so a missing value
+/// counts as "not equal".
+fn push_builtin(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Test) {
+    let col = builtin_col(field.id).expect("validated built-in field");
+    let expr = match col {
+        Col::Issue(c) => format!("{a}.{c}"),
+        Col::Category => {
+            format!("(SELECT st.category FROM issue_statuses st WHERE st.id = {a}.status_id)")
+        }
+        Col::Day(c) => return push_day(qb, &format!("{a}.{c}"), test),
+    };
+    let kind = field.ty.kind();
+    qb.push("(");
+    match test {
+        Test::Cmp(Cmp::Ne, v) => {
+            qb.push(format!("({expr} = "));
+            push_value(qb, v);
+            qb.push(") IS NOT TRUE");
+        }
+        Test::Cmp(op, v) => {
+            let sym = match op {
+                Cmp::Lt => "<",
+                Cmp::Le => "<=",
+                Cmp::Gt => ">",
+                Cmp::Ge => ">=",
+                _ => "=",
+            };
+            qb.push(format!("{expr} {sym} "));
+            push_value(qb, v);
+        }
+        Test::Range { min, max } => {
+            qb.push(format!("{expr} IS NOT NULL"));
+            if let Some(v) = min {
+                qb.push(format!(" AND {expr} >= "));
+                push_value(qb, v);
+            }
+            if let Some(v) = max {
+                qb.push(format!(" AND {expr} <= "));
+                push_value(qb, v);
+            }
+        }
+        Test::In(vs) => {
+            qb.push(format!("{expr} = ANY("));
+            push_array(qb, kind, vs);
+            qb.push(")");
+        }
+        Test::NotIn(vs) => {
+            qb.push(format!("({expr} = ANY("));
+            push_array(qb, kind, vs);
+            qb.push(")) IS NOT TRUE");
+        }
+        Test::EverIn(vs) => {
+            // design 05 §3.2: now, or as an old or new value in the history
+            // (a redacted event has no rows, M1.0-D6).
+            let key = history_key(field.id).expect("validated ever_in field");
+            qb.push(format!("{expr} = ANY("));
+            push_array(qb, kind, vs);
+            qb.push(format!(
+                ") OR EXISTS (SELECT 1 FROM issue_field_changes fc WHERE fc.issue_id = {a}.id                  AND fc.field_key = '{key}' AND (fc.old_ref = ANY("
+            ));
+            push_array(qb, kind, vs);
+            qb.push(") OR fc.new_ref = ANY(");
+            push_array(qb, kind, vs);
+            qb.push(")))");
+        }
+        Test::IsNull => {
+            qb.push(format!("{expr} IS NULL"));
+        }
+        Test::NotNull => {
+            qb.push(format!("{expr} IS NOT NULL"));
+        }
+    }
+    qb.push(")");
+}
+
+/// Start of a date in the organization's time zone (R10), as a timestamptz.
+fn push_day_start(qb: &mut QueryBuilder<Postgres>, d: NaiveDate) {
+    qb.push("((")
+        .push_bind(d)
+        .push("::date)::timestamp AT TIME ZONE (SELECT timezone FROM org_settings))");
+}
+
+fn next_day(d: NaiveDate) -> NaiveDate {
+    d.succ_opt().unwrap_or(d)
+}
+
+/// A timestamptz column tested by its org-time-zone date, written as ranges
+/// on the column itself (index-friendly): `d` is `[start(d), start(d + 1))`.
+fn push_day(qb: &mut QueryBuilder<Postgres>, col: &str, test: &Test) {
+    let date = |v: &Value| match v {
+        Value::Date(d) => *d,
+        _ => unreachable!("validated date value"),
+    };
+    let ge = |qb: &mut QueryBuilder<Postgres>, d: NaiveDate| {
+        qb.push(format!("{col} >= "));
+        push_day_start(qb, d);
+    };
+    let lt = |qb: &mut QueryBuilder<Postgres>, d: NaiveDate| {
+        qb.push(format!("{col} < "));
+        push_day_start(qb, d);
+    };
+    let on = |qb: &mut QueryBuilder<Postgres>, d: NaiveDate| {
+        qb.push("(");
+        ge(qb, d);
+        qb.push(" AND ");
+        lt(qb, next_day(d));
+        qb.push(")");
+    };
+    qb.push("(");
+    match test {
+        Test::Cmp(Cmp::Eq, v) => on(qb, date(v)),
+        Test::Cmp(Cmp::Ne, v) => {
+            on(qb, date(v));
+            qb.push(" IS NOT TRUE");
+        }
+        Test::Cmp(Cmp::Lt, v) => lt(qb, date(v)),
+        Test::Cmp(Cmp::Le, v) => lt(qb, next_day(date(v))),
+        Test::Cmp(Cmp::Gt, v) => ge(qb, next_day(date(v))),
+        Test::Cmp(Cmp::Ge, v) => ge(qb, date(v)),
+        Test::Range { min, max } => {
+            qb.push(format!("{col} IS NOT NULL"));
+            if let Some(v) = min {
+                qb.push(" AND ");
+                ge(qb, date(v));
+            }
+            if let Some(v) = max {
+                qb.push(" AND ");
+                lt(qb, next_day(date(v)));
+            }
+        }
+        Test::In(vs) | Test::NotIn(vs) | Test::EverIn(vs) => {
+            qb.push("(");
+            for (i, v) in vs.iter().enumerate() {
+                if i > 0 {
+                    qb.push(" OR ");
+                }
+                on(qb, date(v));
+            }
+            qb.push(")");
+            if matches!(test, Test::NotIn(_)) {
+                qb.push(" IS NOT TRUE");
+            }
+        }
+        Test::IsNull => {
+            qb.push(format!("{col} IS NULL"));
+        }
+        Test::NotNull => {
+            qb.push(format!("{col} IS NOT NULL"));
+        }
+    }
+    qb.push(")");
 }
 
 #[cfg(test)]
@@ -989,6 +1271,12 @@ mod tests {
                 }
                 Test::IsNull => e && v.is_none(),
                 Test::NotNull => e && v.is_some(),
+                Test::NotIn(xs) => {
+                    !(e && v
+                        .as_ref()
+                        .is_some_and(|v| xs.iter().any(|x| cmp(v, x) == Some(Equal))))
+                }
+                Test::EverIn(_) => unreachable!("not generated"),
                 Test::Cmp(c, x) => {
                     e && v.as_ref().is_some_and(|v| match (c, cmp(v, x)) {
                         (Cmp::Eq, Some(o)) => o == Equal,
@@ -1089,9 +1377,10 @@ mod tests {
                     }
                 };
                 let cmps = [Cmp::Eq, Cmp::Ne, Cmp::Lt, Cmp::Le, Cmp::Gt, Cmp::Ge];
-                let test = match rng.random_range(0..5) {
+                let test = match rng.random_range(0..6) {
                     0 => Test::Cmp(cmps[rng.random_range(0..6)], val(rng)),
                     1 => Test::In((0..rng.random_range(1..3)).map(|_| val(rng)).collect()),
+                    5 => Test::NotIn((0..rng.random_range(1..3)).map(|_| val(rng)).collect()),
                     2 if id != VERSION_FIELD => Test::Range {
                         min: rng.random_bool(0.7).then(|| val(rng)),
                         max: Some(val(rng)),

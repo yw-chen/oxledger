@@ -10,9 +10,10 @@ use crate::error::{ApiError, ErrorCode, api};
 use crate::evidence::{self, CpText, FieldMatch, Highlight, Strength, Terms, Window};
 use crate::filter::{self, FilterInput};
 use crate::search::Wait;
-use crate::search::{DateField, IxFilter, SearchIndex};
+use crate::search::{IxFilter, SearchIndex};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
+use ox_core::filter::{Cmp, Filter, Test, Value as FValue};
 use ox_core::{IssueFacts, Pred};
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
@@ -78,6 +79,25 @@ pub struct SearchParams {
     /// {"field": "Estimate (h)", "op": "between", "value": [2, 8]}]}. Combined with the other filters by AND.
     #[schemars(with = "Option<FilterInput>")]
     pub filter: Option<serde_json::Value>,
+    /// Filter AST v2 (design 05 §3.2) over built-in fields (project, tracker,
+    /// priority, status, status_category, assignee, author, fixed_version,
+    /// is_private, start_date, due_date, created_at, updated_at,
+    /// estimated_hours, overdue) and custom fields (`cf:<id>`), e.g.
+    /// {"and": [{"field": "status_category", "op": "in", "value": ["todo", "doing"]},
+    /// {"field": "assignee", "op": "eq", "value": {"me": true}},
+    /// {"field": "due_date", "op": "within", "value": {"range": "next_n_days", "n": 7}}]}.
+    /// ANDed with the other parameters. Errors: `invalid_filter` with
+    /// `details.path` and `details.reason` (unknown_field, unknown_value,
+    /// too_complex, unsupported_op, invalid_value, invalid_shape,
+    /// project_scope_required, me_unavailable).
+    #[serde(rename = "where")]
+    #[schemars(with = "Option<filter::v2::WhereInput>")]
+    pub where_: Option<serde_json::Value>,
+    /// Order by up to 3 fields (then id): updated_at, created_at, due_date,
+    /// start_date, priority, status, key, estimated_hours, cf:<id>. Default:
+    /// updated_at desc without `q`, relevance with `q` (`rank` is still the
+    /// relevance position when `sort` is given).
+    pub sort: Option<Vec<filter::v2::SortInput>>,
     /// Max items, default 50, max 100.
     pub limit: Option<u32>,
     /// Opaque cursor from a previous `next_cursor`.
@@ -218,14 +238,13 @@ pub struct SearchResult {
     pub next_cursor: Option<String>,
     /// Some snippets were left out to keep the response small (the item list is still complete).
     pub evidence_truncated: bool,
-    /// Only with `overdue`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub meta: Option<SearchMeta>,
+    pub meta: SearchMeta,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMeta {
-    /// The date `overdue` compared with (R10, org time zone), YYYY-MM-DD.
+    /// The date `overdue` and relative dates were computed with (R10, org
+    /// time zone), YYYY-MM-DD.
     pub today: String,
 }
 
@@ -856,6 +875,7 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
         // An invalid request is an input error, not "wait and retry": run it
         // once (results dropped) so its errors come back first.
         let mut tx = read_tx(app).await?;
+        let today = filter::v2::clock(&mut tx).await?.today;
         // An index that cannot serve yet is not an input error: still lagging.
         if let Err(e) = search_in(&mut tx, app, caller, p.clone()).await
             && e.downcast_ref::<ApiError>()
@@ -885,7 +905,9 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
             items: Vec::new(),
             next_cursor: None,
             evidence_truncated: false,
-            meta: None,
+            meta: SearchMeta {
+                today: today.to_string(),
+            },
         });
     }
     let mut tx = read_tx(app).await?;
@@ -1168,41 +1190,24 @@ async fn search_in(
         }))
         .into());
     }
-    // The cursor is bound to who asked, what was asked and the order (§4.5).
-    let qhash = cursor::query_hash(&serde_json::json!({
-        "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
-        "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
-        "version": &p.version, "overdue": &p.overdue,
-        "order": if text.is_some() { "rank" } else { "updated_desc" },
-    }));
-    let pos = match p.cursor.as_deref() {
+    // The cursor's owner and integrity first (another person's cursor is
+    // `invalid_cursor` before any parameter is looked at); its query below.
+    let opened = match p.cursor.as_deref() {
         None => None,
-        Some(c) => Some(cursor::decode(&app.pool, c, caller.principal_id(), &qhash).await?),
+        Some(c) => Some(cursor::unseal_position(&app.pool, c, caller.principal_id()).await?),
     };
-    let after: Option<(DateTime<Utc>, Uuid)> = match (&pos, text) {
-        (Some(Position::Keyset { t, i }), None) => Some((*t, *i)),
-        (None, _) | (Some(Position::Rank { .. }), Some(_)) => None,
-        _ => {
-            return Err(api(
-                ErrorCode::InvalidCursor,
-                "invalid cursor; search again without it",
-            ));
-        }
-    };
-    let offset: i64 = match pos {
-        Some(Position::Rank { o }) => o as i64,
-        _ => 0,
-    };
-
-    let mut filters: Vec<Pred> = Vec::new();
-    let mut sql_extra: Vec<(&str, Uuid)> = Vec::new();
-    // §17.15 fast fields: narrows the index candidates; SQL still decides.
-    let mut ix: Vec<IxFilter> = Vec::new();
+    // design 05 §3.2: the legacy parameters become v2 conditions, ANDed with
+    // the v1 `filter` and `where`, compiled by the one filter compiler.
+    let clock = filter::v2::clock(&mut *conn).await?;
+    let mut legacy: Vec<Filter> = Vec::new();
     let mut project_id = None;
     if let Some(v) = p.project.as_deref() {
         let id = resolve_one(&mut *conn, caller, "project", v).await?;
         project_id = Some(id);
-        filters.push(Pred::ProjectIs(id));
+        legacy.push(filter::builtin_cond(
+            filter::PROJECT_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
     if let Some(v) = p.version.as_deref() {
         // §17.15: names and `next` exist only inside one project; ids do not.
@@ -1222,52 +1227,75 @@ async fn search_in(
                 crate::versions::resolve_for_search(&mut *conn, project, v).await?
             }
         };
-        sql_extra.push(("i.fixed_version_id = ", id));
-        ix.push(IxFilter::Version(Some(id)));
+        legacy.push(filter::builtin_cond(
+            filter::VERSION_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
-    let today = match p.overdue {
-        Some(true) => Some(crate::versions::today(&mut *conn).await?),
-        _ => None,
-    };
-    if let Some(t) = today {
-        ix.push(IxFilter::Date {
-            field: DateField::Due,
-            lo: std::ops::Bound::Unbounded,
-            hi: std::ops::Bound::Excluded(t),
-        });
+    // §17.15 overdue: computed per query, never indexed. `false` filters nothing.
+    if p.overdue == Some(true) {
+        legacy.push(filter::v2::overdue(clock.today, true)?);
     }
     if let Some(v) = p.tracker.as_deref() {
-        filters.push(Pred::TrackerIn(vec![
-            resolve_one(&mut *conn, caller, "tracker", v).await?,
-        ]));
+        let id = resolve_one(&mut *conn, caller, "tracker", v).await?;
+        legacy.push(filter::builtin_cond(
+            filter::TRACKER_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
     if let Some(v) = p.status.as_deref() {
-        sql_extra.push((
-            "i.status_id = ",
-            resolve_one(&mut *conn, caller, "status", v).await?,
-        ));
+        let id = resolve_one(&mut *conn, caller, "status", v).await?;
+        legacy.push(filter::builtin_cond(
+            filter::STATUS_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
-    let categories: Option<Vec<String>> = match p.status_category.as_deref() {
+    let categories: Option<Vec<&str>> = match p.status_category.as_deref() {
         None => None,
-        Some("open") => Some(vec!["todo".into(), "doing".into()]),
-        Some(c @ ("todo" | "doing" | "done")) => Some(vec![c.into()]),
+        Some("open") => Some(vec!["todo", "doing"]),
+        Some(c @ ("todo" | "doing" | "done")) => Some(vec![c]),
         Some(other) => {
             return Err(user_err(format!(
                 "status_category {other:?}: use open, todo, doing or done"
             )));
         }
     };
-    let mut assignee_none = false;
+    if let Some(c) = categories {
+        let test = match c.as_slice() {
+            [one] => Test::Cmp(Cmp::Eq, FValue::Text(one.to_string())),
+            _ => Test::In(c.iter().map(|x| FValue::Text(x.to_string())).collect()),
+        };
+        legacy.push(filter::builtin_cond(filter::CATEGORY_FIELD, test)?);
+    }
     match p.assignee.as_deref() {
         None => {}
-        Some("none") => assignee_none = true,
+        Some("none") => legacy.push(filter::builtin_cond(filter::ASSIGNEE_FIELD, Test::IsNull)?),
+        // `me` as in v2 (Redmine): me and my groups.
         Some("me") => match caller.user_id() {
-            Some(me) => filters.push(Pred::AssigneeIn(vec![me])),
+            Some(_) => {
+                let mine: Vec<FValue> = scope
+                    .principal_ids
+                    .iter()
+                    .copied()
+                    .map(FValue::Ref)
+                    .collect();
+                legacy.push(filter::builtin_cond(
+                    filter::ASSIGNEE_FIELD,
+                    match mine.as_slice() {
+                        [one] => Test::Cmp(Cmp::Eq, one.clone()),
+                        _ => Test::In(mine),
+                    },
+                )?);
+            }
             None => return Err(user_err("assignee=me needs an authenticated caller")),
         },
-        Some(v) => filters.push(Pred::AssigneeIn(vec![
-            resolve_one(&mut *conn, caller, "principal", v).await?,
-        ])),
+        Some(v) => {
+            let id = resolve_one(&mut *conn, caller, "principal", v).await?;
+            legacy.push(filter::builtin_cond(
+                filter::ASSIGNEE_FIELD,
+                Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+            )?);
+        }
     }
 
     let custom = match &p.filter {
@@ -1276,36 +1304,100 @@ async fn search_in(
             Some(filter::resolve(&mut *conn, caller, &scope, &filter::parse_input(v)?).await?)
         }
     };
+    let wherev2 = match &p.where_ {
+        None => None,
+        Some(v) => {
+            Some(filter::v2::resolve(&mut *conn, caller, &scope, clock, v, project_id).await?)
+        }
+    };
+    let sort = match &p.sort {
+        None => None,
+        Some(keys) => {
+            let fields = if keys.iter().any(|k| k.field.trim().starts_with("cf:")) {
+                filter::readable_fields(&mut *conn, caller, &scope).await?
+            } else {
+                Vec::new()
+            };
+            Some(filter::v2::resolve_sort(&fields, keys)?)
+        }
+    };
+    let sort_cols: &[filter::v2::SortCol] = sort.as_ref().map(|s| s.0.as_slice()).unwrap_or(&[]);
 
-    if let Some(f) = &custom {
-        ix.push(filter::index_prefilter(f));
+    // The cursor is bound to who asked, what was asked and the order (§4.5).
+    let order = match (text.is_some(), sort.is_some()) {
+        (_, true) => "sort",
+        (true, false) => "rank",
+        (false, false) => "updated_desc",
+    };
+    let qhash = cursor::query_hash(&serde_json::json!({
+        "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
+        "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
+        "version": &p.version, "overdue": &p.overdue,
+        "where": wherev2.as_ref().map(|w| &w.normalized),
+        "sort": sort.as_ref().map(|s| &s.1),
+        "order": order,
+    }));
+    let pos = match opened {
+        None => None,
+        Some((h, _)) if h != qhash => return Err(cursor::mismatch()),
+        Some((_, pos)) => Some(pos),
+    };
+    let mut after: Option<(DateTime<Utc>, Uuid)> = None;
+    let mut after_sort: Option<(Vec<Option<String>>, Uuid)> = None;
+    let mut offset: i64 = 0;
+    match (pos, text.is_some(), sort.is_some()) {
+        (None, _, _) => {}
+        (Some(Position::Keyset { t, i }), false, false) => after = Some((t, i)),
+        (Some(Position::Sort { k, i }), false, true) if k.len() == sort_cols.len() => {
+            after_sort = Some((k, i))
+        }
+        (Some(Position::Rank { o }), true, _) => offset = o as i64,
+        _ => {
+            return Err(api(
+                ErrorCode::InvalidCursor,
+                "invalid cursor; search again without it",
+            ));
+        }
     }
-    let ix = IxFilter::and(ix);
+
+    // The user's filters (probing, 03 §5.4, looks at these only).
+    let mut chosen: Vec<Filter> = Vec::new();
+    chosen.extend(custom);
+    chosen.extend(wherev2.map(|w| w.filter));
+    let probe = match chosen.as_slice() {
+        [] => None,
+        [one] => filter::probe_conditions(one),
+        many => filter::probe_conditions(&Filter::And(
+            many.iter()
+                .flat_map(|f| match f {
+                    Filter::And(ps) => ps.clone(),
+                    other => vec![other.clone()],
+                })
+                .collect(),
+        )),
+    };
+    let mut parts = legacy;
+    parts.extend(chosen);
+    let combined = match parts.len() {
+        0 => None,
+        1 => parts.pop(),
+        _ => Some(Filter::And(parts)),
+    };
+    // §17.15 fast fields and the visibility-style conditions narrow the
+    // index candidates; SQL still decides.
+    let ix = combined
+        .as_ref()
+        .map(filter::index_prefilter)
+        .unwrap_or(IxFilter::All);
     let mut all = vec![visible];
-    all.extend(filters);
+    if let Some(f) = &combined {
+        all.push(filter::pred_prefilter(f));
+    }
     let pred = Pred::And(all).simplify();
 
     let push_where_shaped = |qb: &mut QueryBuilder<Postgres>, shape: filter::Shape| {
         push_pred(qb, "i", &pred);
-        for (frag, id) in &sql_extra {
-            qb.push(" AND ").push(*frag).push_bind(*id);
-        }
-        if let Some(c) = &categories {
-            qb.push(" AND s.category = ANY(")
-                .push_bind(c.clone())
-                .push(")");
-        }
-        if assignee_none {
-            qb.push(" AND i.assigned_to_id IS NULL");
-        }
-        // §17.15 overdue: computed per query, never indexed.
-        if let Some(t) = today {
-            qb.push(" AND i.due_date < ")
-                .push_bind(t)
-                .push(" AND s.category <> 'done'");
-        }
-        // Custom fields live only in PostgreSQL.
-        if let Some(f) = &custom {
+        if let Some(f) = &combined {
             qb.push(" AND ");
             filter::push_filter_shaped(qb, "i", f, shape);
         }
@@ -1321,10 +1413,21 @@ async fn search_in(
             select.push_str(c);
         }
     }
-    select.push_str(SEARCH_FROM);
+    let select_qb = || {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
+        for (n, c) in sort_cols.iter().enumerate() {
+            qb.push(", (");
+            c.push(&mut qb);
+            qb.push(format!(")::text AS sk{n}"));
+        }
+        qb.push(SEARCH_FROM);
+        qb
+    };
 
     let mut truncated = false;
     let mut checked: HashMap<Uuid, Texts> = HashMap::new();
+    // With `q` and `sort`: each item's relevance rank among all matches.
+    let mut rank_of: HashMap<Uuid, u32> = HashMap::new();
     let (rows, more): (Vec<PgRow>, bool) = match (text, &terms) {
         (Some(q), Some(terms)) => {
             // Free text: rank in the index (already filtered by visibility +
@@ -1333,9 +1436,15 @@ async fn search_in(
             // then compare the current text in batches (design 03 §3.4): a
             // candidate whose text no longer matches is dropped whatever
             // `explain` says. Grow the candidate list until this page and one
-            // lookahead item survive. Best effort: each round asks the index
-            // again, so a concurrent index update can shift the ranking.
-            let need = (offset + limit + 1) as usize;
+            // lookahead item survive (with `sort`: until every match is
+            // known, since any of them may sort first). Best effort: each
+            // round asks the index again, so a concurrent index update can
+            // shift the ranking.
+            let need = if sort.is_some() {
+                usize::MAX
+            } else {
+                (offset + limit + 1) as usize
+            };
             let batch = 2 * limit as usize;
             let mut k = SEARCH_CANDIDATES;
             // One view for the whole search (03 §4.4): the one a satisfied
@@ -1417,49 +1526,77 @@ async fn search_in(
                 }
                 k = (k * 4).min(MAX_SEARCH_CANDIDATES);
             };
-            let more = survivors.len() as i64 > offset + limit;
-            let page: Vec<Uuid> = survivors
-                .into_iter()
-                .skip(offset as usize)
-                .take(limit as usize)
-                .collect();
-            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
-            push_where(&mut qb);
-            qb.push(" AND i.id = ANY(")
-                .push_bind(page.clone())
-                .push(")");
-            let fetched = qb.build().fetch_all(&mut *conn).await?;
-            let mut by_id: HashMap<Uuid, PgRow> = HashMap::new();
-            for r in fetched {
-                by_id.insert(r.try_get("id")?, r);
+            if sort.is_some() {
+                // Every match is known: order them by the sort keys in SQL
+                // (rank stays the relevance position).
+                for (n, id) in survivors.iter().enumerate() {
+                    rank_of.insert(*id, (n + 1) as u32);
+                }
+                let mut qb = select_qb();
+                push_where(&mut qb);
+                qb.push(" AND i.id = ANY(").push_bind(survivors).push(")");
+                push_order(&mut qb, sort_cols);
+                qb.push(" OFFSET ")
+                    .push_bind(offset)
+                    .push(" LIMIT ")
+                    .push_bind(limit + 1);
+                let mut rows = qb.build().fetch_all(&mut *conn).await?;
+                let more = rows.len() as i64 > limit;
+                rows.truncate(limit as usize);
+                (rows, more)
+            } else {
+                let more = survivors.len() as i64 > offset + limit;
+                let page: Vec<Uuid> = survivors
+                    .into_iter()
+                    .skip(offset as usize)
+                    .take(limit as usize)
+                    .collect();
+                let mut qb = select_qb();
+                push_where(&mut qb);
+                qb.push(" AND i.id = ANY(")
+                    .push_bind(page.clone())
+                    .push(")");
+                let fetched = qb.build().fetch_all(&mut *conn).await?;
+                let mut by_id: HashMap<Uuid, PgRow> = HashMap::new();
+                for r in fetched {
+                    by_id.insert(r.try_get("id")?, r);
+                }
+                (
+                    page.iter().filter_map(|id| by_id.remove(id)).collect(),
+                    more,
+                )
             }
-            (
-                page.iter().filter_map(|id| by_id.remove(id)).collect(),
-                more,
-            )
         }
         _ => {
             // 03 §5.4: one work budget for probes, the first shape and at
             // most one switch; out of budget → query_timeout, no partial page.
             let deadline = Budget::start();
-            let mut shape = match custom.as_ref().and_then(filter::probe_conditions) {
+            let mut shape = match probe {
                 Some(conds) => choose_shape(&mut *conn, &conds, &deadline).await?,
                 None => filter::Shape::S0,
             };
             let mut switched = false;
             let mut rows = loop {
-                let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
+                let mut qb = select_qb();
                 push_where_shaped(&mut qb, shape);
-                // Keyset: live paging, newest first (§4.5).
-                if let Some((t, id)) = after {
-                    qb.push(" AND (i.updated_at, i.id) < (")
-                        .push_bind(t)
-                        .push(", ")
-                        .push_bind(id)
-                        .push(")");
+                if sort.is_some() {
+                    if let Some((k, id)) = &after_sort {
+                        push_after(&mut qb, sort_cols, k, *id);
+                    }
+                    push_order(&mut qb, sort_cols);
+                    qb.push(" LIMIT ").push_bind(limit + 1);
+                } else {
+                    // Keyset: live paging, newest first (§4.5).
+                    if let Some((t, id)) = after {
+                        qb.push(" AND (i.updated_at, i.id) < (")
+                            .push_bind(t)
+                            .push(", ")
+                            .push_bind(id)
+                            .push(")");
+                    }
+                    qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
+                        .push_bind(limit + 1);
                 }
-                qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
-                    .push_bind(limit + 1);
                 // A first S2 gets 60% of what is left, so a switch to S0
                 // still has budget (03 §5.4: no fresh budget after it).
                 let cap = (shape == filter::Shape::S2 && !switched)
@@ -1513,7 +1650,12 @@ async fn search_in(
             );
         }
         if text.is_some() {
-            it.rank = Some((offset as usize + n + 1) as u32);
+            it.rank = Some(
+                rank_of
+                    .get(&it.id)
+                    .copied()
+                    .unwrap_or((offset as usize + n + 1) as u32),
+            );
             if let Some(t) = checked.get(&it.id) {
                 let matched: Vec<&FieldText> = t.fields.iter().filter(|f| f.3.is_some()).collect();
                 it.matched = Some(MatchInfo {
@@ -1536,6 +1678,20 @@ async fn search_in(
     };
 
     let next_cursor = match (more, text, rows.last()) {
+        (true, None, Some(last)) if sort.is_some() => Some(
+            cursor::encode(
+                &app.pool,
+                caller.principal_id(),
+                &qhash,
+                Position::Sort {
+                    k: (0..sort_cols.len())
+                        .map(|n| last.try_get::<Option<String>, _>(format!("sk{n}").as_str()))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    i: last.try_get("id")?,
+                },
+            )
+            .await?,
+        ),
         (true, None, Some(last)) => Some(
             cursor::encode(
                 &app.pool,
@@ -1582,10 +1738,107 @@ async fn search_in(
         items,
         next_cursor,
         evidence_truncated,
-        meta: today.map(|t| SearchMeta {
-            today: t.to_string(),
-        }),
+        meta: SearchMeta {
+            today: clock.today.to_string(),
+        },
     })
+}
+
+/// ORDER BY the sort columns (missing values last in both directions,
+/// design 05 §3.2), then `i.id` in the last key's direction (keyset-stable).
+fn push_order(qb: &mut QueryBuilder<Postgres>, cols: &[filter::v2::SortCol]) {
+    qb.push(" ORDER BY ");
+    for c in cols {
+        if c.nullable {
+            qb.push("(");
+            c.push(qb);
+            qb.push(") IS NULL, ");
+        }
+        c.push(qb);
+        qb.push(if c.desc { " DESC, " } else { " ASC, " });
+    }
+    let desc = cols.last().is_some_and(|c| c.desc);
+    qb.push(if desc { "i.id DESC" } else { "i.id ASC" });
+}
+
+/// ` AND (row strictly after the cursor row)` in [`push_order`]'s order:
+/// a lexicographic OR-chain over (missing flag, value) per column and `id`.
+fn push_after(
+    qb: &mut QueryBuilder<Postgres>,
+    cols: &[filter::v2::SortCol],
+    last: &[Option<String>],
+    id: Uuid,
+) {
+    enum Comp<'a> {
+        /// `(expr) IS NULL`, ascending (missing last).
+        Flag(&'a filter::v2::SortCol, bool),
+        Val(&'a filter::v2::SortCol, Option<&'a str>),
+        Id(bool),
+    }
+    let mut comps: Vec<Comp> = Vec::new();
+    for (c, v) in cols.iter().zip(last) {
+        if c.nullable {
+            comps.push(Comp::Flag(c, v.is_none()));
+        }
+        comps.push(Comp::Val(c, v.as_deref()));
+    }
+    comps.push(Comp::Id(cols.last().is_some_and(|c| c.desc)));
+    let push_val = |qb: &mut QueryBuilder<Postgres>, c: &filter::v2::SortCol, v: &str| {
+        qb.push_bind(v.to_string()).push(format!("::{}", c.cast));
+    };
+    let eq = |qb: &mut QueryBuilder<Postgres>, comp: &Comp| match comp {
+        Comp::Flag(c, null) => {
+            qb.push("((");
+            c.push(qb);
+            qb.push(") IS NULL) = ").push_bind(*null);
+        }
+        Comp::Val(c, None) => {
+            qb.push("(");
+            c.push(qb);
+            qb.push(") IS NULL");
+        }
+        Comp::Val(c, Some(v)) => {
+            qb.push("(");
+            c.push(qb);
+            qb.push(") = ");
+            push_val(qb, c, v);
+        }
+        Comp::Id(_) => unreachable!("id is last"),
+    };
+    let gt = |qb: &mut QueryBuilder<Postgres>, comp: &Comp| match comp {
+        Comp::Flag(c, null) => {
+            qb.push("((");
+            c.push(qb);
+            qb.push(") IS NULL) > ").push_bind(*null);
+        }
+        Comp::Val(_, None) => {
+            qb.push("FALSE");
+        }
+        Comp::Val(c, Some(v)) => {
+            qb.push("(");
+            c.push(qb);
+            qb.push(if c.desc { ") < " } else { ") > " });
+            push_val(qb, c, v);
+        }
+        Comp::Id(desc) => {
+            qb.push(if *desc { "i.id < " } else { "i.id > " })
+                .push_bind(id);
+        }
+    };
+    qb.push(" AND (");
+    for j in 0..comps.len() {
+        if j > 0 {
+            qb.push(" OR ");
+        }
+        qb.push("(");
+        for c in &comps[..j] {
+            eq(qb, c);
+            qb.push(" AND ");
+        }
+        gt(qb, &comps[j]);
+        qb.push(")");
+    }
+    qb.push(")");
 }
 
 /// Snippets within the response budget: every item's best snippet first,

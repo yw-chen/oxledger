@@ -468,6 +468,36 @@ export type FieldSchema = {
   type: string;
 };
 
+export type FilterFieldInfo = {
+  /** Custom fields: moves when the type, unit or options change. */
+  definition_version?: number | null;
+  /** Dynamic values besides ids: `me` ({"me": true}), `next` ({"next": true}, one project only), `rel` ({"rel": "today", "offset": n}), `range` (within). */
+  dynamic?: Array<string>;
+  /** The `field` of a `where` condition. */
+  field: string;
+  label: string;
+  ops: Array<string>;
+  /** Small option sets, listed here. */
+  options?: Array<FilterOption> | null;
+  /** Larger sets: where to look values up (`GET …/assignees`, `GET …/versions`, or `POST /api/v1/resolve` across projects). */
+  options_source?: string | null;
+  /** Custom fields: true for a field with `visible = false` (only readers see it; it cannot be used in project views). */
+  restricted?: boolean | null;
+  /** ref | principal | enum | bool | date | datetime | number, or a custom field type (int, float, date, string, text, list, user, bool, link). */
+  type: string;
+};
+
+/** What can be filtered and sorted (`GET /filter-fields`, MCP `describe` scope `filter_fields`; design 05 §3.2). */
+export type FilterFields = {
+  fields: Array<FilterFieldInfo>;
+  /** `sort` keys: the built-in ones and sortable custom fields. */
+  sortable: Array<string>;
+  /** The organization's date (R10), YYYY-MM-DD: what relative dates mean now. */
+  today: string;
+  /** First day of `this_week`: 1 = Monday … 7 = Sunday. */
+  week_start: number;
+};
+
 /** Custom field filter: a condition, or `{"and": [...]}` / `{"or": [...]}` of filters. */
 export type FilterInput = {
   /** All of these must hold. */
@@ -476,6 +506,18 @@ export type FilterInput = {
   /** At least one of these must hold. */
   or: Array<FilterInput>;
 } | CondInput;
+
+export type FilterOption = {
+  /** Priorities and list options: inactive ones still match old values. */
+  active?: boolean | null;
+  /** Statuses: todo | doing | done. */
+  category?: string | null;
+  /** The value to send (an id, or the enum value). */
+  id: string;
+  /** Projects: the key. */
+  key?: string | null;
+  label: string;
+};
 
 export type HealthValues = {
   health_at_risk_days: number | null;
@@ -993,7 +1035,7 @@ export type SearchItem = {
 };
 
 export type SearchMeta = {
-  /** The date `overdue` compared with (R10, org time zone), YYYY-MM-DD. */
+  /** The date `overdue` and relative dates were computed with (R10, org time zone), YYYY-MM-DD. */
   today: string;
 };
 
@@ -1020,6 +1062,8 @@ export type SearchParams = {
   project?: string | null;
   /** Free text (BM25 over subject and description; Chinese works without word segmentation). */
   q?: string | null;
+  /** Order by up to 3 fields (then id): updated_at, created_at, due_date, start_date, priority, status, key, estimated_hours, cf:<id>. Default: updated_at desc without `q`, relevance with `q` (`rank` is still the relevance position when `sort` is given). */
+  sort?: Array<SortInput> | null;
   /** Exact status name or alias. */
   status?: string | null;
   /** "open" (todo + doing), "todo", "doing" or "done". */
@@ -1030,6 +1074,8 @@ export type SearchParams = {
   version?: string | null;
   /** How long to wait for `consistent_after`, 0–2000 ms (default 1000). */
   wait_ms?: number | null;
+  /** Filter AST v2 (design 05 §3.2) over built-in fields (project, tracker, priority, status, status_category, assignee, author, fixed_version, is_private, start_date, due_date, created_at, updated_at, estimated_hours, overdue) and custom fields (`cf:<id>`), e.g. {"and": [{"field": "status_category", "op": "in", "value": ["todo", "doing"]}, {"field": "assignee", "op": "eq", "value": {"me": true}}, {"field": "due_date", "op": "within", "value": {"range": "next_n_days", "n": 7}}]}. ANDed with the other parameters. Errors: `invalid_filter` with `details.path` and `details.reason` (unknown_field, unknown_value, too_complex, unsupported_op, invalid_value, invalid_shape, project_scope_required, me_unavailable). */
+  where?: WhereInput | null;
 };
 
 /** Design 03 §4.3: wait for this before expecting search to show the write. Not a proof of commit; `status` is. */
@@ -1044,8 +1090,7 @@ export type SearchResult = {
   /** Some snippets were left out to keep the response small (the item list is still complete). */
   evidence_truncated: boolean;
   items: Array<SearchItem>;
-  /** Only with `overdue`. */
-  meta?: SearchMeta | null;
+  meta: SearchMeta;
   next_cursor: string | null;
   /** "ok", or "search_lagging": the index has not caught up with `consistent_after` yet. Not a write failure and not "nothing found": do not propose again or ask for approval again; `get` reads the write. */
   outcome: string;
@@ -1093,6 +1138,16 @@ export type SettingEvent = {
 export type SettingEvents = {
   items: Array<SettingEvent>;
   next_cursor: string | null;
+};
+
+export type SortDir = "asc" | "desc";
+
+/** One sort key (design 05 §3.2). */
+export type SortInput = {
+  /** asc (default) or desc. Missing values come last either way. */
+  dir?: SortDir;
+  /** updated_at, created_at, due_date, start_date, priority, status, key, estimated_hours, or cf:<id> of an int, float, date, string or list field (list: by option position). */
+  field: string;
 };
 
 export type SourceProject = {
@@ -1496,6 +1551,27 @@ export type VersionWriteResult = {
   version: VersionView;
 };
 
+/** One condition. Values: ids (uuid) or names / keys / logins for project, tracker, priority, status, assignee, author; `{"me": true}` (or "me") for assignee and author (assignee also matches the caller's groups); `{"next": true}` for fixed_version (needs exactly one project); `"YYYY-MM-DD"` or `{"rel": "today", "offset": -3}` for dates; `within` takes `{"range": "this_week"|"last_week"|"next_week"|"this_month"| "last_month"|"last_n_days"|"next_n_days", "n"?: 1–366}`; decimal strings for estimated_hours; status_category `todo`/`doing`/`done`/`open`; custom fields `{"list": "<option id>"}`, `{"user": "<id>"}`, `{"int": "12"}`, `{"date": "…"}`, … or plain values as in `filter`. */
+export type WhereCond = {
+  /** project, tracker, priority, status, status_category, assignee, author, fixed_version, is_private, start_date, due_date, created_at, updated_at, estimated_hours, overdue, or cf:<custom field id>. */
+  field: string;
+  op: WhereOp;
+  /** eq/ne/lt/le/gt/ge: one value; in/not_in/ever_in: an array; between: [min, max] (inclusive, either may be null); within: a range object; is_null/not_null: omit. */
+  value?: unknown;
+};
+
+/** Filter AST v2 (design 05 §3.2): a condition, or `{"and": [...]}` / `{"or": [...]}` of filters. At most 3 levels of and/or, 30 conditions, 100 values per list, 100 different names (ids do not count) and 16 KiB. */
+export type WhereInput = {
+  /** All of these must hold. */
+  and: Array<WhereInput>;
+} | {
+  /** At least one of these must hold. */
+  or: Array<WhereInput>;
+} | WhereCond;
+
+/** `ne` and `not_in` also match issues without a value; `ever_in` (status, assignee, fixed_version) also matches past values. */
+export type WhereOp = "eq" | "ne" | "in" | "not_in" | "lt" | "le" | "gt" | "ge" | "between" | "within" | "is_null" | "not_null" | "ever_in";
+
 /** Success envelope (§4.3). */
 export interface Ok<T> {
   data: T;
@@ -1547,6 +1623,7 @@ export interface Endpoints {
   "GET /executions/{id}": { body: never; data: ExecutionView };
   "POST /executions/{id}/undo": { body: UndoInput; data: UndoResult };
   "GET /executions/{id}/undo-preview": { body: never; data: UndoPreview };
+  "GET /filter-fields": { body: never; data: FilterFields };
   "GET /home/agent-summary": { body: never; data: AgentSummary };
   "POST /issues/search": { body: SearchParams; data: SearchResult };
   "GET /issues/{key}": { body: never; data: IssueDetail };
