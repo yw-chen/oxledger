@@ -260,3 +260,28 @@ date	stage	decision	why	alternatives	source
 2026-11-09	S8	版本名稱保留 next（casefold 後比對），建立與改名時回 invalid_value，details.kind=reserved_name；version:next 一律當關鍵字	獨立驗證發現 6	文字語法用引號區分名稱與關鍵字	src/versions.rs
 2026-11-09	S8	sync_round 用 tokio Mutex 一次只跑一輪（03 §4.2 單一寫入者）；rebuild 不重設 F，藍綠重建仍不在 S8	獨立驗證發現 8	用型別保證只有一條寫入路徑	src/search.rs
 2026-11-09	S8	新增 test-support 錯誤注入點 search.before_publish（在 reload 與 publish 之間），讓測試能驗證「發布前等待者不能通過」	獨立驗證發現 4	—	src/search.rs; tests/s8_gate_probes.rs
+2026-11-09	P2	索引目錄 CURRENT + gen-<uuid>/；commit payload {v, data_epoch, generation, schema/analyzer/query 版本, cursor, complete_before_xid} 是恢復依據；PG outbox_cursors（consumer search@<gen>）只做協調、監控與 GC	03 §4.2、§4.8；P2-D1、P2-D5	PG cursor 當恢復依據	src/search.rs; migrations/0018
+2026-11-09	P2	沒有可服務的 generation（第一次啟動、payload 壞、data_epoch 不符）時，有 q 的搜尋回 search_unavailable，F 從 0 起，token 一律落後；落後路徑跑一次查詢檢查輸入錯誤時，search_unavailable 不算輸入錯誤	P2-D2；舊 token 不能在空索引上被滿足	回空結果	src/service.rs
+2026-11-09	P2	只有 F 前進時的 durable payload 至少間隔 10 秒（測試可調）；有文件變動一律帶 payload commit	03 §4.2	每輪都 commit	src/search.rs
+2026-11-09	P2	藍綠切換在同步輪的鎖裡做：新 generation 要 F_new ≥ F_old 且 cursor ≥ 舊 cursor（Q-S8 建議預設）；健康檢查抽 200 筆比 search_rev 與可見性／§17.15 欄位，不一致又沒有待套用事件就中止切換、租約 retired	03 §4.8 第 6 步；P2-D6	只比 F	src/search.rs
+2026-11-09	P2	analyzer／query semantics 只有一版；版本不符就重建，不保留舊版 tokenizer 讓舊 generation 繼續服務（真的改版時再做）	P2-D7	現在就做雙版本	src/search.rs
+2026-11-09	P2	oxledger reindex 改成在 search_settings.rebuild_requested_at 登記，由執行中的伺服器背景重建；--offline 在本行程重建	CLI 與伺服器是不同行程，CLI 換不了伺服器的 view	CLI 直接重建（伺服器看不到）	src/main.rs
+2026-11-09	P2	outbox GC 每小時：xid < 所有 active/bootstrapping/retained consumer 的最小 last_xid 且 created_at 早於 1 小時；沒有 consumer 時不刪；保留期滿的 generation 由 GC 改 retired 並刪目錄	03 §4.9；P2-D8、P2-D9	—	src/search.rs
+2026-11-09	P2	/metrics 自己產生 Prometheus 文字，不加依賴；只有設 OXLEDGER_METRICS_TOKEN 才開；長交易每 10 秒查一次，15 秒 warning、60 秒 error 寫進日誌，不 kill	03 §4.6–4.7；P2-D10	加 prometheus crate	src/metrics.rs
+2026-11-09	P2	背景同步迴圈在跑、而上次成功超過 60 秒時，有 q 的搜尋回 search_unavailable	03 §4.11；P2-D11	—	src/service.rs
+2026-11-09	P2	§17.15 fast field：fixed_version（term，none 表示空）、start_date／due_date（i64 天數，INDEXED|FAST）、nulls；下推只做超集（or 有一支不能下推就不下推；ne 只在 gate 為 True 時）	P2-D12；decisions 第 258 列的延後項	完整對應 Filter AST	src/filter.rs; src/search.rs
+2026-11-09	P2	search_rev 相同時候選不必重新比對原文就保留，evidence_status=current；不同時重新比對、rechecked	03 §3.4 第 4 步	—	src/service.rs
+2026-11-09	P2	D14 策略只用在沒有 q 的篩選搜尋、至少兩個正向單值自訂欄位條件的 AND；補 issues (updated_at DESC, id DESC) 索引讓 S2 沿現行排序走；預算 2 秒，第一次 S2 只拿剩餘的 60%，逾時後剩 ≥300 ms 才切 S0；用 savepoint 與 SET LOCAL statement_timeout	03 §5.4；P2-D14	維持 S0（等 id 排序）	src/service.rs; src/filter.rs
+2026-11-09	P2	新錯誤碼 field_definition_changed（409，fix_input）、query_timeout（422，不可重試，fix_input＋ask_human）	03 §3.7、§5.6	query_timeout 用 503	src/error.rs
+2026-11-09	P2	definition_version 由觸發器維護：ftype／unit 變更、選項新增、改名、停用、刪除都 +1，只改 position 不動；篩選帶的版本不符回 field_definition_changed；看不到的欄位照舊回 invalid_filter（不洩漏存在）	P2-D15	每次 UPDATE 都 +1	migrations/0018; src/filter.rs
+2026-11-09	P2	D14 實測（100 萬 issue、updated_at DESC 排序）：寬條件 S2 比 S0 快 10–160 倍，一個稀有條件時 S0 快；保留 §5.4 策略選擇，不退回固定 S0	P2-D14；experiments/sd/results/q3_updated.tsv	固定 S0 只做 deadline	src/service.rs
+2026-11-09	M1	A1：agent 只替委派者本人記工時、新委派的 log_time／update_time_entry 預設 review；agent 可讀委派者自己的工時（time_list），接受工時說明被抄進一般 note 擴大受眾的風險，委派精靈顯示警告	使用者決定（2026-11-09）	(i) M1 不讀；(ii) 只在工時受眾一致的專案讀	docs/design/05
+2026-11-09	M1	A2：M1 做 watcher＋站內通知中心，逐收件人重驗可見性；email／SMTP 排 M2	使用者決定（2026-11-09）	M1 不做通知；M1 含 email	docs/design/05
+2026-11-09	M1	A3：AI 團隊（U33 每角色一個 agent principal、U34 防迴圈、U35 AI 團隊頁）放 M1	使用者決定（2026-11-09）	延到 M2 與 automation 一起	docs/design/05
+2026-11-09	M1	A4：右欄內建 AI 對話（U38）放 M1，伺服器端呼叫，provider 同時支援 Anthropic Messages API 與 OpenAI 相容端點，管理員設定，未設定時不出現	使用者決定（2026-11-09）	延到 M2；只支援其中一種	docs/design/05
+2026-11-09	M1	A5：agent 可以對自己建立的單做 triage_decide；稽核標出自建自分流	使用者決定（2026-11-09）	禁止（forbidden_op self_triage）	docs/design/05
+2026-11-09	M1	內建 AI：預設關閉，管理員設定並確認 D17 後開啟，外部服務用公司帳號的 key；預設只收 https，OXLEDGER_AI_ALLOW_HTTP=1 才允許 loopback／私有網段 http；provider 端點由部署設定登記（名稱＝端點＋key 環境變數），網頁只能選，連線時驗證解析的 IP	使用者決定（05 §9.5 P1、P3，附錄 D Q1）	網頁自由填 base_url；只收 https	docs/design/05
+2026-11-09	M1	系統管理員不能讀使用者的 AI 對話；人核准 agent 送審提案算人介入、重設防迴圈鏈；使用者貼進對話的內容不追蹤來源只提示；角色 bot 的 sponsor 離職時 bot 一起停由管理員退役	使用者決定（05 §9.5 P2、P4、P5、P7）	—	docs/design/05
+2026-11-09	M1	內建 AI 委派預設照 D20 直接寫入（工時除外）；一次 run 讀過 time_list 後該 run 的寫入一律送審	使用者決定（05 §9.5 P6，附錄 D Q3）	全部送審；讀工時後不收窄	docs/design/05
+2026-11-09	M1	同一委派者＋同一 agent 軟體同時只能有一個 active runtime；provider 退役或更換後舊對話可續用，第一次送出前提示新服務名稱	使用者決定（05 附錄 D Q2、Q4）	允許多個 runtime；舊對話唯讀	docs/design/05
+2026-11-09	M1	OXLEDGER_AI_ALLOW_HTTP 只管 http：私有網段與 loopback 的 https 一律允許，http 要開關，公網只收 https；內建 AI 的工時送審延伸到同一對話之後的 run	使用者決定（05 §9.2 B-40、B-41）	開關也管私有網段的 https；只限該 run	docs/design/05

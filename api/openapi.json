@@ -765,6 +765,14 @@
       "CondInput": {
         "description": "One condition on a custom field.",
         "properties": {
+          "definition_version": {
+            "description": "Optional: the custom field's `definition_version` from `resolve(kind: \"custom_field\")`;\nif the definition changed since, the search fails with `field_definition_changed`\n(resolve again). Ignored for the built-in fields.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "field": {
             "description": "Custom field name (case-insensitive), e.g. \"Severity\".",
             "type": "string"
@@ -922,6 +930,57 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "CustomFieldInfo": {
+        "description": "A custom field as `resolve(kind: \"custom_field\")` describes it (design\n03 §2.4): what a filter on it needs.",
+        "properties": {
+          "definition_version": {
+            "description": "Pass it in filter conditions to fail with `field_definition_changed` instead of\nsilently filtering by a changed definition.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "id": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "operators": {
+            "description": "Filter operators the type takes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "options": {
+            "description": "List fields: the options (filter by label; inactive ones still match old values).",
+            "items": {
+              "$ref": "#/components/schemas/FieldOptionInfo"
+            },
+            "type": "array"
+          },
+          "type": {
+            "description": "int | float | date | string | text | list | user | bool | link",
+            "type": "string"
+          },
+          "unit": {
+            "description": "Unit of the stored number (e.g. \"hour\"), when the field has one: send values in it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "unit",
+          "operators",
+          "definition_version"
+        ],
         "type": "object"
       },
       "CustomFieldValue": {
@@ -1613,6 +1672,16 @@
             "const": "search_not_caught_up",
             "description": "`on_lag: \"error\"` and the index has not caught up; `retry_after_ms`.",
             "type": "string"
+          },
+          {
+            "const": "field_definition_changed",
+            "description": "A filter names a custom field definition that changed since (03 §3.7).",
+            "type": "string"
+          },
+          {
+            "const": "query_timeout",
+            "description": "The query did not finish within the request's work budget (03 §5.4).",
+            "type": "string"
           }
         ]
       },
@@ -1806,6 +1875,26 @@
           "key",
           "editable",
           "required"
+        ],
+        "type": "object"
+      },
+      "FieldOptionInfo": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "active"
         ],
         "type": "object"
       },
@@ -3422,7 +3511,7 @@
         "additionalProperties": false,
         "properties": {
           "kind": {
-            "description": "Optional: project | tracker | status | principal.",
+            "description": "Optional: project | tracker | status | principal | custom_field (type, unit, options,\noperators and `definition_version` of a custom field).",
             "type": [
               "string",
               "null"
@@ -3459,6 +3548,13 @@
           "candidates": {
             "items": {
               "$ref": "#/components/schemas/Candidate"
+            },
+            "type": "array"
+          },
+          "custom_fields": {
+            "description": "Only with `kind: \"custom_field\"`: the matching fields the caller may read.",
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldInfo"
             },
             "type": "array"
           },

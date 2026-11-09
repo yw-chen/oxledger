@@ -313,7 +313,7 @@ async fn frontier_never_passes_a_partly_applied_xid() {
             rounds += 1;
             let left: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM outbox o, outbox_cursors c
-                 WHERE c.consumer = 'search' AND o.topic = 'issue' AND (o.xid, o.id) > (c.last_xid, c.last_id)
+                 WHERE c.consumer LIKE 'search@%' AND c.state = 'active' AND o.topic = 'issue' AND (o.xid, o.id) > (c.last_xid, c.last_id)
                    AND o.xid = $1::text::xid8",
             )
             .bind(x.to_string())

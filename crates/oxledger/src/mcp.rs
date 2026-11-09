@@ -50,7 +50,8 @@ pub struct OxServer {
 pub struct ResolveParams {
     /// Name, login, project key or alias to look up (e.g. "缺陷", "alice", "AUTH").
     pub text: String,
-    /// Optional: project | tracker | status | principal.
+    /// Optional: project | tracker | status | principal | custom_field (type, unit, options,
+    /// operators and `definition_version` of a custom field).
     pub kind: Option<String>,
     /// With `purpose`: the project (key or id).
     #[serde(default)]

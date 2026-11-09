@@ -758,7 +758,7 @@ async fn t_s2_outbox_consumed_twice() {
     // two consumers at once on the same index.
     exec(
         &pool,
-        "DELETE FROM outbox_cursors WHERE consumer = 'search';
+        "DELETE FROM outbox_cursors WHERE consumer LIKE 'search%';
          INSERT INTO outbox (topic, entity_id) SELECT 'issue', id FROM issues;
          INSERT INTO outbox (topic, entity_id) SELECT 'issue', id FROM issues;",
     )

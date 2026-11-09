@@ -9,8 +9,8 @@ use crate::db::{self, push_pred};
 use crate::error::{ApiError, ErrorCode, api};
 use crate::evidence::{self, CpText, FieldMatch, Highlight, Strength, Terms, Window};
 use crate::filter::{self, FilterInput};
-use crate::search::SearchIndex;
 use crate::search::Wait;
+use crate::search::{DateField, IxFilter, SearchIndex};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use ox_core::{IssueFacts, Pred};
@@ -278,9 +278,40 @@ pub struct Candidate {
     pub matched: String,
 }
 
+/// A custom field as `resolve(kind: "custom_field")` describes it (design
+/// 03 §2.4): what a filter on it needs.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CustomFieldInfo {
+    pub id: i32,
+    pub name: String,
+    /// int | float | date | string | text | list | user | bool | link
+    #[serde(rename = "type")]
+    pub ftype: String,
+    /// Unit of the stored number (e.g. "hour"), when the field has one: send values in it.
+    pub unit: Option<String>,
+    /// Filter operators the type takes.
+    pub operators: Vec<&'static str>,
+    /// List fields: the options (filter by label; inactive ones still match old values).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<FieldOptionInfo>,
+    /// Pass it in filter conditions to fail with `field_definition_changed` instead of
+    /// silently filtering by a changed definition.
+    pub definition_version: i32,
+}
+
+#[derive(Debug, Serialize, JsonSchema, FromRow)]
+pub struct FieldOptionInfo {
+    pub id: Uuid,
+    pub label: String,
+    pub active: bool,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ResolveResult {
     pub candidates: Vec<Candidate>,
+    /// Only with `kind: "custom_field"`: the matching fields the caller may read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub custom_fields: Vec<CustomFieldInfo>,
     /// When nothing matched: valid values for the requested kind.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub valid_values: Vec<String>,
@@ -288,9 +319,10 @@ pub struct ResolveResult {
 
 // ---------------------------------------------------------------- resolve
 
-const KINDS: [&str; 4] = ["project", "tracker", "status", "principal"];
+const KINDS: [&str; 5] = ["project", "tracker", "status", "principal", "custom_field"];
 
-/// Name/alias lookup. `kind` = project | tracker | status | principal (user or group).
+/// Name/alias lookup. `kind` = project | tracker | status | principal (user
+/// or group) | custom_field (only with this kind).
 pub async fn resolve(
     app: &App,
     caller: AuthContext,
@@ -320,6 +352,9 @@ pub(crate) async fn resolve_in(
         .into());
     }
     let scope = db::load_scope(&mut *conn, caller).await?;
+    if kind == Some("custom_field") {
+        return resolve_custom_field(conn, caller, &scope, text.trim()).await;
+    }
     let visible_projects: Vec<Uuid> = scope.project_ids().collect();
     let t = text.trim();
     // Exact (case-insensitive) matches first; substring matches only if nothing exact.
@@ -359,6 +394,7 @@ pub(crate) async fn resolve_in(
         if !found.is_empty() {
             return Ok(ResolveResult {
                 candidates: found,
+                custom_fields: Vec::new(),
                 valid_values: Vec::new(),
             });
         }
@@ -386,6 +422,66 @@ pub(crate) async fn resolve_in(
     };
     Ok(ResolveResult {
         candidates: Vec::new(),
+        custom_fields: Vec::new(),
+        valid_values,
+    })
+}
+
+/// `resolve(kind: "custom_field")` (design 03 §7 step 11): exact name
+/// (case-insensitive) first, else substring; only fields the caller may
+/// read somewhere. Nothing → the readable field names as `valid_values`.
+async fn resolve_custom_field(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    scope: &ox_core::Scope,
+    text: &str,
+) -> Result<ResolveResult> {
+    let fields = filter::readable_fields(&mut *conn, caller, scope).await?;
+    let t = text.to_lowercase();
+    let mut hits: Vec<&crate::custom_fields::FieldRow> = fields
+        .iter()
+        .map(|(f, _)| f)
+        .filter(|f| f.name.to_lowercase() == t)
+        .collect();
+    if hits.is_empty() && !t.is_empty() {
+        hits = fields
+            .iter()
+            .map(|(f, _)| f)
+            .filter(|f| f.name.to_lowercase().contains(&t))
+            .take(20)
+            .collect();
+    }
+    let mut out = Vec::with_capacity(hits.len());
+    for f in hits {
+        let ty = f.field_type()?;
+        let options: Vec<FieldOptionInfo> = if f.ftype == "list" {
+            sqlx::query_as(
+                "SELECT id, label, active FROM field_options WHERE field_id = $1 ORDER BY position, label",
+            )
+            .bind(f.id)
+            .fetch_all(&mut *conn)
+            .await?
+        } else {
+            Vec::new()
+        };
+        out.push(CustomFieldInfo {
+            id: f.id,
+            name: f.name.clone(),
+            ftype: f.ftype.clone(),
+            unit: f.unit.clone(),
+            operators: filter::operators(ty),
+            options,
+            definition_version: f.definition_version,
+        });
+    }
+    let valid_values = if out.is_empty() {
+        fields.iter().map(|(f, _)| f.name.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    Ok(ResolveResult {
+        candidates: Vec::new(),
+        custom_fields: out,
         valid_values,
     })
 }
@@ -447,6 +543,7 @@ pub async fn resolve_assignee(
     };
     Ok(ResolveResult {
         candidates,
+        custom_fields: Vec::new(),
         valid_values,
     })
 }
@@ -703,11 +800,20 @@ type FieldText = (TextField, String, CpText, Option<FieldMatch>);
 /// The current text of one candidate.
 struct Texts {
     fields: Vec<FieldText>,
+    /// The index document's `search_rev` equals the current text's (03 §3.4
+    /// step 4): the index matched exactly this text.
+    current: bool,
 }
 
 impl Texts {
     fn matched(&self) -> bool {
         self.fields.iter().any(|f| f.3.is_some())
+    }
+
+    /// Still a hit: the index saw this very text (`search_rev` equal, the
+    /// re-match can be skipped), or the current text matches again.
+    fn survives(&self) -> bool {
+        self.current || self.matched()
     }
 }
 
@@ -721,12 +827,40 @@ const FULL_WINDOWS_PER_FIELD: usize = 2;
 pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<SearchResult> {
     // Consistency first, outside the read transaction (no connection held
     // while waiting; 03 §4.4).
-    let waited = consistency_wait(app, caller, &p).await?;
+    let waited = consistency_wait(app, caller, &p).await;
+    {
+        use crate::metrics::Outcome;
+        let ms = std::time::Duration::from_millis;
+        match &waited {
+            Ok(Some(Wait::Satisfied { waited_ms })) => app
+                .index
+                .metrics
+                .consistency(Outcome::Satisfied, Some(ms(*waited_ms))),
+            Ok(Some(Wait::Lagging { waited_ms })) => app
+                .index
+                .metrics
+                .consistency(Outcome::Lagging, Some(ms(*waited_ms))),
+            Err(e)
+                if e.downcast_ref::<ApiError>()
+                    .is_some_and(|a| a.code == ErrorCode::ConsistencyEpochChanged) =>
+            {
+                app.index.metrics.consistency(Outcome::EpochChanged, None)
+            }
+            _ => {}
+        }
+    }
+    let waited = waited?;
     if let Some(Wait::Lagging { waited_ms }) = waited {
         // An invalid request is an input error, not "wait and retry": run it
         // once (results dropped) so its errors come back first.
         let mut tx = read_tx(app).await?;
-        search_in(&mut tx, app, caller, p.clone()).await?;
+        // An index that cannot serve yet is not an input error: still lagging.
+        if let Err(e) = search_in(&mut tx, app, caller, p.clone()).await
+            && e.downcast_ref::<ApiError>()
+                .is_none_or(|a| a.code != ErrorCode::SearchUnavailable)
+        {
+            return Err(e);
+        }
         tx.commit().await?;
         if p.on_lag.as_deref() == Some("error") {
             return Err(ApiError::new(
@@ -767,6 +901,158 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
 }
 
 const LAG_RETRY_MS: u64 = 500;
+
+/// The SQL work budget of one request (03 §5.4 item 4, Q-S7 default 2 s).
+pub const QUERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+/// A timed-out S2 switches to S0 only with at least this much left.
+const SWITCH_MIN: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Tests: override the budget (ms; 0 = default), slow S2 down, and see the
+/// shape the last filter search used `(shape, switched)`.
+#[cfg(feature = "test-support")]
+pub static BUDGET_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+pub static S2_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+pub static LAST_SHAPE: std::sync::Mutex<Option<(filter::Shape, bool)>> =
+    std::sync::Mutex::new(None);
+
+struct Budget {
+    end: std::time::Instant,
+    total: std::time::Duration,
+}
+
+impl Budget {
+    fn start() -> Budget {
+        #[cfg(feature = "test-support")]
+        let total = match BUDGET_MS.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => QUERY_BUDGET,
+            ms => std::time::Duration::from_millis(ms),
+        };
+        #[cfg(not(feature = "test-support"))]
+        let total = QUERY_BUDGET;
+        Budget {
+            end: std::time::Instant::now() + total,
+            total,
+        }
+    }
+
+    fn remaining(&self) -> std::time::Duration {
+        self.end
+            .saturating_duration_since(std::time::Instant::now())
+    }
+
+    /// Runs one statement under the remaining budget inside a savepoint
+    /// (the read transaction stays usable after a cancel). `None`: the
+    /// budget ran out (57014), nothing left running.
+    async fn run(
+        &self,
+        conn: &mut PgConnection,
+        shape: filter::Shape,
+        mut qb: QueryBuilder<Postgres>,
+        cap: Option<std::time::Duration>,
+    ) -> Result<Option<Vec<PgRow>>> {
+        let mut left = self.remaining();
+        if let Some(c) = cap {
+            left = left.min(c);
+        }
+        let left = left.as_millis() as u64;
+        if left == 0 {
+            return Ok(None);
+        }
+        // The caller's own timeout comes back afterwards, not the session
+        // default (ROLLBACK TO restores it by itself; RELEASE keeps ours).
+        let before: String = sqlx::query_scalar("SELECT current_setting('statement_timeout')")
+            .fetch_one(&mut *conn)
+            .await?;
+        sqlx::query("SAVEPOINT ox_budget")
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SET LOCAL statement_timeout = {left}"
+        )))
+        .execute(&mut *conn)
+        .await?;
+        let r = async {
+            #[cfg(feature = "test-support")]
+            {
+                let d = S2_DELAY_MS.load(std::sync::atomic::Ordering::SeqCst);
+                if d > 0 && shape == filter::Shape::S2 {
+                    sqlx::query("SELECT pg_sleep($1)")
+                        .bind(d as f64 / 1000.0)
+                        .execute(&mut *conn)
+                        .await?;
+                }
+            }
+            let _ = shape;
+            qb.build().fetch_all(&mut *conn).await
+        }
+        .await;
+        match r {
+            Ok(rows) => {
+                sqlx::query("RELEASE SAVEPOINT ox_budget")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+                    .bind(&before)
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(Some(rows))
+            }
+            Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("57014") => {
+                sqlx::query("ROLLBACK TO SAVEPOINT ox_budget")
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+fn query_timeout(b: &Budget) -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::QueryTimeout,
+        "the field conditions are too broad to finish in time; narrow them",
+    )
+    .with_details(serde_json::json!({
+        "deadline_ms": b.total.as_millis() as u64,
+        "suggestions": ["add_project_filter", "narrow_date_range", "add_text_query"],
+    }))
+    .into()
+}
+
+/// 03 §5.4 item 2: probe each condition up to T + 1 index entries; any
+/// condition at or below T (an exact count) → S0, all above → S2. A probe
+/// that runs out of budget keeps S0 (the main query then decides).
+async fn choose_shape(
+    conn: &mut PgConnection,
+    conds: &[(ox_core::filter::Field, ox_core::filter::Test)],
+    budget: &Budget,
+) -> Result<filter::Shape> {
+    for (field, test) in conds {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("");
+        filter::push_probe(&mut qb, *field, test);
+        let Some(rows) = budget.run(&mut *conn, filter::Shape::S0, qb, None).await? else {
+            return Ok(filter::Shape::S0);
+        };
+        let n: i64 = rows.first().map(|r| r.try_get(0)).transpose()?.unwrap_or(0);
+        if n < filter::PROBE_CAP {
+            return Ok(filter::Shape::S0);
+        }
+    }
+    Ok(filter::Shape::S2)
+}
+
+/// No generation can serve yet, or the sync loop stopped (03 §4.11).
+fn search_unavailable() -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::SearchUnavailable,
+        "the search index is not available right now; try again later",
+    )
+    .with_retry_after(5000)
+    .into()
+}
 const MAX_WAIT_MS: u32 = 2000;
 const DEFAULT_WAIT_MS: u32 = 1000;
 
@@ -908,6 +1194,8 @@ async fn search_in(
 
     let mut filters: Vec<Pred> = Vec::new();
     let mut sql_extra: Vec<(&str, Uuid)> = Vec::new();
+    // §17.15 fast fields: narrows the index candidates; SQL still decides.
+    let mut ix: Vec<IxFilter> = Vec::new();
     let mut project_id = None;
     if let Some(v) = p.project.as_deref() {
         let id = resolve_one(&mut *conn, caller, "project", v).await?;
@@ -933,11 +1221,19 @@ async fn search_in(
             }
         };
         sql_extra.push(("i.fixed_version_id = ", id));
+        ix.push(IxFilter::Version(Some(id)));
     }
     let today = match p.overdue {
         Some(true) => Some(crate::versions::today(&mut *conn).await?),
         _ => None,
     };
+    if let Some(t) = today {
+        ix.push(IxFilter::Date {
+            field: DateField::Due,
+            lo: std::ops::Bound::Unbounded,
+            hi: std::ops::Bound::Excluded(t),
+        });
+    }
     if let Some(v) = p.tracker.as_deref() {
         filters.push(Pred::TrackerIn(vec![
             resolve_one(&mut *conn, caller, "tracker", v).await?,
@@ -979,11 +1275,15 @@ async fn search_in(
         }
     };
 
+    if let Some(f) = &custom {
+        ix.push(filter::index_prefilter(f));
+    }
+    let ix = IxFilter::and(ix);
     let mut all = vec![visible];
     all.extend(filters);
     let pred = Pred::And(all).simplify();
 
-    let push_where = |qb: &mut QueryBuilder<Postgres>| {
+    let push_where_shaped = |qb: &mut QueryBuilder<Postgres>, shape: filter::Shape| {
         push_pred(qb, "i", &pred);
         for (frag, id) in &sql_extra {
             qb.push(" AND ").push(*frag).push_bind(*id);
@@ -1005,9 +1305,10 @@ async fn search_in(
         // Custom fields live only in PostgreSQL.
         if let Some(f) = &custom {
             qb.push(" AND ");
-            filter::push_filter(qb, "i", f);
+            filter::push_filter_shaped(qb, "i", f, shape);
         }
     };
+    let push_where = |qb: &mut QueryBuilder<Postgres>| push_where_shaped(qb, filter::Shape::S0);
     // Only the requested columns (§3.8 "fields 下推"), plus what identifies,
     // orders and authorizes a row.
     let mut select =
@@ -1035,17 +1336,22 @@ async fn search_in(
             let need = (offset + limit + 1) as usize;
             let batch = 2 * limit as usize;
             let mut k = SEARCH_CANDIDATES;
+            // One view for the whole search (03 §4.4): the one a satisfied
+            // token was checked against, or newer; never switched half-way.
+            let view = match app.index.view() {
+                Some(v) if !app.index.metrics.sync_stalled() => v,
+                _ => return Err(search_unavailable()),
+            };
             let survivors = loop {
-                let hits = app.index.search(q, &pred, k).map_err(|e| {
+                let hits = view.search(q, &pred, &ix, k).map_err(|e| {
                     tracing::error!("search index failed: {e:#}");
-                    api(
-                        ErrorCode::SearchUnavailable,
-                        "the search index is not available right now; try again later",
-                    )
+                    search_unavailable()
                 })?;
                 let exhausted = hits.len() < k;
                 let score_of: HashMap<Uuid, f32> =
                     hits.iter().map(|h| (h.issue_id, h.score)).collect();
+                let rev_of: HashMap<Uuid, Option<[u8; 32]>> =
+                    hits.iter().map(|h| (h.issue_id, h.search_rev)).collect();
                 let ids: Vec<Uuid> = score_of.keys().copied().collect();
                 let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT i.id, k.key");
                 qb.push(SEARCH_FROM);
@@ -1076,6 +1382,8 @@ async fn search_in(
                         .fetch_all(&mut *conn)
                         .await?;
                         for (id, subject, description) in texts {
+                            let current = rev_of.get(&id).copied().flatten()
+                                == Some(crate::search::search_rev(&subject, &description));
                             let fields = [
                                 (TextField::Subject, subject),
                                 (TextField::Description, description),
@@ -1087,13 +1395,13 @@ async fn search_in(
                                 (f, t, cp, m)
                             })
                             .collect();
-                            checked.insert(id, Texts { fields });
+                            checked.insert(id, Texts { fields, current });
                         }
                     }
                     survivors.extend(
                         ranked[i..end]
                             .iter()
-                            .filter(|r| checked.get(&r.0).is_some_and(Texts::matched))
+                            .filter(|r| checked.get(&r.0).is_some_and(Texts::survives))
                             .map(|r| r.0),
                     );
                     i = end;
@@ -1129,19 +1437,48 @@ async fn search_in(
             )
         }
         _ => {
-            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
-            push_where(&mut qb);
-            // Keyset: live paging, newest first (§4.5).
-            if let Some((t, id)) = after {
-                qb.push(" AND (i.updated_at, i.id) < (")
-                    .push_bind(t)
-                    .push(", ")
-                    .push_bind(id)
-                    .push(")");
+            // 03 §5.4: one work budget for probes, the first shape and at
+            // most one switch; out of budget → query_timeout, no partial page.
+            let deadline = Budget::start();
+            let mut shape = match custom.as_ref().and_then(filter::probe_conditions) {
+                Some(conds) => choose_shape(&mut *conn, &conds, &deadline).await?,
+                None => filter::Shape::S0,
+            };
+            let mut switched = false;
+            let mut rows = loop {
+                let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
+                push_where_shaped(&mut qb, shape);
+                // Keyset: live paging, newest first (§4.5).
+                if let Some((t, id)) = after {
+                    qb.push(" AND (i.updated_at, i.id) < (")
+                        .push_bind(t)
+                        .push(", ")
+                        .push_bind(id)
+                        .push(")");
+                }
+                qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
+                    .push_bind(limit + 1);
+                // A first S2 gets 60% of what is left, so a switch to S0
+                // still has budget (03 §5.4: no fresh budget after it).
+                let cap = (shape == filter::Shape::S2 && !switched)
+                    .then(|| deadline.remaining().mul_f32(0.6));
+                match deadline.run(&mut *conn, shape, qb, cap).await? {
+                    Some(rows) => break rows,
+                    // S2 ran out: switch once to S0 if enough budget is left.
+                    None if shape == filter::Shape::S2
+                        && !switched
+                        && deadline.remaining() >= SWITCH_MIN =>
+                    {
+                        shape = filter::Shape::S0;
+                        switched = true;
+                    }
+                    None => return Err(query_timeout(&deadline)),
+                }
+            };
+            #[cfg(feature = "test-support")]
+            if let Ok(mut l) = LAST_SHAPE.lock() {
+                *l = Some((shape, switched));
             }
-            qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
-                .push_bind(limit + 1);
-            let mut rows = qb.build().fetch_all(&mut *conn).await?;
             let more = rows.len() as i64 > limit;
             rows.truncate(limit as usize);
             (rows, more)
@@ -1332,8 +1669,9 @@ fn attach_evidence(
                 let m = m.as_ref()?;
                 Some(SearchEvidence {
                     field: field.as_str().into(),
-                    // No search_rev yet (design 03 §7 step 8): always re-checked.
-                    evidence_status: "rechecked".into(),
+                    // 03 §3.4 step 4: the index ranked this very text, or
+                    // an older one (the snippet is from the current text).
+                    evidence_status: if t.current { "current" } else { "rechecked" }.into(),
                     text: cp.slice(w.start, w.end),
                     highlights: evidence::highlights_in(m, (w.start, w.end))
                         .into_iter()

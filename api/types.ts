@@ -205,6 +205,8 @@ export type CompactValidation = {
 
 /** One condition on a custom field. */
 export type CondInput = {
+  /** Optional: the custom field's `definition_version` from `resolve(kind: "custom_field")`; if the definition changed since, the search fails with `field_definition_changed` (resolve again). Ignored for the built-in fields. */
+  definition_version?: number | null;
   /** Custom field name (case-insensitive), e.g. "Severity". */
   field: string;
   op: Op;
@@ -246,6 +248,22 @@ export type Creation = {
 export type CredentialBody = {
   expires_in_days?: number | null;
   label?: string;
+};
+
+/** A custom field as `resolve(kind: "custom_field")` describes it (design 03 §2.4): what a filter on it needs. */
+export type CustomFieldInfo = {
+  /** Pass it in filter conditions to fail with `field_definition_changed` instead of silently filtering by a changed definition. */
+  definition_version: number;
+  id: number;
+  name: string;
+  /** Filter operators the type takes. */
+  operators: Array<string>;
+  /** List fields: the options (filter by label; inactive ones still match old values). */
+  options?: Array<FieldOptionInfo>;
+  /** int | float | date | string | text | list | user | bool | link */
+  type: string;
+  /** Unit of the stored number (e.g. "hour"), when the field has one: send values in it. */
+  unit: string | null;
 };
 
 export type CustomFieldValue = {
@@ -370,7 +388,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -422,6 +440,12 @@ export type FieldAction = {
   reason?: string | null;
   /** Required in the current status (definition or workflow rule). */
   required: boolean;
+};
+
+export type FieldOptionInfo = {
+  active: boolean;
+  id: string;
+  label: string;
 };
 
 export type FieldSchema = {
@@ -853,7 +877,7 @@ export type RepoLinks = {
 };
 
 export type ResolveParams = {
-  /** Optional: project | tracker | status | principal. */
+  /** Optional: project | tracker | status | principal | custom_field (type, unit, options, operators and `definition_version` of a custom field). */
   kind?: string | null;
   /** With `purpose`: the project (key or id). */
   project?: string | null;
@@ -865,6 +889,8 @@ export type ResolveParams = {
 
 export type ResolveResult = {
   candidates: Array<Candidate>;
+  /** Only with `kind: "custom_field"`: the matching fields the caller may read. */
+  custom_fields?: Array<CustomFieldInfo>;
   /** When nothing matched: valid values for the requested kind. */
   valid_values?: Array<string>;
 };

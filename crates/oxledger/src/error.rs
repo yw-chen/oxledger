@@ -130,6 +130,10 @@ pub enum ErrorCode {
     ConsistencyEpochChanged,
     /// `on_lag: "error"` and the index has not caught up; `retry_after_ms`.
     SearchNotCaughtUp,
+    /// A filter names a custom field definition that changed since (03 §3.7).
+    FieldDefinitionChanged,
+    /// The query did not finish within the request's work budget (03 §5.4).
+    QueryTimeout,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -146,7 +150,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 53] = [
+    pub const ALL: [ErrorCode; 55] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -200,6 +204,8 @@ impl ErrorCode {
         Self::InvalidConsistencyToken,
         Self::ConsistencyEpochChanged,
         Self::SearchNotCaughtUp,
+        Self::FieldDefinitionChanged,
+        Self::QueryTimeout,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -257,6 +263,8 @@ impl ErrorCode {
             Self::InvalidConsistencyToken => "invalid_consistency_token",
             Self::ConsistencyEpochChanged => "consistency_epoch_changed",
             Self::SearchNotCaughtUp => "search_not_caught_up",
+            Self::FieldDefinitionChanged => "field_definition_changed",
+            Self::QueryTimeout => "query_timeout",
         }
     }
 
@@ -312,6 +320,8 @@ impl ErrorCode {
             Self::InvalidConsistencyToken => 400,
             Self::ConsistencyEpochChanged => 409,
             Self::SearchNotCaughtUp => 503,
+            Self::FieldDefinitionChanged => 409,
+            Self::QueryTimeout => 422,
         }
     }
 
@@ -384,6 +394,8 @@ impl ErrorCode {
             Self::SearchUnavailable => &[WaitAndRetry],
             Self::InvalidConsistencyToken | Self::ConsistencyEpochChanged => &[FixInput],
             Self::SearchNotCaughtUp => &[WaitAndRetry],
+            Self::FieldDefinitionChanged => &[FixInput],
+            Self::QueryTimeout => &[FixInput, AskHuman],
         }
     }
 }

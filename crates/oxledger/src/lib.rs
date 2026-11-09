@@ -18,6 +18,7 @@ pub mod filter;
 pub mod github;
 pub mod issue_view;
 pub mod mcp;
+pub mod metrics;
 pub mod openapi;
 pub mod perm;
 pub mod policy;

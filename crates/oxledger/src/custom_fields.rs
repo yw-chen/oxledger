@@ -301,6 +301,9 @@ pub struct FieldRow {
     pub is_for_all: bool,
     pub trackers: Vec<Uuid>,
     pub projects: Vec<Uuid>,
+    /// Moves when type, unit or options change (design 03 §7 step 11).
+    pub definition_version: i32,
+    pub unit: Option<String>,
 }
 
 impl FieldRow {
@@ -313,7 +316,7 @@ impl FieldRow {
 /// All fields (except those being deleted) with their applicability, by position and name.
 pub async fn list_fields<'e>(pool: impl PgExecutor<'e>) -> Result<Vec<FieldRow>> {
     Ok(sqlx::query_as(
-        "SELECT d.id, d.name, d.ftype, d.visible, d.is_for_all,
+        "SELECT d.id, d.name, d.ftype, d.visible, d.is_for_all, d.definition_version, d.unit,
                 ARRAY(SELECT tracker_id FROM field_trackers t WHERE t.field_id = d.id ORDER BY tracker_id) AS trackers,
                 ARRAY(SELECT project_id FROM field_projects p WHERE p.field_id = d.id ORDER BY project_id) AS projects
          FROM field_defs d WHERE d.index_state <> 'dropping' ORDER BY d.position, d.name",

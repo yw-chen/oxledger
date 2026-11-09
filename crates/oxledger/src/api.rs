@@ -74,6 +74,47 @@ pub fn router_with_github(
     }
 }
 
+/// `GET /metrics` (03 §4.6, P2-D10): Prometheus text, only with
+/// `Authorization: Bearer <token>`. Mounted by the server only when
+/// `OXLEDGER_METRICS_TOKEN` is set; otherwise the path does not exist.
+pub fn metrics_routes(app: Arc<App>, token: String) -> Router {
+    let token = Arc::new(token);
+    Router::new().route(
+        "/metrics",
+        get(move |headers: axum::http::HeaderMap| {
+            let (app, token) = (app.clone(), token.clone());
+            async move {
+                let given = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "));
+                let ok = given.is_some_and(|g| {
+                    use sha2::Digest;
+                    // Compare digests: equal length, no early exit on content.
+                    sha2::Sha256::digest(g.as_bytes()) == sha2::Sha256::digest(token.as_bytes())
+                });
+                if !ok {
+                    return axum::http::StatusCode::UNAUTHORIZED.into_response();
+                }
+                match crate::metrics::render(&app.pool, &app.index).await {
+                    Ok(body) => (
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "text/plain; version=0.0.4; charset=utf-8",
+                        )],
+                        body,
+                    )
+                        .into_response(),
+                    Err(e) => {
+                        tracing::error!("metrics: {e:#}");
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    }
+                }
+            }
+        }),
+    )
+}
+
 fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
     let state = Arc::new(ApiState {
         app: app.clone(),

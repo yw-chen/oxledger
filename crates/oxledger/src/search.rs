@@ -11,27 +11,36 @@
 //! * Read-your-writes (design 03 §4.1–4.3): each sync round reads the
 //!   snapshot horizon H and the outbox rows below it in one statement, and
 //!   publishes the exclusive frontier F only after the reader reloaded. A
-//!   token `c1.<epoch>.<X>` is satisfied when `X < F`. F lives in memory
-//!   (S8: no durable payload yet); after a restart it starts at 0 and moves
-//!   to H on the first round, which only makes waiters wait longer.
+//!   token `c1.<epoch>.<X>` is satisfied when `X < F`.
+//! * Generations (03 §4.2, §4.8): `<dir>/CURRENT` names `gen-<uuid>/`; each
+//!   commit carries a payload (cursor, F, epoch, versions), so a restart
+//!   resumes from what the index durably holds. A rebuild builds a new
+//!   generation from a snapshot while the old one serves, then switches.
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use ox_core::Pred;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Mutex;
+use std::ops::Bound;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tantivy::collector::TopDocs;
 use tantivy::query::{
-    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, Occur, Query, TermQuery,
+    AllQuery, BooleanQuery, BoostQuery, ConstScoreQuery, EmptyQuery, Occur, Query, RangeQuery,
+    TermQuery,
 };
 use tantivy::schema::{
-    Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
+    Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing,
+    TextOptions, Value,
 };
 use tantivy::tokenizer::{TextAnalyzer, Token, TokenStream, Tokenizer};
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
+use tantivy::{
+    Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, TantivyDocument, Term, doc,
+};
 use uuid::Uuid;
 
 const TOKENIZER: &str = "cjk_bigram";
@@ -334,6 +343,25 @@ pub fn query_terms(text: &str) -> Vec<(String, f32)> {
 
 // ---------------------------------------------------------------- index
 
+/// Index schema version (design 03 §4.8 payload `schema_version`):
+/// 2 added `search_rev` and the §17.15 fast fields.
+pub const SCHEMA_VERSION: u32 = 2;
+/// Bump when the lexer changes what it emits.
+pub const ANALYZER_VERSION: u32 = 1;
+/// Bump when query weights or field boosts change.
+pub const QUERY_SEMANTICS_VERSION: u32 = 1;
+const PAYLOAD_V: u32 = 1;
+/// Serialises lease registration, retirement and the outbox GC bound (03 §4.8 step 1, §4.9).
+const LEASE_LOCK: i64 = 0x6f78_7365_6172_6368; // "oxsearch"
+/// Issues per page of the snapshot scan.
+const BASELINE_PAGE: i64 = 2000;
+/// A rebuilt generation stays on disk this long after the switch (03 §4.8 step 7).
+const RETAIN_HOURS: i32 = 24;
+/// Durable payload for frontier-only progress at most this often (03 §4.2).
+const DURABLE_INTERVAL: Duration = Duration::from_secs(10);
+/// Issues the switch health check samples (03 §4.8 step 6).
+const HEALTH_SAMPLE: i64 = 200;
+
 #[derive(Clone, Copy)]
 struct Fields {
     id: Field,
@@ -345,22 +373,585 @@ struct Fields {
     assignee: Field,
     subject: Field,
     description: Field,
+    /// §17.15: the version id, or `none`.
+    fixed_version: Field,
+    /// §17.15: days since 1970-01-01; no value when NULL.
+    start_date: Field,
+    due_date: Field,
+    /// Names of the date fields that are NULL (`start_date`, `due_date`).
+    nulls: Field,
+    /// 03 §3.2: sha256 over the indexed text, STORED.
+    search_rev: Field,
 }
 
-pub struct SearchIndex {
-    #[allow(dead_code)] // kept for upcoming schema introspection / merges
-    index: Index,
+impl Fields {
+    fn build() -> (Schema, Fields) {
+        let mut sb = Schema::builder();
+        let text = TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer(TOKENIZER)
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        );
+        let date = NumericOptions::default().set_indexed().set_fast();
+        let f = Fields {
+            id: sb.add_text_field("id", STRING | STORED),
+            key: sb.add_text_field("key", STRING | STORED),
+            project: sb.add_text_field("project", STRING),
+            tracker: sb.add_text_field("tracker", STRING),
+            private: sb.add_text_field("private", STRING),
+            author: sb.add_text_field("author", STRING),
+            assignee: sb.add_text_field("assignee", STRING),
+            subject: sb.add_text_field("subject", text.clone()),
+            description: sb.add_text_field("description", text),
+            fixed_version: sb.add_text_field("fixed_version", STRING),
+            start_date: sb.add_i64_field("start_date", date.clone()),
+            due_date: sb.add_i64_field("due_date", date),
+            nulls: sb.add_text_field("nulls", STRING),
+            search_rev: sb.add_bytes_field("search_rev", STORED),
+        };
+        (sb.build(), f)
+    }
+
+    /// The fields of an existing index, or `None` if its schema is not ours.
+    fn from_schema(s: &Schema) -> Option<Fields> {
+        let (want, f) = Fields::build();
+        (s == &want).then_some(f)
+    }
+}
+
+/// `search_rev` (design 03 §3.2): does an index document still hold the
+/// text SQL has now? sha256("v1" ‖ len ‖ subject ‖ len ‖ description), the
+/// lengths as big-endian u64 byte counts.
+pub fn search_rev(subject: &str, description: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"v1");
+    h.update((subject.len() as u64).to_be_bytes());
+    h.update(subject.as_bytes());
+    h.update((description.len() as u64).to_be_bytes());
+    h.update(description.as_bytes());
+    h.finalize().into()
+}
+
+fn epoch_day(d: NaiveDate) -> i64 {
+    (d - NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch")).num_days()
+}
+
+/// A date column the index can filter on (§17.15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateField {
+    Start,
+    Due,
+}
+
+impl DateField {
+    fn null_term(self) -> &'static str {
+        match self {
+            DateField::Start => "start_date",
+            DateField::Due => "due_date",
+        }
+    }
+}
+
+/// Index-side pre-filter on the §17.15 fast fields. It only narrows the
+/// candidates: the SQL re-check stays the authority, so a translation may
+/// be a superset ([`IxFilter::All`] when unsure) but never a subset.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IxFilter {
+    All,
+    And(Vec<IxFilter>),
+    Or(Vec<IxFilter>),
+    /// Documents the inner filter does not match.
+    Not(Box<IxFilter>),
+    /// `fixed_version_id` equals this (`None`: no version).
+    Version(Option<Uuid>),
+    /// The date is set and inside the bounds.
+    Date {
+        field: DateField,
+        lo: Bound<NaiveDate>,
+        hi: Bound<NaiveDate>,
+    },
+    /// The date is NULL.
+    DateNull(DateField),
+}
+
+impl IxFilter {
+    pub fn and(parts: Vec<IxFilter>) -> IxFilter {
+        let parts: Vec<IxFilter> = parts.into_iter().filter(|p| *p != IxFilter::All).collect();
+        match parts.len() {
+            0 => IxFilter::All,
+            1 => parts.into_iter().next().expect("one"),
+            _ => IxFilter::And(parts),
+        }
+    }
+}
+
+/// Where a generation's replay stands: the last applied outbox row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct Cursor {
+    pub xid: u64,
+    pub id: i64,
+}
+
+/// The commit payload (03 §4.2 step 5, §4.8): what this generation durably holds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct Payload {
+    v: u32,
+    data_epoch: Uuid,
+    generation: Uuid,
+    schema_version: u32,
+    analyzer_version: u32,
+    query_semantics_version: u32,
+    /// xid8 as decimal strings (JSON numbers lose precision past 2^53 in JS).
+    cursor_xid: String,
+    cursor_id: i64,
+    complete_before_xid: String,
+}
+
+impl Payload {
+    fn parse(s: &str) -> Option<(Payload, Cursor, u64)> {
+        let p: Payload = serde_json::from_str(s).ok()?;
+        if p.v != PAYLOAD_V
+            || p.schema_version != SCHEMA_VERSION
+            || p.analyzer_version != ANALYZER_VERSION
+            || p.query_semantics_version != QUERY_SEMANTICS_VERSION
+        {
+            return None;
+        }
+        let c = Cursor {
+            xid: p.cursor_xid.parse().ok()?,
+            id: p.cursor_id,
+        };
+        let f = p.complete_before_xid.parse().ok()?;
+        Some((p, c, f))
+    }
+}
+
+struct GenState {
+    epoch: Uuid,
+    /// Committed replay position (in the last durable payload).
+    cursor: Cursor,
+    /// Exclusive frontier of what the reader shows (may run ahead of `durable_f`).
+    f: u64,
+    durable_f: u64,
+    durable_at: Instant,
+}
+
+/// One index generation (03 §4.8): its own directory, writer and progress.
+struct Gen {
+    id: Uuid,
+    dir: Option<PathBuf>,
     reader: IndexReader,
     writer: Mutex<IndexWriter>,
     f: Fields,
-    /// The published exclusive frontier F (03 §4.1): every transaction with
-    /// xid < F has its search events applied to the current reader.
-    frontier: tokio::sync::watch::Sender<u64>,
-    waiters: AtomicUsize,
-    per_caller: Mutex<HashMap<Option<Uuid>, usize>>,
-    /// One round at a time (03 §4.2 has a single writer): two concurrent
-    /// rounds could overwrite newer documents with an older snapshot.
-    round: tokio::sync::Mutex<()>,
+    st: Mutex<GenState>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
+    m.lock()
+        .map_err(|_| anyhow::anyhow!("search index lock poisoned"))
+}
+
+fn register_tokenizer(index: &Index) {
+    index
+        .tokenizers()
+        .register(TOKENIZER, TextAnalyzer::builder(CjkBigram).build());
+}
+
+impl Gen {
+    fn consumer(&self) -> String {
+        format!("search@{}", self.id)
+    }
+
+    /// A new, empty generation (`root` None: in memory).
+    fn create(root: Option<&Path>, epoch: Uuid) -> Result<Gen> {
+        let id = Uuid::now_v7();
+        let (schema, f) = Fields::build();
+        let (index, dir) = match root {
+            None => (Index::create_in_ram(schema), None),
+            Some(r) => {
+                let d = r.join(format!("gen-{id}"));
+                std::fs::create_dir_all(&d)?;
+                (Index::create_in_dir(&d, schema)?, Some(d))
+            }
+        };
+        Gen::wrap(
+            id,
+            dir,
+            index,
+            f,
+            GenState {
+                epoch,
+                cursor: Cursor::default(),
+                f: 0,
+                durable_f: 0,
+                durable_at: Instant::now(),
+            },
+        )
+    }
+
+    fn wrap(id: Uuid, dir: Option<PathBuf>, index: Index, f: Fields, st: GenState) -> Result<Gen> {
+        register_tokenizer(&index);
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+        let writer = Mutex::new(index.writer(50_000_000)?);
+        Ok(Gen {
+            id,
+            dir,
+            reader,
+            writer,
+            f,
+            st: Mutex::new(st),
+        })
+    }
+
+    /// Opens `root/CURRENT`'s generation if its payload is one this build
+    /// understands. Its `data_epoch` is checked against PostgreSQL before it
+    /// serves (03 §4.2 restart table).
+    fn open_current(root: &Path) -> Result<Option<Gen>> {
+        let Ok(name) = std::fs::read_to_string(root.join("CURRENT")) else {
+            return Ok(None);
+        };
+        let name = name.trim();
+        let Some(id) = name
+            .strip_prefix("gen-")
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            tracing::warn!("search index CURRENT is not a generation: {name:?}");
+            return Ok(None);
+        };
+        let dir = root.join(name);
+        let index = match Index::open_in_dir(&dir) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!("search generation {id} does not open: {e:#}");
+                return Ok(None);
+            }
+        };
+        let Some(f) = Fields::from_schema(&index.schema()) else {
+            tracing::warn!("search generation {id} has another schema; rebuilding");
+            return Ok(None);
+        };
+        let payload = index.load_metas()?.payload;
+        let Some((p, cursor, fr)) = payload.as_deref().and_then(Payload::parse) else {
+            tracing::warn!("search generation {id}: payload missing or unsupported; rebuilding");
+            return Ok(None);
+        };
+        if p.generation != id {
+            tracing::warn!("search generation {id}: payload names {}", p.generation);
+            return Ok(None);
+        }
+        Gen::wrap(
+            id,
+            Some(dir),
+            index,
+            f,
+            GenState {
+                epoch: p.data_epoch,
+                cursor,
+                f: fr,
+                durable_f: fr,
+                durable_at: Instant::now(),
+            },
+        )
+        .map(Some)
+    }
+
+    fn payload(&self, epoch: Uuid, c: Cursor, f: u64) -> String {
+        serde_json::to_string(&Payload {
+            v: PAYLOAD_V,
+            data_epoch: epoch,
+            generation: self.id,
+            schema_version: SCHEMA_VERSION,
+            analyzer_version: ANALYZER_VERSION,
+            query_semantics_version: QUERY_SEMANTICS_VERSION,
+            cursor_xid: c.xid.to_string(),
+            cursor_id: c.id,
+            complete_before_xid: f.to_string(),
+        })
+        .expect("payload serialises")
+    }
+
+    /// Commits pending writes together with the payload (03 §4.2 step 5).
+    /// On failure the writer rolls back: the durable state is the last payload.
+    fn commit(&self, epoch: Uuid, c: Cursor, f: u64) -> Result<()> {
+        let payload = self.payload(epoch, c, f);
+        let mut w = lock(&self.writer)?;
+        let r = (|| -> Result<()> {
+            let mut prep = w.prepare_commit()?;
+            prep.set_payload(&payload);
+            prep.commit()?;
+            Ok(())
+        })();
+        if let Err(e) = r {
+            let _ = w.rollback();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn make_doc(&self, d: &IssueDoc) -> TantivyDocument {
+        let f = self.f;
+        let mut doc = doc!(
+            f.id => d.id.to_string(),
+            f.key => d.key.clone(),
+            f.project => d.project_id.to_string(),
+            f.tracker => d.tracker_id.to_string(),
+            f.private => if d.is_private { "true" } else { "false" },
+            f.author => d.author_id.to_string(),
+            f.assignee => d.assigned_to_id.map(|a| a.to_string()).unwrap_or_else(|| NONE_TERM.into()),
+            f.subject => d.subject.clone(),
+            f.description => d.description.clone(),
+            f.fixed_version => d.fixed_version_id.map(|v| v.to_string()).unwrap_or_else(|| NONE_TERM.into()),
+            f.search_rev => search_rev(&d.subject, &d.description).to_vec(),
+        );
+        for (field, v, which) in [
+            (f.start_date, d.start_date, DateField::Start),
+            (f.due_date, d.due_date, DateField::Due),
+        ] {
+            match v {
+                Some(day) => doc.add_i64(field, epoch_day(day)),
+                None => doc.add_text(f.nulls, which.null_term()),
+            }
+        }
+        doc
+    }
+
+    fn view(&self, f: u64) -> Arc<SearchView> {
+        Arc::new(SearchView {
+            searcher: self.reader.searcher(),
+            f,
+            fields: self.f,
+            generation: self.id,
+        })
+    }
+}
+
+/// What one search reads (03 §4.4): a reader pinned with the frontier it was
+/// published with. A search keeps the view it started with, so it never
+/// switches reader half-way (also across a blue-green switch).
+pub struct SearchView {
+    searcher: Searcher,
+    f: u64,
+    fields: Fields,
+    generation: Uuid,
+}
+
+pub struct Hit {
+    pub issue_id: Uuid,
+    pub score: f32,
+    /// The indexed text's `search_rev`.
+    pub search_rev: Option<[u8; 32]>,
+}
+
+impl SearchView {
+    /// Exclusive frontier F of this view.
+    pub fn frontier(&self) -> u64 {
+        self.f
+    }
+
+    pub fn generation(&self) -> Uuid {
+        self.generation
+    }
+
+    /// Documents in this view.
+    pub fn num_docs(&self) -> u64 {
+        self.searcher.num_docs()
+    }
+
+    fn term(&self, field: Field, v: &str) -> Box<dyn Query> {
+        Box::new(TermQuery::new(
+            Term::from_field_text(field, v),
+            IndexRecordOption::Basic,
+        ))
+    }
+
+    fn filter(&self, pred: &Pred) -> Box<dyn Query> {
+        let f = self.fields;
+        let any_of = |field: Field, ids: &[Uuid]| -> Box<dyn Query> {
+            Box::new(BooleanQuery::new(
+                ids.iter()
+                    .map(|i| (Occur::Should, self.term(field, &i.to_string())))
+                    .collect(),
+            ))
+        };
+        match pred {
+            Pred::True => Box::new(AllQuery),
+            Pred::False => Box::new(EmptyQuery),
+            Pred::And(ps) => Box::new(BooleanQuery::new(
+                ps.iter().map(|p| (Occur::Must, self.filter(p))).collect(),
+            )),
+            Pred::Or(ps) => Box::new(BooleanQuery::new(
+                ps.iter().map(|p| (Occur::Should, self.filter(p))).collect(),
+            )),
+            Pred::ProjectIs(id) => self.term(f.project, &id.to_string()),
+            Pred::TrackerIn(ids) => any_of(f.tracker, ids),
+            Pred::NotPrivate => self.term(f.private, "false"),
+            Pred::AuthorIs(id) => self.term(f.author, &id.to_string()),
+            Pred::AssigneeIn(ids) => any_of(f.assignee, ids),
+        }
+    }
+
+    fn ix_query(&self, x: &IxFilter) -> Box<dyn Query> {
+        let f = self.fields;
+        match x {
+            IxFilter::All => Box::new(AllQuery),
+            IxFilter::And(ps) => Box::new(BooleanQuery::new(
+                ps.iter().map(|p| (Occur::Must, self.ix_query(p))).collect(),
+            )),
+            IxFilter::Or(ps) => Box::new(BooleanQuery::new(
+                ps.iter()
+                    .map(|p| (Occur::Should, self.ix_query(p)))
+                    .collect(),
+            )),
+            IxFilter::Not(p) => Box::new(BooleanQuery::new(vec![
+                (Occur::Must, Box::new(AllQuery) as Box<dyn Query>),
+                (Occur::MustNot, self.ix_query(p)),
+            ])),
+            IxFilter::Version(v) => self.term(
+                f.fixed_version,
+                &v.map(|v| v.to_string())
+                    .unwrap_or_else(|| NONE_TERM.to_string()),
+            ),
+            IxFilter::DateNull(d) => self.term(f.nulls, d.null_term()),
+            IxFilter::Date { field, lo, hi } => {
+                let fld = match field {
+                    DateField::Start => f.start_date,
+                    DateField::Due => f.due_date,
+                };
+                let t = |d: &NaiveDate| Term::from_field_i64(fld, epoch_day(*d));
+                Box::new(RangeQuery::new(lo.as_ref().map(t), hi.as_ref().map(t)))
+            }
+        }
+    }
+
+    /// BM25 over subject (×3) and description (×1), restricted to `filter`
+    /// and the fast-field pre-filter `ix`. Each term's boost is further
+    /// scaled by its [`query_terms`] weight. Empty `q` lists every visible
+    /// document (used by tests).
+    pub fn search(&self, q: &str, filter: &Pred, ix: &IxFilter, limit: usize) -> Result<Vec<Hit>> {
+        let terms = query_terms(q);
+        let text: Box<dyn Query> = if terms.is_empty() {
+            Box::new(AllQuery)
+        } else {
+            let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+            for (t, w) in &terms {
+                for (field, boost) in [(self.fields.subject, 3.0), (self.fields.description, 1.0)] {
+                    let tq = TermQuery::new(
+                        Term::from_field_text(field, t),
+                        IndexRecordOption::WithFreqs,
+                    );
+                    clauses.push((
+                        Occur::Should,
+                        Box::new(BoostQuery::new(Box::new(tq), boost * w)),
+                    ));
+                }
+            }
+            Box::new(BooleanQuery::new(clauses))
+        };
+        // Filters must not change BM25 scores, so they score a constant 0.
+        let mut must: Vec<(Occur, Box<dyn Query>)> = vec![
+            (Occur::Must, text),
+            (
+                Occur::Must,
+                Box::new(ConstScoreQuery::new(self.filter(filter), 0.0)),
+            ),
+        ];
+        if *ix != IxFilter::All {
+            must.push((
+                Occur::Must,
+                Box::new(ConstScoreQuery::new(self.ix_query(ix), 0.0)),
+            ));
+        }
+        let query = BooleanQuery::new(must);
+        let top = self
+            .searcher
+            .search(&query, &TopDocs::with_limit(limit.max(1)).order_by_score())?;
+        let mut hits = Vec::with_capacity(top.len());
+        for (score, addr) in top {
+            let d: TantivyDocument = self.searcher.doc(addr)?;
+            if let Some(id) = d.get_first(self.fields.id).and_then(|v| v.as_str()) {
+                let rev = d
+                    .get_first(self.fields.search_rev)
+                    .and_then(|v| v.as_bytes())
+                    .and_then(|b| <[u8; 32]>::try_from(b).ok());
+                hits.push(Hit {
+                    issue_id: id.parse()?,
+                    score,
+                    search_rev: rev,
+                });
+            }
+        }
+        Ok(hits)
+    }
+
+    /// The stored `search_rev` of one issue's document, if it has one.
+    fn rev_of(&self, id: Uuid) -> Result<Option<[u8; 32]>> {
+        let q = TermQuery::new(
+            Term::from_field_text(self.fields.id, &id.to_string()),
+            IndexRecordOption::Basic,
+        );
+        let top = self
+            .searcher
+            .search(&q, &TopDocs::with_limit(2).order_by_score())?;
+        let Some((_, addr)) = top.first() else {
+            return Ok(None);
+        };
+        let d: TantivyDocument = self.searcher.doc(*addr)?;
+        Ok(d.get_first(self.fields.search_rev)
+            .and_then(|v| v.as_bytes())
+            .and_then(|b| <[u8; 32]>::try_from(b).ok()))
+    }
+
+    /// Does exactly one document for `d.id` carry `d`'s visibility and
+    /// §17.15 facts? (switch health check)
+    fn facts_match(&self, d: &IssueDoc) -> Result<bool> {
+        let f = self.fields;
+        let mut parts: Vec<(Occur, Box<dyn Query>)> = vec![
+            (Occur::Must, self.term(f.id, &d.id.to_string())),
+            (Occur::Must, self.term(f.key, &d.key)),
+            (Occur::Must, self.term(f.project, &d.project_id.to_string())),
+            (Occur::Must, self.term(f.tracker, &d.tracker_id.to_string())),
+            (
+                Occur::Must,
+                self.term(f.private, if d.is_private { "true" } else { "false" }),
+            ),
+            (Occur::Must, self.term(f.author, &d.author_id.to_string())),
+            (
+                Occur::Must,
+                self.term(
+                    f.assignee,
+                    &d.assigned_to_id
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| NONE_TERM.into()),
+                ),
+            ),
+            (
+                Occur::Must,
+                self.ix_query(&IxFilter::Version(d.fixed_version_id)),
+            ),
+        ];
+        for (v, which) in [
+            (d.start_date, DateField::Start),
+            (d.due_date, DateField::Due),
+        ] {
+            let q = match v {
+                Some(day) => IxFilter::Date {
+                    field: which,
+                    lo: Bound::Included(day),
+                    hi: Bound::Included(day),
+                },
+                None => IxFilter::DateNull(which),
+            };
+            parts.push((Occur::Must, self.ix_query(&q)));
+        }
+        let n = self
+            .searcher
+            .search(&BooleanQuery::new(parts), &tantivy::collector::Count)?;
+        Ok(n == 1)
+    }
 }
 
 /// How a wait for `X < F` ended.
@@ -390,11 +981,6 @@ impl Drop for Slot<'_> {
     }
 }
 
-pub struct Hit {
-    pub issue_id: Uuid,
-    pub score: f32,
-}
-
 #[derive(sqlx::FromRow)]
 struct IssueDoc {
     id: Uuid,
@@ -406,56 +992,98 @@ struct IssueDoc {
     assigned_to_id: Option<Uuid>,
     subject: String,
     description: String,
+    fixed_version_id: Option<Uuid>,
+    start_date: Option<NaiveDate>,
+    due_date: Option<NaiveDate>,
+}
+
+const DOC_SELECT: &str =
+    "SELECT i.id, k.key, i.project_id, i.tracker_id, i.is_private, i.author_id,
+        i.assigned_to_id, i.subject, i.description, i.fixed_version_id, i.start_date, i.due_date
+ FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current";
+
+/// Result of a blue-green rebuild (03 §4.8).
+#[derive(Debug, Clone, Serialize)]
+pub struct RebuildReport {
+    pub generation: Uuid,
+    pub previous: Option<Uuid>,
+    /// Issues in the snapshot baseline.
+    pub baseline_docs: u64,
+    /// F0: the baseline is complete for every xid below it.
+    pub baseline_frontier: u64,
+    /// F of the new generation when it started serving.
+    pub frontier: u64,
+}
+
+/// Is a rebuilt generation far enough to replace the serving one (03 §4.8
+/// step 6, Q-S8)? Its F must not be behind, and it must have replayed at
+/// least every event the old one applied: equal F with a shorter cursor
+/// could still miss content the old view already shows.
+pub fn switch_ready(new_f: u64, new_c: Cursor, old_f: u64, old_c: Cursor) -> bool {
+    new_f >= old_f && new_c >= old_c
+}
+
+/// Outbox rows a round reads: (id, xid8 as text, issue id).
+type Events = sqlx::types::Json<Vec<OutboxEvent>>;
+
+pub struct SearchIndex {
+    root: Option<PathBuf>,
+    /// The generation that serves, once validated against PostgreSQL.
+    active: RwLock<Option<Arc<Gen>>>,
+    /// Read from `CURRENT` at open; serves only after its epoch is checked.
+    loaded: Mutex<Option<Arc<Gen>>>,
+    /// A generation being rebuilt (baseline done, catching up).
+    pending: Mutex<Option<Arc<Gen>>>,
+    view: RwLock<Option<Arc<SearchView>>>,
+    /// The published exclusive frontier F (03 §4.1): every transaction with
+    /// xid < F has its search events applied to the current view. Never
+    /// moves backwards, also across a switch.
+    frontier: tokio::sync::watch::Sender<u64>,
+    waiters: AtomicUsize,
+    per_caller: Mutex<HashMap<Option<Uuid>, usize>>,
+    /// One round at a time (03 §4.2 has a single writer per generation);
+    /// the switch also runs under it, so the old generation cannot move
+    /// while the new one is compared with it.
+    round: tokio::sync::Mutex<()>,
+    /// One rebuild at a time.
+    rebuilding: tokio::sync::Mutex<()>,
+    durable_interval: Mutex<Duration>,
+    pub metrics: crate::metrics::SearchMetrics,
 }
 
 impl SearchIndex {
-    /// Opens (or creates) the index in `dir`; `None` keeps it in memory (tests).
+    /// Opens the index under `dir` (`None`: in memory, for tests). Nothing
+    /// serves until the first sync round has checked the generation in
+    /// `CURRENT` against PostgreSQL, or built one from a snapshot.
     pub fn open(dir: Option<&Path>) -> Result<Self> {
-        let mut sb = Schema::builder();
-        let text = TextOptions::default().set_indexing_options(
-            TextFieldIndexing::default()
-                .set_tokenizer(TOKENIZER)
-                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-        );
-        let f = Fields {
-            id: sb.add_text_field("id", STRING | STORED),
-            key: sb.add_text_field("key", STRING | STORED),
-            project: sb.add_text_field("project", STRING),
-            tracker: sb.add_text_field("tracker", STRING),
-            private: sb.add_text_field("private", STRING),
-            author: sb.add_text_field("author", STRING),
-            assignee: sb.add_text_field("assignee", STRING),
-            subject: sb.add_text_field("subject", text.clone()),
-            description: sb.add_text_field("description", text),
-        };
-        let schema = sb.build();
-        let index = match dir {
-            None => Index::create_in_ram(schema),
+        let loaded = match dir {
+            None => None,
             Some(d) => {
                 std::fs::create_dir_all(d)?;
-                let mmap = tantivy::directory::MmapDirectory::open(d)?;
-                Index::open_or_create(mmap, schema)
-                    .context("open search index (schema change? delete the index dir to rebuild)")?
+                Gen::open_current(d)?.map(Arc::new)
             }
         };
-        index
-            .tokenizers()
-            .register(TOKENIZER, TextAnalyzer::builder(CjkBigram).build());
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()?;
-        let writer = Mutex::new(index.writer(50_000_000)?);
         Ok(SearchIndex {
-            index,
-            reader,
-            writer,
-            f,
+            root: dir.map(Path::to_path_buf),
+            active: RwLock::new(None),
+            loaded: Mutex::new(loaded),
+            pending: Mutex::new(None),
+            view: RwLock::new(None),
             frontier: tokio::sync::watch::Sender::new(0),
             waiters: AtomicUsize::new(0),
-            round: tokio::sync::Mutex::new(()),
             per_caller: Mutex::new(HashMap::new()),
+            round: tokio::sync::Mutex::new(()),
+            rebuilding: tokio::sync::Mutex::new(()),
+            durable_interval: Mutex::new(DURABLE_INTERVAL),
+            metrics: Default::default(),
         })
+    }
+
+    /// Tests: how often frontier-only progress is made durable.
+    pub fn set_durable_interval(&self, d: Duration) {
+        if let Ok(mut g) = self.durable_interval.lock() {
+            *g = d;
+        }
     }
 
     /// The published frontier F.
@@ -463,7 +1091,44 @@ impl SearchIndex {
         *self.frontier.borrow()
     }
 
-    fn publish(&self, f: u64) {
+    /// The view searches read now; `None` while no generation can serve
+    /// (first start, or a rebuild after an unusable index).
+    pub fn view(&self) -> Option<Arc<SearchView>> {
+        self.view.read().ok().and_then(|v| v.clone())
+    }
+
+    /// The serving generation's id.
+    pub fn generation(&self) -> Option<Uuid> {
+        self.active
+            .read()
+            .ok()
+            .and_then(|a| a.as_ref().map(|g| g.id))
+    }
+
+    /// Durable (cursor, F) of the serving generation, as its payload has it.
+    pub fn durable_state(&self) -> Option<(Cursor, u64)> {
+        let g = self.active.read().ok()?.clone()?;
+        let st = g.st.lock().ok()?;
+        Some((st.cursor, st.durable_f))
+    }
+
+    /// Searches the current view (tests and tools; services pin a view).
+    pub fn search(&self, q: &str, filter: &Pred, limit: usize) -> Result<Vec<Hit>> {
+        match self.view() {
+            Some(v) => v.search(q, filter, &IxFilter::All, limit),
+            None => anyhow::bail!("search index not ready"),
+        }
+    }
+
+    /// Publishes `gen` at frontier `f`: the view first, then F, so a waiter
+    /// that sees F > X always gets a view whose F > X.
+    fn publish(&self, g: &Gen, f: u64) -> Result<()> {
+        let f = f.max(self.frontier());
+        let v = g.view(f);
+        *self
+            .view
+            .write()
+            .map_err(|_| anyhow::anyhow!("view lock poisoned"))? = Some(v);
         self.frontier.send_if_modified(|cur| {
             if f > *cur {
                 *cur = f;
@@ -472,6 +1137,8 @@ impl SearchIndex {
                 false
             }
         });
+        self.metrics.published(f);
+        Ok(())
     }
 
     fn take_slot(&self, who: Option<Uuid>) -> Option<Slot<'_>> {
@@ -518,86 +1185,7 @@ impl SearchIndex {
         self.waiters.load(Ordering::SeqCst)
     }
 
-    fn uuid_term(&self, field: Field, id: Uuid) -> Term {
-        Term::from_field_text(field, &id.to_string())
-    }
-
-    fn filter(&self, pred: &Pred) -> Box<dyn Query> {
-        let f = self.f;
-        let term = |field: Field, v: &str| -> Box<dyn Query> {
-            Box::new(TermQuery::new(
-                Term::from_field_text(field, v),
-                IndexRecordOption::Basic,
-            ))
-        };
-        let any_of = |field: Field, ids: &[Uuid]| -> Box<dyn Query> {
-            Box::new(BooleanQuery::new(
-                ids.iter()
-                    .map(|i| (Occur::Should, term(field, &i.to_string())))
-                    .collect(),
-            ))
-        };
-        match pred {
-            Pred::True => Box::new(AllQuery),
-            Pred::False => Box::new(EmptyQuery),
-            Pred::And(ps) => Box::new(BooleanQuery::new(
-                ps.iter().map(|p| (Occur::Must, self.filter(p))).collect(),
-            )),
-            Pred::Or(ps) => Box::new(BooleanQuery::new(
-                ps.iter().map(|p| (Occur::Should, self.filter(p))).collect(),
-            )),
-            Pred::ProjectIs(id) => term(f.project, &id.to_string()),
-            Pred::TrackerIn(ids) => any_of(f.tracker, ids),
-            Pred::NotPrivate => term(f.private, "false"),
-            Pred::AuthorIs(id) => term(f.author, &id.to_string()),
-            Pred::AssigneeIn(ids) => any_of(f.assignee, ids),
-        }
-    }
-
-    /// BM25 over subject (×3) and description (×1), restricted to `filter`.
-    /// Each term's boost is further scaled by its [`query_terms`] weight.
-    /// Empty `q` lists every visible document (used by tests).
-    pub fn search(&self, q: &str, filter: &Pred, limit: usize) -> Result<Vec<Hit>> {
-        let terms = query_terms(q);
-        let text: Box<dyn Query> = if terms.is_empty() {
-            Box::new(AllQuery)
-        } else {
-            let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-            for (t, w) in &terms {
-                for (field, boost) in [(self.f.subject, 3.0), (self.f.description, 1.0)] {
-                    let tq = TermQuery::new(
-                        Term::from_field_text(field, t),
-                        IndexRecordOption::WithFreqs,
-                    );
-                    clauses.push((
-                        Occur::Should,
-                        Box::new(BoostQuery::new(Box::new(tq), boost * w)),
-                    ));
-                }
-            }
-            Box::new(BooleanQuery::new(clauses))
-        };
-        // The filter must not change BM25 scores, so it scores a constant 0.
-        let filter_q: Box<dyn Query> = Box::new(ConstScoreQuery::new(self.filter(filter), 0.0));
-        let query = BooleanQuery::new(vec![(Occur::Must, text), (Occur::Must, filter_q)]);
-        let searcher = self.reader.searcher();
-        let top = searcher.search(&query, &TopDocs::with_limit(limit.max(1)).order_by_score())?;
-        let mut hits = Vec::with_capacity(top.len());
-        for (score, addr) in top {
-            let d: TantivyDocument = searcher.doc(addr)?;
-            if let Some(id) = d.get_first(self.f.id).and_then(|v| v.as_str()) {
-                hits.push(Hit {
-                    issue_id: id.parse()?,
-                    score,
-                });
-            }
-        }
-        Ok(hits)
-    }
-
-    /// Applies committed outbox messages (xid8 snapshot rule, D11).
-    /// Returns how many messages were applied. At-least-once: re-applying is harmless.
-    /// Tests: `sync` until every outbox row written so far is indexed.
+    /// Tests: sync until every outbox row written so far is indexed.
     /// `sync` alone skips rows newer than the cluster-wide xmin, so another
     /// database's open transaction can leave a just-committed row for the
     /// next round (playbook).
@@ -614,16 +1202,21 @@ impl SearchIndex {
             let Some((xid, id)) = &target else {
                 return Ok(applied);
             };
-            let done: bool = sqlx::query_scalar(
-                "SELECT COALESCE((c.last_xid, c.last_id) >= ($1::xid8, $2), false)
-                   FROM (SELECT 1) one
-                   LEFT JOIN outbox_cursors c ON c.consumer = 'search'",
-            )
-            .bind(xid)
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
-            if done {
+            let want = Cursor {
+                xid: xid.parse()?,
+                id: *id,
+            };
+            let at = self
+                .active
+                .read()
+                .ok()
+                .and_then(|a| a.clone())
+                .and_then(|g| g.st.lock().ok().map(|s| (s.cursor, s.f)));
+            // Done when the cursor passed the target row, or the baseline
+            // snapshot already covered it (F above its xid).
+            if let Some((c, f)) = at
+                && (c >= want || want.xid < f)
+            {
                 return Ok(applied);
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -643,121 +1236,587 @@ impl SearchIndex {
         }
     }
 
-    /// One round of 03 §4.2: (rows applied, a full batch so more may follow).
+    /// One round of 03 §4.2 for the serving generation (and for a
+    /// generation being rebuilt): (rows applied, a full batch so more may
+    /// follow). The first round validates the generation found on disk or
+    /// builds one from a snapshot.
     pub async fn sync_round(&self, pool: &PgPool) -> Result<(usize, bool)> {
-        const CONSUMER: &str = "search";
         let _round = self.round.lock().await;
-        {
-            // One statement: H and the visible events come from one snapshot,
-            // and H is there even with zero events (03 §4.2; FILTER keeps
-            // the empty case `[]`).
-            let (h, events): (String, sqlx::types::Json<Vec<OutboxEvent>>) = sqlx::query_as(
-                "WITH h AS MATERIALIZED (SELECT pg_snapshot_xmin(pg_current_snapshot()) AS h),
-                          c AS (SELECT COALESCE(max(last_xid::text), '0')::xid8 AS x,
-                                       COALESCE(max(last_id), 0) AS i
-                                FROM outbox_cursors WHERE consumer = $1),
-                          ev AS (SELECT o.id, o.xid, o.entity_id FROM outbox o, h, c
-                                 WHERE o.topic = 'issue' AND o.xid < h.h
-                                   AND (o.xid, o.id) > (c.x, c.i)
-                                 ORDER BY o.xid, o.id LIMIT $2)
-                     SELECT h.h::text,
-                            COALESCE(json_agg(json_build_array(ev.id, ev.xid::text, ev.entity_id)
-                                              ORDER BY ev.xid, ev.id)
-                                     FILTER (WHERE ev.id IS NOT NULL), '[]'::json)
-                     FROM h LEFT JOIN ev ON true GROUP BY h.h",
-            )
-            .bind(CONSUMER)
-            .bind(SYNC_BATCH)
+        let started = Instant::now();
+        let r = self.sync_round_locked(pool).await;
+        self.metrics.round(started.elapsed(), r.is_ok());
+        r
+    }
+
+    async fn sync_round_locked(&self, pool: &PgPool) -> Result<(usize, bool)> {
+        let g = match self.active.read().ok().and_then(|a| a.clone()) {
+            Some(g) => g,
+            None => self.activate(pool).await?,
+        };
+        let r = self.round_on(pool, &g, true).await?;
+        let pending = lock(&self.pending)?.clone();
+        if let Some(p) = pending {
+            // Keep the rebuilt generation close behind; its errors do not
+            // stop the serving one.
+            if let Err(e) = self.round_on(pool, &p, false).await {
+                tracing::warn!("search rebuild catch-up failed: {e:#}");
+            }
+        }
+        Ok(r)
+    }
+
+    /// Validates the generation from `CURRENT` (03 §4.2 restart table) or
+    /// builds one from a snapshot, and makes it serve.
+    async fn activate(&self, pool: &PgPool) -> Result<Arc<Gen>> {
+        let epoch: Uuid = sqlx::query_scalar("SELECT data_epoch FROM search_settings")
             .fetch_one(pool)
             .await?;
-            let rows = events.0;
-            let h: u64 = h.parse().context("snapshot xmin")?;
-            let Some((last_id, last_xid, _)) = rows.last().cloned() else {
-                // Drained: everything below H is applied.
-                self.publish(h);
-                return Ok((0, false));
-            };
-            let mut ids: Vec<Uuid> = rows.iter().map(|r| r.2).collect();
-            ids.sort();
-            ids.dedup();
-            let docs: Vec<IssueDoc> = sqlx::query_as(
-                "SELECT i.id, k.key, i.project_id, i.tracker_id, i.is_private, i.author_id,
-                        i.assigned_to_id, i.subject, i.description
-                 FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
-                 WHERE i.id = ANY($1) AND i.archived_at IS NULL",
-            )
-            .bind(&ids)
-            .fetch_all(pool)
-            .await?;
-            {
-                let mut w = self
-                    .writer
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("index writer poisoned"))?;
-                for id in &ids {
-                    w.delete_term(self.uuid_term(self.f.id, *id));
-                }
-                for d in docs {
-                    let f = self.f;
-                    w.add_document(doc!(
-                        f.id => d.id.to_string(),
-                        f.key => d.key,
-                        f.project => d.project_id.to_string(),
-                        f.tracker => d.tracker_id.to_string(),
-                        f.private => if d.is_private { "true" } else { "false" },
-                        f.author => d.author_id.to_string(),
-                        f.assignee => d.assigned_to_id.map(|a| a.to_string()).unwrap_or_else(|| NONE_TERM.into()),
-                        f.subject => d.subject,
-                        f.description => d.description,
-                    ))?;
-                }
-                w.commit()?;
+        // `loaded` stays until the generation serves: a failed activation
+        // (a transient DB error) retries it instead of rebuilding.
+        let loaded = lock(&self.loaded)?.clone();
+        let g = match loaded {
+            Some(g) if lock(&g.st)?.epoch == epoch => g,
+            Some(g) => {
+                tracing::warn!(
+                    "search generation {} belongs to another data_epoch; rebuilding",
+                    g.id
+                );
+                Arc::new(self.build_baseline(pool).await?)
             }
-            // Publish F only after the reader shows the documents (03 §4.2
-            // step 6): never an old searcher with a new F.
-            self.reader.reload()?;
-            let full = rows.len() as i64 == SYNC_BATCH;
-            // A full batch may stop inside one xid: F' = last.xid, not +1.
-            let f_new = if full {
-                last_xid.parse().context("outbox xid")?
-            } else {
-                h
-            };
-            sqlx::query(
-                "INSERT INTO outbox_cursors (consumer, last_xid, last_id) VALUES ($1, $2::xid8, $3)
-                 ON CONFLICT (consumer) DO UPDATE SET last_xid = EXCLUDED.last_xid, last_id = EXCLUDED.last_id",
-            )
-            .bind(CONSUMER)
-            .bind(&last_xid)
-            .bind(last_id)
-            .execute(pool)
+            None => Arc::new(self.build_baseline(pool).await?),
+        };
+        // PostgreSQL's cursor follows the payload, ahead or behind (03 §4.2):
+        // the payload is what the index durably holds.
+        let (cursor, f) = {
+            let st = lock(&g.st)?;
+            (st.cursor, st.f)
+        };
+        let ready = async {
+            self.mark_active(pool, &g, cursor).await?;
+            if let Some(root) = &self.root {
+                write_current(root, g.id)?;
+            }
+            anyhow::Ok(())
+        }
+        .await;
+        if let Err(e) = ready {
+            // Keep what was opened or built for the next round.
+            *lock(&self.loaded)? = Some(g);
+            return Err(e);
+        }
+        *lock(&self.loaded)? = None;
+        *self
+            .active
+            .write()
+            .map_err(|_| anyhow::anyhow!("active lock poisoned"))? = Some(g.clone());
+        self.publish(&g, f)?;
+        Ok(g)
+    }
+
+    /// This generation's consumer row becomes `active`; any other active
+    /// search generation (an interrupted switch) is retained, and leftover
+    /// `bootstrapping` rows (an interrupted rebuild) retire.
+    async fn mark_active(&self, pool: &PgPool, g: &Gen, c: Cursor) -> Result<()> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(LEASE_LOCK)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "UPDATE outbox_cursors SET state = 'retained', updated_at = now(),
+                    retained_until = now() + make_interval(hours => $2)
+             WHERE consumer LIKE 'search@%' AND consumer <> $1 AND state = 'active'",
+        )
+        .bind(g.consumer())
+        .bind(RETAIN_HOURS)
+        .execute(&mut *tx)
+        .await?;
+        let pending = lock(&self.pending)?.as_ref().map(|p| p.consumer());
+        sqlx::query(
+            "UPDATE outbox_cursors SET state = 'retired', updated_at = now()
+             WHERE consumer LIKE 'search@%' AND consumer <> $1 AND state = 'bootstrapping'
+               AND ($2::text IS NULL OR consumer <> $2)",
+        )
+        .bind(g.consumer())
+        .bind(pending)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO outbox_cursors (consumer, last_xid, last_id, state)
+             VALUES ($1, $2::text::xid8, $3, 'active')
+             ON CONFLICT (consumer) DO UPDATE SET last_xid = EXCLUDED.last_xid,
+                 last_id = EXCLUDED.last_id, state = 'active', retained_until = NULL, updated_at = now()",
+        )
+        .bind(g.consumer())
+        .bind(c.xid.to_string())
+        .bind(c.id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// One 03 §4.2 round on `gen`; `serve` publishes the result.
+    async fn round_on(&self, pool: &PgPool, g: &Gen, serve: bool) -> Result<(usize, bool)> {
+        let (epoch, cursor, f_old, durable_f, durable_at) = {
+            let st = lock(&g.st)?;
+            (st.epoch, st.cursor, st.f, st.durable_f, st.durable_at)
+        };
+        // One statement: H and the visible events come from one snapshot,
+        // and H is there even with zero events (03 §4.2; FILTER keeps the
+        // empty case `[]`). The cursor is the payload's, not PostgreSQL's.
+        let (h, events, db_epoch): (String, Events, Uuid) = sqlx::query_as(
+            "WITH h AS MATERIALIZED (SELECT pg_snapshot_xmin(pg_current_snapshot()) AS h),
+                  ev AS (SELECT o.id, o.xid, o.entity_id FROM outbox o, h
+                         WHERE o.topic = 'issue' AND o.xid < h.h
+                           AND (o.xid, o.id) > ($1::text::xid8, $2::bigint)
+                         ORDER BY o.xid, o.id LIMIT $3)
+             SELECT h.h::text,
+                    COALESCE(json_agg(json_build_array(ev.id, ev.xid::text, ev.entity_id)
+                                      ORDER BY ev.xid, ev.id)
+                             FILTER (WHERE ev.id IS NOT NULL), '[]'::json),
+                    (SELECT data_epoch FROM search_settings)
+             FROM h LEFT JOIN ev ON true GROUP BY h.h",
+        )
+        .bind(cursor.xid.to_string())
+        .bind(cursor.id)
+        .bind(SYNC_BATCH)
+        .fetch_one(pool)
+        .await?;
+        if db_epoch != epoch {
+            // The data was reset under us (03 §4.3): stop advancing; the
+            // next start rebuilds. Tokens of the new epoch keep lagging.
+            anyhow::bail!("search data_epoch changed; restart to rebuild the index");
+        }
+        let rows = events.0;
+        let h: u64 = h.parse().context("snapshot xmin")?;
+        let Some((last_id, last_xid, _)) = rows.last().cloned() else {
+            // Drained: everything below H is applied. The view keeps its
+            // searcher; the payload records F only now and then.
+            let f_new = f_old.max(h);
+            let interval = *lock(&self.durable_interval)?;
+            if f_new > durable_f && durable_at.elapsed() >= interval {
+                g.commit(epoch, cursor, f_new)?;
+                let mut st = lock(&g.st)?;
+                st.durable_f = f_new;
+                st.durable_at = Instant::now();
+            }
+            lock(&g.st)?.f = f_new;
+            if serve {
+                g.reader.reload()?;
+                self.publish(g, f_new)?;
+            }
+            return Ok((0, false));
+        };
+        let mut ids: Vec<Uuid> = rows.iter().map(|r| r.2).collect();
+        ids.sort();
+        ids.dedup();
+        let docs: Vec<IssueDoc> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{DOC_SELECT} WHERE i.id = ANY($1) AND i.archived_at IS NULL"
+        )))
+        .bind(&ids)
+        .fetch_all(pool)
+        .await?;
+        {
+            let w = lock(&g.writer)?;
+            for id in &ids {
+                w.delete_term(Term::from_field_text(g.f.id, &id.to_string()));
+            }
+            for d in &docs {
+                w.add_document(g.make_doc(d))?;
+            }
+        }
+        let full = rows.len() as i64 == SYNC_BATCH;
+        // A full batch may stop inside one xid: F' = last.xid, not +1.
+        let f_cand = if full {
+            last_xid.parse().context("outbox xid")?
+        } else {
+            h
+        };
+        let f_new = f_old.max(f_cand);
+        let c_new = Cursor {
+            xid: last_xid.parse().context("outbox xid")?,
+            id: last_id,
+        };
+        // Durable first (payload with the documents), then the reader, then
+        // the view: never an old searcher with a new F.
+        g.commit(epoch, c_new, f_new)?;
+        {
+            let mut st = lock(&g.st)?;
+            st.cursor = c_new;
+            st.f = f_new;
+            st.durable_f = f_new;
+            st.durable_at = Instant::now();
+        }
+        g.reader.reload()?;
+        // PostgreSQL's cursor last: coordination and GC only (03 §4.2 step 7).
+        sqlx::query(
+            "UPDATE outbox_cursors SET last_xid = $2::text::xid8, last_id = $3, updated_at = now()
+             WHERE consumer = $1",
+        )
+        .bind(g.consumer())
+        .bind(c_new.xid.to_string())
+        .bind(c_new.id)
+        .execute(pool)
+        .await?;
+        if serve {
             #[cfg(feature = "test-support")]
             crate::changesets::faults::hit("search.before_publish").await?;
-            self.publish(f_new);
-            Ok((rows.len(), full))
+            self.publish(g, f_new)?;
+            self.metrics.applied(pool, &rows).await;
+        }
+        Ok((rows.len(), full))
+    }
+
+    /// Builds a generation from a snapshot (03 §4.8 steps 1–4): lease
+    /// first, then the snapshot, then the payload `(F0, 0)` / `F0`.
+    async fn build_baseline(&self, pool: &PgPool) -> Result<Gen> {
+        let epoch: Uuid = sqlx::query_scalar("SELECT data_epoch FROM search_settings")
+            .fetch_one(pool)
+            .await?;
+        let g = Gen::create(self.root.as_deref(), epoch)?;
+        // 1. The lease, before the snapshot: the GC sees it and keeps every
+        //    row from the slowest live consumer on.
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(LEASE_LOCK)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO outbox_cursors (consumer, last_xid, last_id, state)
+             VALUES ($1, COALESCE((SELECT last_xid FROM outbox_cursors
+                                   WHERE state IN ('active', 'bootstrapping', 'retained')
+                                   ORDER BY last_xid LIMIT 1), '0'::xid8), 0, 'bootstrapping')",
+        )
+        .bind(g.consumer())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let r = self.scan_snapshot(pool, &g).await;
+        match r {
+            Ok(()) => Ok(g),
+            Err(e) => {
+                self.retire(pool, &g).await;
+                Err(e)
+            }
         }
     }
 
-    /// Drops everything and replays from the start of the outbox's issues.
-    pub async fn rebuild(&self, pool: &PgPool) -> Result<usize> {
-        {
-            let mut w = self
-                .writer
-                .lock()
-                .map_err(|_| anyhow::anyhow!("index writer poisoned"))?;
-            w.delete_all_documents()?;
-            w.commit()?;
+    async fn scan_snapshot(&self, pool: &PgPool, g: &Gen) -> Result<()> {
+        #[cfg(feature = "test-support")]
+        crate::changesets::faults::hit("search.before_snapshot").await?;
+        // 2–3. One read-only snapshot (no xid, so it does not hold back the
+        //      frontier, 03 §4.7); issues stream out page by page.
+        let mut tx = pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let f0: String = sqlx::query_scalar("SELECT pg_snapshot_xmin(pg_current_snapshot())::text")
+            .fetch_one(&mut *tx)
+            .await?;
+        let f0: u64 = f0.parse().context("snapshot xmin")?;
+        let mut after = Uuid::nil();
+        let mut n: u64 = 0;
+        loop {
+            let page: Vec<IssueDoc> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "{DOC_SELECT} WHERE i.archived_at IS NULL AND i.id > $1 ORDER BY i.id LIMIT $2"
+            )))
+            .bind(after)
+            .bind(BASELINE_PAGE)
+            .fetch_all(&mut *tx)
+            .await?;
+            let Some(last) = page.last() else { break };
+            after = last.id;
+            let w = lock(&g.writer)?;
+            for d in &page {
+                w.add_document(g.make_doc(d))?;
+            }
+            n += page.len() as u64;
         }
-        sqlx::query("DELETE FROM outbox_cursors WHERE consumer = 'search'")
-            .execute(pool)
-            .await?;
-        // Ensure every live issue has a message even if old outbox rows were pruned.
-        sqlx::query("INSERT INTO outbox (topic, entity_id) SELECT 'issue', id FROM issues")
-            .execute(pool)
-            .await?;
-        self.sync(pool).await
+        // The same set the scan reads (an issue without a current key, e.g.
+        // from an import, is not indexed; it must not block the baseline).
+        let (expected, all): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT (SELECT count(*) FROM ({DOC_SELECT} WHERE i.archived_at IS NULL) d),
+                    (SELECT count(*) FROM issues WHERE archived_at IS NULL)"
+        )))
+        .fetch_one(&mut *tx)
+        .await?;
+        if all != expected {
+            tracing::warn!(
+                "{} unarchived issues have no current key and are not searchable",
+                all - expected
+            );
+        }
+        tx.commit().await?;
+        // 4. The generation now claims everything below F0.
+        let c0 = Cursor { xid: f0, id: 0 };
+        let epoch = lock(&g.st)?.epoch;
+        g.commit(epoch, c0, f0)?;
+        g.reader.reload()?;
+        {
+            let mut st = lock(&g.st)?;
+            st.cursor = c0;
+            st.f = f0;
+            st.durable_f = f0;
+            st.durable_at = Instant::now();
+        }
+        let docs = g.reader.searcher().num_docs();
+        if docs != n || docs != expected as u64 {
+            anyhow::bail!(
+                "search baseline has {docs} documents, the snapshot {expected} issues (scanned {n})"
+            );
+        }
+        sqlx::query(
+            "UPDATE outbox_cursors SET last_xid = $2::text::xid8, last_id = 0, updated_at = now()
+             WHERE consumer = $1",
+        )
+        .bind(g.consumer())
+        .bind(f0.to_string())
+        .execute(pool)
+        .await?;
+        Ok(())
     }
+
+    /// A failed rebuild: the lease retires (stops holding back the GC) and
+    /// the directory goes.
+    async fn retire(&self, pool: &PgPool, g: &Gen) {
+        let r = sqlx::query(
+            "UPDATE outbox_cursors SET state = 'retired', retained_until = NULL, updated_at = now()
+             WHERE consumer = $1",
+        )
+        .bind(g.consumer())
+        .execute(pool)
+        .await;
+        if let Err(e) = r {
+            tracing::warn!("retiring search generation {}: {e:#}", g.id);
+        }
+        if let Some(d) = &g.dir {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// Blue-green rebuild (03 §4.8): the serving generation keeps serving
+    /// while a new one is built from a snapshot and catches up; the switch
+    /// happens only when the new one is not behind (Q-S8) and passes the
+    /// health check. Replaces the old `rebuild()` that emptied the index.
+    pub async fn rebuild(&self, pool: &PgPool) -> Result<RebuildReport> {
+        let _one = self.rebuilding.lock().await;
+        // Something must serve first (a fresh start builds it here).
+        self.sync_round(pool).await?;
+        let g = Arc::new(self.build_baseline(pool).await?);
+        let (baseline_docs, baseline_frontier) = (g.reader.searcher().num_docs(), lock(&g.st)?.f);
+        *lock(&self.pending)? = Some(g.clone());
+        let r = self.catch_up_and_switch(pool, &g).await;
+        *lock(&self.pending)? = None;
+        match r {
+            Ok((previous, frontier)) => Ok(RebuildReport {
+                generation: g.id,
+                previous,
+                baseline_docs,
+                baseline_frontier,
+                frontier,
+            }),
+            Err(e) => {
+                self.retire(pool, &g).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn catch_up_and_switch(
+        &self,
+        pool: &PgPool,
+        g: &Arc<Gen>,
+    ) -> Result<(Option<Uuid>, u64)> {
+        // 5. Catch up outside the switch: other rounds keep serving.
+        for _ in 0..100_000 {
+            let _round = self.round.lock().await;
+            let (_, more) = self.round_on(pool, g, false).await?;
+            if !more {
+                break;
+            }
+        }
+        #[cfg(feature = "test-support")]
+        crate::changesets::faults::hit("search.before_switch").await?;
+        // 6. The switch, under the round lock: the old generation stands still.
+        let _round = self.round.lock().await;
+        let old = self.active.read().ok().and_then(|a| a.clone());
+        let (old_f, old_c) = match &old {
+            Some(o) => {
+                let st = lock(&o.st)?;
+                (st.f, st.cursor)
+            }
+            None => (0, Cursor::default()),
+        };
+        let mut ready = false;
+        for _ in 0..1000 {
+            let (nf, nc) = {
+                let st = lock(&g.st)?;
+                (st.f, st.cursor)
+            };
+            if switch_ready(nf, nc, old_f, old_c) {
+                ready = true;
+                break;
+            }
+            self.round_on(pool, g, false).await?;
+        }
+        if !ready {
+            anyhow::bail!("rebuilt search generation did not catch up with the serving one");
+        }
+        self.health_check(pool, g).await?;
+        // Durable before CURRENT names it.
+        let (epoch, c, f) = {
+            let st = lock(&g.st)?;
+            (st.epoch, st.cursor, st.f)
+        };
+        g.commit(epoch, c, f)?;
+        {
+            let mut st = lock(&g.st)?;
+            st.durable_f = f;
+            st.durable_at = Instant::now();
+        }
+        g.reader.reload()?;
+        // PostgreSQL first: if it fails nothing has switched (the caller
+        // retires the new generation, the old one keeps serving). From here
+        // on the switch is done and nothing undoes it.
+        self.mark_active(pool, g, c).await?;
+        if let Some(root) = &self.root
+            && let Err(e) = write_current(root, g.id)
+        {
+            // A restart then opens the old generation, which re-marks
+            // itself active: safe, only this switch is lost.
+            tracing::error!(
+                "search generation {} serves but CURRENT was not written: {e:#}",
+                g.id
+            );
+        }
+        *self
+            .active
+            .write()
+            .map_err(|_| anyhow::anyhow!("active lock poisoned"))? = Some(g.clone());
+        self.publish(g, f)?;
+        self.metrics.switched();
+        Ok((old.map(|o| o.id), f.max(old_f)))
+    }
+
+    /// 03 §4.8 step 6 health check (not a correctness proof): a sample of
+    /// issues must match the new generation, or be explained by events it
+    /// has not applied yet.
+    async fn health_check(&self, pool: &PgPool, g: &Gen) -> Result<()> {
+        let c = lock(&g.st)?.cursor;
+        let view = g.view(0);
+        let sample: Vec<IssueDoc> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{DOC_SELECT} WHERE i.archived_at IS NULL ORDER BY random() LIMIT {HEALTH_SAMPLE}"
+        )))
+        .fetch_all(pool)
+        .await?;
+        let mut bad: Vec<Uuid> = Vec::new();
+        for d in &sample {
+            let rev_ok = view.rev_of(d.id)? == Some(search_rev(&d.subject, &d.description));
+            if !rev_ok || !view.facts_match(d)? {
+                bad.push(d.id);
+            }
+        }
+        if bad.is_empty() {
+            return Ok(());
+        }
+        let unexplained: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT b FROM unnest($1::uuid[]) AS b
+             WHERE NOT EXISTS (SELECT 1 FROM outbox o WHERE o.topic = 'issue' AND o.entity_id = b
+                                 AND (o.xid, o.id) > ($2::text::xid8, $3::bigint))",
+        )
+        .bind(&bad)
+        .bind(c.xid.to_string())
+        .bind(c.id)
+        .fetch_all(pool)
+        .await?;
+        if unexplained.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "rebuilt search generation differs from PostgreSQL for {} sampled issues (e.g. {}); switch aborted",
+                unexplained.len(),
+                unexplained[0]
+            )
+        }
+    }
+
+    /// Outbox GC (03 §4.9) and retained generations past their window
+    /// (§4.8 step 7). Returns (outbox rows deleted, generations removed).
+    pub async fn gc(&self, pool: &PgPool) -> Result<(u64, usize)> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(LEASE_LOCK)
+            .execute(&mut *tx)
+            .await?;
+        let expired: Vec<String> = sqlx::query_scalar(
+            "UPDATE outbox_cursors SET state = 'retired', retained_until = NULL, updated_at = now()
+             WHERE consumer LIKE 'search@%' AND state = 'retained' AND retained_until < now()
+             RETURNING consumer",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        // Only durable progress counts (PostgreSQL's cursor trails the
+        // payload); no consumer at all means nothing may go.
+        let deleted = sqlx::query(
+            "WITH b AS (SELECT last_xid FROM outbox_cursors
+                        WHERE state IN ('active', 'bootstrapping', 'retained')
+                        ORDER BY last_xid LIMIT 1)
+             DELETE FROM outbox o USING b
+             WHERE o.xid < b.last_xid AND o.created_at < clock_timestamp() - interval '1 hour'",
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let retired: Vec<String> = sqlx::query_scalar(
+            "DELETE FROM outbox_cursors WHERE consumer LIKE 'search@%' AND state = 'retired'
+             RETURNING consumer",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let mut removed = 0;
+        if let Some(root) = &self.root {
+            let live: Vec<Uuid> = [
+                self.generation(),
+                lock(&self.pending)?.as_ref().map(|g| g.id),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            for c in retired.iter().chain(expired.iter()) {
+                if let Some(id) = c
+                    .strip_prefix("search@")
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    && !live.contains(&id)
+                {
+                    let d = root.join(format!("gen-{id}"));
+                    if d.exists() && std::fs::remove_dir_all(&d).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+        Ok((deleted, removed))
+    }
+}
+
+/// `CURRENT` names the serving generation: temp file, fsync, rename, fsync
+/// the directory (03 §4.8 step 6.2).
+fn write_current(root: &Path, id: Uuid) -> Result<()> {
+    use std::io::Write as _;
+    let tmp = root.join("CURRENT.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(format!("gen-{id}\n").as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, root.join("CURRENT"))?;
+    // Directories cannot be fsynced on every platform (Windows).
+    if let Ok(d) = std::fs::File::open(root) {
+        let _ = d.sync_all();
+    }
+    Ok(())
 }
 
 /// The lexer before design 03 (no offsets), kept to prove the spanned one
@@ -1057,11 +2116,12 @@ mod tests {
     /// project; returns it with the doc ids in input order.
     fn index_with(docs: &[(&str, &str)]) -> (SearchIndex, Vec<Uuid>) {
         let idx = SearchIndex::open(None).unwrap();
+        let g = std::sync::Arc::new(super::Gen::create(None, Uuid::nil()).unwrap());
         let project = Uuid::new_v4().to_string();
         let mut ids = Vec::new();
         {
-            let mut w = idx.writer.lock().unwrap();
-            let f = idx.f;
+            let w = g.writer.lock().unwrap();
+            let f = g.f;
             for (i, (subject, description)) in docs.iter().enumerate() {
                 let id = Uuid::new_v4();
                 ids.push(id);
@@ -1078,9 +2138,11 @@ mod tests {
                 ))
                 .unwrap();
             }
-            w.commit().unwrap();
         }
-        idx.reader.reload().unwrap();
+        g.commit(Uuid::nil(), super::Cursor::default(), 1).unwrap();
+        g.reader.reload().unwrap();
+        *idx.active.write().unwrap() = Some(g.clone());
+        idx.publish(&g, 1).unwrap();
         (idx, ids)
     }
 

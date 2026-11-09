@@ -23,7 +23,8 @@
 use crate::auth::AuthContext;
 use crate::custom_fields::{self, FieldRow, value_column};
 use crate::db::{self, push_pred};
-use crate::error::{ErrorCode, api};
+use crate::error::{ApiError, ErrorCode, api};
+use crate::search::{DateField, IxFilter};
 use crate::service::resolve_one;
 use anyhow::Result;
 use chrono::NaiveDate;
@@ -61,6 +62,113 @@ fn builtin_column(id: i32) -> Option<&'static str> {
     BUILTINS.iter().find(|b| b.1 == id).map(|b| b.3)
 }
 
+/// The index-side pre-filter for a resolved filter (§17.15 fast fields):
+/// built-in conditions narrow tantivy's candidates, everything else is
+/// [`IxFilter::All`]. Always a superset of what the SQL keeps (P2-D12): an
+/// `or` with an untranslatable branch is not narrowed, and `ne` — which also
+/// keeps issues outside its applicability gate — only when the gate is True.
+pub fn index_prefilter(f: &Filter) -> IxFilter {
+    match f {
+        Filter::And(ps) => IxFilter::and(ps.iter().map(index_prefilter).collect()),
+        Filter::Or(ps) => {
+            let parts: Vec<IxFilter> = ps.iter().map(index_prefilter).collect();
+            if parts.is_empty() || parts.contains(&IxFilter::All) {
+                IxFilter::All
+            } else {
+                IxFilter::Or(parts)
+            }
+        }
+        Filter::Cond {
+            field,
+            test,
+            applies,
+        } => cond_prefilter(field.id, test, *applies == Pred::True),
+    }
+}
+
+fn cond_prefilter(id: i32, test: &Test, ungated: bool) -> IxFilter {
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    let not = |x: IxFilter| {
+        if ungated {
+            IxFilter::Not(Box::new(x))
+        } else {
+            IxFilter::All
+        }
+    };
+    if id == VERSION_FIELD {
+        let one = |v: &Value| match v {
+            Value::Ref(u) => IxFilter::Version(Some(*u)),
+            _ => IxFilter::All,
+        };
+        return match test {
+            Test::Cmp(Cmp::Eq, v) => one(v),
+            Test::Cmp(Cmp::Ne, v) => match one(v) {
+                IxFilter::All => IxFilter::All,
+                x => not(x),
+            },
+            Test::In(vs) => {
+                let parts: Vec<IxFilter> = vs.iter().map(one).collect();
+                if parts.is_empty() || parts.contains(&IxFilter::All) {
+                    IxFilter::All
+                } else {
+                    IxFilter::Or(parts)
+                }
+            }
+            Test::IsNull => IxFilter::Version(None),
+            Test::NotNull => IxFilter::Not(Box::new(IxFilter::Version(None))),
+            _ => IxFilter::All,
+        };
+    }
+    let field = match id {
+        -2 => DateField::Start,
+        -3 => DateField::Due,
+        _ => return IxFilter::All,
+    };
+    let d = |v: &Value| match v {
+        Value::Date(d) => Some(*d),
+        _ => None,
+    };
+    let range = |lo, hi| IxFilter::Date { field, lo, hi };
+    match test {
+        Test::Cmp(c, v) => {
+            let Some(x) = d(v) else {
+                return IxFilter::All;
+            };
+            match c {
+                Cmp::Eq => range(Included(x), Included(x)),
+                Cmp::Ne => not(range(Included(x), Included(x))),
+                Cmp::Lt => range(Unbounded, Excluded(x)),
+                Cmp::Le => range(Unbounded, Included(x)),
+                Cmp::Gt => range(Excluded(x), Unbounded),
+                Cmp::Ge => range(Included(x), Unbounded),
+            }
+        }
+        Test::Range { min, max } => {
+            let b = |v: &Option<Value>| match v.as_ref().map(d) {
+                None => Some(Unbounded),
+                Some(Some(x)) => Some(Included(x)),
+                Some(None) => None,
+            };
+            match (b(min), b(max)) {
+                (Some(lo), Some(hi)) => range(lo, hi),
+                _ => IxFilter::All,
+            }
+        }
+        Test::In(vs) => {
+            let parts: Option<Vec<IxFilter>> = vs
+                .iter()
+                .map(|v| d(v).map(|x| range(Included(x), Included(x))))
+                .collect();
+            match parts {
+                Some(p) if !p.is_empty() => IxFilter::Or(p),
+                _ => IxFilter::All,
+            }
+        }
+        Test::IsNull => IxFilter::DateNull(field),
+        Test::NotNull => IxFilter::Not(Box::new(IxFilter::DateNull(field))),
+    }
+}
+
 // ---------------------------------------------------------------- input
 
 /// Custom field filter: a condition, or `{"and": [...]}` / `{"or": [...]}` of filters.
@@ -89,6 +197,11 @@ pub struct CondInput {
     /// the option label for list, "me"/login/name for user.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Json>,
+    /// Optional: the custom field's `definition_version` from `resolve(kind: "custom_field")`;
+    /// if the definition changed since, the search fails with `field_definition_changed`
+    /// (resolve again). Ignored for the built-in fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition_version: Option<i32>,
 }
 
 /// `ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field.
@@ -157,12 +270,23 @@ fn parse_at(v: &Json, path: &str) -> Result<FilterInput> {
     }
     if let Some(k) = obj
         .keys()
-        .find(|k| !["field", "op", "value"].contains(&k.as_str()))
+        .find(|k| !["field", "op", "value", "definition_version"].contains(&k.as_str()))
     {
         return Err(filter_err(format!(
-            "{path}: unknown key {k:?} (use field, op, value, or and/or)"
+            "{path}: unknown key {k:?} (use field, op, value, definition_version, or and/or)"
         )));
     }
+    let definition_version = match obj.get("definition_version") {
+        None | Some(Json::Null) => None,
+        Some(v) => match v.as_i64().and_then(|n| i32::try_from(n).ok()) {
+            Some(n) if n >= 1 => Some(n),
+            _ => {
+                return Err(filter_err(format!(
+                    "{path}.definition_version: expected a positive integer"
+                )));
+            }
+        },
+    };
     let Some(field) = obj.get("field").and_then(Json::as_str) else {
         return Err(filter_err(format!(
             "{path}: \"field\" (a string) is required"
@@ -179,6 +303,7 @@ fn parse_at(v: &Json, path: &str) -> Result<FilterInput> {
         field: field.to_string(),
         op,
         value: obj.get("value").filter(|v| !v.is_null()).cloned(),
+        definition_version,
     }))
 }
 
@@ -228,6 +353,41 @@ fn applies(row: &FieldRow, admin: bool, readable: &HashMap<i32, Vec<Uuid>>) -> O
     )
 }
 
+/// The custom fields the caller may read somewhere, each with its gate E.
+/// Others are invisible: filters, `resolve` and errors never name them.
+pub async fn readable_fields(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    scope: &Scope,
+) -> Result<Vec<(FieldRow, Pred)>> {
+    let me = db::effective(&mut *conn, caller).await?;
+    let admin = me.is_admin;
+    // Agents read only fields with visible = true (contract 02 §3.5), so no
+    // role-based readability at all.
+    let readable = if me.agent.is_some() {
+        Default::default()
+    } else {
+        custom_fields::readable_projects(&mut *conn, caller, &scope.principal_ids).await?
+    };
+    Ok(custom_fields::list_fields(&mut *conn)
+        .await?
+        .into_iter()
+        .filter_map(|f| applies(&f, admin, &readable).map(|e| (f, e)))
+        .collect())
+}
+
+/// Filter operators a field type takes (`resolve(kind: "custom_field")`).
+pub fn operators(ty: FieldType) -> Vec<&'static str> {
+    match ty {
+        FieldType::Text => vec!["is_null", "not_null"],
+        FieldType::Int | FieldType::Float | FieldType::Date => vec![
+            "eq", "ne", "lt", "le", "gt", "ge", "between", "in", "is_null", "not_null",
+        ],
+        FieldType::Bool => vec!["eq", "ne", "is_null", "not_null"],
+        _ => vec!["eq", "ne", "in", "is_null", "not_null"],
+    }
+}
+
 /// Turns parsed input into a validated typed filter: looks up fields by name
 /// (only those the caller may read; others look like unknown fields), list
 /// options by label and users by login/name ("me" = the caller), and attaches
@@ -238,19 +398,10 @@ pub async fn resolve(
     scope: &Scope,
     input: &FilterInput,
 ) -> Result<Filter> {
-    let me = db::effective(&mut *conn, caller).await?;
-    let admin = me.is_admin;
-    // Agents read only fields with visible = true (contract 02 §3.5), so no
-    // role-based readability at all.
-    let readable = if me.agent.is_some() {
-        Default::default()
-    } else {
-        custom_fields::readable_projects(&mut *conn, caller, &scope.principal_ids).await?
-    };
-    let fields = custom_fields::list_fields(&mut *conn)
+    let fields = readable_fields(&mut *conn, caller, scope)
         .await?
         .into_iter()
-        .filter_map(|f| applies(&f, admin, &readable).map(|e| (f.name.to_lowercase(), (f, e))))
+        .map(|(f, e)| (f.name.to_lowercase(), (f, e)))
         .collect();
     let ctx = Ctx {
         conn: tokio::sync::Mutex::new(conn),
@@ -291,6 +442,25 @@ async fn resolve_cond(ctx: &Ctx<'_>, c: &CondInput) -> Result<Filter> {
     let builtin = BUILTINS.iter().find(|b| b.0 == wanted);
     let (field, name, gate) = match (builtin, ctx.fields.get(&wanted)) {
         (Some(b), _) => (Field { id: b.1, ty: b.2 }, b.0, Pred::True),
+        (None, Some((row, _)))
+            if c.definition_version
+                .is_some_and(|v| v != row.definition_version) =>
+        {
+            return Err(ApiError::new(
+                ErrorCode::FieldDefinitionChanged,
+                format!(
+                    "custom field {:?} changed since definition_version {}; resolve it again",
+                    row.name,
+                    c.definition_version.unwrap_or_default()
+                ),
+            )
+            .with_details(serde_json::json!({
+                "field": row.name,
+                "current_version": row.definition_version,
+                "suggested_tool": "resolve",
+            }))
+            .into());
+        }
         (None, Some((row, gate))) => (
             Field {
                 id: row.id,
@@ -502,6 +672,67 @@ fn push_array(qb: &mut QueryBuilder<Postgres>, kind: ValueKind, vs: &[Value]) {
 
 /// Appends `filter` (already validated) as a SQL boolean expression over issue alias `a`.
 pub fn push_filter(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Filter) {
+    push_filter_shaped(qb, a, filter, Shape::S0);
+}
+
+/// SQL shape of the `EXISTS` conditions (design 03 §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// Plain `EXISTS`: the planner may pull it up into a join and start
+    /// from the rarest condition.
+    S0,
+    /// `EXISTS (.. OFFSET 0)`: stays a correlated SubPlan, probed per issue
+    /// while walking the sort order until a page is full. PostgreSQL 18
+    /// behaviour (`simplify_EXISTS_query` stops at OFFSET); re-check on
+    /// major upgrades.
+    S2,
+}
+
+/// Probe cap T + 1 (03 §5.4: T = 10,000, an absolute count).
+pub const PROBE_CAP: i64 = 10_001;
+
+/// The conditions strategy selection applies to (03 §5.4 item 2): an AND
+/// of at least two positive, single-valued custom field conditions (no
+/// `or`, `ne`, `is_null`, `not_null`, built-ins or long text). `None`:
+/// keep the default shape.
+pub fn probe_conditions(f: &Filter) -> Option<Vec<(Field, Test)>> {
+    let conds: Vec<&Filter> = match f {
+        Filter::And(ps) => ps.iter().collect(),
+        c @ Filter::Cond { .. } => vec![c],
+        Filter::Or(_) => return None,
+    };
+    let mut out = Vec::with_capacity(conds.len());
+    for c in conds {
+        let Filter::Cond { field, test, .. } = c else {
+            return None;
+        };
+        let positive = matches!(
+            test,
+            Test::Cmp(Cmp::Eq | Cmp::Lt | Cmp::Le | Cmp::Gt | Cmp::Ge, _)
+                | Test::In(_)
+                | Test::Range { .. }
+        );
+        if !positive || field.id <= 0 || field.ty == FieldType::Text {
+            return None;
+        }
+        out.push((*field, test.clone()));
+    }
+    (out.len() >= 2).then_some(out)
+}
+
+/// `SELECT count(*)` of one condition's index entries, capped at
+/// [`PROBE_CAP`] (index only; the count picks a shape and is never shown).
+pub fn push_probe(qb: &mut QueryBuilder<Postgres>, field: Field, test: &Test) {
+    qb.push(format!(
+        "SELECT count(*) FROM (SELECT 1 FROM issue_cf cf WHERE cf.field_id = {}",
+        field.id
+    ));
+    push_value_test(qb, value_column(field.ty.kind()), field, test);
+    qb.push(format!(" LIMIT {PROBE_CAP}) p"));
+}
+
+/// [`push_filter`] in a chosen [`Shape`].
+pub fn push_filter_shaped(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Filter, shape: Shape) {
     match filter {
         Filter::And(fs) | Filter::Or(fs) => {
             let and = matches!(filter, Filter::And(_));
@@ -514,7 +745,7 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Filter) {
                 if i > 0 {
                     qb.push(if and { " AND " } else { " OR " });
                 }
-                push_filter(qb, a, f);
+                push_filter_shaped(qb, a, f, shape);
             }
             qb.push(")");
         }
@@ -543,7 +774,7 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Filter) {
             if inner_not {
                 qb.push("NOT ");
             }
-            push_exists(qb, a, *field, test);
+            push_exists(qb, a, *field, test, shape);
             if gated || outer_not {
                 qb.push(")");
             }
@@ -552,7 +783,7 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Filter) {
 }
 
 /// `EXISTS (..)` for the positive form of `test` (`ne` as `=`, `is_null` as presence).
-fn push_exists(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Test) {
+fn push_exists(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Test, shape: Shape) {
     let col = match builtin_column(field.id) {
         Some(c) => {
             qb.push(format!(
@@ -568,6 +799,15 @@ fn push_exists(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Te
             value_column(field.ty.kind())
         }
     };
+    push_value_test(qb, col, field, test);
+    if shape == Shape::S2 {
+        qb.push(" OFFSET 0");
+    }
+    qb.push(")");
+}
+
+/// ` AND cf.<col> ..` for the positive form of `test`.
+fn push_value_test(qb: &mut QueryBuilder<Postgres>, col: &str, field: Field, test: &Test) {
     match test {
         Test::Cmp(op, v) => {
             let sym = match op {
@@ -599,7 +839,6 @@ fn push_exists(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Te
             qb.push(format!(" AND cf.{col} IS NOT NULL"));
         }
     }
-    qb.push(")");
 }
 
 #[cfg(test)]
@@ -708,6 +947,199 @@ mod tests {
         assert!(
             text.contains("is_null") && text.contains("\"and\""),
             "{text}"
+        );
+    }
+
+    /// P2-D12: the index pre-filter never drops an issue the SQL keeps.
+    /// Random built-in filters (gated and not) over random issues, with the
+    /// SQL semantics of `push_filter` written out by hand.
+    #[test]
+    fn index_prefilter_is_a_superset() {
+        use rand::{Rng, SeedableRng};
+        use std::ops::Bound;
+        #[derive(Clone, Copy)]
+        struct Doc {
+            version: Option<Uuid>,
+            start: Option<NaiveDate>,
+            due: Option<NaiveDate>,
+            gated: bool,
+        }
+        let vs = [Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3)];
+        let day =
+            |n: i64| NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Days::new(n as u64);
+        let gate = Pred::ProjectIs(Uuid::from_u128(9));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(20261109);
+        fn value_of(d: &Doc, id: i32) -> Option<Value> {
+            match id {
+                VERSION_FIELD => d.version.map(Value::Ref),
+                -2 => d.start.map(Value::Date),
+                _ => d.due.map(Value::Date),
+            }
+        }
+        fn holds(t: &Test, v: &Option<Value>, e: bool) -> bool {
+            let cmp = |a: &Value, b: &Value| match (a, b) {
+                (Value::Date(x), Value::Date(y)) => Some(x.cmp(y)),
+                (Value::Ref(x), Value::Ref(y)) => Some(x.cmp(y)),
+                _ => None,
+            };
+            use std::cmp::Ordering::*;
+            match t {
+                Test::Cmp(Cmp::Ne, x) => {
+                    !(e && v.as_ref().is_some_and(|v| cmp(v, x) == Some(Equal)))
+                }
+                Test::IsNull => e && v.is_none(),
+                Test::NotNull => e && v.is_some(),
+                Test::Cmp(c, x) => {
+                    e && v.as_ref().is_some_and(|v| match (c, cmp(v, x)) {
+                        (Cmp::Eq, Some(o)) => o == Equal,
+                        (Cmp::Lt, Some(o)) => o == Less,
+                        (Cmp::Le, Some(o)) => o != Greater,
+                        (Cmp::Gt, Some(o)) => o == Greater,
+                        (Cmp::Ge, Some(o)) => o != Less,
+                        _ => false,
+                    })
+                }
+                Test::In(xs) => {
+                    e && v
+                        .as_ref()
+                        .is_some_and(|v| xs.iter().any(|x| cmp(v, x) == Some(Equal)))
+                }
+                Test::Range { min, max } => {
+                    e && v.as_ref().is_some_and(|v| {
+                        min.as_ref().is_none_or(|m| cmp(v, m) != Some(Less))
+                            && max.as_ref().is_none_or(|m| cmp(v, m) != Some(Greater))
+                    })
+                }
+            }
+        }
+        fn sql_keeps(f: &Filter, d: &Doc) -> bool {
+            match f {
+                Filter::And(ps) => ps.iter().all(|p| sql_keeps(p, d)),
+                Filter::Or(ps) => ps.iter().any(|p| sql_keeps(p, d)),
+                Filter::Cond {
+                    field,
+                    test,
+                    applies,
+                } => {
+                    let e = *applies == Pred::True || d.gated;
+                    holds(test, &value_of(d, field.id), e)
+                }
+            }
+        }
+        fn ix_keeps(x: &IxFilter, d: &Doc) -> bool {
+            let within = |v: Option<NaiveDate>, lo: &Bound<NaiveDate>, hi: &Bound<NaiveDate>| {
+                v.is_some_and(|v| {
+                    (match lo {
+                        Bound::Included(l) => v >= *l,
+                        Bound::Excluded(l) => v > *l,
+                        Bound::Unbounded => true,
+                    }) && (match hi {
+                        Bound::Included(h) => v <= *h,
+                        Bound::Excluded(h) => v < *h,
+                        Bound::Unbounded => true,
+                    })
+                })
+            };
+            match x {
+                IxFilter::All => true,
+                IxFilter::And(ps) => ps.iter().all(|p| ix_keeps(p, d)),
+                IxFilter::Or(ps) => ps.iter().any(|p| ix_keeps(p, d)),
+                IxFilter::Not(p) => !ix_keeps(p, d),
+                IxFilter::Version(v) => d.version == *v,
+                IxFilter::DateNull(DateField::Start) => d.start.is_none(),
+                IxFilter::DateNull(DateField::Due) => d.due.is_none(),
+                IxFilter::Date {
+                    field: DateField::Start,
+                    lo,
+                    hi,
+                } => within(d.start, lo, hi),
+                IxFilter::Date {
+                    field: DateField::Due,
+                    lo,
+                    hi,
+                } => within(d.due, lo, hi),
+            }
+        }
+        let mut narrowed = 0;
+        for _ in 0..3000 {
+            fn random_filter(
+                rng: &mut rand::rngs::StdRng,
+                depth: u32,
+                vs: &[Uuid; 3],
+                day: &dyn Fn(i64) -> NaiveDate,
+                gate: &Pred,
+            ) -> Filter {
+                if depth > 0 && rng.random_bool(0.4) {
+                    let n = rng.random_range(1..=3);
+                    let ps = (0..n)
+                        .map(|_| random_filter(rng, depth - 1, vs, day, gate))
+                        .collect();
+                    return if rng.random_bool(0.5) {
+                        Filter::And(ps)
+                    } else {
+                        Filter::Or(ps)
+                    };
+                }
+                let id = [VERSION_FIELD, -2, -3][rng.random_range(0..3)];
+                let val = |rng: &mut rand::rngs::StdRng| {
+                    if id == VERSION_FIELD {
+                        Value::Ref(vs[rng.random_range(0..3)])
+                    } else {
+                        Value::Date(day(rng.random_range(0..8)))
+                    }
+                };
+                let cmps = [Cmp::Eq, Cmp::Ne, Cmp::Lt, Cmp::Le, Cmp::Gt, Cmp::Ge];
+                let test = match rng.random_range(0..5) {
+                    0 => Test::Cmp(cmps[rng.random_range(0..6)], val(rng)),
+                    1 => Test::In((0..rng.random_range(1..3)).map(|_| val(rng)).collect()),
+                    2 if id != VERSION_FIELD => Test::Range {
+                        min: rng.random_bool(0.7).then(|| val(rng)),
+                        max: Some(val(rng)),
+                    },
+                    3 => Test::IsNull,
+                    _ => Test::NotNull,
+                };
+                let applies = if rng.random_bool(0.3) {
+                    gate.clone()
+                } else {
+                    Pred::True
+                };
+                Filter::Cond {
+                    field: Field {
+                        id,
+                        ty: if id == VERSION_FIELD {
+                            FieldType::List
+                        } else {
+                            FieldType::Date
+                        },
+                    },
+                    test,
+                    applies,
+                }
+            }
+            let f = random_filter(&mut rng, 3, &vs, &day, &gate);
+            let ix = index_prefilter(&f);
+            if ix != IxFilter::All {
+                narrowed += 1;
+            }
+            for _ in 0..20 {
+                let pick = |rng: &mut rand::rngs::StdRng| -> Option<NaiveDate> {
+                    rng.random_bool(0.7).then(|| day(rng.random_range(0..8)))
+                };
+                let d = Doc {
+                    version: rng.random_bool(0.7).then(|| vs[rng.random_range(0..3)]),
+                    start: pick(&mut rng),
+                    due: pick(&mut rng),
+                    gated: rng.random_bool(0.5),
+                };
+                if sql_keeps(&f, &d) {
+                    assert!(ix_keeps(&ix, &d), "{f:?}\n→ {ix:?}");
+                }
+            }
+        }
+        assert!(
+            narrowed > 1000,
+            "the pre-filter narrows most filters ({narrowed})"
         );
     }
 }
