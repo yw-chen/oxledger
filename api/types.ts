@@ -112,6 +112,8 @@ export type Candidate = {
 };
 
 export type Capabilities = {
+  /** Additions to command schema version 1 this server accepts (design 05 §3.10), e.g. "estimated_hours". Clients that do not use one are not affected. */
+  command_features: Array<string>;
   /** Command document versions this server accepts (§4.5). */
   command_schema_versions: Array<number>;
 };
@@ -462,7 +464,7 @@ export type FieldSchema = {
   options_source?: string | null;
   /** The field definition itself is required (workflow rules are per status: see the issue actions). */
   required: boolean;
-  /** string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a custom field type (int, float, date, string, text, list, user, bool, link). */
+  /** string | text | date | decimal | principal_ref | priority_ref | status_ref | version_ref, or a custom field type (int, float, date, string, text, list, user, bool, link). `decimal` values are decimal strings. */
   type: string;
 };
 
@@ -569,6 +571,8 @@ export type IssueDetail = {
   custom_fields: Array<CustomFieldValue>;
   description: string;
   due_date: string | null;
+  /** Decimal string such as "1.5" (design 05 §3.10.3); null when not set. */
+  estimated_hours: string | null;
   is_private: boolean;
   key: string;
   /** Pass back as `expected_lock_version` when updating (M1). */
@@ -708,7 +712,7 @@ export type OpEffect = {
 export type OpInput = {
   /** A name later ops use as `{"type": "temp", "ref": …}`. */
   bind?: string | null;
-  /** `subject` (required), `description`, `is_private`, `assigned_to_id`, `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `cf:<id>`. */
+  /** `subject` (required), `description`, `is_private`, `assigned_to_id`, `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`. */
   fields: Record<string, unknown>;
   kind: "create_issue";
   op_id: string;

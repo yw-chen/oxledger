@@ -35,7 +35,7 @@ pub const PROPOSAL_OPS: [&str; 7] = [
 /// Commands that need the delegator's `manage_versions` for a policy row (§17.11).
 pub const VERSION_OPS: [&str; 2] = ["create_version", "update_version"];
 /// Built-in field keys a delegation may make writable; custom fields are `cf:<id>`.
-pub const BUILTIN_FIELDS: [&str; 7] = [
+pub const BUILTIN_FIELDS: [&str; 8] = [
     "subject",
     "description",
     "assigned_to_id",
@@ -43,6 +43,7 @@ pub const BUILTIN_FIELDS: [&str; 7] = [
     "start_date",
     "due_date",
     "fixed_version_id",
+    "estimated_hours",
 ];
 pub const DEFAULT_DELEGATION_DAYS: i64 = 7;
 pub const MAX_DELEGATION_DAYS: i64 = 30;

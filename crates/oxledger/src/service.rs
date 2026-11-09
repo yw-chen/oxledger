@@ -248,6 +248,8 @@ pub struct IssueDetail {
     pub children: Vec<IssueBrief>,
     pub start_date: Option<NaiveDate>,
     pub due_date: Option<NaiveDate>,
+    /// Decimal string such as "1.5" (design 05 §3.10.3); null when not set.
+    pub estimated_hours: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Pass back as `expected_lock_version` when updating (M1).
@@ -1721,6 +1723,7 @@ struct DetailRow {
     parent: Option<String>,
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
+    estimated_hours: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     lock_version: i32,
@@ -1756,7 +1759,8 @@ pub(crate) async fn get_in(
                 i.assigned_to_id, i.is_private, i.subject, i.description,
                 p.name AS project, t.name AS tracker, s.name AS status, s.category AS status_category,
                 au.name AS author, a.name AS assignee, pk.key AS parent,
-                i.start_date, i.due_date, i.created_at, i.updated_at, i.lock_version
+                i.start_date, i.due_date, trim_scale(i.estimated_hours)::text AS estimated_hours,
+                i.created_at, i.updated_at, i.lock_version
          FROM issue_keys rk
          JOIN issues i ON i.id = rk.issue_id
          JOIN issue_keys ck ON ck.issue_id = i.id AND ck.is_current
@@ -1863,6 +1867,7 @@ pub(crate) async fn get_in(
             children,
             start_date: row.start_date,
             due_date: row.due_date,
+            estimated_hours: row.estimated_hours,
             created_at: row.created_at,
             updated_at: row.updated_at,
             lock_version: row.lock_version,

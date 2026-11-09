@@ -385,6 +385,13 @@
       },
       "Capabilities": {
         "properties": {
+          "command_features": {
+            "description": "Additions to command schema version 1 this server accepts (design 05\n§3.10), e.g. \"estimated_hours\". Clients that do not use one are not\naffected.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "command_schema_versions": {
             "description": "Command document versions this server accepts (§4.5).",
             "items": {
@@ -397,7 +404,8 @@
           }
         },
         "required": [
-          "command_schema_versions"
+          "command_schema_versions",
+          "command_features"
         ],
         "type": "object"
       },
@@ -1941,7 +1949,7 @@
             "type": "boolean"
           },
           "type": {
-            "description": "string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a\ncustom field type (int, float, date, string, text, list, user, bool, link).",
+            "description": "string | text | date | decimal | principal_ref | priority_ref | status_ref |\nversion_ref, or a custom field type (int, float, date, string, text, list, user,\nbool, link). `decimal` values are decimal strings.",
             "type": "string"
           }
         },
@@ -2340,6 +2348,13 @@
               "null"
             ]
           },
+          "estimated_hours": {
+            "description": "Decimal string such as \"1.5\" (design 05 §3.10.3); null when not set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "is_private": {
             "type": "boolean"
           },
@@ -2406,6 +2421,7 @@
           "children",
           "start_date",
           "due_date",
+          "estimated_hours",
           "created_at",
           "updated_at",
           "lock_version",
@@ -2849,7 +2865,7 @@
               },
               "fields": {
                 "additionalProperties": true,
-                "description": "`subject` (required), `description`, `is_private`, `assigned_to_id`,\n`priority_id`, `fixed_version_id`, `start_date`, `due_date`, `cf:<id>`.",
+                "description": "`subject` (required), `description`, `is_private`, `assigned_to_id`,\n`priority_id`, `fixed_version_id`, `start_date`, `due_date`,\n`estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`.",
                 "type": "object"
               },
               "kind": {

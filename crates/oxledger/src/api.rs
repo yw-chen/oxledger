@@ -727,6 +727,7 @@ async fn session(
         expires_at: row.4,
         capabilities: Capabilities {
             command_schema_versions: vec![1],
+            command_features: COMMAND_FEATURES.iter().map(|f| f.to_string()).collect(),
         },
     }))
 }
@@ -870,7 +871,14 @@ pub struct LoginData {
 pub struct Capabilities {
     /// Command document versions this server accepts (§4.5).
     pub command_schema_versions: Vec<u16>,
+    /// Additions to command schema version 1 this server accepts (design 05
+    /// §3.10), e.g. "estimated_hours". Clients that do not use one are not
+    /// affected.
+    pub command_features: Vec<String>,
 }
+
+/// See [`Capabilities::command_features`]; later M1 stages add theirs.
+pub const COMMAND_FEATURES: &[&str] = &["estimated_hours"];
 
 #[derive(Serialize, JsonSchema)]
 pub struct SessionData {

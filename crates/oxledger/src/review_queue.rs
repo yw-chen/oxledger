@@ -180,6 +180,7 @@ fn label(field: &str) -> &'static str {
         "fixed_version_id" => "Target version",
         "start_date" => "Start date",
         "due_date" => "Due date",
+        "estimated_hours" => "Estimated time",
         "is_private" => "Private",
         "status" => "Status",
         _ => "",
@@ -280,10 +281,12 @@ pub async fn diff(
             Uuid,
             Uuid,
             Uuid,
+            Option<String>,
         );
         let cur: Option<Cur> = sqlx::query_as(
             "SELECT subject, description, assigned_to_id, priority_id, fixed_version_id,
-                    start_date, due_date, is_private, status_id, tracker_id, project_id, id
+                    start_date, due_date, is_private, status_id, tracker_id, project_id, id,
+                    trim_scale(estimated_hours)::text
              FROM issues WHERE id = $1",
         )
         .bind(id)
@@ -316,6 +319,7 @@ pub async fn diff(
                         "start_date" => json!(c.5),
                         "due_date" => json!(c.6),
                         "is_private" => json!(c.7),
+                        "estimated_hours" => json!(c.12),
                         _ => Json::Null,
                     };
                     let (lbl, before) = if let Some(n) = k.strip_prefix("cf:") {

@@ -39,6 +39,7 @@ pub const GET_FIELDS: &[&str] = &[
     "assignee",
     "priority",
     "fixed_version",
+    "estimated_hours",
     "is_private",
     "created_at",
     "updated_at",
@@ -62,8 +63,9 @@ pub struct GetParams {
     /// Issue key such as "AUTH-12". Old keys of moved issues still work.
     pub key: String,
     /// Issue fields to read: key, subject, description, project, tracker, status,
-    /// status_category, status_since, assignee, priority, is_private, created_at,
-    /// updated_at, last_activity_at, lock_version, cf:<custom field name>. Without
+    /// status_category, status_since, assignee, priority, fixed_version,
+    /// estimated_hours, is_private, created_at, updated_at, last_activity_at,
+    /// lock_version, cf:<custom field name>. Without
     /// `fields`: the full current detail (no notes or history).
     pub fields: Option<Vec<String>>,
     /// "subject" and/or "description" (must also be in `fields`): a citation_id for
@@ -208,6 +210,9 @@ pub struct IssueView {
     pub start_date: Option<Option<NaiveDate>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due_date: Option<Option<NaiveDate>>,
+    /// Decimal string such as "1.5"; null when not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_hours: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -380,6 +385,7 @@ fn column(f: &str) -> Option<&'static str> {
         "is_private" => "i.is_private",
         "updated_at" => "i.updated_at",
         "lock_version" => "i.lock_version",
+        "estimated_hours" => "trim_scale(i.estimated_hours)::text AS estimated_hours",
         "fixed_version" => "fv.id AS fixed_version_id, fv.name AS fixed_version_name, fv.status AS fixed_version_status,
              fv.effective_date AS fixed_version_date, fv.deleted_at IS NOT NULL AS fixed_version_deleted",
         _ => return None,
@@ -526,6 +532,7 @@ async fn get_one(
             children: Some(d.children),
             start_date: Some(d.start_date),
             due_date: Some(d.due_date),
+            estimated_hours: Some(d.estimated_hours),
             created_at: Some(d.created_at),
             updated_at: Some(d.updated_at),
             lock_version: Some(d.lock_version),
@@ -617,6 +624,7 @@ async fn get_one(
                 }));
             }
             "is_private" => v.is_private = Some(row.try_get("is_private")?),
+            "estimated_hours" => v.estimated_hours = Some(row.try_get("estimated_hours")?),
             "created_at" => v.created_at = Some(created),
             "updated_at" => v.updated_at = Some(row.try_get("updated_at")?),
             "lock_version" => v.lock_version = Some(row.try_get("lock_version")?),

@@ -185,7 +185,8 @@ pub struct CreateIssueOp {
     pub project_id: Uuid,
     pub tracker_id: Uuid,
     /// `subject` (required), `description`, `is_private`, `assigned_to_id`,
-    /// `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `cf:<id>`.
+    /// `priority_id`, `fixed_version_id`, `start_date`, `due_date`,
+    /// `estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`.
     pub fields: BTreeMap<String, Json>,
 }
 
@@ -358,6 +359,7 @@ enum Key {
     Version,
     StartDate,
     DueDate,
+    EstimatedHours,
     Cf(i32),
 }
 
@@ -371,6 +373,7 @@ impl Key {
             "fixed_version_id" => Key::Version,
             "start_date" => Key::StartDate,
             "due_date" => Key::DueDate,
+            "estimated_hours" => Key::EstimatedHours,
             _ => {
                 let n = k.strip_prefix("cf:")?;
                 if n.is_empty() || n.len() > 9 || !n.bytes().all(|b| b.is_ascii_digit()) {
@@ -390,12 +393,13 @@ impl Key {
             Key::Version => "fixed_version_id".into(),
             Key::StartDate => "start_date".into(),
             Key::DueDate => "due_date".into(),
+            Key::EstimatedHours => "estimated_hours".into(),
             Key::Cf(id) => format!("cf:{id}"),
         }
     }
 }
 
-const BUILTIN_KEYS: [Key; 7] = [
+const BUILTIN_KEYS: [Key; 8] = [
     Key::Subject,
     Key::Description,
     Key::AssignedTo,
@@ -403,7 +407,53 @@ const BUILTIN_KEYS: [Key; 7] = [
     Key::Version,
     Key::StartDate,
     Key::DueDate,
+    Key::EstimatedHours,
 ];
+
+/// `issues.estimated_hours` is `numeric(7,2)` (design 05 §2.2).
+pub const MAX_ESTIMATED_HOURS: &str = "99999.99";
+
+/// An `estimated_hours` value from a document or the database → canonical
+/// decimal string, or why not: `Err(None)` = not a decimal string,
+/// `Err(Some(kind))` = out of range or too many decimals.
+pub fn estimated_hours(s: &str) -> std::result::Result<String, Option<&'static str>> {
+    // Decimal syntax first (no length limits here: those are range and
+    // decimals questions, answered after the zeros that do not count).
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    let (ip, fp) = match digits.split_once('.') {
+        Some((i, f)) if !f.is_empty() => (i, f),
+        Some(_) => return Err(None),
+        None => (digits, ""),
+    };
+    if ip.is_empty()
+        || !ip.bytes().all(|b| b.is_ascii_digit())
+        || !fp.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(None);
+    }
+    let ip = ip.trim_start_matches('0');
+    let fp = fp.trim_end_matches('0');
+    let zero = ip.is_empty() && fp.is_empty();
+    if (neg && !zero) || ip.len() > 5 {
+        return Err(Some("out_of_range"));
+    }
+    if fp.len() > 2 {
+        return Err(Some("too_many_decimals"));
+    }
+    let mut out = if ip.is_empty() {
+        "0".to_string()
+    } else {
+        ip.to_string()
+    };
+    if !fp.is_empty() {
+        out.push('.');
+        out.push_str(fp);
+    }
+    Ok(out)
+}
 
 fn date_in_range(d: NaiveDate) -> bool {
     let lo = NaiveDate::from_ymd_opt(MIN_DATE.0, MIN_DATE.1, MIN_DATE.2).unwrap_or(d);
@@ -558,6 +608,27 @@ fn parse_builtin(path: &str, key: Key, v: &Json) -> Result<Json> {
                 Ok(json!(d.to_string()))
             }
             _ => Err(bad(path, "dates are YYYY-MM-DD strings or null")),
+        },
+        Key::EstimatedHours => match v {
+            Json::Null => Ok(Json::Null),
+            Json::String(s) => match estimated_hours(s) {
+                Ok(c) => Ok(json!(c)),
+                Err(None) => Err(bad(
+                    path,
+                    "estimated_hours is a decimal string such as \"1.5\" or null",
+                )),
+                Err(Some(kind)) => Err(ApiError::new(
+                    ErrorCode::InvalidValue,
+                    "estimated_hours is between 0 and 99999.99 with at most two decimals",
+                )
+                .with_details(json!({"path": path, "kind": kind,
+                                     "min": "0", "max": MAX_ESTIMATED_HOURS, "max_decimals": 2}))
+                .into()),
+            },
+            _ => Err(bad(
+                path,
+                "estimated_hours is a decimal string such as \"1.5\" or null",
+            )),
         },
         Key::Cf(_) => unreachable!("custom fields use parse_cf"),
     }
@@ -1435,6 +1506,8 @@ struct IssueRow {
     fixed_version_id: Option<Uuid>,
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
+    /// `trim_scale(estimated_hours)::text`.
+    estimated_hours: Option<String>,
     is_private: bool,
     lock_version: i32,
     last_event_seq: i64,
@@ -1453,6 +1526,14 @@ impl IssueRow {
                 json!(self.start_date.map(|d| d.to_string())),
             ),
             (Key::DueDate, json!(self.due_date.map(|d| d.to_string()))),
+            (
+                Key::EstimatedHours,
+                json!(
+                    self.estimated_hours
+                        .as_deref()
+                        .and_then(|h| estimated_hours(h).ok())
+                ),
+            ),
         ])
     }
 
@@ -2003,7 +2084,8 @@ pub(crate) async fn current_values(
     let r: Option<IssueRow> = sqlx::query_as(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
                 i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
-                i.fixed_version_id, i.start_date, i.due_date, i.is_private, i.lock_version,
+                i.fixed_version_id, i.start_date, i.due_date,
+                trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
          FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
          WHERE i.id = $1 AND i.archived_at IS NULL",
@@ -2313,7 +2395,8 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
     let rows: Vec<IssueRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
                 i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
-                i.fixed_version_id, i.start_date, i.due_date, i.is_private, i.lock_version,
+                i.fixed_version_id, i.start_date, i.due_date,
+                trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
          FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
          WHERE i.id = ANY($1) ORDER BY i.id{}",
@@ -2764,6 +2847,7 @@ async fn run_ops(
                     (Key::Version, Json::Null),
                     (Key::StartDate, Json::Null),
                     (Key::DueDate, Json::Null),
+                    (Key::EstimatedHours, Json::Null),
                 ]);
                 let mut w = Work {
                     id,
@@ -3197,13 +3281,23 @@ pub(crate) async fn write_effects(
             }
             let base = w.orig.as_ref().map(|o| o.last_event_seq).unwrap_or(0);
             for (n, ev) in w.events.iter().enumerate() {
+                // The issue_field_changes rows (design 05 §2.2) in the same
+                // statement, through the mapping the 0020 backfill uses.
                 let event_id: Uuid = sqlx::query_scalar(
-                    "INSERT INTO issue_events (issue_id, seq, kind, origin, actor_id, actor_kind,
-                                               proposer_id, approver_id, on_behalf_of_id, delegation_id,
-                                               agent_client_id, operation_request_id, command_execution_id,
-                                               changeset_id, changeset_version, execution_id, op_id,
-                                               note_id, payload)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id",
+                    "WITH ev AS (
+                       INSERT INTO issue_events (issue_id, seq, kind, origin, actor_id, actor_kind,
+                                                 proposer_id, approver_id, on_behalf_of_id, delegation_id,
+                                                 agent_client_id, operation_request_id, command_execution_id,
+                                                 changeset_id, changeset_version, execution_id, op_id,
+                                                 note_id, payload)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                       RETURNING id, issue_id, kind, payload, at
+                     ), projected AS (
+                       INSERT INTO issue_field_changes (event_id, issue_id, field_key, old_ref, new_ref, at)
+                       SELECT ev.id, ev.issue_id, r.field_key, r.old_ref, r.new_ref, ev.at
+                       FROM ev, issue_field_change_rows(ev.kind, ev.payload) r
+                     )
+                     SELECT id FROM ev",
                 )
                 .bind(id)
                 .bind(base + 1 + n as i64)
@@ -3563,8 +3657,8 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     sqlx::query(
         "INSERT INTO issues (id, project_id, tracker_id, status_id, subject, description, author_id,
                              created_on_behalf_of_id, assigned_to_id, priority_id, fixed_version_id,
-                             start_date, due_date, is_private, last_event_seq)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+                             start_date, due_date, is_private, last_event_seq, estimated_hours)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::numeric)",
     )
     .bind(w.id)
     .bind(w.project_id)
@@ -3583,6 +3677,7 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     // Every event of a new issue is known now, so its single INSERT sets the
     // final sequence and the outbox trigger fires once (§6.9).
     .bind(w.events.len() as i64)
+    .bind(v(Key::EstimatedHours).as_str().map(String::from))
     .execute(&mut *conn)
     .await?;
     let key = format!("{pkey}-{number}");
@@ -3602,6 +3697,7 @@ async fn update_issue(conn: &mut PgConnection, w: &Work, last_event_seq: i64) ->
     sqlx::query(
         "UPDATE issues SET status_id = $2, subject = $3, description = $4, assigned_to_id = $5,
                 priority_id = $6, fixed_version_id = $7, start_date = $8, due_date = $9,
+                estimated_hours = $11::numeric,
                 lock_version = lock_version + 1, last_event_seq = $10, updated_at = now()
          WHERE id = $1",
     )
@@ -3615,6 +3711,7 @@ async fn update_issue(conn: &mut PgConnection, w: &Work, last_event_seq: i64) ->
     .bind(json_date(&v(Key::StartDate)))
     .bind(json_date(&v(Key::DueDate)))
     .bind(last_event_seq)
+    .bind(v(Key::EstimatedHours).as_str().map(String::from))
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -3704,6 +3801,38 @@ mod tests {
         assert_eq!(Key::parse("cf:x"), None);
         assert_eq!(Key::parse("status_id"), None);
         assert_eq!(Key::parse("author_id"), None);
+    }
+
+    #[test]
+    fn estimated_hours_values() {
+        assert_eq!(estimated_hours("1.50").as_deref(), Ok("1.5"));
+        assert_eq!(estimated_hours("0.00").as_deref(), Ok("0"));
+        assert_eq!(estimated_hours("-0").as_deref(), Ok("0"));
+        assert_eq!(estimated_hours("99999.99").as_deref(), Ok("99999.99"));
+        assert_eq!(estimated_hours("100000"), Err(Some("out_of_range")));
+        assert_eq!(estimated_hours("-1"), Err(Some("out_of_range")));
+        assert_eq!(estimated_hours("1.255"), Err(Some("too_many_decimals")));
+        assert_eq!(estimated_hours("1.250").as_deref(), Ok("1.25"));
+        assert_eq!(estimated_hours("1e2"), Err(None));
+        // Beyond canonical_number's length limits: decided by value.
+        assert_eq!(
+            estimated_hours("1.123456789012"),
+            Err(Some("too_many_decimals"))
+        );
+        assert_eq!(estimated_hours("1.00000000000").as_deref(), Ok("1"));
+        assert_eq!(
+            estimated_hours("123456789012345678901"),
+            Err(Some("out_of_range"))
+        );
+        assert_eq!(estimated_hours("000000000000000000001").as_deref(), Ok("1"));
+        assert_eq!(estimated_hours("1."), Err(None));
+        assert_eq!(estimated_hours(".5"), Err(None));
+        assert_eq!(estimated_hours("-"), Err(None));
+        assert_eq!(estimated_hours("+1"), Err(None));
+        assert_eq!(estimated_hours("-0.00").as_deref(), Ok("0"));
+        assert_eq!(estimated_hours(""), Err(None));
+        assert_eq!(Key::parse("estimated_hours"), Some(Key::EstimatedHours));
+        assert_eq!(Key::EstimatedHours.name(), "estimated_hours");
     }
 
     #[test]

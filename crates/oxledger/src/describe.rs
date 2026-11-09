@@ -61,8 +61,9 @@ pub struct FieldSchema {
     /// Display name (custom fields).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a
-    /// custom field type (int, float, date, string, text, list, user, bool, link).
+    /// string | text | date | decimal | principal_ref | priority_ref | status_ref |
+    /// version_ref, or a custom field type (int, float, date, string, text, list, user,
+    /// bool, link). `decimal` values are decimal strings.
     #[serde(rename = "type")]
     pub field_type: String,
     /// The field definition itself is required (workflow rules are per status:
@@ -295,6 +296,16 @@ fn builtin_fields(project: Uuid) -> Vec<Builtin> {
             false,
             None,
             Some(format!("/api/v1/projects/{project}/versions?status=open")),
+        ),
+        // Design 05 §3.10.3: hours as a decimal string, e.g. "1.5".
+        (
+            "estimated_hours",
+            "decimal",
+            false,
+            Some(
+                json!({"min": "0", "max": crate::commands::MAX_ESTIMATED_HOURS, "max_decimals": 2}),
+            ),
+            None,
         ),
     ]
 }

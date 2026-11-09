@@ -474,6 +474,11 @@ async fn redact_locked(
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
+            // Design 05 §2.2: a redacted change cannot be filtered on (ever_in).
+            sqlx::query("DELETE FROM issue_field_changes WHERE event_id = $1")
+                .bind(at.row)
+                .execute(&mut *tx)
+                .await?;
             id
         }
         Target::VersionEvent { .. } => {
