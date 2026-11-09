@@ -7,13 +7,18 @@
 	import { api } from '$lib/api';
 	import { counts } from '$lib/counts.svelte';
 	import { prefs, savePrefs } from '$lib/prefs.svelte';
-	import { fmtShort, fmtValue, fieldLabel } from '$lib/format';
+	import { fmtShort } from '$lib/format';
+	import { session } from '$lib/session.svelte';
+	import { labelOf, show, type Lookups } from '$lib/render';
+	import { projectLookups } from '$lib/trackers';
 
 	type Row = ActivityItem & { agent: string; agentId: string };
 
 	const issueKey = $derived(page.url.pathname.startsWith('/issue/') ? decodeURIComponent(page.params.key ?? '').toUpperCase() : null);
 	let rows = $state<Row[]>([]);
 	let loading = $state(false);
+	// Names for field keys and ids in the diffs (§15.3: names, not ids).
+	let look = $state<Lookups>({ fields: [], assignees: [], versions: [] });
 
 	const agents = $derived.by(() => {
 		const m = new Map<string, string>();
@@ -42,11 +47,20 @@
 			)
 		).then((all) => {
 			if (my !== seq) return;
-			rows = all
+			const shown = all
 				.flat()
 				.sort((a, b) => b.at.localeCompare(a.at))
 				.slice(0, key ? 20 : 8);
-			loading = false;
+			const prefixes = new Set(shown.flatMap((r) => r.keys.map((k) => k.split('-')[0])));
+			const pids = session.projects.filter((p) => prefixes.has(p.key)).map((p) => p.id);
+			projectLookups(pids)
+				.catch(() => ({ fields: [], assignees: [], versions: [] }) as Lookups)
+				.then((l) => {
+					if (my !== seq) return;
+					look = l;
+					rows = shown;
+					loading = false;
+				});
 		});
 	});
 
@@ -107,7 +121,7 @@
 							<div style="font-size:12.5px">
 								{#each r.keys as k (k)}<a class="key" href="/issue/{k}">{k}</a> {/each}
 								{#each r.diff.slice(0, 3) as d (d.key + d.field)}
-									<div class="diff">{fieldLabel(d.field)}：<span class="old">{fmtValue(d.before)}</span><span class="arrow">→</span><span class="new">{fmtValue(d.after)}</span></div>
+									<div class="diff">{labelOf(d.field, look)}：<span class="old">{show(d.field, d.before, look)}</span><span class="arrow">→</span><span class="new">{show(d.field, d.after, look)}</span></div>
 								{/each}
 							</div>
 						</div>

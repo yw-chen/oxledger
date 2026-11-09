@@ -284,3 +284,10 @@ date	stage	decision	why	alternatives	source
 2026-11-09	P1-F5	操作表預設全部「直接寫入」（D20），可改「需要核准」或「不允許」；update_fields 可展開到每個欄位；送出時 off 的不放進 proposal_ops／writable_fields，review 寫進 policies	§16.10	—	src/routes/agents/new/+page.svelte
 2026-11-09	P1-F5	token 只放在元件記憶體，不進 URL、localStorage、log；MCP 設定的 url 用目前頁面的 origin + /mcp（開發時 vite 也代理 /mcp）	§15.2	—	src/lib/components/TokenOnce.svelte
 2026-11-09	P1-F5	事故回復：建議先暫停；只自動執行 automatic 且不需選擇的項目，一筆一個 undo（新到舊、各自冪等、各自結果）；需要選擇的列出來逐筆打開	§16.7	全部批次	src/routes/agents/[id]/activity/+page.svelte
+2026-11-09	P1-F6	「規劃（心智圖）」分頁第一版只顯示「第一版不提供」，不做任何編輯器	02 範圍、01 §15.1	隱藏分頁	src/routes/project/[key]/[[tab]]/+page.svelte
+2026-11-09	P1-F6	分頁設定整份取代：上下移、改標題、隱藏、增刪查詢／連結分頁；新分頁要先儲存才能設成預設（還沒有 id）	PUT tabs 要求整份與 lock_version	拖拉排序	src/routes/project/[key]/settings/+page.svelte
+2026-11-09	P1-F6	里程碑改日期／狀態前先打 impact 預覽，顯示會晚於新日期的未完成單數；儲存帶 lock_version，衝突時重載	§17.8	儲存後才顯示	src/lib/components/Milestones.svelte
+2026-11-09	P1-F6	時程長條只有一端日期時畫成一天；沒有日期的單不畫，只在泳道標題列出張數	§17.8 不臆測日期	用建立日推估	src/lib/components/Timeline.svelte
+2026-11-09	P1-F6	開發分頁與 repo 連動：GitHub 文字照原文顯示；App 讀不到的 repo 顯示「資料停在 <同步時間>」；解除連動要確認	§19.7	—	src/lib/components/DevTab.svelte
+2026-11-09	P1-F6	/admin/github 只管「可連動」開關；安裝／移除 App 指引到 GitHub 操作	§19.3	在 oxledger 內做安裝流程	src/routes/admin/github/+page.svelte
+2026-11-09	P1-F6	右欄「動態」的 diff 跟活動頁一樣用專案 schema／成員／里程碑換成名稱（原本顯示 cf:2 與 {"float":"5"}）	§15.3	—	src/lib/components/Collab.svelte
