@@ -869,6 +869,16 @@ async fn check_evidence(
 }
 
 async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
+    // Contract 05 §3.5.4: deleting time is for people only (T-M1-38), refused
+    // before any policy.
+    if parsed.deletes_time() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "delete_time_entry is not among an agent's commands",
+        )
+        .with_details(json!({"path": "ops[0].kind"}))
+        .into());
+    }
     if let Some(cmd) = parsed.version_cmd() {
         return crate::versions::cmd_project(&mut *conn, cmd)
             .await?
@@ -886,6 +896,9 @@ async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
         return Err(api(ErrorCode::NotFound, "no such issue"));
     }
     projects.extend(rows.iter().map(|r| r.1));
+    if parsed.has_time() {
+        projects.extend(crate::time_entries::cmd_projects(&mut *conn, &parsed.time_cmds()).await?);
+    }
     let mut it = projects.into_iter();
     match (it.next(), it.next()) {
         (Some(p), None) => Ok(p),
@@ -1136,6 +1149,10 @@ pub enum SubmitResult {
         /// A version document's result (§17.9a).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         versions: Vec<commands::VersionEffect>,
+        /// Time entries written (ids and lock versions only, contract 05
+        /// §3.5.4: the fields are read with `time_list`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        time_entries: Vec<crate::time_entries::TimeEntryEffect>,
         search: commands::SearchReceipt,
         next_actions: Vec<NextAction>,
     },
@@ -1332,6 +1349,7 @@ async fn agent_write_tx(
                 execution_id: c.execution_id,
                 effects: c.effects,
                 versions: serde_json::from_value(r["versions"].clone()).unwrap_or_default(),
+                time_entries: c.time_entries,
                 search: c.search,
                 next_actions: Vec::new(),
             });
@@ -1572,6 +1590,12 @@ async fn agent_direct(
         vw,
     )
     .await?;
+    let logs = parsed
+        .time_cmds()
+        .iter()
+        .filter(|c| matches!(c, crate::time_entries::TimeCmd::Log { .. }))
+        .count() as i64;
+    quota::reserve_time(&mut *conn, who.agent, logs).await?;
     let ectx = EvalCtx {
         mode: Mode::AgentDirect,
         caller,
@@ -1648,7 +1672,9 @@ async fn agent_direct(
         sim.version.as_ref().map(|p| (p.id, p.created)),
     )
     .await?;
+    quota::record_time(&mut *conn, who.agent, who.context, deleg.id, logs).await?;
     let versions: Vec<commands::VersionEffect> = sim.version.iter().map(|p| p.effect()).collect();
+    let time_entries = sim.time.as_ref().map(|t| t.effects()).unwrap_or_default();
     commands::complete_request(
         &mut *conn,
         request_id,
@@ -1656,6 +1682,7 @@ async fn agent_direct(
             "execution_id": execution_id,
             "consistent_after": consistent_after,
             "versions": versions,
+            "time_entries": time_entries,
             "effects": effects.iter().map(|e| json!({
                 "issue_id": e.issue_id, "lock_version": e.lock_version,
                 "changed": e.changed, "created": e.created,
@@ -1678,6 +1705,7 @@ async fn agent_direct(
             .filter(|e| visible.contains_key(&e.issue_id))
             .collect(),
         versions,
+        time_entries,
         search: commands::SearchReceipt { consistent_after },
         next_actions: Vec::new(),
     })
@@ -3896,8 +3924,9 @@ async fn apply_tx(
     let item_results = json!({
         "items": sim.items.iter().map(|i: &ItemResult| json!({
             "op_id": i.op_id, "status": i.status, "issue_id": i.issue_id,
-            "version_id": i.version_id})).collect::<Vec<_>>(),
+            "version_id": i.version_id, "time_entry_id": i.time_entry_id})).collect::<Vec<_>>(),
         "versions": sim.version.iter().map(|p| p.effect()).collect::<Vec<_>>(),
+        "time_entries": sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
         "effects": effects.iter().map(|e| json!({
             "issue_id": e.issue_id, "lock_version": e.lock_version,
             "changed": e.changed, "created": e.created})).collect::<Vec<_>>(),
@@ -3911,7 +3940,11 @@ async fn apply_tx(
     .bind(exec_id)
     .bind(
         (effects.iter().filter(|e| e.changed).count()
-            + sim.version.iter().filter(|p| p.effect().changed).count()) as i32,
+            + sim.version.iter().filter(|p| p.effect().changed).count()
+            + sim
+                .time
+                .as_ref()
+                .map_or(0, |t| t.effects().iter().filter(|e| e.changed).count())) as i32,
     )
     .execute(&mut *conn)
     .await?;

@@ -56,3 +56,19 @@
 - **既有委派不會多出 `triage_decide`**：`proposal_ops` 與命令政策不變；委派頁的「新操作」會列出 `triage_decide`，委派人自己決定要不要加。新委派預設 direct。
 - `issues` 多一個唯一限制 `issues_id_project_uq (id, project_id)`（契約 R25）；建索引時會短暫鎖 `issues`，大表升級請排在離峰。
 - 四個 CHECK 用聯集重建：`delegation_command_policies_command_kind_check`、`delegations_proposal_ops_check`、`changeset_version_ops_kind_check` 加 `triage_decide`；`project_setting_events_kind_check` 加 `triage_settings_updated`。
+
+## 0023_time_tracking（M1.4，工時）
+
+- **升級後要重建 agent 工作脈絡。**
+  - 0023 照 Redmine 預設把 M1 新權限給內建角色（使用者 2026-11-10 決定）：Manager 拿全部 7 個（`view_time_entries`、`log_time`、`edit_time_entries`、`edit_own_time_entries`、`log_time_for_other_users`、`triage_issues`、`manage_public_views`），Developer 與 Reporter 拿 `view_time_entries`、`log_time`。
+  - 授權寫成一個 `INSERT`，0010 的 epoch trigger 讓**每個專案的 `security_epoch` 恰好加一**。
+  - 所以升級前建立的 agent 工作脈絡全部失效：agent 的請求回 `context_unavailable`（`details.kind = "quarantined"`）。
+  - 要做的事：委派人在設定頁為每個 agent 開新的工作脈絡，重新發 token。舊的委派、政策與歷史都還在，不用重設。
+- 角色用名稱找（`Manager`、`Developer`、`Reporter`，非 built-in）。改過名的角色拿不到，要由管理員手動加（加的時候同樣會讓 agent 工作脈絡失效）。
+- **Non member、Anonymous 不給 `view_time_entries`**（和 Redmine 預設不同，待使用者決定）。公開專案的非成員看不到工時。
+- **每個既有專案都啟用 `time_tracking` 模組**（這一步不另外 bump epoch）。不想用工時的專案，由專案管理員在工時設定關掉。
+- 新增 5 個活動類別（開發〔預設〕、設計、測試、會議、其他）；每個專案一列 `project_time_settings`，之後新建的專案由 trigger 自動補。
+- 組織工時規則預設：每日上限 0（不限）、可記 0 小時、可記未來日期、可記已關閉的單、不要求 issue、不要求說明。
+- **既有委派不會多出工時操作**：`proposal_ops` 與命令政策不變，`read_own_time` 是 `false`。委派頁的「新操作」會列出 `log_time`、`update_time_entry`；新委派這兩個預設「需要核准」。
+- 新增 SQL 函式 `time_role_visibility(project, viewer)`（只看角色）與 `time_visibility(project, viewer)`（工時模組開著才回前者），讀取與寫入都靠它判斷工時可見性。
+- 四個 CHECK 用聯集重建：`delegation_command_policies_command_kind_check`、`delegations_proposal_ops_check`、`changeset_version_ops_kind_check` 加 `log_time`、`update_time_entry`（`delete_time_entry` 只給人，不在 agent 清單）；`agent_write_log_kind_check` 加 `time_write`。

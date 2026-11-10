@@ -39,6 +39,8 @@ pub mod limits {
     pub const VERSION_CREATES_PER_HOUR: i64 = 10;
     /// §17.9a: agent writes to one version per 10 minutes (more trips the breaker).
     pub const VERSION_WRITES_PER_10_MIN: i64 = 5;
+    /// Contract 05 §4.3: time entries an agent logs per hour.
+    pub const LOG_TIME_PER_HOUR: i64 = 20;
     /// §8.9: validate per delegation per hour.
     pub const VALIDATES_PER_HOUR: i64 = 120;
     /// §8.9: proposal writes of one delegation running at the same time.
@@ -47,6 +49,43 @@ pub mod limits {
     pub const RAW_PAYLOAD_BYTES: usize = 768 * 1024;
     /// §8.9: the normalized command document (canonical JSON bytes).
     pub const NORMALIZED_BYTES: usize = 512 * 1024;
+}
+
+/// Contract 05 §4.3: at most [`limits::LOG_TIME_PER_HOUR`] entries an hour
+/// (checked after [`reserve_direct`], which holds the agent row).
+pub async fn reserve_time(conn: &mut PgConnection, agent: Uuid, logs: i64) -> Result<()> {
+    if logs > 0
+        && count(conn, BY_AGENT, agent, "time_write", 3600).await? + logs
+            > limits::LOG_TIME_PER_HOUR
+    {
+        return Err(quota_exceeded(
+            "log_time_per_hour",
+            limits::LOG_TIME_PER_HOUR,
+        ));
+    }
+    Ok(())
+}
+
+/// Counts `logs` new time entries for [`reserve_time`].
+pub async fn record_time(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+    logs: i64,
+) -> Result<()> {
+    for _ in 0..logs {
+        sqlx::query(
+            "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+             VALUES ($1, $2, $3, 'time_write')",
+        )
+        .bind(agent)
+        .bind(context)
+        .bind(delegation)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 /// A version document's part in the counters (§17.9a).

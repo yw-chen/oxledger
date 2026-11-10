@@ -21,7 +21,7 @@ use axum::extract::{ConnectInfo, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -157,6 +157,22 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             "/projects/{id}/triage-settings",
             get(triage_settings_get).put(triage_settings_put),
         )
+        .route("/time-entries", get(time_list))
+        .route("/time-entries/summary", get(time_summary))
+        .route("/time-entries/{id}", get(time_get))
+        .route("/time-entries/{id}/events", get(time_events))
+        .route("/me/timesheet", get(time_sheet))
+        .route("/time-activities", get(time_activities))
+        .route("/admin/time-activities", put(time_activities_put))
+        .route(
+            "/projects/{id}/time-activities",
+            get(time_project_settings).put(time_project_settings_put),
+        )
+        .route("/projects/{id}/time-users", get(time_users))
+        .route(
+            "/org/timelog-settings",
+            get(timelog_settings_get).put(timelog_settings_put),
+        )
         .route("/triage", get(triage_mine))
         .route("/triage/counts", get(triage_counts))
         .route("/views", get(views_list).post(views_create))
@@ -190,6 +206,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             "/projects/{id}/setting-events/{event_id}/redact",
             post(redact_setting_event),
         )
+        .route("/time-entries/{id}/redact", post(redact_time_entry))
         .route("/issues/{key}/dev", get(issue_dev))
         .route("/admin/github", get(admin_github_get).put(admin_github_put))
         .route(
@@ -235,6 +252,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             get(list_delegations).post(create_delegation),
         )
         .route("/delegations/{id}/revoke", post(revoke_delegation))
+        .route(
+            "/delegations/{id}/read-own-time",
+            put(delegation_read_own_time),
+        )
         .route(
             "/delegations/{id}/policies",
             get(delegation_policies).put(set_delegation_policies),
@@ -917,7 +938,7 @@ pub struct Capabilities {
 }
 
 /// See [`Capabilities::command_features`]; later M1 stages add theirs.
-pub const COMMAND_FEATURES: &[&str] = &["estimated_hours", "triage_decide"];
+pub const COMMAND_FEATURES: &[&str] = &["estimated_hours", "triage_decide", "log_time"];
 
 #[derive(Serialize, JsonSchema)]
 pub struct SessionData {
@@ -978,8 +999,15 @@ pub struct DelegationBody {
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
-    /// Modes inside the ceiling (§16.3); unlisted commands and fields are direct.
+    /// Modes inside the ceiling (§16.3); unlisted commands and fields are
+    /// direct, except `log_time` and `update_time_entry` (review, contract 05 §4.3).
     pub policies: Option<agents::PolicyInput>,
+    /// Contract 05 §3.5.4 A1: let the agent read your own time (default false).
+    #[serde(default)]
+    pub read_own_time: Option<bool>,
+    /// Required with `read_own_time: true` (the §6.14 warning was acknowledged).
+    #[serde(default)]
+    pub read_own_time_ack: Option<bool>,
 }
 
 pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
@@ -1424,6 +1452,198 @@ async fn setting_events(
         ctx,
         &id,
         q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- time (design 05 §3.5, M1.4)
+
+fn time_query(q: &HashMap<String, String>) -> Result<crate::time_reports::ListQuery, ApiFailure> {
+    let activity = match q.get("activity") {
+        None => None,
+        Some(a) => Some(a.parse::<Uuid>().map_err(|_| {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "activity is an activity id")
+                    .with_details(json!({"path": "activity"}))
+                    .into(),
+            )
+        })?),
+    };
+    Ok(crate::time_reports::ListQuery {
+        project: q.get("project").cloned(),
+        issue: q.get("issue").cloned(),
+        user: q.get("user").cloned(),
+        activity,
+        from: q.get("from").cloned(),
+        to: q.get("to").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(q, "limit")?.map(|l| l.clamp(1, 200) as u32),
+    })
+}
+
+async fn time_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lq = time_query(&q)?;
+    Ok(ok(crate::time_reports::list(&st.app, ctx, &lq).await?))
+}
+
+async fn time_summary(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let sq = crate::time_reports::SummaryQuery {
+        project: q.get("project").cloned(),
+        from: q.get("from").cloned(),
+        to: q.get("to").cloned(),
+        group_by: q.get("group_by").cloned(),
+        user: q.get("user").cloned(),
+        issue: q.get("issue").cloned(),
+    };
+    Ok(ok(crate::time_reports::summary(&st.app, ctx, &sq).await?))
+}
+
+async fn time_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::get(&st.app, ctx, &id).await?))
+}
+
+async fn time_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::events(&st.app, ctx, &id).await?))
+}
+
+async fn time_sheet(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::timesheet(
+        &st.app,
+        ctx,
+        q.get("week").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn time_activities(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::activities(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn time_activities_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::time_reports::ActivitiesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::put_site_activities(
+        &st.app, ctx, &body,
+    )
+    .await?))
+}
+
+async fn time_project_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::time_reports::project_settings(&st.app, ctx, &id).await?
+    ))
+}
+
+async fn time_project_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::time_reports::ProjectTimePut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::put_project_settings(
+        &st.app, ctx, &id, &body,
+    )
+    .await?))
+}
+
+async fn time_users(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::time_users(&st.app, ctx, &id).await?))
+}
+
+async fn timelog_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::time_reports::timelog_settings(&st.app, ctx).await?
+    ))
+}
+
+async fn timelog_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::time_reports::TimelogSettingsPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::put_timelog_settings(
+        &st.app, ctx, &body,
+    )
+    .await?))
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadOwnTimeBody {
+    pub enabled: bool,
+    /// Required (true) when enabling: the §6.14 warning was acknowledged.
+    #[serde(default)]
+    pub ack: bool,
+}
+
+async fn delegation_read_own_time(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<ReadOwnTimeBody>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::set_read_own_time(
+        &st.app.pool,
+        &st.cfg.session,
+        &ctx,
+        id_param(&id)?,
+        b.enabled,
+        b.ack,
     )
     .await?))
 }
@@ -1889,6 +2109,25 @@ async fn redact_setting_event(
     .await
 }
 
+async fn redact_time_entry(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let entry =
+        id_param(&id).map_err(|_| ApiFailure(api(ErrorCode::NotFound, "no such time entry")))?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::TimeEntry { entry },
+        &body,
+    )
+    .await
+}
+
 async fn issue_dev(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
@@ -2132,6 +2371,8 @@ async fn create_delegation(
             max_ops: b.max_ops,
             expires_in_days: b.expires_in_days,
             policies: b.policies,
+            read_own_time: b.read_own_time.unwrap_or(false),
+            read_own_time_ack: b.read_own_time_ack.unwrap_or(false),
         },
     )
     .await?;

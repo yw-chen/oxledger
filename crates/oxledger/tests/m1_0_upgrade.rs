@@ -239,7 +239,7 @@ async fn m1_0_upgrade_with_data() {
             .unwrap();
 
     // ------------------------------------------------ 0019, 0020 (the files)
-    db::MIGRATOR.run(&pool).await.unwrap();
+    db::MIGRATOR.run_to(20, &pool).await.unwrap();
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE version > 18 ORDER BY 1")
             .fetch_all(&pool)

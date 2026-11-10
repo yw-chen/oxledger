@@ -349,3 +349,25 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	snooze 下限給 1 分鐘寬限（≥ 59 分鐘）	獨立驗證 2b：client 算的「現在＋1 小時」送到時已不足 1 小時	嚴格 1 小時	crates/oxledger/src/commands.rs
 2026-11-10	M1	Triage 設定只驗證這次有改的欄位；失效的既有值改回 warnings（responsible_invalid、decline_status_invalid）；DB trigger 也只在欄位變更時檢查	獨立驗證 2c：失效值不該擋關閉 Triage 等其他修改	每次全驗（修正前）	crates/oxledger/src/triage.rs;migrations/0022_triage.sql
 2026-11-10	M1	undo decline／duplicate 後單回收件匣但狀態仍是 done（transition 另外還原）	獨立驗證 2d：照契約，transition 是 undo 的另一項	triage undo 連帶還原狀態	docs/impl/m1-checklist.md
+2026-11-10	M1	0023 一次給內建角色 M1 權限：Manager 全 7 個，Developer／Reporter 給 view_time_entries、log_time；單一 INSERT 只 bump 一次 epoch	使用者 2026-11-10 決定（照 Redmine 預設）	分散在 M1.3／M1.4 各給（多次 bump）	migrations/0023_time_tracking.sql;docs/impl/upgrade-notes.md
+2026-11-10	M1	Non member／Anonymous 不給 view_time_entries（待使用者決定）	公開專案非成員會看到全部人的工時（visibility 預設 all），影響隱私，無合理預設	照 Redmine 給	migrations/0023_time_tracking.sql
+2026-11-10	M1	既有專案一律啟用 time_tracking 模組，期間停用模組 epoch trigger	Redmine 預設模組含工時；epoch 只因授權 +1	不啟用，等專案自己開	migrations/0023_time_tracking.sql
+2026-11-10	M1	工時回執放獨立的 time_entries 陣列（每項 kind: time_entry），不混進 effects	effects 既有元素是 issue 形狀，混入會壞既有 client	照契約放進 effects	crates/oxledger/src/commands.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	agent 的 log_time 回執只給 id 與 lock_version，不論 read_own_time	§3.5.4 只要求關時不給；開時也用 time_list 讀，行為單純	開時回完整欄位	crates/oxledger/src/time_entries.rs
+2026-11-10	M1	spent_on 省略用組織今天；activity 省略用預設，沒有預設回 required_field_missing(activity_id)	Redmine 行為；不猜活動	一律必填	crates/oxledger/src/time_entries.rs
+2026-11-10	M1	新表 project_time_settings 放專案工時設定的 lock_version；PUT 可帶 module_enabled	§3.5.3 的 PUT 要 lock_version，沒有現成列可放	放在 projects	migrations/0023_time_tracking.sql;crates/oxledger/src/time_reports.rs
+2026-11-10	M1	日上限預設 0（不限）；log_time 配額 20 次／小時只算 direct 寫入	同 Redmine 預設；送審的提案已有人把關	預設 24；送審也計	migrations/0023_time_tracking.sql;crates/oxledger/src/quota.rs
+2026-11-10	M1	read_own_time 另開 PUT /delegations/{id}/read-own-time；開關都 policy_version+1 並要 step-up；API 預設 false 且開時要 ack	契約 §2.5（委派設定變更）；獨立驗證撤回原本「不 bump」	不 bump（原做法）；併進 policies PUT	crates/oxledger/src/agents.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	工時受眾檢查錯誤 kind 用 private_destination；時數 0 寫成 "0"，其他兩位小數	沿用 §3.8 的目的地錯誤分類	新 kind time_audience	crates/oxledger/src/audience.rs;crates/oxledger/src/time_entries.rs
+2026-11-10	M1	封存 issue 上的工時看不到；REST 工時讀取只給人，agent 只能 MCP time_list	和 issue 可見性一致；§3.5.4 agent 範圍	封存單的工時照列	crates/oxledger/src/time_reports.rs
+2026-11-10	M1	spent_hours 開放為 Filter 欄位（number，不可排序）；觀看者放在 Filter::Cond 的明確欄位 viewer（applies 維持 True）；agent 回 invalid_argument(unavailable_to_agent)（待使用者確認）	M1.4 任務說明要開 Filter；契約 §3.2 沒列；觀看者塞在 applies 會被當 gate	不開 Filter（契約字面）；觀看者放 applies（原做法）	crates/ox-core/src/filter.rs;crates/oxledger/src/filter.rs;crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	issue 詳情的 spent_hours 讀不到工時時省略欄位；get fields 時為 null	和 skip_serializing 的既有選填欄位一致	一律回 null	crates/oxledger/src/service.rs;crates/oxledger/src/issue_view.rs
+2026-11-10	M1	工時 undo：建立的軟刪除、欄位直接放回前值不重驗；issue_id／user_id 回 not_supported；改欄位的還原要能改那筆；agent 建立且沒人改過的（user_id＝undo 的人）只要 log_time（待使用者確認）；只標實際寫回的欄位 reverted_by	前值當時合法；Developer 預設沒有 edit_own_time_entries（Redmine loader.rb 未查證：無原始碼）	一律要編輯權限；走完整命令驗證	crates/oxledger/src/undo.rs;crates/oxledger/src/time_entries.rs
+2026-11-10	M1	工時說明遮蔽：只換掉事件中 comments 的值；衍生副本整個前後值換標記	保留時數歷史；副本照 02 §16.7 規則	整個事件 payload 換標記	crates/oxledger/src/redaction.rs
+2026-11-10	M1	待審佇列：log_time 說明 ≤80 字可勾選；update_time_entry 不可；沒有 issue 的 log_time 沒有 diff 列	§4.3；DiffTarget 需要 issue	改 DiffTarget 形狀	crates/oxledger/src/review_queue.rs
+2026-11-10	M1	MCP 描述只加工時相關句子；agent_chain、describe_form／validate 句子等 M1.9／M1.5	避免 agent 找不存在的工具	照 §4.2 全加	crates/oxledger/src/mcp.rs
+2026-11-10	M1	Non member／Anonymous 維持不給 view_time_entries（待使用者確認）	獨立驗證後維持原預設；公開專案非成員會看到全部工時	照 Redmine 給	migrations/0023_time_tracking.sql
+2026-11-10	M1	遮蔽後改 comments 清掉 redacted_at（可再遮蔽）；已軟刪除的工時也可遮蔽	獨立驗證 D2、D6：新文字不是遮蔽過的內容；刪除的事件仍留文字	遮蔽一次後鎖住 comments	crates/oxledger/src/time_entries.rs;crates/oxledger/src/redaction.rs
+2026-11-10	M1	日合計逐列鎖（(user, day) 排序）；混合文件在 field option 與 search token 前先鎖日合計	§3.5.5；獨立驗證 D5	一個 SELECT ORDER BY … FOR UPDATE（原做法）	crates/oxledger/src/time_entries.rs;crates/oxledger/src/commands.rs
+2026-11-10	M1	update／delete 看不到的工時一律 not_found，先於 module_disabled；0023 拆出 time_role_visibility（不看模組）	獨立驗證 D7(3)：錯誤不洩漏存在；看得到的人仍知道模組關了	模組關了一律 not_found	crates/oxledger/src/time_entries.rs;migrations/0023_time_tracking.sql
+2026-11-10	M1	日上限錯誤對 agent 一律不帶 remaining；/me/timesheet 只列啟用工時模組的專案	獨立驗證 D1、D7(1)：委派者的當日合計跨專案	agent 有 read_own_time 時給	crates/oxledger/src/time_entries.rs;crates/oxledger/src/time_reports.rs

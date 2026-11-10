@@ -19,7 +19,7 @@ use super::{
     ASSIGNEE_FIELD, AUTHOR_FIELD, CATEGORY_FIELD, CREATED_FIELD, DUE_FIELD, ESTIMATED_FIELD,
     ON_BEHALF_FIELD, PRIORITY_FIELD, PRIVATE_FIELD, PROJECT_FIELD, START_FIELD, STATUS_FIELD,
     TRACKER_FIELD, TRIAGE_FIELD, TRIAGE_SELF_FIELD, UPDATED_FIELD, VERSION_FIELD, builtin_cond,
-    operators, readable_fields,
+    operators, readable_fields, spent_cond,
 };
 use crate::auth::AuthContext;
 use crate::commands::canonical_number;
@@ -82,14 +82,15 @@ pub enum WhereInput {
 /// `"YYYY-MM-DD"` or `{"rel": "today", "offset": -3}` for dates; `within`
 /// takes `{"range": "this_week"|"last_week"|"next_week"|"this_month"|
 /// "last_month"|"last_n_days"|"next_n_days", "n"?: 1–366}`; decimal strings
-/// for estimated_hours; status_category `todo`/`doing`/`done`/`open`;
+/// for estimated_hours and spent_hours; status_category `todo`/`doing`/`done`/`open`;
 /// custom fields `{"list": "<option id>"}`, `{"user": "<id>"}`,
 /// `{"int": "12"}`, `{"date": "…"}`, … or plain values as in `filter`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct WhereCond {
     /// project, tracker, priority, status, status_category, assignee, author,
     /// fixed_version, is_private, start_date, due_date, created_at,
-    /// updated_at, estimated_hours, overdue, or cf:<custom field id>.
+    /// updated_at, estimated_hours, spent_hours (people only), overdue, or
+    /// cf:<custom field id>.
     pub field: String,
     pub op: WhereOp,
     /// eq/ne/lt/le/gt/ge: one value; in/not_in/ever_in: an array;
@@ -454,6 +455,8 @@ enum Fk {
     /// created_at / updated_at.
     Day(i32),
     Estimated,
+    /// Contract 05 §3.5.4: the time the caller can see (people only).
+    Spent,
     Overdue,
     /// Contract 05 §3.4: the triage state.
     Triage,
@@ -549,6 +552,11 @@ pub const BUILTIN_FIELDS: &[(&str, &str, &[WhereOp])] = &[
             O::NotNull,
         ],
     ),
+    (
+        "spent_hours",
+        "number",
+        &[O::Eq, O::Ne, O::Lt, O::Le, O::Gt, O::Ge, O::Between],
+    ),
     ("overdue", "bool", &[O::Eq]),
     ("triage", "enum", &[O::Eq, O::In]),
     ("triage_self_decided", "bool", &[O::Eq]),
@@ -580,6 +588,7 @@ fn builtin_kind(name: &str) -> Option<Fk> {
         "created_at" => Fk::Day(CREATED_FIELD),
         "updated_at" => Fk::Day(UPDATED_FIELD),
         "estimated_hours" => Fk::Estimated,
+        "spent_hours" => Fk::Spent,
         "overdue" => Fk::Overdue,
         "triage" => Fk::Triage,
         "triage_self_decided" => Fk::TriageSelf,
@@ -915,6 +924,15 @@ async fn resolve_cond(
             (b.0.to_string(), b.2.iter().map(|o| o.as_str()).collect())
         }
     };
+    // Contract 05 §4 / R-VD7: agents get no spent_hours.
+    if kind == Fk::Spent && cx.caller.user_id().is_none() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidArgument,
+            format!("{fpath}: spent_hours is not available to agents"),
+        )
+        .with_details(json!({"path": fpath, "reason": "unavailable_to_agent"}))
+        .into());
+    }
     if !ops.contains(&op.as_str()) {
         return Err(ferr(
             &format!("{path}.op"),
@@ -1083,7 +1101,7 @@ async fn resolve_cond(
                 cond_json(&canonical, op, Some(norm)),
             ))
         }
-        Fk::Estimated => {
+        Fk::Estimated | Fk::Spent => {
             let num = |v: &Json, p: &str| -> Result<(Value, Json)> {
                 let s = match v {
                     Json::String(s) => s.trim().to_string(),
@@ -1118,10 +1136,11 @@ async fn resolve_cond(
                     (Test::Cmp(cmp_of(op), v), j)
                 }
             };
-            Ok((
-                built(path, builtin_cond(ESTIMATED_FIELD, test))?,
-                cond_json(&canonical, op, Some(norm)),
-            ))
+            let f = match (kind, cx.caller.user_id()) {
+                (Fk::Spent, Some(me)) => spent_cond(me, test),
+                _ => builtin_cond(ESTIMATED_FIELD, test),
+            };
+            Ok((built(path, f)?, cond_json(&canonical, op, Some(norm))))
         }
         Fk::Cf(i) => resolve_cf(cx, path, &canonical, i, op, value).await,
     }
@@ -1968,6 +1987,7 @@ pub(crate) fn label(field: &str) -> &'static str {
         "created_at" => "建立時間",
         "updated_at" => "更新時間",
         "estimated_hours" => "預估工時",
+        "spent_hours" => "已記工時",
         "overdue" => "逾期",
         "triage" => "Triage",
         "triage_self_decided" => "自建自分流",
@@ -2028,6 +2048,10 @@ pub async fn filter_fields_in(
     let visible: Vec<Uuid> = scope.project_ids().collect();
     let mut fields = Vec::new();
     for (name, ty, ops) in BUILTIN_FIELDS {
+        // Contract 05 §4: agents get no spent_hours.
+        if *name == "spent_hours" && caller.user_id().is_none() {
+            continue;
+        }
         let mut info = FilterFieldInfo {
             field: name.to_string(),
             ftype: ty.to_string(),

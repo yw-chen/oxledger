@@ -453,8 +453,12 @@ async fn t_m1_02_unknown_and_invisible_look_alike() {
         (e.0, e.1.as_str(), e.2.as_str()),
         (ErrorCode::InvalidFilter, "invalid_value", "where.value")
     );
-    let e = where_err(&w, a, cond("spent_hours", "gt", json!("1"))).await;
-    assert_eq!(e.1, "unknown_field", "not in M1.1");
+    // M1.4 opened `spent_hours` (a number): a bool is a bad value.
+    let e = where_err(&w, a, cond("spent_hours", "gt", json!(true))).await;
+    assert_eq!(
+        (e.0, e.1.as_str(), e.2.as_str()),
+        (ErrorCode::InvalidFilter, "invalid_value", "where.value")
+    );
     // The readable one works.
     run(
         &w,
@@ -1398,6 +1402,8 @@ async fn m1_1_filter_fields() {
     // M1.3 (05 §8 依賴倒置): triage and triage_self_decided are open.
     assert!(names.contains(&"triage"));
     assert!(names.contains(&"triage_self_decided"));
+    // M1.4: spent_hours (people only).
+    assert!(names.contains(&"spent_hours"));
     assert!(!names.contains(&format!("cf:{restricted}").as_str()));
     assert!(names.contains(&format!("cf:{open_f}").as_str()));
     assert!(names.contains(&format!("cf:{auth_only}").as_str()));

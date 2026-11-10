@@ -90,6 +90,18 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
     q("INSERT INTO role_permissions (role_id, permission) SELECT id, 'manage_public_views' FROM roles WHERE name = 'Manager'")
         .execute(&mut *tx)
         .await?;
+    // Design 05 M1.4 (user decision 2026-11-10): the Redmine defaults, as
+    // migration 0023 grants them to existing roles.
+    q("INSERT INTO role_permissions (role_id, permission)
+        SELECT r.id, p.perm FROM roles r CROSS JOIN (VALUES
+          ('Manager','triage_issues'), ('Manager','view_time_entries'), ('Manager','log_time'),
+          ('Manager','edit_time_entries'), ('Manager','edit_own_time_entries'),
+          ('Manager','log_time_for_other_users'),
+          ('Developer','view_time_entries'), ('Developer','log_time'),
+          ('Reporter','view_time_entries'), ('Reporter','log_time')) AS p(role, perm)
+        WHERE r.name = p.role ON CONFLICT DO NOTHING")
+    .execute(&mut *tx)
+    .await?;
     // Every role may move New → In Progress → Resolved; only Manager may close.
     q("INSERT INTO workflow_transitions (tracker_id, role_id, old_status_id, new_status_id)
         SELECT t.id, r.id, o.id, n.id FROM trackers t, roles r, issue_statuses o, issue_statuses n
@@ -123,9 +135,10 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         SELECT 'project', id, 'login', 'en' FROM projects WHERE key='AUTH'")
     .execute(&mut *tx)
     .await?;
-    q("INSERT INTO enabled_modules (project_id, module) SELECT id, 'issue_tracking' FROM projects")
-        .execute(&mut *tx)
-        .await?;
+    q("INSERT INTO enabled_modules (project_id, module)
+        SELECT id, m FROM projects, (VALUES ('issue_tracking'), ('time_tracking')) AS v(m)")
+    .execute(&mut *tx)
+    .await?;
     q("INSERT INTO project_trackers SELECT p.id, t.id FROM projects p, trackers t")
         .execute(&mut *tx)
         .await?;

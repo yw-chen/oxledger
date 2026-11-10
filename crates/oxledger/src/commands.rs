@@ -119,6 +119,12 @@ pub enum OpInput {
     UpdateVersion(UpdateVersionOp),
     /// Contract 05 §3.10.1: decide an issue waiting in Triage.
     TriageDecide(TriageDecideOp),
+    /// Contract 05 §3.10.2: log time (with issue ops on the same issue, or alone).
+    LogTime(LogTimeOp),
+    /// Contract 05 §3.10.2: the only op, one precondition on the entry.
+    UpdateTimeEntry(UpdateTimeEntryOp),
+    /// Contract 05 §3.10.2: people only; the only op, one precondition.
+    DeleteTimeEntry(DeleteTimeEntryOp),
 }
 
 const KINDS: &[&str] = &[
@@ -130,7 +136,89 @@ const KINDS: &[&str] = &[
     "create_version",
     "update_version",
     "triage_decide",
+    "log_time",
+    "update_time_entry",
+    "delete_time_entry",
 ];
+
+/// A time entry's fields (contract 05 §3.10.2). `hours` is a decimal
+/// string; `author_id`, `created_on_behalf_of_id` and `project_id` cannot be
+/// set here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeFields {
+    /// `YYYY-MM-DD`; omitted = today in the org time zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_on: Option<String>,
+    /// Decimal string, 0–1000, at most two decimals (`"1.50"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Json>,
+    /// Omitted = the project's default activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<String>,
+    /// Whose time; omitted = the caller (an agent: its delegator).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
+}
+
+/// `update_time_entry.set`: absent = unchanged; `issue: null` detaches.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeEntrySet {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Json>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<String>,
+    /// People only (with `log_time_for_other_users`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
+    /// `{"type": "issue", …}` in the same project, or `null`.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub issue: Option<Option<TargetRef>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LogTimeOp {
+    pub op_id: Uuid,
+    /// Accepted for symmetry with create_issue; nothing can refer to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// Optional with `issue` (must then match its project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
+    /// An existing issue (`{"type": "issue", "id"|"key"}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<TargetRef>,
+    pub fields: TimeFields,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateTimeEntryOp {
+    pub op_id: Uuid,
+    /// `{"type": "time_entry", "id": …}`.
+    pub target: TargetRef,
+    pub set: TimeEntrySet,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteTimeEntryOp {
+    pub op_id: Uuid,
+    /// `{"type": "time_entry", "id": …}`.
+    pub target: TargetRef,
+}
 
 /// A milestone's fields (§17.9a). Absent = not set; `effective_date: null`
 /// clears the date. `status` only in `update_version`.
@@ -300,6 +388,9 @@ pub enum TargetRef {
     },
     /// A milestone (update_version and its precondition only).
     Version { id: Uuid },
+    /// A time entry (update_time_entry, delete_time_entry and their
+    /// precondition only).
+    TimeEntry { id: Uuid },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -331,6 +422,9 @@ pub struct CommandResult {
     /// One per op, in order.
     pub items: Vec<ItemResult>,
     pub search: SearchReceipt,
+    /// Time entries the document wrote (contract 05 §3.10.2); omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub time_entries: Vec<crate::time_entries::TimeEntryEffect>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -354,6 +448,9 @@ pub struct ItemResult {
     /// The milestone the op wrote (version ops).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_id: Option<Uuid>,
+    /// The time entry the op wrote (time ops, contract 05 §3.10.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_entry_id: Option<Uuid>,
 }
 
 /// What a version command did (§17.9a: the new id is in the response).
@@ -401,7 +498,7 @@ fn op_err(
     ApiError::new(code, msg).with_details(d).into()
 }
 
-fn issue_not_found(what: &str) -> anyhow::Error {
+pub(crate) fn issue_not_found(what: &str) -> anyhow::Error {
     api(ErrorCode::NotFound, format!("no issue {what}"))
 }
 
@@ -745,6 +842,23 @@ pub(crate) enum DestKind {
     /// A milestone's name and description: public content of its project
     /// (§17.9a, M8). `New` = created in that project.
     Version(VersionDest),
+    /// A time entry (contract 05 §3.5.4): its readers are the project's
+    /// time readers (`all`) plus the person, cut to the issue's readers.
+    Time(TimeDest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimeDest {
+    /// `project_id` may be omitted with an issue.
+    New {
+        project_id: Option<Uuid>,
+        issue: Option<Uuid>,
+    },
+    /// `issue`: `set.issue` when the op moves the entry.
+    Existing {
+        entry_id: Uuid,
+        issue: Option<Option<Uuid>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -823,9 +937,32 @@ enum Op {
         dup: Option<Target>,
         snooze_until: Option<chrono::DateTime<chrono::Utc>>,
     },
+    LogTime {
+        op_id: Uuid,
+        project_id: Option<Uuid>,
+        issue: Option<Uuid>,
+        fields: TimeFields,
+    },
+    UpdateTime {
+        op_id: Uuid,
+        entry_id: Uuid,
+        set: TimeEntrySet,
+        issue: Option<Option<Uuid>>,
+    },
+    DeleteTime {
+        op_id: Uuid,
+        entry_id: Uuid,
+    },
 }
 
 impl Op {
+    fn is_time(&self) -> bool {
+        matches!(
+            self,
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. }
+        )
+    }
+
     fn op_id(&self) -> Uuid {
         match self {
             Op::Create { op_id, .. }
@@ -835,7 +972,10 @@ impl Op {
             | Op::Duplicate { op_id, .. }
             | Op::CreateVersion { op_id, .. }
             | Op::UpdateVersion { op_id, .. }
-            | Op::Triage { op_id, .. } => *op_id,
+            | Op::Triage { op_id, .. }
+            | Op::LogTime { op_id, .. }
+            | Op::UpdateTime { op_id, .. }
+            | Op::DeleteTime { op_id, .. } => *op_id,
         }
     }
 }
@@ -859,6 +999,8 @@ pub(crate) struct Parsed {
     pub norm: Json,
     /// update_version's precondition.
     version_lock: Option<i32>,
+    /// update_time_entry's / delete_time_entry's precondition.
+    time_lock: Option<i32>,
 }
 
 impl Parsed {
@@ -876,6 +1018,9 @@ impl Parsed {
                     Op::CreateVersion { .. } => perm::OP_CREATE_VERSION,
                     Op::UpdateVersion { .. } => perm::OP_UPDATE_VERSION,
                     Op::Triage { .. } => perm::OP_TRIAGE_DECIDE,
+                    Op::LogTime { .. } => perm::OP_LOG_TIME,
+                    Op::UpdateTime { .. } => perm::OP_UPDATE_TIME_ENTRY,
+                    Op::DeleteTime { .. } => perm::OP_DELETE_TIME_ENTRY,
                 };
                 (o.op_id(), k)
             })
@@ -911,6 +1056,64 @@ impl Parsed {
             }),
             _ => None,
         }
+    }
+
+    /// Whether every op is a time op (planned by `time_entries::plan` alone).
+    pub(crate) fn time_only(&self) -> bool {
+        self.ops.iter().all(Op::is_time)
+    }
+
+    /// Whether the document has a time op.
+    pub(crate) fn has_time(&self) -> bool {
+        self.ops.iter().any(Op::is_time)
+    }
+
+    /// Whether the document deletes a time entry (people only).
+    pub(crate) fn deletes_time(&self) -> bool {
+        self.ops.iter().any(|o| matches!(o, Op::DeleteTime { .. }))
+    }
+
+    /// The time ops, for `time_entries::plan`.
+    pub(crate) fn time_cmds(&self) -> Vec<crate::time_entries::TimeCmd<'_>> {
+        use crate::time_entries::TimeCmd;
+        self.ops
+            .iter()
+            .enumerate()
+            .filter_map(|(index, o)| match o {
+                Op::LogTime {
+                    op_id,
+                    project_id,
+                    issue,
+                    fields,
+                } => Some(TimeCmd::Log {
+                    index,
+                    op_id: *op_id,
+                    project_id: *project_id,
+                    issue: *issue,
+                    fields,
+                }),
+                Op::UpdateTime {
+                    op_id,
+                    entry_id,
+                    set,
+                    issue,
+                } => Some(TimeCmd::Update {
+                    index,
+                    op_id: *op_id,
+                    entry_id: *entry_id,
+                    lock_version: self.time_lock.expect("parsed with its precondition"),
+                    set,
+                    issue: *issue,
+                }),
+                Op::DeleteTime { op_id, entry_id } => Some(TimeCmd::Delete {
+                    index,
+                    op_id: *op_id,
+                    entry_id: *entry_id,
+                    lock_version: self.time_lock.expect("parsed with its precondition"),
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Where each op writes, for the audience check (§3.8 M8, M9; §6.7
@@ -995,6 +1198,25 @@ impl Parsed {
                         });
                     }
                 }
+                Op::LogTime {
+                    project_id, issue, ..
+                } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::Time(TimeDest::New {
+                        project_id: *project_id,
+                        issue: *issue,
+                    }),
+                }),
+                Op::UpdateTime {
+                    entry_id, issue, ..
+                } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::Time(TimeDest::Existing {
+                        entry_id: *entry_id,
+                        issue: *issue,
+                    }),
+                }),
+                Op::DeleteTime { .. } => {}
             }
         }
         out
@@ -1026,6 +1248,10 @@ impl Parsed {
                 Op::CreateVersion { .. } => (i, perm::OP_CREATE_VERSION, Vec::new()),
                 Op::UpdateVersion { .. } => (i, perm::OP_UPDATE_VERSION, Vec::new()),
                 Op::Triage { .. } => (i, perm::OP_TRIAGE_DECIDE, Vec::new()),
+                // Contract 05 §4.3: no field-level policy for time.
+                Op::LogTime { .. } => (i, perm::OP_LOG_TIME, Vec::new()),
+                Op::UpdateTime { .. } => (i, perm::OP_UPDATE_TIME_ENTRY, Vec::new()),
+                Op::DeleteTime { .. } => (i, perm::OP_DELETE_TIME_ENTRY, Vec::new()),
             })
             .collect();
         // A duplicate decision also writes the duplicate relation: the
@@ -1097,6 +1323,95 @@ pub fn canonical_json(v: &Json) -> String {
 
 /// Step 2–4: syntax, structure, issue keys. Needs the connection only to
 /// resolve keys (no locks; a key that does not resolve is `not_found`).
+/// Contract 05 §3.10.2 composition: `update_time_entry` and
+/// `delete_time_entry` are the only op of their document, with exactly one
+/// precondition on the entry; `log_time` ops share one issue (or none, in one
+/// project) and may come with `update_fields`, `transition` and `add_note`
+/// on that same existing issue. Returns the edit's lock_version.
+fn check_time_doc(
+    ops: &[Op],
+    preconditions: &[Precondition],
+    has_time: bool,
+    has_time_edit: bool,
+) -> Result<Option<i32>> {
+    if has_time_edit {
+        if ops.len() != 1 {
+            return Err(bad(
+                "ops",
+                "update_time_entry and delete_time_entry are the only op of their document",
+            ));
+        }
+        let entry = match &ops[0] {
+            Op::UpdateTime { entry_id, .. } | Op::DeleteTime { entry_id, .. } => *entry_id,
+            _ => unreachable!("the only op is the edit"),
+        };
+        return match preconditions {
+            [one]
+                if matches!(one.target, TargetRef::TimeEntry { id } if id == entry)
+                    && one.field_values.is_empty() =>
+            {
+                Ok(Some(one.lock_version))
+            }
+            _ => Err(bad(
+                "preconditions",
+                "a time entry edit needs exactly one precondition: the entry's lock_version",
+            )),
+        };
+    }
+    if preconditions
+        .iter()
+        .any(|p| matches!(p.target, TargetRef::TimeEntry { .. }))
+    {
+        return Err(bad(
+            "preconditions",
+            "a time entry precondition goes with update_time_entry or delete_time_entry",
+        ));
+    }
+    if !has_time {
+        return Ok(None);
+    }
+    let logs: Vec<(Option<Uuid>, Option<Uuid>)> = ops
+        .iter()
+        .filter_map(|o| match o {
+            Op::LogTime {
+                project_id, issue, ..
+            } => Some((*project_id, *issue)),
+            _ => None,
+        })
+        .collect();
+    let issue = logs[0].1;
+    if logs.iter().any(|l| l.1 != issue) {
+        return Err(bad("ops", "the log_time ops of a document share one issue"));
+    }
+    if issue.is_none() && logs.iter().any(|l| l.0 != logs[0].0) {
+        return Err(bad(
+            "ops",
+            "the log_time ops of a document share one project",
+        ));
+    }
+    for (i, o) in ops.iter().enumerate() {
+        let t = match o {
+            Op::LogTime { .. } => continue,
+            Op::Update { target, .. } | Op::Transition { target, .. } | Op::Note { target, .. } => {
+                target
+            }
+            _ => {
+                return Err(bad(
+                    &format!("ops[{i}].kind"),
+                    "log_time goes only with update_fields, transition and add_note on its issue",
+                ));
+            }
+        };
+        if issue.is_none_or(|id| *t != Target::Issue(id)) {
+            return Err(bad(
+                &format!("ops[{i}].target"),
+                "ops next to log_time target the issue the time is logged on",
+            ));
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -> Result<Parsed> {
     let Json::Object(top) = raw else {
         return Err(bad("", "the body is a command document object"));
@@ -1167,6 +1482,17 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 collect(&o.target);
             }
             OpInput::CreateVersion(_) | OpInput::UpdateVersion(_) => {}
+            OpInput::LogTime(o) => {
+                if let Some(t) = &o.issue {
+                    collect(t);
+                }
+            }
+            OpInput::UpdateTimeEntry(o) => {
+                if let Some(Some(t)) = &o.set.issue {
+                    collect(t);
+                }
+            }
+            OpInput::DeleteTimeEntry(_) => {}
             OpInput::TriageDecide(o) => {
                 collect(&o.target);
                 if let Some(d) = &o.duplicate_of {
@@ -1217,7 +1543,9 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 path,
                 "a temp ref must name a bind declared by an earlier create_issue",
             )),
-            TargetRef::Version { .. } => Err(bad(path, "this op targets an issue")),
+            TargetRef::Version { .. } | TargetRef::TimeEntry { .. } => {
+                Err(bad(path, "this op targets an issue"))
+            }
         }
     };
 
@@ -1227,6 +1555,8 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     let mut transitions: BTreeSet<Target> = BTreeSet::new();
     let mut has_dup = false;
     let mut has_version = false;
+    let mut has_time = false;
+    let mut has_time_edit = false;
     for (i, op) in doc.ops.iter().enumerate() {
         let p = |s: &str| format!("ops[{i}].{s}");
         let parse_writes = |m: &BTreeMap<String, Json>,
@@ -1388,6 +1718,67 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                     set: o.set.clone(),
                 }
             }
+            OpInput::LogTime(o) => {
+                has_time = true;
+                if let Some(b) = &o.bind
+                    && (b.is_empty() || b.len() > 64)
+                {
+                    return Err(bad(&p("bind"), "bind is 1–64 characters"));
+                }
+                let issue = match &o.issue {
+                    None => None,
+                    Some(t) => match target(t, &p("issue"), &BTreeSet::new())? {
+                        Target::Issue(id) => Some(id),
+                        Target::Temp(_) => unreachable!("no binds were offered"),
+                    },
+                };
+                Op::LogTime {
+                    op_id: o.op_id,
+                    project_id: o.project_id,
+                    issue,
+                    fields: o.fields.clone(),
+                }
+            }
+            OpInput::UpdateTimeEntry(o) => {
+                has_time_edit = true;
+                let TargetRef::TimeEntry { id } = o.target else {
+                    return Err(bad(&p("target"), "update_time_entry targets a time entry"));
+                };
+                let st = &o.set;
+                if st.spent_on.is_none()
+                    && st.hours.is_none()
+                    && st.activity_id.is_none()
+                    && st.comments.is_none()
+                    && st.user_id.is_none()
+                    && st.issue.is_none()
+                {
+                    return Err(bad(&p("set"), "set names at least one field"));
+                }
+                let issue = match &o.set.issue {
+                    None => None,
+                    Some(None) => Some(None),
+                    Some(Some(t)) => match target(t, &p("set.issue"), &BTreeSet::new())? {
+                        Target::Issue(id) => Some(Some(id)),
+                        Target::Temp(_) => unreachable!("no binds were offered"),
+                    },
+                };
+                Op::UpdateTime {
+                    op_id: o.op_id,
+                    entry_id: id,
+                    set: o.set.clone(),
+                    issue,
+                }
+            }
+            OpInput::DeleteTimeEntry(o) => {
+                has_time_edit = true;
+                let TargetRef::TimeEntry { id } = o.target else {
+                    return Err(bad(&p("target"), "delete_time_entry targets a time entry"));
+                };
+                Op::DeleteTime {
+                    op_id: o.op_id,
+                    entry_id: id,
+                }
+            }
             OpInput::TriageDecide(o) => {
                 let t = target(&o.target, &p("target"), &binds)?;
                 if matches!(t, Target::Temp(_)) {
@@ -1455,6 +1846,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         ops.push(parsed);
     }
     check_triage_doc(&ops)?;
+    let time_lock = check_time_doc(&ops, &doc.preconditions, has_time, has_time_edit)?;
     if has_dup && ops.len() != 1 {
         return Err(bad("ops", "duplicate_of is the only op of its document"));
     }
@@ -1512,6 +1904,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 }
             }
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
         }
     }
     let mut pre: BTreeMap<Uuid, Pre> = BTreeMap::new();
@@ -1519,7 +1912,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         .preconditions
         .iter()
         .enumerate()
-        .filter(|_| !has_version)
+        .filter(|_| !has_version && !has_time_edit)
     {
         let path = format!("preconditions[{i}].target");
         if matches!(p.target, TargetRef::Temp { .. }) {
@@ -1579,6 +1972,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         refs,
         norm,
         version_lock,
+        time_lock,
     })
 }
 
@@ -2022,6 +2416,7 @@ async fn run(
             "changed": e.changed, "created": e.created,
         })).collect::<Vec<_>>(),
         "items": result.items,
+        "time_entries": result.time_entries,
     });
     complete_request(&mut *tx, request_id, &result_ref).await?;
     Ok(Outcome::Done(result))
@@ -2319,6 +2714,7 @@ pub(crate) async fn evaluate_undo(
         effects,
         items: sim.items,
         search: SearchReceipt { consistent_after },
+        time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
     })
 }
 
@@ -2425,8 +2821,13 @@ pub(crate) async fn replay(
     let items = serde_json::from_value::<Vec<ItemResult>>(r["items"].clone())
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| i.issue_id.is_some_and(|id| visible.contains_key(&id)))
+        .filter(|i| {
+            i.issue_id.is_some_and(|id| visible.contains_key(&id)) || i.time_entry_id.is_some()
+        })
         .collect();
+    // A replay repeats the time receipts as written (ids and lock versions
+    // only; the entries' contents are read through GET /time-entries).
+    let time_entries = serde_json::from_value(r["time_entries"].clone()).unwrap_or_default();
     Ok(CommandResult {
         status: "succeeded".into(),
         execution_id: json_uuid(&r["execution_id"]).unwrap_or_default(),
@@ -2438,6 +2839,7 @@ pub(crate) async fn replay(
                 .unwrap_or_default()
                 .to_string(),
         },
+        time_entries,
     })
 }
 
@@ -2517,6 +2919,8 @@ pub(crate) struct Sim {
     pub token: Option<String>,
     /// A version document's planned write (§17.9a).
     pub version: Option<crate::versions::Plan>,
+    /// The time ops' planned writes (contract 05 §3.10.2).
+    pub time: Option<crate::time_entries::TimePlan>,
 }
 
 /// Errors §6.7 never stores with a proposal (steps 1–8): the caller may not
@@ -2580,6 +2984,7 @@ async fn evaluate(
         effects,
         items: sim.items,
         search: SearchReceipt { consistent_after },
+        time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
     })
 }
 
@@ -2594,6 +2999,18 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             items: vec![plan.item()],
             token,
             version: Some(plan),
+            time: None,
+        });
+    }
+    if doc.time_only() {
+        let (plan, token) =
+            crate::time_entries::plan(&mut *conn, ectx, &doc.time_cmds(), None).await?;
+        return Ok(Sim {
+            work: BTreeMap::new(),
+            items: plan.items(),
+            token,
+            version: None,
+            time: Some(plan),
         });
     }
     let locks = ectx.mode.locks();
@@ -2609,6 +3026,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         };
         match op {
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
             Op::Create { project_id, .. } => {
                 create_projects.insert(*project_id);
             }
@@ -2725,6 +3143,12 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         .into_iter()
         .map(|(i, p, s, d)| (i, (p, s, d)))
         .collect();
+
+    // §3.5.5: a mixed document's daily totals come right after the issues
+    // (before the field options and the search token below).
+    if locks && doc.has_time() {
+        crate::time_entries::prelock_totals(&mut *conn, ectx, &doc.time_cmds()).await?;
+    }
 
     // Step 8: custom field definitions FOR SHARE, list options FOR KEY SHARE.
     let dropping: Vec<i32> = sqlx::query_scalar(
@@ -2859,6 +3283,9 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 Op::Note { .. } => perm::OP_ADD_NOTE,
                 Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
                 Op::Create { .. } => perm::OP_CREATE_ISSUE,
+                Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {
+                    unreachable!("time ops are checked by time_entries::plan")
+                }
                 // The relation of a duplicate decision (checked as
                 // duplicate_of on both ends).
                 Op::Triage { .. } => perm::OP_DUPLICATE_OF,
@@ -2881,6 +3308,8 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         };
         match op {
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
+            // Planned by time_entries::plan after the issue ops.
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
             Op::Update { target, .. } | Op::Transition { target, .. } => check(target, "edit")?,
             Op::Note { target, .. } => check(target, "note")?,
             Op::Duplicate { source, target, .. } => {
@@ -2946,11 +3375,54 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         (Err(p), _) => return Err(p),
         (Ok(()), r) => r?,
     };
+    // Contract 05 §3.10.2: log_time next to issue ops on the same issue,
+    // after them (T5 compares the status before and after the document).
+    let mut time = None;
+    let mut items = items;
+    if doc.has_time() {
+        let cmds = doc.time_cmds();
+        let issue = cmds.iter().find_map(|c| match c {
+            crate::time_entries::TimeCmd::Log { issue, .. } => *issue,
+            _ => None,
+        });
+        let ctx = match issue.and_then(|i| work.get(&i)) {
+            Some(w) => {
+                let before = w.orig.as_ref().map_or(w.status, |o| o.status_id);
+                let (closed_before, closed_after): (bool, bool) = sqlx::query_as(
+                    "SELECT COALESCE((SELECT category = 'done' FROM issue_statuses WHERE id = $1), false),
+                            COALESCE((SELECT category = 'done' FROM issue_statuses WHERE id = $2), false)",
+                )
+                .bind(before)
+                .bind(w.status)
+                .fetch_one(&mut *conn)
+                .await?;
+                Some(crate::time_entries::IssueCtx {
+                    id: w.id,
+                    closed_before,
+                    closed_after,
+                })
+            }
+            None => None,
+        };
+        let (plan, _) = crate::time_entries::plan(&mut *conn, ectx, &cmds, ctx).await?;
+        let mut by_op: BTreeMap<Uuid, ItemResult> = items
+            .into_iter()
+            .chain(plan.items())
+            .map(|it| (it.op_id, it))
+            .collect();
+        items = doc
+            .ops
+            .iter()
+            .filter_map(|o| by_op.remove(&o.op_id()))
+            .collect();
+        time = Some(plan);
+    }
     Ok(Sim {
         work,
         items,
         token,
         version: None,
+        time,
     })
 }
 
@@ -3092,6 +3564,7 @@ async fn run_ops(
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {
                 unreachable!("version documents are planned apart")
             }
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
             Op::Create {
                 op_id,
                 bind,
@@ -3244,6 +3717,7 @@ async fn run_ops(
                     status: "applied".into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Update { op_id, target, set } => {
@@ -3307,6 +3781,7 @@ async fn run_ops(
                     status: if applied { "applied" } else { "no_effect" }.into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Transition { op_id, target, to } => {
@@ -3363,6 +3838,7 @@ async fn run_ops(
                     status: if applied { "applied" } else { "no_effect" }.into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Note {
@@ -3406,6 +3882,7 @@ async fn run_ops(
                     status: "applied".into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Duplicate {
@@ -3422,6 +3899,7 @@ async fn run_ops(
                     status: if exists { "no_effect" } else { "applied" }.into(),
                     issue_id: Some(s),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Triage {
@@ -3510,6 +3988,7 @@ async fn run_ops(
                     status: "applied".into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
         }
@@ -3678,6 +4157,12 @@ pub(crate) async fn write_effects(
     if let Some(plan) = &sim.version {
         crate::versions::write_plan(&mut *conn, plan, at).await?;
         return Ok(Vec::new());
+    }
+    if let Some(plan) = &sim.time {
+        crate::time_entries::write_plan(&mut *conn, plan, at).await?;
+        if doc.time_only() {
+            return Ok(Vec::new());
+        }
     }
     let (work, items) = (&sim.work, &sim.items);
     let execution_id = at.execution_ref;

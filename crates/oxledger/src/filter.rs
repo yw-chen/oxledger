@@ -79,6 +79,12 @@ pub const TRIAGE_FIELD: i32 = -17;
 /// A5: the decision was made by the issue's own agent author, or by an
 /// agent with the same sponsor (`self_triage OR same_sponsor`). Bool.
 pub const TRIAGE_SELF_FIELD: i32 = -18;
+/// Contract 05 §3.5.4 / R-VD7: the hours of the time entries on the issue
+/// that one person can see (`time_visibility`), as a number; NULL where
+/// they cannot read time. Depends on the viewer, so its condition carries
+/// the viewer in `Filter::Cond::viewer` (see [`spent_cond`]); `applies`
+/// stays `True` like every built-in field. People only.
+pub const SPENT_FIELD: i32 = -19;
 
 /// v1 names of the built-in fields (contract 02 §17.15).
 const BUILTINS: &[(&str, i32, FieldType)] = &[
@@ -102,6 +108,8 @@ enum Col {
     Triage,
     /// [`TRIAGE_SELF_FIELD`].
     TriageSelf,
+    /// [`SPENT_FIELD`].
+    Spent,
 }
 
 fn builtin_col(id: i32) -> Option<Col> {
@@ -124,6 +132,7 @@ fn builtin_col(id: i32) -> Option<Col> {
         WROTE_RECENTLY_FIELD => Col::Wrote,
         TRIAGE_FIELD => Col::Triage,
         TRIAGE_SELF_FIELD => Col::TriageSelf,
+        SPENT_FIELD => Col::Spent,
         _ => return None,
     })
 }
@@ -146,7 +155,7 @@ pub fn builtin_type(id: i32) -> Option<FieldType> {
         START_FIELD | DUE_FIELD | CREATED_FIELD | UPDATED_FIELD => FieldType::Date,
         CATEGORY_FIELD | TRIAGE_FIELD => FieldType::String,
         PRIVATE_FIELD | TRIAGE_SELF_FIELD => FieldType::Bool,
-        ESTIMATED_FIELD => FieldType::Float,
+        ESTIMATED_FIELD | SPENT_FIELD => FieldType::Float,
         _ => FieldType::List,
     })
 }
@@ -160,6 +169,22 @@ pub fn builtin_cond(id: i32, test: Test) -> Result<Filter> {
         anyhow::bail!("built-in field {id} has no history");
     }
     Ok(Filter::cond(Field { id, ty }, test)?)
+}
+
+/// A condition on [`SPENT_FIELD`] as `viewer` sees it (`Filter::Cond::viewer`).
+/// No prefilter narrows on it (it is not in the search index).
+pub fn spent_cond(viewer: Uuid, test: Test) -> Result<Filter> {
+    let Some(ty) = builtin_type(SPENT_FIELD) else {
+        anyhow::bail!("no spent field");
+    };
+    Ok(Filter::cond_as(
+        Field {
+            id: SPENT_FIELD,
+            ty,
+        },
+        test,
+        viewer,
+    )?)
 }
 
 /// The visibility-style part of a resolved filter that the search index can
@@ -181,6 +206,7 @@ pub fn pred_prefilter(f: &Filter) -> Pred {
             field,
             test,
             applies,
+            ..
         } => {
             if *applies != Pred::True {
                 return Pred::True;
@@ -229,6 +255,7 @@ pub fn index_prefilter(f: &Filter) -> IxFilter {
             field,
             test,
             applies,
+            ..
         } => cond_prefilter(field.id, test, *applies == Pred::True),
     }
 }
@@ -901,14 +928,16 @@ pub fn push_filter_shaped(qb: &mut QueryBuilder<Postgres>, a: &str, filter: &Fil
             field,
             test,
             applies,
+            viewer,
         } if field.id < 0 => {
-            debug_assert_eq!(*applies, Pred::True, "built-in fields are never gated");
-            push_builtin(qb, a, *field, test);
+            debug_assert!(*applies == Pred::True, "built-in fields are never gated");
+            push_builtin(qb, a, *field, test, *viewer);
         }
         Filter::Cond {
             field,
             test,
             applies,
+            ..
         } => {
             // ne / not_in are complements; is_null needs E but no value.
             let (outer_not, inner_not) = match test {
@@ -992,9 +1021,30 @@ fn push_value_test(qb: &mut QueryBuilder<Postgres>, col: &str, field: Field, tes
 /// Positive tests may be NULL for a missing value, which only ever meets
 /// AND / OR; the complements are written `IS NOT TRUE` so a missing value
 /// counts as "not equal".
-fn push_builtin(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &Test) {
+fn push_builtin(
+    qb: &mut QueryBuilder<Postgres>,
+    a: &str,
+    field: Field,
+    test: &Test,
+    viewer: Option<Uuid>,
+) {
     let col = builtin_col(field.id).expect("validated built-in field");
     let expr = match col {
+        // A uuid prints as hex and dashes only, so it is safe inline.
+        Col::Spent => {
+            let Some(u) = viewer else {
+                unreachable!("SPENT_FIELD carries its viewer (spent_cond)")
+            };
+            format!(
+                "(CASE time_visibility({a}.project_id, '{u}'::uuid)
+                    WHEN 'all' THEN (SELECT COALESCE(sum(te.hours), 0) FROM time_entries te
+                                     WHERE te.issue_id = {a}.id AND te.deleted_at IS NULL)
+                    WHEN 'own' THEN (SELECT COALESCE(sum(te.hours), 0) FROM time_entries te
+                                     WHERE te.issue_id = {a}.id AND te.deleted_at IS NULL
+                                       AND te.user_id = '{u}'::uuid)
+                  END)"
+            )
+        }
         Col::Issue(c) => format!("{a}.{c}"),
         Col::Category => {
             format!("(SELECT st.category FROM issue_statuses st WHERE st.id = {a}.status_id)")
@@ -1353,6 +1403,7 @@ mod tests {
                     field,
                     test,
                     applies,
+                    ..
                 } => {
                     let e = *applies == Pred::True || d.gated;
                     holds(test, &value_of(d, field.id), e)
@@ -1449,6 +1500,7 @@ mod tests {
                     },
                     test,
                     applies,
+                    viewer: None,
                 }
             }
             let f = random_filter(&mut rng, 3, &vs, &day, &gate);

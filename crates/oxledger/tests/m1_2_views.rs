@@ -407,16 +407,8 @@ async fn t_m1_06_project_views_have_no_restricted_fields_and_one_project() {
             "updated_at"
         ])
     );
-    // Unknown keys and later stages' keys are unknown (05 §8).
+    // Unknown keys are unknown (05 §8; spent_hours opened in M1.4).
     for (def, path) in [
-        (
-            json!({"kind": "list", "columns": ["spent_hours"]}),
-            "def.columns[0]",
-        ),
-        (
-            json!({"kind": "list", "totals": ["spent_hours"]}),
-            "def.totals[0]",
-        ),
         (
             json!({"kind": "list", "group_by": "triage"}),
             "def.group_by",

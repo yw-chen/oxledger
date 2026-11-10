@@ -211,6 +211,11 @@ pub enum Filter {
         test: Test,
         /// Issues for which the field counts (applicable and readable).
         applies: Pred,
+        /// Whose view the value is, for a field whose value depends on the
+        /// reader (oxledger's spent hours: only the time that person can
+        /// read). `None` for every other field. Not a gate: `applies` stays
+        /// what it would be without it.
+        viewer: Option<Uuid>,
     },
 }
 
@@ -249,6 +254,19 @@ impl Filter {
             field,
             test,
             applies: applies.simplify(),
+            viewer: None,
+        })
+    }
+
+    /// Builds a validated condition on a field whose value is what `viewer`
+    /// can read (see `Filter::Cond::viewer`); it applies to every issue.
+    pub fn cond_as(field: Field, test: Test, viewer: Uuid) -> Result<Filter, FilterError> {
+        check_cond(field, &test)?;
+        Ok(Filter::Cond {
+            field,
+            test,
+            applies: Pred::True,
+            viewer: Some(viewer),
         })
     }
 
@@ -298,6 +316,7 @@ impl Filter {
                 field,
                 test,
                 applies,
+                ..
             } => {
                 let e = applies.eval(facts);
                 // Outside E the value does not count, whatever is stored.
@@ -590,6 +609,7 @@ mod tests {
         // validate() also checks conditions built without Filter::cond.
         let raw = Filter::And(vec![Filter::Cond {
             applies: Pred::True,
+            viewer: None,
             field: SEV,
             test: Test::Range {
                 min: Some(Value::Ref(Uuid::nil())),

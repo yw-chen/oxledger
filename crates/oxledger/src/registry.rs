@@ -298,6 +298,13 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<crate::triage::TriageList>,
         ),
         agent_tool(
+            "time_list",
+            "The delegator's own time entries, when the delegation has read_own_time (design 05 §3.5.4 A1(c), §4.1).",
+            EffectClass::Read,
+            schema::<crate::time_reports::TimeListParams>,
+            schema::<crate::time_reports::TimeEntryPage>,
+        ),
+        agent_tool(
             "command_submit",
             "Write directly where the delegation's policy allows, else create a proposal (§16.4).",
             EffectClass::Propose,

@@ -23,7 +23,7 @@ use sqlx::{PgConnection, PgPool};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const PROPOSAL_OPS: [&str; 8] = [
+pub const PROPOSAL_OPS: [&str; 10] = [
     "create_issue",
     "update_fields",
     "transition",
@@ -32,7 +32,43 @@ pub const PROPOSAL_OPS: [&str; 8] = [
     "create_version",
     "update_version",
     "triage_decide",
+    "log_time",
+    "update_time_entry",
 ];
+/// Contract 05 §4.3 (A1(b)): time commands default to `review` on a new
+/// delegation (and when added later).
+pub const TIME_OPS: [&str; 2] = ["log_time", "update_time_entry"];
+
+/// Contract 05 §6.14: the delegation wizard's warning for `read_own_time`,
+/// word for word (A1(c)). The SPA shows it; the API carries it so the text
+/// has one source.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ReadOwnTimeWarning {
+    /// The bold first line.
+    pub title: String,
+    /// The paragraphs after it.
+    pub body: Vec<String>,
+    /// The checkbox that must be ticked to turn it on.
+    pub ack_label: String,
+    /// The tooltip of the delegation list tag 「可讀我的工時」.
+    pub tag: String,
+    pub tag_tooltip: String,
+}
+
+impl Default for ReadOwnTimeWarning {
+    fn default() -> Self {
+        Self {
+            title: "這個 agent 可以讀你自己的工時紀錄，包括說明文字。".into(),
+            body: vec![
+                "工時說明通常只有你和有權看工時的人看得到。agent 讀了之後，可能把說明抄進議題留言或欄位，讓專案所有成員都看得到。oxledger 不會攔下這種搬移（這是你同意承擔的例外，其他內容仍會攔）。".into(),
+                "agent 讀不到別人的工時，也讀不到工時合計。之後關掉這個開關，agent 已經讀過的內容也收不回來。".into(),
+            ],
+            ack_label: "我了解，仍要開啟".into(),
+            tag: "可讀我的工時".into(),
+            tag_tooltip: "這個 agent 可讀你的工時（含說明）。說明可能被抄到專案成員看得到的地方。".into(),
+        }
+    }
+}
 /// Commands that need the delegator's `manage_versions` for a policy row (§17.11).
 pub const VERSION_OPS: [&str; 2] = ["create_version", "update_version"];
 /// Built-in field keys a delegation may make writable; custom fields are `cf:<id>`.
@@ -72,6 +108,13 @@ pub struct DelegationView {
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Contract 05 §2.5, §3.5.4: the agent may read the delegator's own time.
+    pub read_own_time: bool,
+    /// When the delegator ticked 「我了解，仍要開啟」.
+    pub read_own_time_ack_at: Option<DateTime<Utc>>,
+    /// The §6.14 warning text (the same on every delegation).
+    #[sqlx(skip)]
+    pub read_own_time_warning: ReadOwnTimeWarning,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -399,8 +442,14 @@ pub struct DelegationInput {
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
-    /// Modes inside the ceiling (§16.10); anything not listed is `direct`.
+    /// Modes inside the ceiling (§16.10); anything not listed is `direct`,
+    /// except the time commands (`review`, contract 05 §4.3).
     pub policies: Option<PolicyInput>,
+    /// Contract 05 §3.5.4 A1: let the agent read the delegator's own time.
+    pub read_own_time: bool,
+    /// The delegator ticked 「我了解，仍要開啟」 (§6.14); required with
+    /// `read_own_time`.
+    pub read_own_time_ack: bool,
 }
 
 /// Per-command and per-field modes (§16.3). Keys must be inside the ceiling.
@@ -438,6 +487,14 @@ pub async fn create_delegation(
     }
     if let Some(p) = &input.policies {
         check_policy_keys(p, &input.proposal_ops, &input.writable_fields)?;
+    }
+    if input.read_own_time && !input.read_own_time_ack {
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            "reading your own time needs the warning acknowledged (read_own_time_ack)",
+        )
+        .with_details(json!({"path": "read_own_time_ack", "kind": "ack_required"}))
+        .into());
     }
     let max_ops = input.max_ops.unwrap_or(10);
     if !(1..=10).contains(&max_ops) {
@@ -574,10 +631,12 @@ pub async fn create_delegation(
     let now = Utc::now();
     let view: DelegationView = sqlx::query_as(
         "INSERT INTO delegations (agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
-                                  proposal_ops, writable_fields, max_ops, created_at, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                                  proposal_ops, writable_fields, max_ops, created_at, expires_at,
+                                  read_own_time, read_own_time_ack_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12,CASE WHEN $12 THEN $9 END)
          RETURNING id, agent_principal_id, $11::uuid AS agent_client_id, context_id, project_id, proposal_ops,
-                   writable_fields, max_ops, created_at, expires_at, revoked_at",
+                   writable_fields, max_ops, created_at, expires_at, revoked_at,
+                   read_own_time, read_own_time_ack_at",
     )
     .bind(agent)
     .bind(user)
@@ -590,6 +649,7 @@ pub async fn create_delegation(
     .bind(now)
     .bind(now + lifetime)
     .bind(input.agent_client_id)
+    .bind(input.read_own_time)
     .fetch_one(&mut *tx)
     .await?;
     // §16.3 rule 1: one row per command and field in the ceiling.
@@ -608,7 +668,11 @@ pub async fn create_delegation(
             .commands
             .get(op)
             .copied()
-            .unwrap_or(PolicyMode::Direct);
+            .unwrap_or(if TIME_OPS.contains(&op.as_str()) {
+                PolicyMode::Review
+            } else {
+                PolicyMode::Direct
+            });
         sqlx::query(
             "INSERT INTO delegation_command_policies VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
@@ -872,7 +936,8 @@ pub async fn set_delegation_policies(
 
 const DELEGATION_COLUMNS: &str =
     "d.id, d.agent_principal_id, ap.agent_client_id, d.context_id, d.project_id,
-    d.proposal_ops, d.writable_fields, d.max_ops, d.created_at, d.expires_at, d.revoked_at";
+    d.proposal_ops, d.writable_fields, d.max_ops, d.created_at, d.expires_at, d.revoked_at,
+    d.read_own_time, d.read_own_time_ack_at";
 
 pub async fn list_delegations(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<DelegationView>> {
     let (user, _) = ctx.require_human_session()?;
@@ -1354,4 +1419,65 @@ pub async fn describe_context(
         state,
         projects,
     })
+}
+
+/// Contract 05 §6.14: turns `read_own_time` on (with the warning
+/// acknowledged) or off for one of the caller's delegations. Turning it off
+/// takes effect at once; what the agent already read stays read. Either way
+/// it is a delegation-setting change (§2.5): it needs a step-up like the
+/// other policy changes and bumps `policy_version`.
+pub async fn set_read_own_time(
+    pool: &PgPool,
+    session_policy: &SessionPolicy,
+    ctx: &AuthContext,
+    id: Uuid,
+    enabled: bool,
+    ack: bool,
+) -> Result<DelegationView> {
+    let (user, _) = ctx.require_human_session()?;
+    if enabled && !ack {
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            "reading your own time needs the warning acknowledged (ack)",
+        )
+        .with_details(json!({"path": "ack", "kind": "ack_required"}))
+        .into());
+    }
+    let mut tx = pool.begin().await?;
+    // §3.7 lock order: the browser session (step-up) before the delegation.
+    auth::require_step_up(&mut tx, session_policy, ctx).await?;
+    let found: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE delegations SET read_own_time = $3,
+                read_own_time_ack_at = CASE WHEN $3 THEN now() END,
+                policy_version = policy_version + 1
+         WHERE id = $1 AND delegator_user_id = $2 AND revoked_at IS NULL
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(user)
+    .bind(enabled)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_none() {
+        return Err(ApiError::new(ErrorCode::NotFound, "no such delegation").into());
+    }
+    auth::audit(
+        &mut tx,
+        "delegation_read_own_time",
+        Some(user),
+        Some(id),
+        json!({"enabled": enabled}),
+    )
+    .await?;
+    let sql = format!(
+        "SELECT {DELEGATION_COLUMNS} FROM delegations d
+         JOIN agent_principals ap ON ap.agent_principal_id = d.agent_principal_id
+         WHERE d.id = $1"
+    );
+    let view: DelegationView = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(view)
 }

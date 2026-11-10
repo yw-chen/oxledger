@@ -1852,6 +1852,7 @@ impl Plan {
             .into(),
             issue_id: None,
             version_id: Some(self.id),
+            time_entry_id: None,
         }
     }
 

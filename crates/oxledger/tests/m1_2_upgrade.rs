@@ -118,7 +118,7 @@ async fn m1_2_upgrade_project_tabs() {
             .await
             .unwrap();
 
-    db::MIGRATOR.run(&pool).await.unwrap();
+    db::MIGRATOR.run_to(21, &pool).await.unwrap();
 
     let builtins = [
         "timeline",

@@ -22,6 +22,7 @@ use crate::commands;
 use crate::db;
 use crate::error::{ApiError, ErrorCode, api};
 use crate::service::App;
+use crate::time_entries::UndoTimeEntry;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use ox_core::IssueFacts;
@@ -161,12 +162,16 @@ pub struct UndoPreview {
     /// Triage decisions (contract 05 §3.10.1).
     #[serde(default)]
     pub triage: Vec<UndoTriage>,
+    /// Time entries (contract 05 §3.10.2, T-M1-41).
+    #[serde(default)]
+    pub time_entries: Vec<UndoTimeEntry>,
 }
 
 impl UndoPreview {
     fn automatic(&self) -> bool {
         self.fields.iter().any(|f| f.restorable)
             || self.triage.iter().any(|t| t.restorable)
+            || self.time_entries.iter().any(|t| t.restorable)
             || self.notes.iter().any(|n| n.restorable)
             || self.relations.iter().any(|r| r.restorable)
             || self.version_fields.iter().any(|f| f.restorable)
@@ -185,6 +190,11 @@ impl UndoPreview {
         for t in &self.triage {
             if let Some(r) = &t.reason {
                 v.push(json!({"key": t.key, "field": "triage", "reason": r}));
+            }
+        }
+        for t in &self.time_entries {
+            if let Some(r) = &t.reason {
+                v.push(json!({"time_entry_id": t.time_entry_id, "field": t.field, "reason": r}));
             }
         }
         for n in &self.notes {
@@ -230,6 +240,10 @@ pub struct UndoInput {
     /// Issue ids whose triage decision stays (contract 05 §3.10.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_triage: Vec<Uuid>,
+    /// `"<time_entry_id>/<field>"` (field `created` for a new entry) to
+    /// leave as they are (contract 05 §3.10.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_time_entries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -243,6 +257,10 @@ pub struct UndoResult {
     /// Triage decisions put back (contract 05 §3.10.1).
     #[serde(default)]
     pub triage_restored: usize,
+    /// Time entries deleted (created by the execution) or put back
+    /// (contract 05 §3.10.2).
+    #[serde(default)]
+    pub time_entries_restored: usize,
     #[serde(default)]
     pub version_fields_restored: usize,
     #[serde(default)]
@@ -704,6 +722,22 @@ async fn build_preview(
     let (version_fields, version_created) =
         version_preview(&mut *conn, caller, id, expired).await?;
 
+    // Time entries (§3.10.2): their issues as the caller sees them.
+    let entry_issues: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT te.issue_id FROM execution_time_entry_changes c
+         JOIN time_entries te ON te.id = c.time_entry_id
+         WHERE c.execution_id = $1 AND te.issue_id IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let seen: BTreeSet<Uuid> = visible(&mut *conn, caller, &entry_issues)
+        .await?
+        .into_keys()
+        .collect();
+    let time_entries =
+        crate::time_entries::undo_preview(&mut *conn, caller, id, expired, &seen).await?;
+
     Ok(UndoPreview {
         execution_id: id,
         execution_kind: info.kind.clone(),
@@ -716,6 +750,7 @@ async fn build_preview(
         version_fields,
         version_created,
         triage,
+        time_entries,
     })
 }
 
@@ -958,6 +993,17 @@ pub async fn apply(
     .fetch_all(&mut *tx)
     .await?;
     projects.extend(ip);
+    // Time entries (§3.10.2): their projects and issues join the locks.
+    let entries = crate::time_entries::undo_entries(&mut tx, id).await?;
+    let ep: Vec<(Uuid, Option<Uuid>)> =
+        sqlx::query_as("SELECT project_id, issue_id FROM time_entries WHERE id = ANY($1)")
+            .bind(&entries)
+            .fetch_all(&mut *tx)
+            .await?;
+    projects.extend(ep.iter().map(|e| e.0));
+    let mut lock_issues: BTreeSet<Uuid> = issues.iter().copied().collect();
+    lock_issues.extend(ep.iter().filter_map(|e| e.1));
+    let lock_issues: Vec<Uuid> = lock_issues.into_iter().collect();
     for p in &projects {
         sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
             .bind(p)
@@ -970,7 +1016,11 @@ pub async fn apply(
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT 1 FROM issues WHERE id = ANY($1) ORDER BY id FOR UPDATE")
-        .bind(&issues)
+        .bind(&lock_issues)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT 1 FROM time_entries WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&entries)
         .execute(&mut *tx)
         .await?;
     let pv = build_preview(&mut tx, caller, id, &info).await?;
@@ -1042,9 +1092,24 @@ pub async fn apply(
         .iter()
         .filter(|t| t.restorable && !input.skip_triage.contains(&t.issue_id))
         .collect();
-    if ops.is_empty() && notes.is_empty() && rels.is_empty() && triage.is_empty() {
+    let time: Vec<&UndoTimeEntry> = pv
+        .time_entries
+        .iter()
+        .filter(|t| {
+            t.restorable
+                && !input
+                    .skip_time_entries
+                    .contains(&format!("{}/{}", t.time_entry_id, t.field))
+        })
+        .collect();
+    if ops.is_empty() && notes.is_empty() && rels.is_empty() && triage.is_empty() && time.is_empty()
+    {
         return Err(not_applicable(pv.reasons()));
     }
+    // The daily totals come next in the lock order (after the entries,
+    // before the search token the execution takes).
+    let time_plan = crate::time_entries::undo_plan(&mut tx, &time).await?;
+    crate::time_entries::undo_lock(&mut tx, &time_plan).await?;
 
     let targets: BTreeSet<Uuid> = sets
         .keys()
@@ -1247,6 +1312,15 @@ pub async fn apply(
         restored_triage.push((*issue, crate::triage::FIELD_KEY.to_string()));
     }
 
+    // Time entries (§3.10.2): soft delete the created ones, put fields back.
+    let time_restored = crate::time_entries::undo_write(
+        &mut tx,
+        &time_plan,
+        id,
+        &commands::Attribution::human(user, request_id, exec_id),
+    )
+    .await?;
+
     // What was reverted, and the transitive source snapshot.
     for (issue, field) in restored.iter().chain(&restored_triage) {
         sqlx::query(
@@ -1279,6 +1353,7 @@ pub async fn apply(
         relations_removed: rels.len(),
         transitions: n_transitions,
         triage_restored: restored_triage.len(),
+        time_entries_restored: time_restored,
         version_fields_restored: 0,
         version_deleted: false,
         consistent_after,
@@ -1382,6 +1457,7 @@ async fn apply_version(
         relations_removed: 0,
         transitions: 0,
         triage_restored: 0,
+        time_entries_restored: 0,
         version_fields_restored: restorable.len(),
         version_deleted: create.is_some(),
         consistent_after: token,

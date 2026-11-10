@@ -10,7 +10,7 @@
 | M1.1 Filter AST v2 | `filter.rs` 擴充成 v2（內建欄位、`me`、相對日期、`ever_in`、排序）；舊參數轉 v2；`/filter-fields`、`describe filter_fields`；`search` 收 `where` | T-M1-01…05；E4 可見性測試加 v2 隨機條件；OpenAPI 與 `api/types.ts` 重產 | 完成（2026-11-10，含獨立驗證修正；全套兩輪全綠：test-support 197 過、test-support,github 205 過；未 commit） |
 | M1.2 視圖與看板 | 0021；`/views*`；內建視圖；`run`／`preview`；看板計數；專案分頁 `view`、`board`、`triage`；MCP `view_list`、`view_run` | T-M1-06…20；前端可接列表與看板 | 實作完成，含獨立驗證 9 項修正（2026-11-10；`m1_2_views` 26 個、`m1_2_upgrade` 1 個測試；全套兩輪全綠：test-support 226 過、test-support,github 234 過；前端未接；未 commit） |
 | M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_3_triage` 6 個、`m1_3_upgrade` 1 個測試；前端未接；未 commit）。**0022 不給任何角色 `triage_issues`，M1.4 給 Manager** |
-| M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | — |
+| M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_4_time` 28 個、`m1_4_upgrade` 2 個測試；警告文案只驗證 API 回應，前端未接；未 commit）。**0023 一次給內建角色 M1 權限，所有 agent 工作脈絡失效** |
 | M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | — |
 | M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | — |
 | M1.7 搜尋 | 0027；BM25F 欄位與 fast field；別名展開；概念管理；藍綠重建切換 | T-M1-62…65；E1 nDCG＠10 不低於 0.810；E2 用獨立查詢集量別名增益（只記錄） | — |
@@ -198,3 +198,66 @@
 - `m1_3_upgrade.rs`：0021 → 0022。
 - 沒測到：MCP `triage_list` 只測了 `agent_list` 函式，沒經 MCP 協定。
 - 後續項：`project_tabs.rs` PUT 分頁設定的 Idempotency-Key 重送回現在的設定（同 D11 修正前的模式）。
+
+## M1.4 疑點與照建議的做法
+
+- M1.4-D1 **內建角色的 M1 權限**（使用者決定，2026-11-10）：0023 用一個 `INSERT` 照 Redmine 預設給內建角色，所有專案的 `security_epoch` 只加一次。
+  - Manager：7 個全給（`view_time_entries`、`log_time`、`edit_time_entries`、`edit_own_time_entries`、`log_time_for_other_users`、`triage_issues`、`manage_public_views`）。
+  - Developer、Reporter：`view_time_entries`、`log_time`。
+  - **Non member／Anonymous 不給 `view_time_entries`**（Redmine 預設有）。理由：公開專案的非成員會看到全部人的工時（`time_entries_visibility` 預設 `all`），會影響產品與隱私，沒有合理預設。**待使用者決定**；要給時由管理員手動加（會再 bump 一次 epoch）。
+  - 角色照 0015 的做法用名稱找（`builtin IS NULL`）；改過名的角色拿不到，要手動給。
+- M1.4-D2 **既有專案一律啟用 `time_tracking` 模組**（Redmine 預設模組含它）。這一個 `INSERT` 期間停用 `enabled_modules` 的 epoch trigger，所以每個專案的 epoch 只因為上面的授權加一（升級測試驗證「恰好 +1」）。
+- M1.4-D3 **回執**：契約 §3.10.2 寫的是 `effects` 加 `{kind: "time_entry", …}`；實作放在獨立的 `time_entries` 陣列（`/commands` 的 `CommandResult.time_entries`、`command_submit` 的 `Applied.time_entries`；空的時候省略），每項 `{kind: "time_entry", id, lock_version, changed, action}`。理由：`effects` 的既有元素是 issue 形狀（`key`、`search` 等），前端與 agent 都以 issue 解讀，混進另一種形狀會壞既有 client。items 另有 `time_entry_id`。
+- M1.4-D4 **agent 回執只給 id 與 `lock_version`**，不論 `read_own_time` 開不開（§3.5.4 只要求關的時候不給欄位；開的時候也用 `time_list` 讀，行為單純）。
+- M1.4-D5 **預設值**：`spent_on` 省略時用組織時區的今天；`activity_id` 省略時用專案可用的預設活動，沒有預設時回 `required_field_missing`（`fields: ["activity_id"]`）。`user_id` 省略是自己（agent 是委派者）。
+- M1.4-D6 **專案工時設定版本**：新表 `project_time_settings`（每專案一列，trigger 建列）放 `lock_version`，給 `PUT /projects/{id}/time-activities` 做樂觀鎖；同一個 PUT 可帶 `module_enabled` 開關模組（要 `manage_project` 或管理員）。
+- M1.4-D7 **組織規則預設**：`timelog_max_hours_per_day = 0`（不限）、可記 0 小時、可記未來日期、可記已關閉的單、不要求 issue、不要求說明（同 Redmine 預設）。
+- M1.4-D8 **配額**：`log_time` 每個 agent 每小時 20 次，只算 direct 寫入（送審的提案不算，核准時也不算），和既有配額同一張表。
+- M1.4-D9 **委派的 `read_own_time`**：
+  - API 建委派時預設 `false`；要開必須同時帶 `read_own_time_ack: true`，否則 `invalid_value`（`kind: "ack_required"`）。DB 也有 CHECK（開著就要有 `read_own_time_ack_at`）。
+  - 另開 `PUT /delegations/{id}/read-own-time`（`{enabled, ack}`）切換。**開或關都 `policy_version + 1`，並要求 step-up**（契約 §2.5：委派設定變更；比照 `PUT /delegations/{id}/policies`）。原本「不 bump」的做法經獨立驗證撤回。
+  - 委派回應帶 `read_own_time_warning`：§6.14 文案逐字（`title`、`body`、`ack_label`、`tag`、`tag_tooltip`），前端直接顯示。
+- M1.4-D10 **受眾檢查**（§3.8）：工時目的地的讀者＝工時讀者（`time_visibility`）∩ issue 讀者；私有 issue 上的工時略過；不一致時錯誤 `kind` 用 `private_destination`。
+- M1.4-D11 **時數格式**：回應一律兩位小數字串（`"1.50"`）；0 寫成 `"0"`。報表與視圖合計是 `numeric(12,2)` 文字（`"0.00"`）。
+- M1.4-D12 **封存的 issue 上的工時看不到**（清單、報表、合計都不算），和 issue 本身一致。
+- M1.4-D13 **REST 讀取端點只給人**（`/time-entries*`、`/me/timesheet`、`/time-activities` 等）；agent 只能用 MCP `time_list`。
+- M1.4-D14 **`spent_hours`**（§3.5.4、R-VD7）：
+  - issue 詳情（`GET /issues/{key}` 與 MCP `get` 不帶 `fields`）：人看到自己看得到的工時合計；在該專案讀不到工時時**省略欄位**；agent 永遠沒有。
+  - `get` 的 `fields` 可要 `spent_hours`（人：讀不到時是 `null`）；agent 要它回 `invalid_argument`（`details.reason = "unavailable_to_agent"`，T-M1-40）。
+  - **Filter 欄位 `spent_hours`**（number；`eq`、`ne`、`lt`、`le`、`gt`、`ge`、`between`；值是小數字串）：比較的是觀看者看得到的合計，讀不到工時的專案是 NULL（`ne` 會符合，同其他欄位的「沒有值算不相等」）。契約 §3.2 的內建欄位表沒有列 `spent_hours`，這是依 M1.4 任務說明加的；agent 用它回 `invalid_argument`（`unavailable_to_agent`），`/filter-fields` 對 agent 不列。**不開放排序**（契約沒寫，成本高）。
+  - 實作：`ox_core::filter::Filter::Cond` 多一個明確欄位 `viewer: Option<Uuid>`（「這個值是誰看到的」；只有 `spent_hours` 用，`Filter::cond_as` 建立），`applies` 維持 `True`，和其他內建欄位一樣。原本把觀看者塞在 `applies = Pred::AuthorIs(viewer)` 的做法已拿掉（會被當成 gate，例如 views 的 `Clause::NotApplies`）。prefilter 不認得這個欄位，一律不收窄。
+  - 視圖：欄位 `spent_hours`（人：看得到的合計字串，讀不到是 `null`）與合計 `totals: ["spent_hours"]`（整個可見結果，R-VD6 同一個 2 秒預算）。agent 的 `view_run` 不回欄位值與合計，所以不受影響。M1.2 的 `LATER` 清單移除。
+- M1.4-D15 **undo**（T-M1-41）：只處理 agent 執行的工時變更（人的執行不留前後值）。
+  - 建立的工時：沒人改過（所有欄位來源仍是這次執行、沒被刪）→ 軟刪除；否則 `changed_since`。
+  - agent 改過的欄位：來源仍是這次執行 → 直接放回前值（不重跑 T1–T7 驗證，例如日上限；前值當時是合法的）；`issue_id`、`user_id` 回 `not_supported`（agent 不能改 `user_id`；改 issue 要人手動），`comments` 的前後值被遮蔽時回 `redacted`。
+  - 權限：改欄位的還原要能改那筆（`edit_time_entries`，或自己的工時有 `edit_own_time_entries`），否則 `permission`。**agent「建立」的工時（`created`：`user_id` 是 undo 的人、之後沒人改過）只要 `log_time` 就能撤回**（照預設，**待使用者確認**）。理由：Developer 預設只有 `view_time_entries`、`log_time`，否則 Developer 委派者收不回 agent 替他記的工時。Redmine `lib/redmine/default_data/loader.rb` 的 Developer 預設權限：repo 與本機都沒有 Redmine 原始碼，**沒有查證**；依記憶 Developer 有 `log_time`、`view_time_entries`，沒有 `edit_own_time_entries`，要使用者或下一輪對照原始碼確認。
+  - 只把實際寫回的欄位標 `reverted_by`（建立的標 `_created`）；用 `skip_time_entries` 跳過的欄位之後仍可 undo。
+  - 鎖順序：projects FOR SHARE → issues（含工時所在的 issue）FOR UPDATE → time_entries FOR UPDATE → 日合計 → 執行紀錄。`UndoInput.skip_time_entries`（`"<id>/<field>"`，新建的是 `created`）、`UndoResult.time_entries_restored`、`UndoPreview.time_entries`。
+- M1.4-D16 **D12 遮蔽工時說明**（T-M1-42）：新端點 `POST /time-entries/{id}/redact`（同其他遮蔽：`manage_project` 或管理員、step-up、Idempotency-Key、epoch +1）。
+  - `time_entries.comments` 換成 `[已遮蔽]`、`redacted_at`；每個含 comments 的事件只換掉 comments 的值（時數等其他變更保留），各寫一筆 `time_entry_event_redactions`；回應的 `redaction_id` 是第一筆。
+  - 衍生副本：`redaction::derived` 加上 `execution_time_entry_changes`（該專案的工時，或來源快照含該專案的執行），整個前後值換成標記；所以專案內任何一次遮蔽之後，agent 工時變更的 undo 會變成 `redacted`（建立的工時仍可刪），和 issue 欄位的行為一致。
+  - 讀不到那筆工時的人（非管理員）回 `not_found`。已軟刪除的工時也可遮蔽（同權限）。
+  - 遮蔽後再改 comments 會清掉 `redacted_at`（新文字不是遮蔽過的內容），所以可以再遮蔽一次（`changed: true`）。undo 寫回 comments 時同樣處理。
+- M1.4-D17 **待審佇列**（§4.3、C4）：`log_time` 沒有 comments 或 comments ≤ 80 字可勾選，超過是 `long_field:comments`；`update_time_entry` 一律 `op:update_time_entry`（逐份看）。diff 多一列 `field: "time"`（`after: {hours, spent_on, activity: {id, name}, comments, user_id}`）；沒有 issue 的 `log_time` 沒有 diff 列（`DiffTarget` 需要 issue）。
+- M1.4-D18 **MCP**：新工具 `time_list`（`{project?, issue?, from, to, limit?, cursor?}`，描述照 §4.2 逐字）；`command_submit` 描述加「log_time 只能替委派者記、agent 不能刪工時」兩句；server instructions 加「工時只能代委派者記、說明不要抄進 note」。§4.2 的 `agent_chain` 一句與 instructions 的 `describe_form`／`validate` 一句**沒加**：那是 M1.9、M1.5 的功能，現在加會讓 agent 找不存在的工具。
+
+- M1.4-D19 **鎖順序（§3.5.5）的實作細節**：
+  - 日合計一列一列鎖（`(user, day)` 排序後逐筆 `SELECT … FOR UPDATE`），鎖完第一列有測試用 fault point `time.after_first_total`（只在 `test-support`）。
+  - 混合文件（`log_time` 加同一張 issue 的 op）：引擎在鎖完 issue、版本之後，field option 與 search token 之前，先呼叫 `time_entries::prelock_totals` 鎖文件可能動到的日合計（`spent_on` 無法解析的不鎖，之後 plan 也會拒絕）；plan 之後再鎖同一批列是 no-op。
+- M1.4-D20 **update／delete 的錯誤順序**：看不到的工時一律 `not_found`，在專案、模組、權限檢查之前判斷（專案看不到、`time_entries_visibility` 不允許、所在 issue 看不到）。為了區分「模組關了但本來看得到」（仍回 `module_disabled`）與「本來就看不到」（`not_found`），0023 把 SQL 函式拆成 `time_role_visibility(project, viewer)`（只看角色，不看模組）與 `time_visibility`（模組開著才回前者）。
+- M1.4-D21 **其他修正**：`/me/timesheet` 只列啟用 `time_tracking` 模組的專案；日上限錯誤的 `remaining` 對 agent 一律不給（委派者的當日合計跨專案）；判斷「看得到整天」時排除封存 issue 上的工時。
+
+### 測試
+
+- `m1_4_time.rs`（17 個）：T-M1-31（權限矩陣）、32（可見性）、33（日上限並行）、34（`remaining` 只在看得到時給）、35（T1–T7）、36／37（文件結構、不碰 issue `lock_version`）、38（agent 寫入、預設 review、配額、scope）、39／39a（`time_list`、`read_own_time` 開關）、39b（沒 ack 建不起來）、40（`spent_hours`：詳情、`get` fields、Filter、`/filter-fields`、視圖欄與合計、agent 錯誤、MCP `time_list` 函式）、41／42（undo 與遮蔽）、43（跨日、改人；100 並行的鎖順序壓力測試，用 `pg_stat_database.deadlocks` 前後比對）、44（報表與週表）、待審佇列、CHECK 清單與常數一致、HTTP 路由。
+- `m1_4_upgrade.rs`：0022 → 0023：每個專案 epoch 恰好 +1、權限對照、模組與設定列、委派不變、工作脈絡隔離、5 個預設活動。
+- 改了既有測試：`m1_0_upgrade`、`m1_2_upgrade`、`m1_3_upgrade` 升級後改成 `run_to(20／21／22)`（原本 `run()` 會連 0023 一起跑，0023 的 epoch bump 讓「升級不 bump epoch」的斷言失敗；各自只驗自己的 migration）；`s6_direct` 的 `available_commands` 多了 `log_time`、`update_time_entry`；`m1_1_filter`（`spent_hours` 不再是 unknown；`/filter-fields` 有它）、`m1_2_views`（`spent_hours` 欄與合計不再是 unknown）；所有 `DelegationInput` 字面值補 `read_own_time: false, read_own_time_ack: false`。
+- 獨立驗證後補的（`m1_4_time.rs` 再加 11 個）：
+  - 驗證者的 5 個重現測試（`vfy_*`：agent 的 `remaining`、遮蔽後改再遮蔽、undo skip、agent 在 `or` 裡用 `spent_hours`、送審模式的 agent 範圍）。
+  - `t43_lock_order_two_documents`：兩份文件在同一個人的兩天之間反向移動，第一份鎖完第一列就停（fault point），第二份等鎖後再放行；比對 `pg_stat_database.deadlocks`。已用 mutant 確認：把鎖的順序改成「先鎖減少的那天」時這個測試失敗（deadlock 1 次），`t43_lock_order_stress` 仍通過。
+  - `agent_log_time_quota`：成功的 direct `log_time` 寫一筆 `time_write`，第 21 次 `quota_exceeded`。
+  - `t41_undo_permission_and_skip`：`permission` 原因、`created` 只要 `log_time`、`skip_time_entries` 部分還原後剩下的欄位仍可 undo。
+  - `update_delete_invisible_and_closed`：私有 issue 上的工時、`own` 看不到別人的（模組關了也是 `not_found`；看得到的人是 `module_disabled`）、update 的 `closed_issue`。
+  - `agent_view_run_with_spent_hours`、`t39c_mcp_time_list`（經 MCP 協定）；`m1_4_http` 加 `POST /time-entries/{id}/redact`、`PUT /delegations/{id}/read-own-time`（開關各 +1、bob 改不了、step-up 過期拒絕）。
+- `m1_4_upgrade.rs` 加：所有角色 `time_entries_visibility = 'all'`；`m1_4_fresh_install_matches_migration`（全新安裝跑完 migration 再 `seed-demo`，內建角色的 M1 權限與 0023 給既有角色的一致）。
+- 沒測到：委派精靈的警告只驗證 API 回應的文案，畫面要等前端接（契約要求截圖檢查）。

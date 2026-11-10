@@ -85,6 +85,10 @@ pub const OP_CREATE_VERSION: &str = "create_version";
 pub const OP_UPDATE_VERSION: &str = "update_version";
 /// Contract 05 §3.10.1 (M1.3).
 pub const OP_TRIAGE_DECIDE: &str = "triage_decide";
+/// Contract 05 §3.10.2: time ops agents may have (delete_time_entry is for people only).
+pub const OP_LOG_TIME: &str = "log_time";
+pub const OP_UPDATE_TIME_ENTRY: &str = "update_time_entry";
+pub const OP_DELETE_TIME_ENTRY: &str = "delete_time_entry";
 
 /// One active delegation's scope.
 #[derive(Debug, Clone, PartialEq, Eq)]

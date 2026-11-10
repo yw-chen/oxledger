@@ -182,7 +182,7 @@ async fn m1_3_upgrade_triage() {
             .unwrap();
     let grants_before = count(&pool, "SELECT count(*) FROM role_permissions").await;
 
-    db::MIGRATOR.run(&pool).await.unwrap();
+    db::MIGRATOR.run_to(22, &pool).await.unwrap();
 
     // Settings: one row per project, Triage off, the default rule.
     let (enabled, rule, lv): (bool, String, i32) = sqlx::query_as(

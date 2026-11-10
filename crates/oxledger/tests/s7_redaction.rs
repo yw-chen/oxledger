@@ -1060,6 +1060,8 @@ async fn admin_only_archived_and_version_copies() {
             max_ops: None,
             expires_in_days: Some(30),
             policies: None,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await

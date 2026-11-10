@@ -269,6 +269,12 @@ pub struct IssueDetail {
     pub due_date: Option<NaiveDate>,
     /// Decimal string such as "1.5" (design 05 §3.10.3); null when not set.
     pub estimated_hours: Option<String>,
+    /// Contract 05 §3.5.4: hours of the time entries on this issue that the
+    /// caller can see (others' hidden entries are not counted), such as "6.00";
+    /// "0" when none. Absent when the caller cannot read time in the project
+    /// (no `view_time_entries`, module off) and always for agents (§4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spent_hours: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Pass back as `expected_lock_version` when updating (M1).
@@ -2130,6 +2136,12 @@ pub(crate) async fn get_in(
             }
         };
     let triage = crate::triage::issue_state(&mut *conn, row.id, can_triage).await?;
+    let spent_hours = match caller.user_id() {
+        Some(me) => {
+            crate::time_reports::issue_spent(&mut *conn, me, row.project_id, row.id).await?
+        }
+        None => None,
+    };
     let custom_fields = custom_field_values(
         &mut *conn,
         caller,
@@ -2162,6 +2174,7 @@ pub(crate) async fn get_in(
             start_date: row.start_date,
             due_date: row.due_date,
             estimated_hours: row.estimated_hours,
+            spent_hours,
             created_at: row.created_at,
             updated_at: row.updated_at,
             lock_version: row.lock_version,

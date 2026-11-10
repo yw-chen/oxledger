@@ -40,6 +40,7 @@ pub const GET_FIELDS: &[&str] = &[
     "priority",
     "fixed_version",
     "estimated_hours",
+    "spent_hours",
     "is_private",
     "created_at",
     "updated_at",
@@ -66,8 +67,8 @@ pub struct GetParams {
     /// Issue fields to read: key, subject, description, project, tracker, status,
     /// status_category, status_since, assignee, priority, fixed_version,
     /// estimated_hours, is_private, created_at, updated_at, last_activity_at,
-    /// lock_version, triage, cf:<custom field name>. Without
-    /// `fields`: the full current detail (no notes or history).
+    /// lock_version, triage, spent_hours (people only), cf:<custom field name>.
+    /// Without `fields`: the full current detail (no notes or history).
     pub fields: Option<Vec<String>>,
     /// "subject" and/or "description" (must also be in `fields`): a citation_id for
     /// the whole field. Quote ≤2000 characters directly; else use get_source(selection: "subquote").
@@ -215,6 +216,11 @@ pub struct IssueView {
     /// Decimal string such as "1.5"; null when not set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_hours: Option<Option<String>>,
+    /// People only (contract 05 §3.5.4): the visible time on this issue; null
+    /// when the caller cannot read time in the project. Agents asking for it
+    /// get `invalid_argument` (`details.reason = "unavailable_to_agent"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spent_hours: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -294,6 +300,18 @@ async fn plan(conn: &mut PgConnection, caller: AuthContext, a: Ask<'_>) -> Resul
                     cf.push(name.into());
                 }
             } else if let Some(k) = GET_FIELDS.iter().find(|k| **k == f.as_str()) {
+                if *k == "spent_hours" && caller.user_id().is_none() {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidArgument,
+                        "spent_hours is not available to agents (contract 05 §4); read your delegator's own time with time_list",
+                    )
+                    .with_details(serde_json::json!({
+                        "reason": "unavailable_to_agent",
+                        "path": "fields",
+                        "field": "spent_hours",
+                    }))
+                    .into());
+                }
                 if !v.contains(k) {
                     v.push(k);
                 }
@@ -545,6 +563,7 @@ async fn get_one(
             start_date: Some(d.start_date),
             due_date: Some(d.due_date),
             estimated_hours: Some(d.estimated_hours),
+            spent_hours: d.spent_hours.map(Some),
             created_at: Some(d.created_at),
             updated_at: Some(d.updated_at),
             lock_version: Some(d.lock_version),
@@ -637,6 +656,15 @@ async fn get_one(
             }
             "is_private" => v.is_private = Some(row.try_get("is_private")?),
             "estimated_hours" => v.estimated_hours = Some(row.try_get("estimated_hours")?),
+            "spent_hours" => {
+                let me = caller.user_id();
+                v.spent_hours = Some(match me {
+                    Some(me) => {
+                        crate::time_reports::issue_spent(&mut *conn, me, project_id, id).await?
+                    }
+                    None => None,
+                });
+            }
             "created_at" => v.created_at = Some(created),
             "updated_at" => v.updated_at = Some(row.try_get("updated_at")?),
             "lock_version" => v.lock_version = Some(row.try_get("lock_version")?),

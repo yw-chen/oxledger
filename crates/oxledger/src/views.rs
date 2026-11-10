@@ -79,6 +79,7 @@ pub const COLUMNS: &[&str] = &[
     "created_at",
     "updated_at",
     "estimated_hours",
+    "spent_hours",
     "triage",
 ];
 /// Built-in `group_by` keys (list, cf: list, user and bool types).
@@ -99,10 +100,8 @@ pub const LANES_BY: &[&str] = &[
     "fixed_version",
 ];
 pub const SWIMLANES_BY: &[&str] = &["assignee", "priority", "fixed_version", "project"];
-pub const TOTALS: &[&str] = &["estimated_hours"];
-/// Keys of later stages (design 05 §8 依賴倒置): `spent_hours` needs 0023
-/// (M1.4); until then it is unknown.
-const LATER: &[&str] = &["spent_hours"];
+/// R-VD7: `spent_hours` sums only the time the opener can see (§3.5.4).
+pub const TOTALS: &[&str] = &["estimated_hours", "spent_hours"];
 const DEFAULT_LIST_COLUMNS: &[&str] = &[
     "key",
     "subject",
@@ -1083,9 +1082,6 @@ fn norm_key(
             ),
         )
     };
-    if LATER.contains(&key) {
-        return Err(unknown());
-    }
     let (row, _) = find_cf(fields, key).ok_or_else(unknown)?;
     let ty = row.field_type()?;
     if cf_types.is_some_and(|t| !t.contains(&ty)) {
@@ -2806,6 +2802,31 @@ impl Counter {
         }))
     }
 
+    /// R-VD7: the hours of the time entries `me` can see (§3.5.4) on the
+    /// visible matching issues (two decimals).
+    async fn sum_spent(
+        &self,
+        conn: &mut PgConnection,
+        me: Option<Uuid>,
+        visible: &Pred,
+        clauses: &[Clause<'_>],
+    ) -> Result<Option<String>> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT (COALESCE(sum(te.hours), 0)::numeric(12, 2))::text FROM time_entries te
+             WHERE te.deleted_at IS NULL AND (CASE time_visibility(te.project_id, ",
+        );
+        qb.push_bind(me)
+            .push(") WHEN 'all' THEN true WHEN 'own' THEN te.user_id = ")
+            .push_bind(me)
+            .push(" ELSE false END) AND te.issue_id IN (SELECT i.id");
+        Self::from_where(&mut qb, visible, clauses);
+        qb.push(")");
+        let Some(rows) = self.rows(&mut *conn, qb).await? else {
+            return Ok(None);
+        };
+        Ok(rows.first().map(|r| r.try_get(0)).transpose()?)
+    }
+
     /// The sum of `estimated_hours` (two decimals).
     async fn sum_estimated(
         &self,
@@ -3059,12 +3080,19 @@ struct Display {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     estimated_hours: Option<String>,
+    /// R-VD7: hundredths of the hours of the time entries the opener can see
+    /// on the issue; `None` when the opener cannot read time in its project.
+    spent_cents: Option<i64>,
     /// Contract 05 §3.4: the triage state (`snoozed` while snoozed), or
     /// `None` when the issue never entered the inbox.
     triage: Option<String>,
 }
 
-async fn displays(conn: &mut PgConnection, ids: &[Uuid]) -> Result<HashMap<Uuid, Display>> {
+async fn displays(
+    conn: &mut PgConnection,
+    me: Option<Uuid>,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, Display>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -3078,11 +3106,16 @@ async fn displays(conn: &mut PgConnection, ids: &[Uuid]) -> Result<HashMap<Uuid,
                 i.fixed_version_id, v.name AS version_name,
                 i.is_private, i.start_date, i.due_date, i.created_at, i.updated_at,
                 trim_scale(i.estimated_hours)::text AS estimated_hours,
+                CASE WHEN vis.v IS NOT NULL THEN
+                    (SELECT (COALESCE(sum(te.hours), 0) * 100)::bigint FROM time_entries te
+                     WHERE te.issue_id = i.id AND te.deleted_at IS NULL
+                       AND (vis.v = 'all' OR te.user_id = $2)) END AS spent_cents,
                 (SELECT CASE WHEN tr.state = 'pending' AND tr.snoozed_until > now()
                                   AND i.updated_at <= tr.snoozed_at
                              THEN 'snoozed' ELSE tr.state END
                  FROM issue_triage tr WHERE tr.issue_id = i.id) AS triage
          FROM issues i
+         LEFT JOIN LATERAL (SELECT time_visibility(i.project_id, $2) AS v) vis ON true
          JOIN projects p ON p.id = i.project_id
          JOIN trackers t ON t.id = i.tracker_id
          JOIN issue_statuses s ON s.id = i.status_id
@@ -3093,6 +3126,7 @@ async fn displays(conn: &mut PgConnection, ids: &[Uuid]) -> Result<HashMap<Uuid,
          WHERE i.id = ANY($1)",
     )
     .bind(ids)
+    .bind(me)
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(|r| (r.id, r)).collect())
@@ -3173,6 +3207,7 @@ fn value_of(col: &str, r: &Display, cf: &HashMap<String, Json>) -> Json {
         "created_at" => json!(r.created_at),
         "updated_at" => json!(r.updated_at),
         "estimated_hours" => json!(r.estimated_hours),
+        "spent_hours" => json!(r.spent_cents.map(crate::time_entries::fmt_hours)),
         "triage" => json!(r.triage),
         k => cf.get(k).cloned().unwrap_or(Json::Null),
     }
@@ -3454,7 +3489,7 @@ async fn execute(
                 return Ok((empty_run(p, &meta), Some(a)));
             }
             let ids: Vec<Uuid> = res.items.iter().map(|i| i.id).collect();
-            let rows = displays(&mut *conn, &ids).await?;
+            let rows = displays(&mut *conn, caller.user_id(), &ids).await?;
             let columns: Vec<String> = p
                 .def
                 .columns
@@ -3551,7 +3586,11 @@ async fn execute(
             } else {
                 let mut t = BTreeMap::new();
                 for k in &p.def.totals {
-                    let value = if counting {
+                    let value = if counting && k == "spent_hours" {
+                        counter
+                            .sum_spent(&mut *conn, caller.user_id(), &b.visible, &base_clauses)
+                            .await?
+                    } else if counting {
                         counter
                             .sum_estimated(&mut *conn, &b.visible, &base_clauses)
                             .await?
@@ -3770,7 +3809,7 @@ async fn execute(
                     continue;
                 }
                 let ids: Vec<Uuid> = res.items.iter().map(|i| i.id).collect();
-                let rows = displays(&mut *conn, &ids).await?;
+                let rows = displays(&mut *conn, caller.user_id(), &ids).await?;
                 let cards: Vec<String> = p
                     .def
                     .card_fields

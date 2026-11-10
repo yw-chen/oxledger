@@ -1,7 +1,56 @@
 {
   "components": {
     "schemas": {
+      "ActivitiesPut": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
       "Activity": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "in_use": {
+            "description": "Entries use it (it can then only be deactivated).",
+            "type": "boolean"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "position",
+          "active",
+          "is_default",
+          "in_use"
+        ],
+        "type": "object"
+      },
+      "Activity2": {
         "properties": {
           "items": {
             "items": {
@@ -31,6 +80,40 @@
           "field",
           "before",
           "after"
+        ],
+        "type": "object"
+      },
+      "ActivityInput": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "default": null,
+            "description": "Omitted = a new activity.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "position",
+          "active",
+          "is_default"
         ],
         "type": "object"
       },
@@ -73,6 +156,22 @@
           "keys",
           "diff",
           "undoable"
+        ],
+        "type": "object"
+      },
+      "ActivityOverride": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "activity_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activity_id",
+          "active"
         ],
         "type": "object"
       },
@@ -325,6 +424,37 @@
         "required": [
           "project_id",
           "assignees"
+        ],
+        "type": "object"
+      },
+      "AuthorRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`user` or `agent`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "on_behalf_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
         ],
         "type": "object"
       },
@@ -747,6 +877,13 @@
           "status": {
             "description": "Always `succeeded` (failures are errors).",
             "type": "string"
+          },
+          "time_entries": {
+            "description": "Time entries the document wrote (contract 05 §3.10.2); omitted when none.",
+            "items": {
+              "$ref": "#/components/schemas/TimeEntryEffect"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -1107,7 +1244,7 @@
                 "type": "null"
               }
             ],
-            "description": "Modes inside the ceiling (§16.3); unlisted commands and fields are direct."
+            "description": "Modes inside the ceiling (§16.3); unlisted commands and fields are\ndirect, except `log_time` and `update_time_entry` (review, contract 05 §4.3)."
           },
           "project_id": {
             "format": "uuid",
@@ -1118,6 +1255,22 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "read_own_time": {
+            "default": null,
+            "description": "Contract 05 §3.5.4 A1: let the agent read your own time (default false).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "read_own_time_ack": {
+            "default": null,
+            "description": "Required with `read_own_time: true` (the §6.14 warning was acknowledged).",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "writable_fields": {
             "items": {
@@ -1174,6 +1327,22 @@
             },
             "type": "array"
           },
+          "read_own_time": {
+            "description": "Contract 05 §2.5, §3.5.4: the agent may read the delegator's own time.",
+            "type": "boolean"
+          },
+          "read_own_time_ack_at": {
+            "description": "When the delegator ticked 「我了解，仍要開啟」.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "read_own_time_warning": {
+            "$ref": "#/components/schemas/ReadOwnTimeWarning",
+            "description": "The §6.14 warning text (the same on every delegation)."
+          },
           "revoked_at": {
             "format": "date-time",
             "type": [
@@ -1199,7 +1368,10 @@
           "max_ops",
           "created_at",
           "expires_at",
-          "revoked_at"
+          "revoked_at",
+          "read_own_time",
+          "read_own_time_ack_at",
+          "read_own_time_warning"
         ],
         "type": "object"
       },
@@ -2348,7 +2520,7 @@
           "decline_status": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Named"
+                "$ref": "#/components/schemas/Named2"
               },
               {
                 "type": "null"
@@ -2361,7 +2533,7 @@
           "responsible": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Named"
+                "$ref": "#/components/schemas/Named2"
               },
               {
                 "type": "null"
@@ -2651,6 +2823,13 @@
               "null"
             ]
           },
+          "spent_hours": {
+            "description": "Contract 05 §3.5.4: hours of the time entries on this issue that the\ncaller can see (others' hidden entries are not counted), such as \"6.00\";\n\"0\" when none. Absent when the caller cannot read time in the project\n(no `view_time_entries`, module off) and always for agents (§4).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "start_date": {
             "format": "date",
             "type": [
@@ -2748,6 +2927,26 @@
         ],
         "type": "object"
       },
+      "IssueRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "subject"
+        ],
+        "type": "object"
+      },
       "IssueTriage": {
         "description": "`GET /issues/{key}`'s `triage` (§3.4).",
         "properties": {
@@ -2819,6 +3018,14 @@
           "status": {
             "description": "`applied` or `no_effect`.",
             "type": "string"
+          },
+          "time_entry_id": {
+            "description": "The time entry the op wrote (time ops, contract 05 §3.10.2).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "version_id": {
             "description": "The milestone the op wrote (version ops).",
@@ -3059,6 +3266,22 @@
         "type": "object"
       },
       "Named": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "Named2": {
         "properties": {
           "id": {
             "format": "uuid",
@@ -3531,6 +3754,107 @@
               "decision"
             ],
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Contract 05 §3.10.2: log time (with issue ops on the same issue, or alone).",
+            "properties": {
+              "bind": {
+                "description": "Accepted for symmetry with create_issue; nothing can refer to it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fields": {
+                "$ref": "#/components/schemas/TimeFields"
+              },
+              "issue": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TargetRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "An existing issue (`{\"type\": \"issue\", \"id\"|\"key\"}`)."
+              },
+              "kind": {
+                "const": "log_time",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "project_id": {
+                "description": "Optional with `issue` (must then match its project).",
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "fields"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Contract 05 §3.10.2: the only op, one precondition on the entry.",
+            "properties": {
+              "kind": {
+                "const": "update_time_entry",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "set": {
+                "$ref": "#/components/schemas/TimeEntrySet"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef",
+                "description": "`{\"type\": \"time_entry\", \"id\": …}`."
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "set"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Contract 05 §3.10.2: people only; the only op, one precondition.",
+            "properties": {
+              "kind": {
+                "const": "delete_time_entry",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef",
+                "description": "`{\"type\": \"time_entry\", \"id\": …}`."
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3900,7 +4224,7 @@
           "on_behalf_of": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Named"
+                "$ref": "#/components/schemas/Named2"
               },
               {
                 "type": "null"
@@ -3932,6 +4256,29 @@
         "required": [
           "default",
           "allowed_values"
+        ],
+        "type": "object"
+      },
+      "ProjectActivities": {
+        "properties": {
+          "default_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "description": "Usable now in the project (site active and not turned off here).",
+            "items": {
+              "$ref": "#/components/schemas/Named"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "default_id"
         ],
         "type": "object"
       },
@@ -3996,6 +4343,22 @@
           },
           "key": {
             "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key"
+        ],
+        "type": "object"
+      },
+      "ProjectRef2": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -4005,6 +4368,127 @@
           "id",
           "key",
           "name"
+        ],
+        "type": "object"
+      },
+      "ProjectTimePut": {
+        "additionalProperties": false,
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "module_enabled": {
+            "default": null,
+            "description": "Turns the time tracking module on or off (omitted = unchanged). This\nchanges the project's security epoch: agent work contexts that read\nfrom the project must be restarted.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "overrides": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityOverride"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lock_version",
+          "overrides"
+        ],
+        "type": "object"
+      },
+      "ProjectTimeSettings": {
+        "properties": {
+          "activities": {
+            "description": "The site list, for the settings page.",
+            "items": {
+              "$ref": "#/components/schemas/Activity"
+            },
+            "type": "array"
+          },
+          "can_manage": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "module_enabled": {
+            "description": "Whether the time tracking module is on.",
+            "type": "boolean"
+          },
+          "overrides": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityOverride"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "lock_version",
+          "module_enabled",
+          "overrides",
+          "activities",
+          "can_manage"
+        ],
+        "type": "object"
+      },
+      "ReadOwnTimeBody": {
+        "additionalProperties": false,
+        "properties": {
+          "ack": {
+            "default": false,
+            "description": "Required (true) when enabling: the §6.14 warning was acknowledged.",
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "ReadOwnTimeWarning": {
+        "description": "Contract 05 §6.14: the delegation wizard's warning for `read_own_time`,\nword for word (A1(c)). The SPA shows it; the API carries it so the text\nhas one source.",
+        "properties": {
+          "ack_label": {
+            "description": "The checkbox that must be ticked to turn it on.",
+            "type": "string"
+          },
+          "body": {
+            "description": "The paragraphs after it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tag": {
+            "description": "The tooltip of the delegation list tag 「可讀我的工時」.",
+            "type": "string"
+          },
+          "tag_tooltip": {
+            "type": "string"
+          },
+          "title": {
+            "description": "The bold first line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "body",
+          "ack_label",
+          "tag",
+          "tag_tooltip"
         ],
         "type": "object"
       },
@@ -5124,6 +5608,66 @@
         ],
         "type": "string"
       },
+      "Summary": {
+        "properties": {
+          "from": {
+            "format": "date",
+            "type": "string"
+          },
+          "group_by": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SummaryRow"
+            },
+            "type": "array"
+          },
+          "scope_note": {
+            "description": "Always `only_visible`: the totals count only time the viewer may read.",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "type": "string"
+          },
+          "total": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "group_by",
+          "rows",
+          "total",
+          "scope_note"
+        ],
+        "type": "object"
+      },
+      "SummaryRow": {
+        "properties": {
+          "hours": {
+            "type": "string"
+          },
+          "key": {
+            "description": "The group's id or value (`null`: no issue / no tracker / no version).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "hours"
+        ],
+        "type": "object"
+      },
       "SummaryValidation": {
         "properties": {
           "checked_at": {
@@ -5417,6 +5961,25 @@
               "id"
             ],
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A time entry (update_time_entry, delete_time_entry and their\nprecondition only).",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "time_entry",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -5463,6 +6026,279 @@
           "at_risk_open_pct",
           "source"
         ],
+        "type": "object"
+      },
+      "TimeEntryEffect": {
+        "description": "`effects` of a time op (contract 05 §3.10.2).",
+        "properties": {
+          "action": {
+            "description": "`created`, `updated` or `deleted`.",
+            "type": "string"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Always `time_entry`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "lock_version",
+          "changed",
+          "action"
+        ],
+        "type": "object"
+      },
+      "TimeEntryEvent": {
+        "description": "Events of one visible entry (oldest first).",
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Named"
+          },
+          "actor_kind": {
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "changes": {
+            "description": "`{field: {\"old\", \"new\"}}`; redacted text shows `[已遮蔽]`."
+          },
+          "kind": {
+            "description": "`created`, `updated`, `deleted`, `restored`.",
+            "type": "string"
+          },
+          "on_behalf_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "origin": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "at",
+          "kind",
+          "origin",
+          "actor",
+          "actor_kind",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "TimeEntryPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TimeEntryView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "TimeEntrySet": {
+        "additionalProperties": false,
+        "description": "`update_time_entry.set`: absent = unchanged; `issue: null` detaches.",
+        "properties": {
+          "activity_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comments": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hours": true,
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TargetRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`{\"type\": \"issue\", …}` in the same project, or `null`."
+          },
+          "spent_on": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "description": "People only (with `log_time_for_other_users`).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "TimeEntryView": {
+        "description": "A time entry (§3.5.1). `can_edit`/`can_delete` only on the single read.",
+        "properties": {
+          "activity": {
+            "$ref": "#/components/schemas/Named"
+          },
+          "author": {
+            "$ref": "#/components/schemas/AuthorRef"
+          },
+          "can_delete": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "can_edit": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "comments": {
+            "description": "`[已遮蔽]` once redacted (D12).",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hours": {
+            "description": "Decimal string (`\"1.50\"`).",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectRef"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "spent_on": {
+            "format": "date",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/Named"
+          }
+        },
+        "required": [
+          "id",
+          "project",
+          "issue",
+          "user",
+          "author",
+          "activity",
+          "spent_on",
+          "hours",
+          "comments",
+          "redacted",
+          "lock_version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "TimeFields": {
+        "additionalProperties": false,
+        "description": "A time entry's fields (contract 05 §3.10.2). `hours` is a decimal\nstring; `author_id`, `created_on_behalf_of_id` and `project_id` cannot be\nset here.",
+        "properties": {
+          "activity_id": {
+            "description": "Omitted = the project's default activity.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comments": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hours": {
+            "description": "Decimal string, 0–1000, at most two decimals (`\"1.50\"`)."
+          },
+          "spent_on": {
+            "description": "`YYYY-MM-DD`; omitted = today in the org time zone.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "description": "Whose time; omitted = the caller (an agent: its delegator).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "Timeline": {
@@ -5678,6 +6514,183 @@
           "status",
           "health",
           "health_reasons"
+        ],
+        "type": "object"
+      },
+      "TimelogSettings": {
+        "properties": {
+          "accept_0_hours": {
+            "type": "boolean"
+          },
+          "accept_closed_issues": {
+            "type": "boolean"
+          },
+          "accept_future_dates": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_hours_per_day": {
+            "description": "`\"0\"` = no limit.",
+            "type": "string"
+          },
+          "require_comments": {
+            "type": "boolean"
+          },
+          "require_issue": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lock_version",
+          "max_hours_per_day",
+          "accept_0_hours",
+          "accept_future_dates",
+          "accept_closed_issues",
+          "require_issue",
+          "require_comments"
+        ],
+        "type": "object"
+      },
+      "TimelogSettingsPut": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_0_hours": {
+            "type": "boolean"
+          },
+          "accept_closed_issues": {
+            "type": "boolean"
+          },
+          "accept_future_dates": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_hours_per_day": {
+            "description": "Decimal string 0–24 (`\"0\"` = no limit).",
+            "type": "string"
+          },
+          "require_comments": {
+            "type": "boolean"
+          },
+          "require_issue": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lock_version",
+          "max_hours_per_day",
+          "accept_0_hours",
+          "accept_future_dates",
+          "accept_closed_issues",
+          "require_issue",
+          "require_comments"
+        ],
+        "type": "object"
+      },
+      "Timesheet": {
+        "properties": {
+          "day_totals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "days": {
+            "description": "Seven days in `week_start` order.",
+            "items": {
+              "format": "date",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_hours_per_day": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/TimesheetRow"
+            },
+            "type": "array"
+          },
+          "week": {
+            "type": "string"
+          },
+          "week_total": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "week",
+          "days",
+          "max_hours_per_day",
+          "rows",
+          "day_totals",
+          "week_total"
+        ],
+        "type": "object"
+      },
+      "TimesheetCell": {
+        "properties": {
+          "date": {
+            "format": "date",
+            "type": "string"
+          },
+          "entry_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hours": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "date",
+          "hours",
+          "entry_ids"
+        ],
+        "type": "object"
+      },
+      "TimesheetRow": {
+        "properties": {
+          "activity": {
+            "$ref": "#/components/schemas/Named"
+          },
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/TimesheetCell"
+            },
+            "type": "array"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectRef"
+          }
+        },
+        "required": [
+          "project",
+          "issue",
+          "activity",
+          "cells"
         ],
         "type": "object"
       },
@@ -5922,7 +6935,7 @@
           "priority": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Named"
+                "$ref": "#/components/schemas/Named2"
               },
               {
                 "type": "null"
@@ -5966,7 +6979,7 @@
             "type": "string"
           },
           "tracker": {
-            "$ref": "#/components/schemas/Named"
+            "$ref": "#/components/schemas/Named2"
           }
         },
         "required": [
@@ -6054,7 +7067,7 @@
           "decline_status": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Named"
+                "$ref": "#/components/schemas/Named2"
               },
               {
                 "type": "null"
@@ -6080,7 +7093,7 @@
           "responsible": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Named"
+                "$ref": "#/components/schemas/Named2"
               },
               {
                 "type": "null"
@@ -6160,7 +7173,7 @@
           },
           "roles": {
             "items": {
-              "$ref": "#/components/schemas/Named"
+              "$ref": "#/components/schemas/Named2"
             },
             "type": "array"
           }
@@ -6280,6 +7293,13 @@
             },
             "type": "array"
           },
+          "skip_time_entries": {
+            "description": "`\"<time_entry_id>/<field>\"` (field `created` for a new entry) to\nleave as they are (contract 05 §3.10.2).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "skip_triage": {
             "description": "Issue ids whose triage decision stays (contract 05 §3.10.1).",
             "items": {
@@ -6372,6 +7392,14 @@
             },
             "type": "array"
           },
+          "time_entries": {
+            "default": [],
+            "description": "Time entries (contract 05 §3.10.2, T-M1-41).",
+            "items": {
+              "$ref": "#/components/schemas/UndoTimeEntry"
+            },
+            "type": "array"
+          },
           "triage": {
             "default": [],
             "description": "Triage decisions (contract 05 §3.10.1).",
@@ -6407,7 +7435,8 @@
           "relations",
           "choices",
           "version_fields",
-          "triage"
+          "triage",
+          "time_entries"
         ],
         "type": "object"
       },
@@ -6469,6 +7498,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "time_entries_restored": {
+            "default": 0,
+            "description": "Time entries deleted (created by the execution) or put back\n(contract 05 §3.10.2).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "transitions": {
             "format": "uint",
             "minimum": 0,
@@ -6500,9 +7536,47 @@
           "relations_removed",
           "transitions",
           "triage_restored",
+          "time_entries_restored",
           "version_fields_restored",
           "version_deleted",
           "consistent_after"
+        ],
+        "type": "object"
+      },
+      "UndoTimeEntry": {
+        "description": "One time entry change of an agent execution (contract 05 §3.10.2,\nT-M1-41): a created entry is undone by a soft delete, a changed field\ngoes back to its value before.",
+        "properties": {
+          "after": true,
+          "before": true,
+          "current": {
+            "description": "The value now; for `created`, the entry now (null once deleted)."
+          },
+          "field": {
+            "description": "`created` (undo deletes the entry) or the field: hours, spent_on,\nactivity_id, comments, issue_id.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "`expired`, `redacted`, `changed_since` (changed or deleted after the\nexecution), `permission` (cannot edit or delete that entry now) or\n`not_supported` (issue_id: change it by hand).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "time_entry_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "time_entry_id",
+          "field",
+          "before",
+          "after",
+          "current",
+          "restorable"
         ],
         "type": "object"
       },
@@ -7193,7 +8267,7 @@
           "project": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ProjectRef"
+                "$ref": "#/components/schemas/ProjectRef2"
               },
               {
                 "type": "null"
@@ -7485,7 +8559,7 @@
           "project": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ProjectRef"
+                "$ref": "#/components/schemas/ProjectRef2"
               },
               {
                 "type": "null"
@@ -7529,10 +8603,10 @@
         "type": "object"
       },
       "WhereCond": {
-        "description": "One condition. Values: ids (uuid) or names / keys / logins for project,\ntracker, priority, status, assignee, author; `{\"me\": true}` (or \"me\") for\nassignee and author (assignee also matches the caller's groups);\n`{\"next\": true}` for fixed_version (needs exactly one project);\n`\"YYYY-MM-DD\"` or `{\"rel\": \"today\", \"offset\": -3}` for dates; `within`\ntakes `{\"range\": \"this_week\"|\"last_week\"|\"next_week\"|\"this_month\"|\n\"last_month\"|\"last_n_days\"|\"next_n_days\", \"n\"?: 1–366}`; decimal strings\nfor estimated_hours; status_category `todo`/`doing`/`done`/`open`;\ncustom fields `{\"list\": \"<option id>\"}`, `{\"user\": \"<id>\"}`,\n`{\"int\": \"12\"}`, `{\"date\": \"…\"}`, … or plain values as in `filter`.",
+        "description": "One condition. Values: ids (uuid) or names / keys / logins for project,\ntracker, priority, status, assignee, author; `{\"me\": true}` (or \"me\") for\nassignee and author (assignee also matches the caller's groups);\n`{\"next\": true}` for fixed_version (needs exactly one project);\n`\"YYYY-MM-DD\"` or `{\"rel\": \"today\", \"offset\": -3}` for dates; `within`\ntakes `{\"range\": \"this_week\"|\"last_week\"|\"next_week\"|\"this_month\"|\n\"last_month\"|\"last_n_days\"|\"next_n_days\", \"n\"?: 1–366}`; decimal strings\nfor estimated_hours and spent_hours; status_category `todo`/`doing`/`done`/`open`;\ncustom fields `{\"list\": \"<option id>\"}`, `{\"user\": \"<id>\"}`,\n`{\"int\": \"12\"}`, `{\"date\": \"…\"}`, … or plain values as in `filter`.",
         "properties": {
           "field": {
-            "description": "project, tracker, priority, status, status_category, assignee, author,\nfixed_version, is_private, start_date, due_date, created_at,\nupdated_at, estimated_hours, overdue, or cf:<custom field id>.",
+            "description": "project, tracker, priority, status, status_category, assignee, author,\nfixed_version, is_private, start_date, due_date, created_at,\nupdated_at, estimated_hours, spent_hours (people only), overdue, or\ncf:<custom field id>.",
             "type": "string"
           },
           "op": {
@@ -7737,6 +8811,69 @@
           }
         },
         "summary": "Open or close repositories for linking (administrators). Closing keeps existing links.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/time-activities": {
+      "put": {
+        "operationId": "put_admin_time_activities",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivitiesPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Activity"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the site activity list (administrators). An activity left out is deleted unless entries use it (invalid_value kind activity_in_use: deactivate it instead). At most one default, and it must be active (kinds default_count, default_inactive, name_invalid, name_taken, unknown_id).",
         "x-access": "session",
         "x-csrf": true
       }
@@ -8273,7 +9410,7 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/Activity"
+                      "$ref": "#/components/schemas/Activity2"
                     },
                     "meta": {
                       "$ref": "#/components/schemas/Meta"
@@ -9724,6 +10861,76 @@
         "x-csrf": true
       }
     },
+    "/delegations/{id}/read-own-time": {
+      "put": {
+        "operationId": "put_delegations_id_read_own_time",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadOwnTimeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DelegationView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Let the agent read your own time or stop it (design 05 §3.5.4 A1, §6.14). enabled true needs ack true (invalid_value kind ack_required). The response carries read_own_time_warning, the wizard's warning text.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/delegations/{id}/revoke": {
       "post": {
         "operationId": "post_delegations_id_revoke",
@@ -10473,6 +11680,55 @@
         "x-csrf": true
       }
     },
+    "/me/timesheet": {
+      "get": {
+        "operationId": "get_me_timesheet",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Timesheet"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The caller's own time for one ISO week (design 05 §3.5.2): query week=YYYY-Www (default this week). Rows are (project, issue, activity); days follow org week_start.",
+        "x-access": "session"
+      }
+    },
     "/operations/{id}": {
       "get": {
         "operationId": "get_operations_id",
@@ -10635,6 +11891,113 @@
           }
         },
         "summary": "Change the organization defaults (a system administrator). Header Idempotency-Key. lock_version must match (conflict).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/org/timelog-settings": {
+      "get": {
+        "operationId": "get_org_timelog_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TimelogSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The timelog rules (design 05 §3.5.3): max_hours_per_day (\"0\" = no limit), accept_0_hours, accept_future_dates, accept_closed_issues, require_issue, require_comments, lock_version.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_org_timelog_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimelogSettingsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TimelogSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the timelog rules (administrators). conflict carries details.current and current_lock_version.",
         "x-access": "session",
         "x-csrf": true
       }
@@ -11743,6 +13106,195 @@
         "x-access": "session"
       }
     },
+    "/projects/{id}/time-activities": {
+      "get": {
+        "operationId": "get_projects_id_time_activities",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectTimeSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "A project's time settings: module_enabled, activity overrides, lock_version, the site activities and can_manage.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_projects_id_time_activities",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTimePut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectTimeSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the project's activity overrides and optionally turn the time tracking module on or off (manage_project, active project). conflict carries details.current and current_lock_version. Turning the module on or off changes the project's security epoch.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/time-users": {
+      "get": {
+        "operationId": "get_projects_id_time_users",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Named"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Whom the caller may log time for in the project: themself, plus (with log_time_for_other_users) active members who may log time.",
+        "x-access": "session"
+      }
+    },
     "/projects/{id}/timeline": {
       "get": {
         "operationId": "get_projects_id_timeline",
@@ -12238,6 +13790,344 @@
           }
         },
         "summary": "Name, login, key or alias to ids the caller can see.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/time-activities": {
+      "get": {
+        "operationId": "get_time_activities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectActivities"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "With project=<id or key>: the activities usable there now and default_id. Without: the site list (id, name, position, active, is_default, in_use).",
+        "x-access": "session"
+      }
+    },
+    "/time-entries": {
+      "get": {
+        "operationId": "get_time_entries",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TimeEntryPage"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
+        "x-access": "session"
+      }
+    },
+    "/time-entries/summary": {
+      "get": {
+        "operationId": "get_time_entries_summary",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Summary"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Totals of the time the caller may read (design 05 §3.5.2). Query from and to (required, at most 366 days), group_by user|activity|issue|tracker|fixed_version|day|week|month (default user), project, user, issue. scope_note is always only_visible. forbidden_op reason time_entries_not_visible when no visible project gives view_time_entries.",
+        "x-access": "session"
+      }
+    },
+    "/time-entries/{id}": {
+      "get": {
+        "operationId": "get_time_entries_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TimeEntryView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One time entry with can_edit and can_delete (design 05 §3.5.1); not_found when not visible.",
+        "x-access": "session"
+      }
+    },
+    "/time-entries/{id}/events": {
+      "get": {
+        "operationId": "get_time_entries_id_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/TimeEntryEvent"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "History of a visible time entry, oldest first: kind created|updated|deleted|restored, origin, actor, changes {field: {old, new}}.",
+        "x-access": "session"
+      }
+    },
+    "/time-entries/{id}/redact": {
+      "post": {
+        "operationId": "post_time_entries_id_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Redact a time entry's comments (design 05 §2.5 D12). Same rules as the other redactions: manage_project of the project or a system administrator; human session; step-up within 15 minutes; an entry you cannot read is not_found. One transaction: the project's security_epoch + 1, the comments and every event that holds them replaced by [已遮蔽] (time_entry.redacted = true), one redaction record per such event, and the derived copies (as for notes, plus execution_time_entry_changes). Already redacted → changed=false. Header Idempotency-Key.",
         "x-access": "session",
         "x-csrf": true
       }
