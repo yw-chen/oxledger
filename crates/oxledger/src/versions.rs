@@ -313,6 +313,20 @@ async fn access(conn: &mut PgConnection, caller: AuthContext, project: Uuid) -> 
     })
 }
 
+/// Whether `caller` can read the versions of `project` now
+/// (`GET /projects/{id}/versions`; the home `milestones` widget, M1.6).
+pub(crate) async fn readable(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    project: Uuid,
+) -> Result<bool> {
+    match access(&mut *conn, caller, project).await {
+        Ok(_) => Ok(true),
+        Err(e) if crate::error::classify(&e).is_some() => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Visible, unarchived issues of `project` in `versions`.
 async fn visible_bits(
     conn: &mut PgConnection,

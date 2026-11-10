@@ -12,7 +12,7 @@
 | M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_3_triage` 6 個、`m1_3_upgrade` 1 個測試；前端未接；未 commit）。**0022 不給任何角色 `triage_issues`，M1.4 給 Manager** |
 | M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_4_time` 28 個、`m1_4_upgrade` 2 個測試；警告文案只驗證 API 回應，前端未接；未 commit）。**0023 一次給內建角色 M1 權限，所有 agent 工作脈絡失效** |
 | M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | 實作完成（2026-11-10；`m1_5_forms` 31 個、`m1_5_upgrade` 1 個測試；獨立驗證的 8 項缺陷已修、待複驗；前端未接；未 commit）。**0024、0025 不動權限、不 bump epoch** |
-| M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | — |
+| M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | 實作完成（2026-11-10；`m1_6_home` 6 個、`m1_6_upgrade` 1 個、`home` 單元測試 2 個；前端未接；未 commit）。**0026 不動權限、不 bump epoch** |
 | M1.7 搜尋 | 0027；BM25F 欄位與 fast field；別名展開；概念管理；藍綠重建切換 | T-M1-62…65；E1 nDCG＠10 不低於 0.810；E2 用獨立查詢集量別名增益（只記錄） | — |
 | M1.8 通知 | 0028；`notify` consumer；`/notifications*`、`/issues/{key}/watch`、`/me/notification-preferences`；GC 與 lag 監控；保留清除 | T-M1-70…83、125、126、132；派送延遲 p95 ≤ 10 秒（本機 1 萬張單、50 人）；前端鈴鐺、通知中心、關注、偏好可用 | — |
 | M1.9 AI 團隊 | 0029；runtime、角色 principal、共用脈絡；token 綁 principal；principal／專案層暫停；鏈上限；`/ai-team*`、`/me/agent-runtimes*`；角色範本；`describe agent_context` | T-M1-84…99、66a、121、123、124、127、128、133；02 的 E4w、§9.6 受眾測試、§16.7b 全部重跑全綠；既有 agent token 升級後照常可用 | — |
@@ -313,3 +313,40 @@
 - `m1_5_upgrade.rs`：0023 → 0025：epoch 不變、工作脈絡仍可用、既有欄位 `lock_version = 0`、`form_l0_version` 從 1 開始、L0 trigger 只在該動時動（改名、選項改名不動；必填、停用、選項停用、角色、專案、is_for_all、tracker、可見性、選項增刪、刪除中各 +1）、表單列動 `schema_version`、站台表單每個 tracker 一個。
 - 改了既有測試：`s6b_queue` 的 `eligibility` 多一個參數。`m1_4_upgrade` 原本改成 `run_to(23)`，驗證者實測 `MIGRATOR.run` 可過，已改回（**待使用者確認**）。
 - 沒測到：前端的 `show_if` 評估器（前端未接）；`resume_conversions` 只在續跑路徑間接測到，沒有模擬服務重啟。
+
+## M1.6 疑點與照建議的做法
+
+- M1.6-D1 **權限**：不需要新權限，0026 不動 `role_permissions`、不 bump epoch。`/me/preferences`、`/me/home`、`/me/home/apply-template`、`/home/templates` 只給登入的本人（human session）；agent 在服務層是 `human_session_required`，REST 帶 bearer 是 `unauthenticated`。沒有任何端點帶使用者 id（T-M1-61）；MCP 沒有相關工具。
+- M1.6-D2 **兩個樂觀鎖**：DDL 多一欄 `home_lock_version`。契約範例 `/me/preferences` 的 `lock_version` 是 3、`/me/home` 是 5，顯然是分開的；共用一個鎖會讓「改主題」與「另一個分頁編輯首頁」互相 `conflict`。`apply-template` 只 bump 有變的那一邊（重複 merge 不 bump）。
+- M1.6-D3 **冪等**：三個寫入都收 `Idempotency-Key`（共用 `operation_requests`，action `me_preferences_put`／`me_home_put`／`me_home_apply_template`）；重送回目前狀態，同 key 不同內容 `idempotency_key_reused`。`GET` 首次建列（`INSERT … ON CONFLICT DO NOTHING`，單獨的短交易）不收 key。`conflict` 的 `details` 帶 `current_lock_version` 與 `current`（前端「已載入最新版本」直接用）。
+- M1.6-D4 **`PUT /me/preferences` 是部分更新**：除了 `lock_version`，沒帶的欄位不變；`nav_shortcuts`、`default_views` 帶了就整份取代。`onboarded: true` 記下第一次的時間，`false` 清掉（下次登入再問）。`interface_roles` 去重、保留順序。
+- M1.6-D5 **小工具格式**：`{id, type, width, view_id?, limit?, project_id?}`；`id` 是 1–40 個英數、`_`、`-`，新的可以不給（伺服器產生 `w_xxxxxxxx`）；`width` 預設 `need_decision` 2、其他 1；`view` 的 `limit` 預設 8。輸出多 `protected`、`available`、可用時的 `view_name`／`view_kind`（view）與 `project_key`／`project_name`（milestones）；這些唯讀欄位 PUT 時可以原樣送回（忽略）。錯誤 `invalid_value` 的 `kind`：`protected_widget_missing`、`duplicate_protected_widget`、`too_many_widgets`、`unknown_widget_type`、`invalid_widget_id`、`duplicate_widget_id`、`width_out_of_range`、`limit_out_of_range`、`view_required`、`unexpected_property`、`unknown_view`、`unknown_project`。
+- M1.6-D6 **每次讀取重驗參照**（任務第 3 點）：`view` 小工具、`view` 捷徑、`default_views` 的視圖用 `views::usable`（同 `GET /views/{id}` 的 `load` 加 R-VD10 的綁定專案檢查）；`milestones` 用 `versions::readable`（同 `GET /projects/{id}/versions` 的 `access`：專案在可見範圍、未封存、`view_issues`）。視圖被刪、改成看不到、專案被移出、模組停用、權限撤銷時，小工具一律 `available: false`，不給名稱、不給數量，被刪與看不到的回應欄位完全一樣；`default_views` 的失效項目（獨立驗證後改）照樣回傳，形狀比照捷徑：`{view_id, available: false}`，不帶名稱，只回自己存的 id；原樣送回 PUT 時保留（不重驗），所以前端整份 PUT 不會默默刪掉。被刪與看不到仍完全一樣。小工具本身不帶任何數量；數量只來自各自的資料端點（`/views/{id}/run`、`/triage/counts`、`/projects/{id}/versions?include=stats`、`/me/timesheet`、`/home/agent-summary`），它們本來就逐項依讀者過濾。
+- M1.6-D7 **PUT 時的參照**（獨立驗證後補）：視圖 id 一律存 `views::usable` 回傳的正規 id（列 id，或 `builtin:project_board:<專案 uuid>`），送進來的 view id 超過 80 字元回 `invalid_value`（`kind: "invalid_view_id"`）；小工具保留與否比對的是**同 id 且同 view_id**（同 id 換視圖要重驗）。新的或改過的視圖／專案必須現在讀得到，否則 `unknown_view`／`unknown_project`（不分不存在與看不到，訊息與 details 相同）；和既存**同 id、同參照**的小工具（或相同的捷徑、相同的 default view 項目）不重驗，讓視圖消失後仍能重排首頁；但失效的參照不能搬到別的小工具 id。`milestones` 的 `project_id` 收 id 或 key，存 id。
+- M1.6-D8 **範本**：契約表的「與我相關」＝`builtin:involving_me`、「指派給我」＝`builtin:assigned_to_me`。**通用範本**（沒選角色）＝需要你決定、指派給我、與我相關（契約沒列內容）。PM 範本的 `milestones` 沒有 `project_id`（範本不知道專案；前端請使用者選，沒選時 `available` 是 `true`）。複選依**請求的順序**輪流取、重複只取一次、最多 8 個；捷徑同樣輪流去重；`*` 預設視圖取第一個角色的。範本是程式常數（`home.rs` 的 `role_template`）。
+- M1.6-D9 **`apply-template` 也套捷徑與預設視圖**：`replace` 換成範本的小工具（使用者自己的 `need_decision` 保留 id 與寬度）、換掉捷徑、設 `*` 預設視圖（各專案的項目保留）；`merge` 只加缺的小工具（同 type＋view_id＋project_id 算同一個，上限 12）、缺的捷徑，`*` 沒有時才設。回應 `{home, preferences}`。理由：§3.8 範本表三欄都是「預設」，UI 的「套用新預設」應一次套齊。`interface_roles` 本身仍由 `PUT /me/preferences` 改（§6.12 的流程）。
+- M1.6-D10 **`default_views`**（獨立驗證後改）：key 是專案 id 或 `*`（其他所有專案）；值是視圖 id 或 `builtin:list`／`builtin:board`／`builtin:timeline`（專案的內建列表、看板、時程分頁）。專案項目的視圖必須**綁定在同一個專案**，否則 `unknown_view`；`*` 只收這三個 builtin 或沒綁專案的視圖（綁了專案的是 `invalid_default_view`）。key 正規化（uuid 小寫）後重複回 `invalid_value`（`kind: "duplicate_default_view"`）。最多 100 項。讀取時每項是 `{view_id, available, name?}`；PUT 收字串或同形狀物件（`available`、`name` 忽略）。
+- M1.6-D11 **捷徑**：`{kind, id?}`，kind 是 `view`（要 `id`）、`triage`、`timeline`、`board`、`timesheet`；最多 20、不能重複。讀取時每項帶 `available`（view 可開時另給 `name`）。
+- M1.6-D12 **`GET /home/templates`**：`roles` 是逗號清單，未知角色回 `invalid_argument`（`kind: "unknown_role"`，查詢參數）；`apply-template` 的未知角色是 `invalid_value`（body）。
+- M1.6-D13 **M1.5 遺留修正**：非管理員（專案經理）寫表單**版面**時，欄位目錄也用依可讀性過濾的目錄（`author_catalog`）：把讀不到的欄位放進版面、或寫進 `show_if`，一律 `unknown_field`，不再出現 `field_not_applicable`、`hides_required` 之類會透露該欄位的錯誤。「什麼是必填」仍用完整目錄（只影響已放進版面、也就是讀得到的欄位）。管理員不變。M1.5-D21 的「版面檢查仍用完整目錄」作廢。
+- M1.6-D14 **改規則時重檢已發布版面**（獨立驗證後改，**待使用者確認**）：原本用完整目錄對已發布版面重跑整個 `parse_layout`，版面裡的欄位之後被停用或不再適用時，所有規則草稿與發布都被 `unknown_field` 卡死（管理員也是；站台表單會被任一專案版面卡住），錯誤還帶出經理讀不到的 key。改成：已發布版面以寬鬆方式讀（停用、不適用、未知的欄位略過，和顯示時一樣；`show_if` 解析不了算「可能隱藏」），只比較「改規則前」與「改規則後」被 `show_if` 隱藏卻必填的欄位，**只有這次變動新造成的**才回 `hides_required`；錯誤只對讀得到該欄位的人帶 `field`，讀不到時是不帶 key 的訊息（目前經理的規則目標必然讀得到，這條是防禦）。已經存在的違反不擋。
+- M1.6-D15 **版面 impact 的 `layout_warnings`**（獨立驗證後補）：`POST /forms/{id}/drafts/layout/impact` 的「未放進版面」警告也改用作者目錄，經理不會看到讀不到的欄位；管理員不變。
+- M1.6-D16 **milestones 的 `versions::readable`**：獨立驗證指出 PUT 時拿掉這個檢查仍通過測試（封存專案本來就不在 `visible_project` 的範圍），目前等價於可見範圍檢查；保留當防禦（`view_issues` 不在範圍內時的保險），記為等價 mutant。
+
+### 測試
+
+- `m1_6_home.rs`（6 個）：
+  - `t60_protected_widget_and_templates`：T-M1-60（缺 `need_decision`、空清單都是 `protected_widget_missing` 且不寫入；其他 8 種錯誤；12 個上限；移動與改寬；replace 保留自己的 need_decision、merge 只加缺的、重複 merge 不 bump、滿 12 個時 merge 不加；三個角色 ≤ 8；壞的 mode／role；範本端點不改任何東西）。
+  - `preferences_put_and_concurrency`：首次登入流程、六種驗證錯誤；兩個同 `lock_version` 的 PUT 同時送（`tokio::join!`）恰好一個成功、另一個 `conflict` 帶目前版本；勝者的 key 重送不 bump、換內容 `idempotency_key_reused`；首頁同樣兩個並行 PUT 只成功一個。
+  - `t61_nobody_reads_anyone_elses`：T-M1-61（bob 只讀到自己的；agent 四個入口 `human_session_required`；registry 沒有相關工具；openapi 的相關路徑都在 `/me/` 或 `/home/` 且不帶參數；經 router 試 6 種帶 alice id 的路徑都是 404；查詢參數帶別人被忽略；bearer 401）。
+  - `references_rechecked_on_every_read`：新參照讀不到時 `unknown_view`／`unknown_project`，「看不到」與「不存在」的 code、訊息、details 完全相同；離開 AUTH（AUTH 綁定的個人視圖、AUTH 看板、AUTH 里程碑、AUTH 預設視圖、捷徑）、視圖被刪、WEB 停用 `issue_tracking`、撤銷 `view_issues` 四種情況各自變暗且不帶名稱，被刪與看不到的欄位集合相同；資料端點同樣看不到（`views::run`、`versions::list`、`triage::counts` 不再列 AUTH）；失效的參照原樣保留可重排、搬到新 id 被擋；重新加入後恢復。
+  - `check_lists_match_constants`：0026 三個 CHECK 與 `home::ROLES`／`THEMES`／`DENSITIES` 一致；agent principal 不能有列。
+  - `m1_6_http`：經 router 的 GET／PUT／POST、缺 Idempotency-Key 400、重送不 bump、未知欄位 400、GET 的回應原樣送回 PUT、移除 need_decision、`conflict` 409、`/home/templates`。
+  - mutant 確認（各自讓測試失敗後還原）：不擋缺 need_decision、PUT 不驗新視圖、讀取不重驗 view 小工具、讀取不重驗 milestones、`default_views` 不濾看不到的專案。
+- 獨立驗證的重現（`verify_m16_*`，7 個附加到 `m1_6_home.rs`；V1 改成要求超長 id 回 `invalid_view_id` 並驗證短的變體存正規 id）；`m1_5_forms.rs` 加 F1、F2（F2 預期改成經理存無關規則成功）與 `g_rules_recheck_only_new_hides_required`。
+- 獨立驗證後的 mutant（各自讓測試失敗後還原）：impact 改回完整目錄（F1）、重檢改回嚴格 `parse_layout`（F2、`g_rules_recheck…`）、不限 view id 長度（V1）、小工具不存正規 id（V1）、不擋重複 key（V2）、小工具只比 id（V5）、default view 不檢查綁定專案（V6）、GET 省略失效的 default view（references 測試）。沒有對應 mutant 的：D14 的「只算新造成的」差集（沒有測試建立「改規則前就已違反」的版面）、讀不到欄位時不帶 key 的分支（目前到不了）。
+- `m1_6_upgrade.rs`：0025 → 0026：epoch 與 `schema_version` 不變、工作脈絡仍有效、表是空的、預設值、CHECK 與 user-only trigger（INSERT 與 `UPDATE OF user_id` 改成 agent 都被擋）、寫入偏好不動 epoch。
+- `home` 單元測試 2 個：範本輪流取的順序、replace／merge 的 id 衝突處理。
+- `m1_5_forms.rs` 加 `g_manager_layout_unreadable_field`（M1.6-D13；mutant：版面改回完整目錄時，經理放讀不到的欄位會成功、測試失敗）。
+- 既有升級測試沒改（`m1_4_upgrade` 的 `MIGRATOR.run` 會連 0026 一起跑，0026 不 bump epoch）。
+- 沒測到：前端畫面（首次登入對話框、編輯首頁、以角色預覽）未接；`my_time_week` 的模組過濾沿用 M1.4 的 `/me/timesheet` 測試，沒在 M1.6 重測。

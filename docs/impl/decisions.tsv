@@ -400,3 +400,17 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	待使用者確認：轉換 running 時舊欄位唯讀（invalid_value kind field_converting），結束後解除；完成後是否停用仍由管理員決定	轉換期間寫進舊欄位的值可能被游標略過	不凍結；凍結到取消	crates/oxledger/src/commands.rs
 2026-11-10	M1	待使用者確認：T-M1-57 同時改可見性與角色 epoch +3、改 roles／projects／is_for_all +5（0010 trigger 的 DELETE／INSERT 各觸發）；不改 trigger，測試維持至少 +1	和契約 T-M1-57 的 +1 不同；改 trigger 會動到既有權限行為	改 0010 trigger 讓每個 PATCH 只 +1	docs/impl/m1-checklist.md
 2026-11-10	M1	待使用者確認：m1_4_upgrade 改回 MIGRATOR.run	驗證者實測可過；run_to(23) 只是避開 0024／0025 的保險	維持 run_to(23)	crates/oxledger/tests/m1_4_upgrade.rs
+2026-11-10	M1	user_preferences 多一欄 home_lock_version；/me/preferences 與 /me/home 各自樂觀鎖	契約範例兩者 lock_version 不同（3 與 5）；共用一個鎖會讓改主題與改首頁互相 conflict	照 DDL 只用一個 lock_version	migrations/0026_user_preferences.sql;crates/oxledger/src/home.rs
+2026-11-10	M1	PUT /me/preferences、PUT /me/home、POST /me/home/apply-template 收 Idempotency-Key（operation_requests）；GET 首次建列不收	§3.1 共通規則：寫入要 Idempotency-Key；GET 建列不算使用者寫入	不收 key、只靠 lock_version	crates/oxledger/src/home.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	GET /me/home 每個小工具帶 available（每次讀取重驗）；view 小工具可用時才給 view_name／view_kind，milestones 才給 project_key／project_name；看不到與被刪同一個答案	看不到＝不存在；前端要顯示「這個視圖已不存在」，又不能從差異推出存在	只回存的設定、由前端各自呼叫 run 判斷	crates/oxledger/src/home.rs;crates/oxledger/src/views.rs
+2026-11-10	M1	PUT 時新的或改過的參照（視圖、專案）必須現在讀得到（unknown_view／unknown_project 不分不存在與看不到）；和既存同 id 小工具相同的參照不重驗	看不到的參照不能新加；但視圖消失後使用者仍要能重排首頁	每次 PUT 全部重驗（失效的小工具會讓整個首頁存不了）	crates/oxledger/src/home.rs
+2026-11-10	M1	default_views 的 key 可以是 *（其他所有專案），值是視圖 id 或 builtin:list／builtin:board／builtin:timeline；GET 照樣回失效項目（{view_id, available:false}，獨立驗證後改，原本省略會讓整份 PUT 默默刪掉）	範本的「專案預設視圖」不綁特定專案；契約只寫 project_id → view id	範本不給 default_views	crates/oxledger/src/home.rs
+2026-11-10	M1	apply-template 除了小工具也套左欄捷徑與 * 預設視圖；replace 保留使用者自己的 need_decision（id 與寬度），merge 只加缺的（小工具上限 12）；回傳 {home, preferences}	§3.8 範本表三欄都是「預設」；UI「套用新預設」應一次套齊	只套小工具	crates/oxledger/src/home.rs
+2026-11-10	M1	通用範本（沒選角色）＝需要你決定、指派給我、與我相關；PM 範本的 milestones 沒有 project_id（前端請使用者選）	契約只說「略過＝通用範本」沒列內容；範本不知道使用者的專案	PM 範本拿掉里程碑	crates/oxledger/src/home.rs
+2026-11-10	M1	複選角色依請求的順序輪流取（重複只取一次），最多 8 個；* 預設視圖取第一個角色的	§3.8「依角色順序輪流取」沒說是哪個順序	固定 pm→designer→engineer	crates/oxledger/src/home.rs
+2026-11-10	M1	左欄捷徑種類 view（帶 id）、triage、timeline、board、timesheet，最多 20；view 捷徑讀取時帶 available	契約沒定捷徑格式；範本需要 Triage、時程、看板、指派給我	自由字串	crates/oxledger/src/home.rs
+2026-11-10	M1	/me/* 與 /home/templates 只給人（human session）；agent 一律 human_session_required，REST 帶 bearer 是 unauthenticated	§3.1 表標「人」；T-M1-61	agent 可讀委派者的偏好	crates/oxledger/src/home.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	非管理員作者的表單版面也用依可讀性過濾的欄位目錄：讀不到的欄位放進版面或寫進 show_if 一律 unknown_field	M1.5 遺留：版面錯誤（field_not_applicable、hides_required）會透露讀不到的欄位；和規則作者目錄一致	版面檢查用完整目錄	crates/oxledger/src/forms.rs
+2026-11-10	M1	改規則時重檢已發布版面只看這次變動新造成的 hides_required；版面寬鬆讀（停用、不適用欄位略過）；讀不到的欄位不帶 key（待使用者確認）	獨立驗證 F2：停用欄位讓規則草稿與發布全部卡死，錯誤帶出讀不到的 key	完整目錄嚴格重跑 parse_layout（原做法）	crates/oxledger/src/forms.rs
+2026-11-10	M1	版面 impact 的 layout_warnings 用作者目錄	獨立驗證 F1：經理看到讀不到欄位的 unplaced 警告	完整目錄	crates/oxledger/src/forms.rs
+2026-11-10	M1	小工具、捷徑、default_views 存正規 view id；view id 超過 80 字元 invalid_value（invalid_view_id）；default_views key 正規化後重複 duplicate_default_view；default view 必須綁同一專案，* 只收 builtin 或未綁專案的視圖	獨立驗證 V1、V2、V6	存原字串、不限長度、後者覆蓋	crates/oxledger/src/home.rs;crates/oxledger/src/views.rs

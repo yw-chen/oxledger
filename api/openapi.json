@@ -361,6 +361,44 @@
         ],
         "type": "object"
       },
+      "Applied": {
+        "description": "The result of `apply-template`: the home and the preferences (the\ntemplate also sets shortcuts and the `*` default view).",
+        "properties": {
+          "home": {
+            "$ref": "#/components/schemas/HomeView"
+          },
+          "preferences": {
+            "$ref": "#/components/schemas/PreferencesView"
+          }
+        },
+        "required": [
+          "home",
+          "preferences"
+        ],
+        "type": "object"
+      },
+      "ApplyTemplate": {
+        "additionalProperties": false,
+        "description": "`POST /me/home/apply-template`.",
+        "properties": {
+          "mode": {
+            "description": "replace or merge.",
+            "type": "string"
+          },
+          "roles": {
+            "description": "Interface roles in order (empty: the general template).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "roles",
+          "mode"
+        ],
+        "type": "object"
+      },
       "ApproveInput": {
         "additionalProperties": false,
         "properties": {
@@ -1352,6 +1390,68 @@
         "required": [
           "version",
           "proposal_hash"
+        ],
+        "type": "object"
+      },
+      "DefaultView": {
+        "description": "One default view as read.",
+        "properties": {
+          "available": {
+            "description": "The project (for `*`, none) and the view can be read now; one\nanswer for \"deleted\" and \"not visible\".",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "A saved view's name, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_id": {
+            "description": "A view id or `builtin:list` / `builtin:board` / `builtin:timeline`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id",
+          "available"
+        ],
+        "type": "object"
+      },
+      "DefaultViewInput": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/DefaultViewRead"
+          }
+        ],
+        "description": "One default view of `PUT /me/preferences`: the view id, or the object\n`GET` returned (`available` and `name` ignored)."
+      },
+      "DefaultViewRead": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id"
         ],
         "type": "object"
       },
@@ -3364,6 +3464,47 @@
         ],
         "type": "object"
       },
+      "HomePut": {
+        "additionalProperties": false,
+        "description": "`PUT /me/home`.",
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "widgets": {
+            "items": {
+              "$ref": "#/components/schemas/WidgetInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lock_version",
+          "widgets"
+        ],
+        "type": "object"
+      },
+      "HomeView": {
+        "description": "`GET /me/home`.",
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "widgets": {
+            "items": {
+              "$ref": "#/components/schemas/Widget"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lock_version",
+          "widgets"
+        ],
+        "type": "object"
+      },
       "Impact": {
         "description": "What a date or status change touches, over visible issues only.",
         "properties": {
@@ -5339,6 +5480,125 @@
         ],
         "type": "object"
       },
+      "PreferencesPut": {
+        "additionalProperties": false,
+        "description": "`PUT /me/preferences`: fields left out stay as they are.",
+        "properties": {
+          "default_views": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DefaultViewInput"
+            },
+            "default": null,
+            "description": "The whole map: project id or `*` → a view id (or the object `GET`\nreturned).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "density": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interface_roles": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "nav_shortcuts": {
+            "default": null,
+            "description": "The whole list, in order.",
+            "items": {
+              "$ref": "#/components/schemas/ShortcutInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "onboarded": {
+            "default": null,
+            "description": "true marks the onboarding as done; false asks again at next sign-in.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "theme": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "PreferencesView": {
+        "description": "`GET /me/preferences`.",
+        "properties": {
+          "default_views": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DefaultView"
+            },
+            "description": "Project id (or `*`: every other project) → the default view. Entries\nwhose project or view the reader cannot see any more stay, with\n`available: false` (send them back unchanged to keep them).",
+            "type": "object"
+          },
+          "density": {
+            "description": "comfortable, compact.",
+            "type": "string"
+          },
+          "interface_roles": {
+            "description": "pm, designer, engineer (only defaults, never permissions).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "nav_shortcuts": {
+            "items": {
+              "$ref": "#/components/schemas/ShortcutView"
+            },
+            "type": "array"
+          },
+          "onboarded": {
+            "description": "false: ask \"what do you mainly do?\" at sign-in.",
+            "type": "boolean"
+          },
+          "theme": {
+            "description": "dark, light, high_contrast, system.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "interface_roles",
+          "onboarded",
+          "theme",
+          "density",
+          "nav_shortcuts",
+          "default_views",
+          "lock_version"
+        ],
+        "type": "object"
+      },
       "PreviewInput": {
         "additionalProperties": false,
         "description": "`POST /changesets/{id}/revision-previews`: per conflicting field, keep\nthe issue's `current` value or the `proposed` one (default `proposed`).",
@@ -6876,6 +7136,90 @@
         ],
         "type": "object"
       },
+      "Shortcut": {
+        "description": "A left-nav shortcut as stored.",
+        "properties": {
+          "id": {
+            "description": "`view`: a view id or `builtin:…`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "view, triage, timeline, board, timesheet.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "ShortcutInput": {
+        "additionalProperties": false,
+        "description": "A shortcut of `PUT /me/preferences` (`available` and `name` ignored).",
+        "properties": {
+          "available": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "ShortcutView": {
+        "description": "A left-nav shortcut as read.",
+        "properties": {
+          "available": {
+            "description": "`view`: the view can be opened now (same rule as a widget).",
+            "type": "boolean"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "description": "`view`, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "available"
+        ],
+        "type": "object"
+      },
       "SortDir": {
         "enum": [
           "asc",
@@ -7352,6 +7696,42 @@
         "required": [
           "id",
           "key"
+        ],
+        "type": "object"
+      },
+      "Template": {
+        "description": "`GET /home/templates?roles=`.",
+        "properties": {
+          "default_views": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "nav_shortcuts": {
+            "items": {
+              "$ref": "#/components/schemas/Shortcut"
+            },
+            "type": "array"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "widgets": {
+            "items": {
+              "$ref": "#/components/schemas/Widget"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "roles",
+          "widgets",
+          "nav_shortcuts",
+          "default_views"
         ],
         "type": "object"
       },
@@ -10170,6 +10550,184 @@
           "ever_in"
         ],
         "type": "string"
+      },
+      "Widget": {
+        "description": "One home widget (§3.8).",
+        "properties": {
+          "available": {
+            "description": "What it names can be read now. `false` when the view was deleted,\nbecame unreadable or is bound to a project the reader cannot see,\nor the milestones project is not readable any more — one answer for\nall of them; show \"this view no longer exists\".",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "limit": {
+            "description": "`view`: rows to show, 3–20.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "project_id": {
+            "description": "`milestones`: the project (`GET /projects/{id}/versions?include=stats`);\nabsent until the person picks one.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_key": {
+            "description": "`milestones`, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protected": {
+            "description": "`need_decision`: cannot be removed (U22).",
+            "type": "boolean"
+          },
+          "type": {
+            "description": "need_decision, view, triage_count, milestones, my_time_week, agent_summary.",
+            "type": "string"
+          },
+          "view_id": {
+            "description": "`view`: a view id or `builtin:…`; run it with `POST /views/{view_id}/run`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_kind": {
+            "description": "`view`, when available: list or board.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_name": {
+            "description": "`view`, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "width": {
+            "description": "1–3 columns.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "width",
+          "protected",
+          "available"
+        ],
+        "type": "object"
+      },
+      "WidgetInput": {
+        "additionalProperties": false,
+        "description": "One widget of `PUT /me/home`. The read-only fields of `GET /me/home`\n(`protected`, `available`, names) may be sent back and are ignored.",
+        "properties": {
+          "available": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "default": null,
+            "description": "Keep the id of an existing widget; a new one may leave it out.\n1–40 letters, digits, `_` and `-`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "description": "`milestones`: a project id or key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_key": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protected": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "view_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_kind": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "width": {
+            "default": null,
+            "description": "1–3; default 2 for need_decision, else 1.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
       },
       "Wip": {
         "properties": {
@@ -14130,6 +14688,55 @@
         "x-access": "session"
       }
     },
+    "/home/templates": {
+      "get": {
+        "operationId": "get_home_templates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Template"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The template of roles=pm,designer,engineer (comma list, order matters; none = the general template) as data for \"preview as role\": widgets, nav_shortcuts, default_views. Changes nothing; the browser renders it with the caller's own permissions.",
+        "x-access": "session"
+      }
+    },
     "/issues/search": {
       "post": {
         "operationId": "post_issues_search",
@@ -14519,6 +15126,280 @@
           }
         },
         "summary": "Redact a note (not_found when you cannot read it). §7.5 D12 redaction (manage_project of the project or a system administrator; human session; step-up within 15 minutes). One transaction: the project's security_epoch + 1 (agent contexts that read it are quarantined), the text replaced by [已遮蔽], a redaction record without the original, and the derived copies (every proposal content and group label of proposals to or from the project, execution before/after values). Already redacted → changed=false. reason_code: personal_data, confidential, legal, other; reason 1–500 characters, never the original text. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/me/home": {
+      "get": {
+        "operationId": "get_me_home",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HomeView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The caller's home widgets (design 05 §3.8). need_decision is protected. Each widget says available: false when the view it runs or the milestones project cannot be read now (deleted, not visible, project left — the same answer); names only when available. Data comes from the endpoints of §3.8 (POST /views/{id}/run, GET /triage/counts, GET /projects/{id}/versions?include=stats, GET /me/timesheet, GET /home/agent-summary).",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_me_home",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HomePut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HomeView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the caller's widget list (at most 12). Header Idempotency-Key; lock_version as read from GET /me/home. invalid_value kinds: protected_widget_missing (need_decision cannot be removed), duplicate_protected_widget, too_many_widgets, unknown_widget_type, invalid_widget_id, duplicate_widget_id, width_out_of_range (1–3), limit_out_of_range (view, 3–20), view_required, invalid_view_id (over 80 characters), unexpected_property, unknown_view, unknown_project. A view or project kept unchanged from the stored widget is accepted even if no longer available. conflict carries current_lock_version and current.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/me/home/apply-template": {
+      "post": {
+        "operationId": "post_me_home_apply_template",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyTemplate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Applied"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Apply the interface roles' template (Header Idempotency-Key): mode replace takes the template's widgets (the caller's need_decision stays), shortcuts and * default view; merge only adds what is missing (up to 12 widgets). Templates of several roles are taken in turn, at most 8 widgets. Returns the home and the preferences.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/me/preferences": {
+      "get": {
+        "operationId": "get_me_preferences",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PreferencesView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The caller's own preferences (design 05 §3.8): interface roles (defaults only, never permissions), onboarded, theme, density, left-nav shortcuts, default views per project id (* = every other project). The first read creates them from the general template; no Idempotency-Key. Shortcuts and default views carry available (the project and view can be read now; deleted and not visible read the same, with only the stored id); send them back unchanged to keep them. There is no endpoint for anyone else's preferences.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_me_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PreferencesView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change the caller's preferences. Header Idempotency-Key; lock_version as read; fields left out stay. nav_shortcuts and default_views replace the whole list / map; a default view is a view id or the object GET returned; view ids are stored canonical. conflict carries current_lock_version and current. invalid_value kinds: unknown_role, invalid_theme, invalid_density, too_many_shortcuts, unknown_shortcut_kind, view_required, unexpected_property, duplicate_shortcut, unknown_view, too_many_default_views, duplicate_default_view, invalid_view_id (over 80 characters), unknown_project, invalid_default_view (unknown_view and unknown_project do not tell missing from not visible).",
         "x-access": "session",
         "x-csrf": true
       }

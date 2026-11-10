@@ -1719,6 +1719,44 @@ async fn detail(conn: &mut PgConnection, caller: AuthContext, l: &Loaded) -> Res
     })
 }
 
+/// A view a home widget, shortcut or default view (M1.6) names, as the
+/// reader may see it now.
+#[derive(Debug, Clone)]
+pub(crate) struct Usable {
+    /// The canonical id (a row id, or `builtin:…` with a project id).
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub project: Option<Uuid>,
+}
+
+/// What a home widget, shortcut or default view (M1.6) may show about the
+/// view `id` when `caller` can open and run it now. `None` when it is
+/// deleted, not readable, or a personal view bound to a project they
+/// cannot see any more — the same answer for all of them (not visible =
+/// does not exist).
+pub(crate) async fn usable(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    id: &str,
+) -> Result<Option<Usable>> {
+    let l = match load(&mut *conn, caller, id, false).await {
+        Ok(l) => l,
+        Err(e) if classify(&e).is_some() => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    match require_bound_project(&mut *conn, caller, &l).await {
+        Ok(()) => Ok(Some(Usable {
+            id: l.id,
+            name: l.name,
+            kind: l.kind.as_str().into(),
+            project: l.project,
+        })),
+        Err(e) if classify(&e).is_some() => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// `GET /views/{id}`.
 pub async fn get(app: &App, caller: AuthContext, id: &str) -> Result<ViewDetail> {
     caller.require_human_session()?;

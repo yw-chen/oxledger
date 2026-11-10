@@ -102,6 +102,20 @@ export type AgentToday = {
   label: string;
 };
 
+/** The result of `apply-template`: the home and the preferences (the template also sets shortcuts and the `*` default view). */
+export type Applied = {
+  home: HomeView;
+  preferences: PreferencesView;
+};
+
+/** `POST /me/home/apply-template`. */
+export type ApplyTemplate = {
+  /** replace or merge. */
+  mode: string;
+  /** Interface roles in order (empty: the general template). */
+  roles: Array<string>;
+};
+
 export type ApproveInput = {
   /** `sha256:<hex>` as returned with the version. */
   proposal_hash: string;
@@ -378,6 +392,25 @@ export type CustomFieldValue = {
 export type DecisionInput = {
   proposal_hash: string;
   version: number;
+};
+
+/** One default view as read. */
+export type DefaultView = {
+  /** The project (for `*`, none) and the view can be read now; one answer for "deleted" and "not visible". */
+  available: boolean;
+  /** A saved view's name, when available. */
+  name?: string | null;
+  /** A view id or `builtin:list` / `builtin:board` / `builtin:timeline`. */
+  view_id: string;
+};
+
+/** One default view of `PUT /me/preferences`: the view id, or the object `GET` returned (`available` and `name` ignored). */
+export type DefaultViewInput = string | DefaultViewRead;
+
+export type DefaultViewRead = {
+  available?: boolean | null;
+  name?: string | null;
+  view_id: string;
 };
 
 export type DelegationBody = {
@@ -821,6 +854,18 @@ export type Highlight = {
   end: number;
   start: number;
   strength: Strength;
+};
+
+/** `PUT /me/home`. */
+export type HomePut = {
+  lock_version: number;
+  widgets: Array<WidgetInput>;
+};
+
+/** `GET /me/home`. */
+export type HomeView = {
+  lock_version: number;
+  widgets: Array<Widget>;
 };
 
 /** What a date or status change touches, over visible issues only. */
@@ -1327,6 +1372,36 @@ export type Precondition = {
   target: TargetRef;
 };
 
+/** `PUT /me/preferences`: fields left out stay as they are. */
+export type PreferencesPut = {
+  /** The whole map: project id or `*` → a view id (or the object `GET` returned). */
+  default_views?: Record<string, DefaultViewInput> | null;
+  density?: string | null;
+  interface_roles?: Array<string> | null;
+  lock_version: number;
+  /** The whole list, in order. */
+  nav_shortcuts?: Array<ShortcutInput> | null;
+  /** true marks the onboarding as done; false asks again at next sign-in. */
+  onboarded?: boolean | null;
+  theme?: string | null;
+};
+
+/** `GET /me/preferences`. */
+export type PreferencesView = {
+  /** Project id (or `*`: every other project) → the default view. Entries whose project or view the reader cannot see any more stay, with `available: false` (send them back unchanged to keep them). */
+  default_views: Record<string, DefaultView>;
+  /** comfortable, compact. */
+  density: string;
+  /** pm, designer, engineer (only defaults, never permissions). */
+  interface_roles: Array<string>;
+  lock_version: number;
+  nav_shortcuts: Array<ShortcutView>;
+  /** false: ask "what do you mainly do?" at sign-in. */
+  onboarded: boolean;
+  /** dark, light, high_contrast, system. */
+  theme: string;
+};
+
 /** `POST /changesets/{id}/revision-previews`: per conflicting field, keep the issue's `current` value or the `proposed` one (default `proposed`). */
 export type PreviewInput = {
   /** `"<op_id>/<field>"` → `"current"` | `"proposed"`. */
@@ -1764,6 +1839,32 @@ export type SettingEvents = {
   next_cursor: string | null;
 };
 
+/** A left-nav shortcut as stored. */
+export type Shortcut = {
+  /** `view`: a view id or `builtin:…`. */
+  id?: string | null;
+  /** view, triage, timeline, board, timesheet. */
+  kind: string;
+};
+
+/** A shortcut of `PUT /me/preferences` (`available` and `name` ignored). */
+export type ShortcutInput = {
+  available?: boolean | null;
+  id?: string | null;
+  kind: string;
+  name?: string | null;
+};
+
+/** A left-nav shortcut as read. */
+export type ShortcutView = {
+  /** `view`: the view can be opened now (same rule as a widget). */
+  available: boolean;
+  id?: string | null;
+  kind: string;
+  /** `view`, when available. */
+  name?: string | null;
+};
+
 export type SortDir = "asc" | "desc";
 
 /** One sort key (design 05 §3.2). */
@@ -1895,6 +1996,14 @@ export type TargetRef = {
 export type TargetView = {
   id: string;
   key: string;
+};
+
+/** `GET /home/templates?roles=`. */
+export type Template = {
+  default_views: Record<string, string>;
+  nav_shortcuts: Array<Shortcut>;
+  roles: Array<string>;
+  widgets: Array<Widget>;
 };
 
 /** The thresholds in use (org default or the project override); a null value turns `deadline_near_incomplete` off. */
@@ -2653,6 +2762,51 @@ export type WhereInput = {
 /** `ne` and `not_in` also match issues without a value; `ever_in` (status, assignee, fixed_version) also matches past values. */
 export type WhereOp = "eq" | "ne" | "in" | "not_in" | "lt" | "le" | "gt" | "ge" | "between" | "within" | "is_null" | "not_null" | "ever_in";
 
+/** One home widget (§3.8). */
+export type Widget = {
+  /** What it names can be read now. `false` when the view was deleted, became unreadable or is bound to a project the reader cannot see, or the milestones project is not readable any more — one answer for all of them; show "this view no longer exists". */
+  available: boolean;
+  id: string;
+  /** `view`: rows to show, 3–20. */
+  limit?: number | null;
+  /** `milestones`: the project (`GET /projects/{id}/versions?include=stats`); absent until the person picks one. */
+  project_id?: string | null;
+  /** `milestones`, when available. */
+  project_key?: string | null;
+  project_name?: string | null;
+  /** `need_decision`: cannot be removed (U22). */
+  protected: boolean;
+  /** need_decision, view, triage_count, milestones, my_time_week, agent_summary. */
+  type: string;
+  /** `view`: a view id or `builtin:…`; run it with `POST /views/{view_id}/run`. */
+  view_id?: string | null;
+  /** `view`, when available: list or board. */
+  view_kind?: string | null;
+  /** `view`, when available. */
+  view_name?: string | null;
+  /** 1–3 columns. */
+  width: number;
+};
+
+/** One widget of `PUT /me/home`. The read-only fields of `GET /me/home` (`protected`, `available`, names) may be sent back and are ignored. */
+export type WidgetInput = {
+  available?: boolean | null;
+  /** Keep the id of an existing widget; a new one may leave it out. 1–40 letters, digits, `_` and `-`. */
+  id?: string | null;
+  limit?: number | null;
+  /** `milestones`: a project id or key. */
+  project_id?: string | null;
+  project_key?: string | null;
+  project_name?: string | null;
+  protected?: boolean | null;
+  type: string;
+  view_id?: string | null;
+  view_kind?: string | null;
+  view_name?: string | null;
+  /** 1–3; default 2 for need_decision, else 1. */
+  width?: number | null;
+};
+
 export type Wip = {
   /** null when the lane was not counted. */
   exceeded: boolean | null;
@@ -2735,12 +2889,18 @@ export interface Endpoints {
   "POST /forms/{id}/rollback": { body: RollbackInput; data: PublishResult };
   "GET /forms/{id}/versions": { body: never; data: Array<FormVersionView> };
   "GET /home/agent-summary": { body: never; data: AgentSummary };
+  "GET /home/templates": { body: never; data: Template };
   "POST /issues/search": { body: SearchParams; data: SearchResult };
   "GET /issues/{key}": { body: never; data: IssueDetail };
   "GET /issues/{key}/actions": { body: never; data: IssueActions };
   "GET /issues/{key}/dev": { body: never; data: IssueDev };
   "POST /issues/{key}/events/{event_id}/redact": { body: RedactInput; data: Redacted };
   "POST /issues/{key}/notes/{note_id}/redact": { body: RedactInput; data: Redacted };
+  "GET /me/home": { body: never; data: HomeView };
+  "PUT /me/home": { body: HomePut; data: HomeView };
+  "POST /me/home/apply-template": { body: ApplyTemplate; data: Applied };
+  "GET /me/preferences": { body: never; data: PreferencesView };
+  "PUT /me/preferences": { body: PreferencesPut; data: PreferencesView };
   "GET /me/timesheet": { body: never; data: Timesheet };
   "GET /operations/{id}": { body: never; data: OperationView };
   "GET /org/schedule-settings": { body: never; data: OrgScheduleSettings };

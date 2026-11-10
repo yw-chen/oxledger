@@ -1195,6 +1195,64 @@ pub(crate) fn parse_layout(
     Ok(())
 }
 
+/// Fields a published layout shows only under a condition while `required`
+/// makes them required where the condition can be false (`hides_required`
+/// of [`parse_mode`]), read leniently: fields that are deactivated, no
+/// longer applicable or unknown are skipped (as the effective layout skips
+/// them), and a show_if that no longer parses counts as "may hide".
+/// Used when rules change, to report only what the change breaks.
+fn hidden_required(
+    body: &Json,
+    cat: &BTreeMap<i32, CfInfo>,
+    required: &Required,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for op in ["create", "update"] {
+        let Some(sections) = layout_sections(body, op) else {
+            continue;
+        };
+        for s in &sections {
+            let section_show = s
+                .show_if
+                .as_ref()
+                .map(|w| parse_when(w, "", cat, true).ok());
+            for f in &s.fields {
+                let shown = LAYOUT_BUILTINS.contains(&f.key.as_str())
+                    || matches!(Key::parse(&f.key), Some(Key::Cf(id))
+                        if cat.get(&id).is_some_and(|c| !c.inactive && c.applies));
+                if !shown {
+                    continue;
+                }
+                let field_show = f
+                    .show_if
+                    .as_ref()
+                    .map(|w| parse_when(w, "", cat, true).ok());
+                let mut shows: Vec<When> = Vec::new();
+                let mut unparsed = false;
+                for x in [&section_show, &field_show].into_iter().flatten() {
+                    match x {
+                        Some(w) => shows.push(w.clone()),
+                        None => unparsed = true,
+                    }
+                }
+                if shows.is_empty() && !unparsed {
+                    continue;
+                }
+                let refs: Vec<&When> = shows.iter().collect();
+                let hidden = match required.get(&f.key) {
+                    None => false,
+                    Some(None) => true,
+                    Some(Some(reqs)) => unparsed || reqs.iter().any(|r| !implies(r, &refs)),
+                };
+                if hidden {
+                    out.insert(f.key.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The sections of `op` in a published layout body (no checks: it was
 /// valid when published).
 fn layout_sections(body: &Json, op: &str) -> Option<Vec<SectionIn>> {
@@ -2666,8 +2724,13 @@ async fn check_body(
             let rules = parse_rules(body, &mine)?;
             // A rule must not make a field required where a published
             // layout hides it.
+            // Only what this change breaks counts (M1.6-D14): a published
+            // layout is read leniently (deactivated or inapplicable fields
+            // are skipped, as when it is shown), and a field already hidden
+            // while required before the change does not block it.
             for (layout_form, lb) in layouts_to_recheck(&mut *conn, f).await? {
                 let lcat = layer_catalog(&mut *conn, &layout_form).await?;
+                let before = rules_in_force(&mut *conn, &layout_form, &lcat, None).await?;
                 let all = rules_in_force(&mut *conn, &layout_form, &lcat, Some(&rules)).await?;
                 let all = if layout_form.id == f.id || f.project_id.is_some() {
                     all
@@ -2682,14 +2745,39 @@ async fn check_body(
                     a
                 };
                 let wf = workflow_required(&mut *conn, layout_form.tracker_id).await?;
-                parse_layout(&lb, &lcat, &required_map(&lcat, &all, &wf))?;
+                let was = hidden_required(&lb, &lcat, &required_map(&lcat, &before, &wf));
+                let now = hidden_required(&lb, &lcat, &required_map(&lcat, &all, &wf));
+                if let Some(key) = now.difference(&was).next() {
+                    // Name the field only to someone who can read it.
+                    let readable = LAYOUT_BUILTINS.contains(&key.as_str())
+                        || matches!(Key::parse(key), Some(Key::Cf(id)) if mine.contains_key(&id));
+                    return Err(if readable {
+                        form_invalid(
+                            "hides_required",
+                            format!("{key} would be required where a published layout can hide it"),
+                            json!({"path": "", "field": key}),
+                        )
+                    } else {
+                        form_invalid(
+                            "hides_required",
+                            "a published layout can hide a field these rules make required",
+                            json!({"path": ""}),
+                        )
+                    });
+                }
             }
             Ok(rules)
         }
         Part::Layout => {
             let all = rules_in_force(&mut *conn, f, &cat, None).await?;
             let wf = workflow_required(&mut *conn, f.tracker_id).await?;
-            parse_layout(body, &cat, &required_map(&cat, &all, &wf))?;
+            // What may be placed or named in a show_if is the author's
+            // catalog (as for rules): a field a project manager cannot read
+            // is `unknown_field`, so no error names it. What is required
+            // still comes from the whole catalog; it only matters for
+            // placed (so readable) fields.
+            let mine = author_catalog(&mut *conn, caller, f, &cat).await?;
+            parse_layout(body, &mine, &required_map(&cat, &all, &wf))?;
             Ok(Vec::new())
         }
     }
@@ -3192,7 +3280,9 @@ pub async fn impact(app: &App, caller: AuthContext, id: Uuid, part: Part) -> Res
                 .0
         }
         Part::Layout => {
+            // Warnings name only fields the author can read (M1.6-D13).
             let cat = layer_catalog(&mut tx, &f).await?;
+            let cat = author_catalog(&mut tx, caller, &f, &cat).await?;
             let mut c =
                 counters(&mut tx, f.project_id.unwrap_or(Uuid::nil()), f.tracker_id).await?;
             if f.project_id.is_some() {

@@ -162,6 +162,13 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/time-entries/{id}", get(time_get))
         .route("/time-entries/{id}/events", get(time_events))
         .route("/me/timesheet", get(time_sheet))
+        .route(
+            "/me/preferences",
+            get(me_preferences).put(me_preferences_put),
+        )
+        .route("/me/home", get(me_home).put(me_home_put))
+        .route("/me/home/apply-template", post(me_home_apply))
+        .route("/home/templates", get(home_templates))
         .route("/time-activities", get(time_activities))
         .route("/admin/time-activities", put(time_activities_put))
         .route(
@@ -1564,6 +1571,69 @@ async fn time_sheet(
         q.get("week").map(String::as_str),
     )
     .await?))
+}
+
+// ---------------------------------------------------------------- me (design 05 §3.8, M1.6)
+
+async fn me_preferences(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::home::preferences(&st.app, ctx).await?))
+}
+
+async fn me_preferences_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::home::PreferencesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::home::put_preferences(&st.app, ctx, key, &body).await?
+    ))
+}
+
+async fn me_home(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::home::home(&st.app, ctx).await?))
+}
+
+async fn me_home_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::home::HomePut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::home::put_home(&st.app, ctx, key, &body).await?))
+}
+
+async fn me_home_apply(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::home::ApplyTemplate>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::home::apply_template(&st.app, ctx, key, &body).await?
+    ))
+}
+
+async fn home_templates(Extension(ra): Extension<RequestAuth>, Query(q): Params) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::home::templates(
+        ctx,
+        q.get("roles").map(String::as_str),
+    )?))
 }
 
 async fn time_activities(

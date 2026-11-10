@@ -18,6 +18,7 @@ pub mod field_admin;
 pub mod filter;
 pub mod forms;
 pub mod github;
+pub mod home;
 pub mod issue_view;
 pub mod mcp;
 pub mod metrics;

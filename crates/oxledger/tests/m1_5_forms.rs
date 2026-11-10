@@ -3561,3 +3561,332 @@ async fn g_layout_workflow_required_and_hidden_sections() {
     let fd = describe(w, w.alice_ctx).await;
     assert!(fd.layout.sections.iter().any(|s| s.id == "classified"));
 }
+
+/// M1.6 follow-up of D21: a project manager's layout is checked against
+/// the fields they can read. Placing a field they cannot read, or naming
+/// it in a show_if, is `unknown_field` — never `field_not_applicable` or
+/// `hides_required` naming it — while an administrator may place it.
+#[tokio::test]
+async fn g_manager_layout_unreadable_field() {
+    let pool = test_pool().await;
+    let f = setup(&pool).await;
+    let w = &f.w;
+    let mgr = v_manager(&f).await;
+    let lead = lead_role(&pool).await;
+    let mut secret = field_input("Secret", "string", vec![w.bug], &[]);
+    secret.visible = Some(false);
+    secret.role_ids = Some(vec![lead]);
+    secret.is_required = Some(true);
+    let secret = field_admin::create(&w.app, w.alice_ctx, &secret)
+        .await
+        .unwrap();
+    // Restricted and not for this tracker: no field_not_applicable either.
+    let task = id(
+        &pool,
+        "INSERT INTO trackers (name, position, default_status_id) SELECT 'Task', 2, id FROM issue_statuses WHERE name = 'New' RETURNING id",
+    )
+    .await;
+    let mut other = field_input("Other", "string", vec![task], &[]);
+    other.visible = Some(false);
+    other.role_ids = Some(vec![lead]);
+    let other = field_admin::create(&w.app, w.alice_ctx, &other)
+        .await
+        .unwrap();
+    let form = v_project_form(&f, mgr).await;
+    let put = |who: AuthContext, body: Value| {
+        let app = w.app.clone();
+        async move {
+            forms::put_draft(
+                &app,
+                who,
+                form,
+                Part::Layout,
+                &DraftInput {
+                    base_version: 0,
+                    body,
+                },
+            )
+            .await
+        }
+    };
+    let placed = |key: &str, show: Option<Value>| {
+        let mut field = json!({"key": key});
+        if let Some(s) = show {
+            field["show_if"] = s;
+        }
+        json!({"modes": {"create": {"sections": [
+            {"id": "main", "title": "Main", "fields": [{"key": "subject"}, field]}
+        ]}}})
+    };
+    let hidden = json!({"all": [{"field": "status_category", "op": "eq", "value": "done"}]});
+    for (what, body) in [
+        ("placed", placed(&secret.key, None)),
+        (
+            "placed under show_if",
+            placed(&secret.key, Some(hidden.clone())),
+        ),
+        ("not applicable", placed(&other.key, None)),
+        (
+            "named in show_if",
+            placed(
+                "description",
+                Some(json!({"all": [{"field": secret.key.clone(), "op": "is_set"}]})),
+            ),
+        ),
+    ] {
+        let e = put(mgr, body).await.unwrap_err();
+        let d = details(&e);
+        assert_eq!(d["kind"], "unknown_field", "{what}: {d}");
+    }
+    // Readable fields are fine for the manager.
+    put(mgr, placed("description", Some(hidden.clone())))
+        .await
+        .unwrap();
+    // The administrator's checks are unchanged: the required restricted
+    // field under a show_if is hides_required, plainly placed it is fine.
+    let base = forms::get(&w.app, w.alice_ctx, form)
+        .await
+        .unwrap()
+        .layout
+        .draft
+        .map_or(0, |d| d.version);
+    let e = forms::put_draft(
+        &w.app,
+        w.alice_ctx,
+        form,
+        Part::Layout,
+        &DraftInput {
+            base_version: base,
+            body: placed(&secret.key, Some(hidden)),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(details(&e)["kind"], "hides_required");
+    forms::put_draft(
+        &w.app,
+        w.alice_ctx,
+        form,
+        Part::Layout,
+        &DraftInput {
+            base_version: base,
+            body: placed(&secret.key, None),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+// ---------------------------------------------------------------- independent verification (M1.6-D13/D14)
+
+/// F1 (M1.6-D13 left a path out): `POST /forms/{id}/drafts/layout/impact`
+/// builds `layout_warnings` from the whole catalog, so a project manager
+/// gets `{"kind": "unplaced", "field": "cf:N"}` for a field they cannot
+/// read (it applies to the tracker, is active, and is not placed).
+/// Expected: only fields in the author's catalog are named.
+#[tokio::test]
+async fn verify_m16_manager_layout_impact_names_unreadable_field() {
+    let pool = test_pool().await;
+    let f = setup(&pool).await;
+    let w = &f.w;
+    let mgr = v_manager(&f).await;
+    let lead = lead_role(&pool).await;
+    let mut secret = field_input("Secret", "string", vec![w.bug], &[]);
+    secret.visible = Some(false);
+    secret.role_ids = Some(vec![lead]);
+    let secret = field_admin::create(&w.app, w.alice_ctx, &secret)
+        .await
+        .unwrap();
+    let form = v_project_form(&f, mgr).await;
+    forms::put_draft(
+        &w.app,
+        mgr,
+        form,
+        Part::Layout,
+        &DraftInput {
+            base_version: 0,
+            body: json!({"modes": {"create": {"sections": [
+                {"id": "main", "title": "Main", "fields": [{"key": "subject"}, {"key": "description"}]}
+            ]}}}),
+        },
+    )
+    .await
+    .unwrap();
+    let imp = forms::impact(&w.app, mgr, form, Part::Layout)
+        .await
+        .unwrap();
+    let s = serde_json::to_string(&imp.layout_warnings).unwrap();
+    assert!(
+        !s.contains(&format!("\"{}\"", secret.key)),
+        "the manager's impact names {}: {s}",
+        secret.key
+    );
+}
+
+/// F2 (M1.6-D14 in practice): an administrator places a restricted field
+/// in the WEB layout and publishes it, then deactivates the field. Every
+/// later rule draft of that form fails the re-check of the published
+/// layout with `unknown_field` naming the field — for the project manager
+/// too (who cannot read it), and whatever the rule is about.
+/// Expected: the manager can save an unrelated rule; no error names the
+/// field.
+#[tokio::test]
+async fn verify_m16_manager_rules_blocked_by_deactivated_layout_field() {
+    let pool = test_pool().await;
+    let f = setup(&pool).await;
+    let w = &f.w;
+    let mgr = v_manager(&f).await;
+    let lead = lead_role(&pool).await;
+    let mut secret = field_input("Secret", "string", vec![w.bug], &[]);
+    secret.visible = Some(false);
+    secret.role_ids = Some(vec![lead]);
+    let secret = field_admin::create(&w.app, w.alice_ctx, &secret)
+        .await
+        .unwrap();
+    let form = v_project_form(&f, mgr).await;
+    publish_form(
+        w,
+        form,
+        Part::Layout,
+        json!({"modes": {"create": {"sections": [
+            {"id": "main", "title": "Main", "fields": [{"key": "subject"}, {"key": secret.key}]}
+        ]}}}),
+        None,
+    )
+    .await
+    .unwrap();
+    let lv = field_admin::get(
+        &w.app,
+        w.alice_ctx,
+        &secret.key,
+        &FieldQuery {
+            preview_required: None,
+        },
+    )
+    .await
+    .unwrap()
+    .field
+    .lock_version;
+    field_admin::patch(
+        &w.app,
+        w.alice_ctx,
+        &secret.key,
+        &FieldPatch {
+            lock_version: lv,
+            set: FieldSet {
+                deactivated: Some(true),
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let r = forms::put_draft(
+        &w.app,
+        mgr,
+        form,
+        Part::Rules,
+        &DraftInput {
+            base_version: 0,
+            body: rules(vec![
+                json!({"id": "r1", "field": "due_date", "kind": "required_if",
+                       "when": {"all": [{"field": "assignee", "op": "is_set"}]}}),
+            ]),
+        },
+    )
+    .await;
+    if let Err(e) = r {
+        panic!(
+            "manager's unrelated rule refused: {e:#} {} (names {}: {})",
+            details(&e),
+            secret.key,
+            format!("{e:#} {}", details(&e)).contains(&secret.key)
+        );
+    }
+}
+
+/// M1.6-D14: a rule change re-checks published layouts only for what it
+/// breaks: a rule that makes a field required where a published layout
+/// hides it is `hides_required` naming the (readable) field; an unrelated
+/// rule passes even though the layout also places a deactivated field.
+#[tokio::test]
+async fn g_rules_recheck_only_new_hides_required() {
+    let pool = test_pool().await;
+    let f = setup(&pool).await;
+    let w = &f.w;
+    let mgr = v_manager(&f).await;
+    let form = v_project_form(&f, mgr).await;
+    let old = field_admin::create(
+        &w.app,
+        w.alice_ctx,
+        &field_input("Old", "string", vec![w.bug], &[]),
+    )
+    .await
+    .unwrap();
+    publish_form(
+        w,
+        form,
+        Part::Layout,
+        json!({"modes": {"create": {"sections": [
+            {"id": "main", "title": "Main", "fields": [{"key": "subject"}, {"key": "assigned_to_id"}, {"key": old.key}]},
+            {"id": "plan", "title": "Plan",
+             "show_if": {"all": [{"field": "status_category", "op": "eq", "value": "done"}]},
+             "fields": [{"key": "due_date"}]}
+        ]}}}),
+        None,
+    )
+    .await
+    .unwrap();
+    let lv = field_admin::get(
+        &w.app,
+        w.alice_ctx,
+        &old.key,
+        &FieldQuery {
+            preview_required: None,
+        },
+    )
+    .await
+    .unwrap()
+    .field
+    .lock_version;
+    field_admin::patch(
+        &w.app,
+        w.alice_ctx,
+        &old.key,
+        &FieldPatch {
+            lock_version: lv,
+            set: FieldSet {
+                deactivated: Some(true),
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let draft = |body: Value| {
+        let app = w.app.clone();
+        async move {
+            forms::put_draft(
+                &app,
+                mgr,
+                form,
+                Part::Rules,
+                &DraftInput {
+                    base_version: 0,
+                    body,
+                },
+            )
+            .await
+        }
+    };
+    let e = draft(rules(vec![due_when_assigned()])).await.unwrap_err();
+    let d = details(&e);
+    assert_eq!(d["kind"], "hides_required", "{d}");
+    assert_eq!(d["field"], "due_date", "{d}");
+    draft(rules(vec![
+        json!({"id": "r1", "field": "description", "kind": "required_if",
+        "when": {"all": [{"field": "assignee", "op": "is_set"}]}}),
+    ]))
+    .await
+    .unwrap();
+}

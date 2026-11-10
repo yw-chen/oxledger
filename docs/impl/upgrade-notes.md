@@ -83,3 +83,10 @@
 - 欄位的可見性與角色變更仍照 0010 的 trigger bump 相關專案 epoch（每個變更的部分各一次）。
 - 型別轉換在背景分批跑；服務重啟時，欄位背景工作會接手 `running` 的轉換。轉完舊欄位不會自動停用，由管理員確認報告後自己停用。
 - CHECK：都是新表的新 CHECK（`form_rule_versions`／`form_layout_versions` 的 `state`、`publish_mode`，`custom_field_conversions.state`），沒有重建既有 CHECK。
+## 0026_user_preferences（M1.6，首頁與介面角色）
+
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`、角色或成員，`security_epoch` 與 `schema_version` 都不變（升級測試驗證）。不需要新權限：`/me/*` 只給登入的本人。
+- 新增 `user_preferences`（每個使用者一列；`user_id` 必須是 user，trigger 擋 agent）。**升級後是空的**：使用者第一次 `GET /me/preferences` 或 `GET /me/home` 時以通用範本建立（需要你決定、指派給我、與我相關；左欄捷徑「指派給我」；所有專案預設列表），`onboarded` 是 `false`，所以每個既有使用者下次登入都會看到「你主要做什麼？」對話框（可略過）。
+- 和契約 §2.8 的 DDL 差異：多一欄 `home_lock_version`（首頁有自己的樂觀鎖，改主題不會讓另一個分頁的首頁編輯衝突）；`home`、`nav_shortcuts`、`default_views` 加 `jsonb_typeof` CHECK。
+- CHECK 是新建的（`interface_roles`、`theme`、`density`），沒有重建既有清單；測試比對 `pg_get_constraintdef` 與 `home::ROLES`／`THEMES`／`DENSITIES`。
+- 偏好與首頁是個人狀態：不進 `issue_events`、不留稽核事件、不動任何 epoch。
