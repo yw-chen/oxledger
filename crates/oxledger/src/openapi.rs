@@ -147,6 +147,54 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "GET",
+            "/admin/concepts",
+            "Concepts and their labels for search alias expansion (design 05 §3.9), by preferred label. Every signed-in person; people who are not administrators see active concepts and their active labels that are not hidden. Query: q (part of a label, NFC + casefold), limit (clamped to 1–100, default 50), cursor.",
+            Session,
+            None,
+            s::<crate::concepts::ConceptList>,
+        ),
+        r(
+            "POST",
+            "/admin/concepts",
+            "Create a concept (administrators; 201): {pref_label, labels:[{label, kind? alt|hidden, status? active|staging}]}. The preferred label is also an active label (kind pref). Labels are 1–60 characters, compared after NFC + casefold. A label active in another concept: concept_label_taken (409, details.concept_id, pref_label, label). invalid_value kinds: label_invalid, label_kind_invalid, label_status_invalid, duplicate_label, too_many_labels (50).",
+            Session,
+            Some(s::<crate::concepts::NewConcept>),
+            s::<crate::concepts::ConceptView>,
+        ),
+        r(
+            "GET",
+            "/admin/concepts/{id}",
+            "One concept (not_found for a retired one unless you are an administrator).",
+            Session,
+            None,
+            s::<crate::concepts::ConceptView>,
+        ),
+        r(
+            "PATCH",
+            "/admin/concepts/{id}",
+            "Rename or retire a concept (administrators): {lock_version, pref_label?, status? active|retired}. A retired concept does not expand; its active labels still hold their names. conflict carries current_lock_version; concept_label_taken as for POST; invalid_value kinds: label_invalid, label_exists, concept_status_invalid.",
+            Session,
+            Some(s::<crate::concepts::ConceptPatch>),
+            s::<crate::concepts::ConceptView>,
+        ),
+        r(
+            "POST",
+            "/admin/concepts/{id}/labels",
+            "Add a label (administrators; 201): {label, kind? alt|hidden, status? active|staging}. invalid_value kinds: label_invalid, label_kind_invalid, label_status_invalid, label_exists, too_many_labels; concept_label_taken when active in another concept.",
+            Session,
+            Some(s::<crate::concepts::NewLabel>),
+            s::<crate::concepts::ConceptView>,
+        ),
+        r(
+            "PATCH",
+            "/admin/concepts/{id}/labels/{label}",
+            "Change a label's status (active | staging; staging labels do not expand) or kind (alt | hidden). The path label is matched after NFC + casefold. The preferred label cannot change (invalid_value kind pref_label_fixed). Activating a label active in another concept: concept_label_taken.",
+            Session,
+            Some(s::<crate::concepts::LabelPatch>),
+            s::<crate::concepts::ConceptView>,
+        ),
+        r(
+            "GET",
             "/admin/custom-fields",
             "Every custom field with its scope, roles, options, lock_version and state (administrators).",
             Session,
@@ -1136,6 +1184,8 @@ pub const CREATED_ROUTES: &[(&str, &str)] = &[
     ("POST", "/admin/custom-fields"),
     ("POST", "/admin/custom-fields/{id}/options"),
     ("POST", "/admin/custom-fields/{id}/conversions"),
+    ("POST", "/admin/concepts"),
+    ("POST", "/admin/concepts/{id}/labels"),
 ];
 
 /// The OpenAPI 3.1 document.

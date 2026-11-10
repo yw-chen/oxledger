@@ -10,7 +10,7 @@ use crate::error::{ApiError, ErrorCode, api};
 use crate::evidence::{self, CpText, FieldMatch, Highlight, Strength, Terms, Window};
 use crate::filter::{self, FilterInput};
 use crate::search::Wait;
-use crate::search::{IxFilter, SearchIndex};
+use crate::search::{IxFilter, Layout, SearchIndex};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use ox_core::filter::{Cmp, Filter, Test, Value as FValue};
@@ -19,7 +19,7 @@ use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, PgPool, Postgres, QueryBuilder, Row};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub struct App {
@@ -56,7 +56,11 @@ const MAX_SEARCH_CANDIDATES: usize = 8000;
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
-    /// Free text (BM25 over subject and description; Chinese works without word segmentation).
+    /// Free text: BM25F over the issue keys (×5), subject (×3), description
+    /// (×1), visible text custom fields (×0.7) and public notes (×0.5);
+    /// Chinese works without word segmentation. A word (or the whole query)
+    /// equal to a concept label also searches the concept's other labels
+    /// (`match.expanded`).
     pub q: Option<String>,
     /// Project key (e.g. "AUTH"), name, or alias.
     pub project: Option<String>,
@@ -143,17 +147,28 @@ pub struct IssueBrief {
 /// Which fields matched, recomputed from the current text (design 03 §3.4 step 6).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct MatchInfo {
-    /// subject and/or description.
+    /// Of key, subject, description, cf_text (visible text custom fields),
+    /// notes (public notes), in that order.
     pub fields: Vec<String>,
-    /// primary: a full term matched; fallback: only single CJK characters or identifier parts.
+    /// primary: a full term matched (an expanded label's word counts);
+    /// fallback: only single CJK characters or identifier parts.
     pub strength: Strength,
+    /// Design 05 §3.9: concept labels added to the query that occur in
+    /// this issue's text (a hidden label shows as the concept's name).
+    /// Absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expanded: Vec<crate::concepts::Expansion>,
 }
 
 /// A snippet of the current text and its citation (design 03 §3.6).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchEvidence {
-    /// subject | description
+    /// subject | description | note (a public note; `note_id`). Keys and
+    /// custom field values match without a snippet.
     pub field: String,
+    /// The note the snippet is from (`field = note`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<Uuid>,
     /// current | rechecked (the index may still rank by older text; the snippet is from the current text).
     pub evidence_status: String,
     /// The cited text, verbatim: pass it unchanged as `quote`.
@@ -827,9 +842,64 @@ fn item_from_row(r: &PgRow, sel: &[&str]) -> Result<SearchItem> {
     Ok(it)
 }
 
-/// One text field of a candidate: which, the raw text, its code points and
+/// Where a candidate's text comes from (design 05 §3.9 index fields).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Src {
+    Key,
+    Subject,
+    Description,
+    Cf,
+    Note(Uuid),
+}
+
+impl Src {
+    /// The `match.fields` name.
+    fn match_name(self) -> &'static str {
+        match self {
+            Src::Key => "key",
+            Src::Subject => "subject",
+            Src::Description => "description",
+            Src::Cf => "cf_text",
+            Src::Note(_) => "notes",
+        }
+    }
+
+    /// The citation source unit (03 §3.2); keys and custom field values
+    /// have none yet, so they never give a snippet.
+    fn source(self, issue_id: Uuid) -> Option<(Source, &'static str, Option<Uuid>)> {
+        match self {
+            Src::Subject => Some((
+                Source::IssueField {
+                    issue_id,
+                    field: TextField::Subject,
+                },
+                "subject",
+                None,
+            )),
+            Src::Description => Some((
+                Source::IssueField {
+                    issue_id,
+                    field: TextField::Description,
+                },
+                "description",
+                None,
+            )),
+            Src::Note(note_id) => Some((
+                Source::IssueNote { issue_id, note_id },
+                "note",
+                Some(note_id),
+            )),
+            Src::Key | Src::Cf => None,
+        }
+    }
+}
+
+/// `match.fields` in the order of the §3.9 table.
+const MATCH_ORDER: [&str; 5] = ["key", "subject", "description", "cf_text", "notes"];
+
+/// One text of a candidate: where from, the raw text, its code points and
 /// what the query matches in it.
-type FieldText = (TextField, String, CpText, Option<FieldMatch>);
+type FieldText = (Src, String, CpText, Option<FieldMatch>);
 
 /// The current text of one candidate.
 struct Texts {
@@ -1472,10 +1542,12 @@ pub(crate) async fn search_with(
 
     let mut truncated = false;
     let mut checked: HashMap<Uuid, Texts> = HashMap::new();
+    // Design 05 §3.9: the concept labels added to `q` (current layout only).
+    let mut expansions: Vec<crate::concepts::Expansion> = Vec::new();
     // With `q` and `sort`: each item's relevance rank among all matches.
     let mut rank_of: HashMap<Uuid, u32> = HashMap::new();
     let (rows, more): (Vec<PgRow>, bool) = match (text, &terms) {
-        (Some(q), Some(terms)) => {
+        (Some(q), Some(_)) => {
             // Free text: rank in the index (already filtered by visibility +
             // the index-side filters), re-check every candidate in SQL — the
             // index may lag the database, and some filters exist only in SQL —
@@ -1499,11 +1571,30 @@ pub(crate) async fn search_with(
                 Some(v) if !app.index.metrics.sync_stalled() => v,
                 _ => return Err(search_unavailable()),
             };
+            // A legacy generation (before M1.7, still serving until its
+            // rebuild switches) is queried and re-checked the old way:
+            // subject and description only, no expansion (03 §4.8).
+            let layout = view.layout();
+            let (eterms, keys) = match layout {
+                Layout::Current => {
+                    expansions = crate::concepts::expansions(&mut *conn, q).await?;
+                    let labels: Vec<String> = expansions.iter().map(|e| e.added.clone()).collect();
+                    (
+                        Terms::with_expansions(q, &labels, crate::search::EXPANSION_WEIGHT),
+                        crate::search::key_terms(q),
+                    )
+                }
+                Layout::Legacy => (Terms::new(q), Vec::new()),
+            };
+            let terms = &eterms;
+            let weighted = terms.weighted();
             let survivors = loop {
-                let hits = view.search(q, &pred, &ix, k).map_err(|e| {
-                    tracing::error!("search index failed: {e:#}");
-                    search_unavailable()
-                })?;
+                let hits = view
+                    .search_weighted(&weighted, &keys, &pred, &ix, k)
+                    .map_err(|e| {
+                        tracing::error!("search index failed: {e:#}");
+                        search_unavailable()
+                    })?;
                 let exhausted = hits.len() < k;
                 let score_of: HashMap<Uuid, f32> =
                     hits.iter().map(|h| (h.issue_id, h.score)).collect();
@@ -1538,21 +1629,28 @@ pub(crate) async fn search_with(
                         .bind(&todo)
                         .fetch_all(&mut *conn)
                         .await?;
+                        // The other indexed sources as they are now, with
+                        // the index's own rules (public notes, visible
+                        // text fields that apply): a retracted or redacted
+                        // note, a hidden field drop out here even before
+                        // the index sees the change (T-M1-62, 63).
+                        let mut extras = match layout {
+                            Layout::Current => {
+                                crate::search::load_extras(&mut *conn, &todo).await?
+                            }
+                            Layout::Legacy => HashMap::new(),
+                        };
                         for (id, subject, description) in texts {
+                            let x = extras.remove(&id).unwrap_or_default();
                             let current = rev_of.get(&id).copied().flatten()
-                                == Some(crate::search::search_rev(&subject, &description));
-                            let fields = [
-                                (TextField::Subject, subject),
-                                (TextField::Description, description),
-                            ]
-                            .into_iter()
-                            .map(|(f, t)| {
-                                let cp = CpText::new(&t);
-                                let m = evidence::match_field(terms, &t, &cp);
-                                (f, t, cp, m)
-                            })
-                            .collect();
-                            checked.insert(id, Texts { fields, current });
+                                == Some(crate::search::doc_rev(layout, &subject, &description, &x));
+                            checked.insert(
+                                id,
+                                Texts {
+                                    fields: candidate_texts(terms, &keys, subject, description, x),
+                                    current,
+                                },
+                            );
                         }
                     }
                     survivors.extend(
@@ -1670,6 +1768,28 @@ pub(crate) async fn search_with(
         }
     };
 
+    // Per expansion, its label's full terms that the query itself lacks:
+    // an item shows the expansion when one of them matched in its text.
+    let expanded_terms: Vec<(crate::concepts::Expansion, Vec<String>)> = match text {
+        Some(q) if !expansions.is_empty() => {
+            let own: HashSet<String> = crate::search::query_terms(q)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect();
+            expansions
+                .iter()
+                .map(|e| {
+                    let ts = crate::search::query_terms(&e.added)
+                        .into_iter()
+                        .filter(|(t, w)| *w >= 1.0 && !own.contains(t))
+                        .map(|(t, _)| t)
+                        .collect();
+                    (e.clone(), ts)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     let mut items = Vec::with_capacity(rows.len());
     let mut cf_roles: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
     for (n, r) in rows.iter().enumerate() {
@@ -1704,13 +1824,37 @@ pub(crate) async fn search_with(
             );
             if let Some(t) = checked.get(&it.id) {
                 let matched: Vec<&FieldText> = t.fields.iter().filter(|f| f.3.is_some()).collect();
+                let seen: HashSet<&str> = matched
+                    .iter()
+                    .filter_map(|f| f.3.as_ref())
+                    .flat_map(|m| m.terms())
+                    .collect();
                 it.matched = Some(MatchInfo {
-                    fields: matched.iter().map(|f| f.0.as_str().to_string()).collect(),
+                    fields: MATCH_ORDER
+                        .iter()
+                        .filter(|n| matched.iter().any(|f| f.0.match_name() == **n))
+                        .map(|n| n.to_string())
+                        .collect(),
                     strength: matched
                         .iter()
                         .filter_map(|f| f.3.as_ref().map(|m| m.strength))
                         .max()
                         .unwrap_or(Strength::Fallback),
+                    expanded: expanded_terms
+                        .iter()
+                        .filter(|(_, ts)| ts.iter().any(|t| seen.contains(t.as_str())))
+                        .map(|(e, _)| e.clone())
+                        // Hidden labels show as the concept's name: one
+                        // entry per distinct (from, via, label).
+                        .fold(Vec::new(), |mut acc: Vec<crate::concepts::Expansion>, e| {
+                            if !acc
+                                .iter()
+                                .any(|x| x.from == e.from && x.via == e.via && x.label == e.label)
+                            {
+                                acc.push(e);
+                            }
+                            acc
+                        }),
                 });
             }
         }
@@ -1887,6 +2031,48 @@ fn push_after(
     qb.push(")");
 }
 
+/// A candidate's texts for the re-check (§3.4) in snippet order: subject,
+/// description, then the public notes, keys and custom field values that
+/// match (sources that do not match are not kept).
+fn candidate_texts(
+    terms: &Terms,
+    keys: &[String],
+    subject: String,
+    description: String,
+    x: crate::search::Extras,
+) -> Vec<FieldText> {
+    let text = |src: Src, t: String| {
+        let cp = CpText::new(&t);
+        let m = evidence::match_field(terms, &t, &cp);
+        (src, t, cp, m)
+    };
+    let mut out = vec![
+        text(Src::Subject, subject),
+        text(Src::Description, description),
+    ];
+    for (id, body) in x.notes {
+        let f = text(Src::Note(id), body);
+        if f.3.is_some() {
+            out.push(f);
+        }
+    }
+    for k in x.keys {
+        let lower = k.to_lowercase();
+        if keys.contains(&lower) {
+            let cp = CpText::new(&k);
+            let m = FieldMatch::whole(&lower, cp.len());
+            out.push((Src::Key, k, cp, Some(m)));
+        }
+    }
+    for (_, v) in x.cf {
+        let f = text(Src::Cf, v);
+        if f.3.is_some() {
+            out.push(f);
+        }
+    }
+    out
+}
+
 /// Snippets within the response budget: every item's best snippet first,
 /// then the others; a snippet that does not fit is left out and reported
 /// (design 03 §3.5). Citations only for snippets that are returned. Returns
@@ -1905,8 +2091,11 @@ fn attach_evidence(
             continue;
         };
         let mut plan: Vec<(usize, Window)> = Vec::new();
-        for (fi, (_, _, cp, m)) in t.fields.iter().enumerate() {
+        for (fi, (src, _, cp, m)) in t.fields.iter().enumerate() {
             let Some(m) = m else { continue };
+            if src.source(it.id).is_none() {
+                continue;
+            }
             match explain {
                 Explain::Brief => {
                     if let Some(w) = evidence::windows(cp, m, BRIEF_WINDOW, 1).first() {
@@ -1966,10 +2155,12 @@ fn attach_evidence(
             .enumerate()
             .filter(|(pi, _)| keep[ii][*pi])
             .filter_map(|(_, (fi, w))| {
-                let (field, raw, cp, m) = &t.fields[*fi];
+                let (src, raw, cp, m) = &t.fields[*fi];
                 let m = m.as_ref()?;
+                let (source, field, note_id) = src.source(issue_id)?;
                 Some(SearchEvidence {
-                    field: field.as_str().into(),
+                    field: field.into(),
+                    note_id,
                     // 03 §3.4 step 4: the index ranked this very text, or
                     // an older one (the snippet is from the current text).
                     evidence_status: if t.current { "current" } else { "rechecked" }.into(),
@@ -1982,15 +2173,7 @@ fn attach_evidence(
                             strength: m.strength,
                         })
                         .collect(),
-                    citation_id: citations::cite(
-                        Source::IssueField {
-                            issue_id,
-                            field: *field,
-                        },
-                        raw,
-                        w.start,
-                        w.end,
-                    ),
+                    citation_id: citations::cite(source, raw, w.start, w.end),
                 })
             })
             .collect();

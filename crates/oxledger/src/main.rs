@@ -57,6 +57,18 @@ async fn open_app() -> Result<Arc<App>> {
 /// Keeps the search index following the outbox; picks up `oxledger reindex`
 /// requests, runs the outbox GC hourly and the long-transaction check every
 /// 10 s (design 03 §4.7–4.9).
+/// The upgrade claim of [`spawn_indexer`]: released when dropped unless
+/// the rebuild succeeded (`.1`).
+struct UpgradeClaim(Arc<App>, bool);
+
+impl Drop for UpgradeClaim {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0.index.release_upgrade();
+        }
+    }
+}
+
 fn spawn_indexer(app: Arc<App>) {
     app.index
         .metrics
@@ -68,6 +80,28 @@ fn spawn_indexer(app: Arc<App>) {
         loop {
             if let Err(e) = app.index.sync(&app.pool).await {
                 tracing::warn!("index sync failed: {e:#}");
+            }
+            // An index written by an older release (M1.7 schema/semantics
+            // change): rebuild blue-green while the old generation keeps
+            // serving with its own query semantics (design 03 §4.8).
+            if app.index.needs_upgrade() && app.index.claim_upgrade() {
+                let a = app.clone();
+                tokio::spawn(async move {
+                    // Released on every way out but success, a panic
+                    // included, so a later round can try again.
+                    let mut claim = UpgradeClaim(a.clone(), false);
+                    tracing::info!("search index layout is outdated: rebuilding");
+                    match a.index.rebuild(&a.pool).await {
+                        Ok(r) => {
+                            claim.1 = true;
+                            tracing::info!(?r, "search index upgraded");
+                        }
+                        Err(e) => {
+                            tracing::error!("search index upgrade failed: {e:#}");
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                        }
+                    }
+                });
             }
             if last_check.elapsed() >= Duration::from_secs(10) {
                 last_check = std::time::Instant::now();

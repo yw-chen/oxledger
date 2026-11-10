@@ -414,3 +414,24 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	改規則時重檢已發布版面只看這次變動新造成的 hides_required；版面寬鬆讀（停用、不適用欄位略過）；讀不到的欄位不帶 key（待使用者確認）	獨立驗證 F2：停用欄位讓規則草稿與發布全部卡死，錯誤帶出讀不到的 key	完整目錄嚴格重跑 parse_layout（原做法）	crates/oxledger/src/forms.rs
 2026-11-10	M1	版面 impact 的 layout_warnings 用作者目錄	獨立驗證 F1：經理看到讀不到欄位的 unplaced 警告	完整目錄	crates/oxledger/src/forms.rs
 2026-11-10	M1	小工具、捷徑、default_views 存正規 view id；view id 超過 80 字元 invalid_value（invalid_view_id）；default_views key 正規化後重複 duplicate_default_view；default view 必須綁同一專案，* 只收 builtin 或未綁專案的視圖	獨立驗證 V1、V2、V6	存原字串、不限長度、後者覆蓋	crates/oxledger/src/home.rs;crates/oxledger/src/views.rs
+2026-11-10	M1	概念與標籤管理只給管理員（is_admin），不新增權限、不 bump epoch；GET 給所有登入者，非管理員只看到啟用概念的啟用標籤	任務規定不得 bump epoch；staging 常是未審內部用語	新增 manage_concepts 權限；所有人看到全部標籤	crates/oxledger/src/concepts.rs;migrations/0027_concepts.sql
+2026-11-10	M1	標籤比較用 PG18 casefold(normalize(x, NFC))，unique index 與應用程式同一式子，不加 Rust 依賴；casefold 跟資料庫 collation（與其他名稱規則一致）	R18；IMMUTABLE 可建 index；避免新增 crate	Rust unicode-normalization；lower()；COLLATE pg_unicode_fast（待決定）	migrations/0027_concepts.sql;crates/oxledger/src/concepts.rs
+2026-11-10	M1	0027 遇到既有撞名的概念標籤不失敗：每組留一個 active（pref、最舊概念、bytewise 最小），其他改 staging 並 NOTICE	R18；升級不能卡在既有資料	migration 失敗要求人工清理	migrations/0027_concepts.sql;crates/oxledger/tests/m1_7_upgrade.rs
+2026-11-10	M1	別名展開只比對整個 q 與空白分隔的詞（正規化後相等），不做子字串；hidden 標籤參與展開；最多 16 段、加 32 個標籤；展開詞權重 0.5	避免中文長句誤展開；E1 alias0.5 與 alias1 差距小	子字串包含（E1 雛形的做法）；hidden 不展開；權重 1.0	crates/oxledger/src/concepts.rs;crates/oxledger/src/search.rs
+2026-11-10	M1	match.expanded 只列標籤裡原查詢沒有的完整詞、且出現在該 issue 命中文字的展開，{from, via, label}	§3.9 要說明「透過哪個概念找到」，不能列沒用上的展開	列出查詢的全部展開	crates/oxledger/src/service.rs
+2026-11-10	M1	退役概念的啟用標籤仍佔名稱；pref 標籤不能改 kind 或 staging（pref_label_fixed）；同概念重複是 invalid_value，跨概念才是 concept_label_taken（409）	恢復概念不會撞名；pref 是概念名稱	退役即釋出名稱	crates/oxledger/src/concepts.rs
+2026-11-10	M1	概念 API 不收 Idempotency-Key，PATCH concept 用 lock_version；概念變更不寫 issue_events	比照 M1.5 欄位管理；站台設定不是 issue 歷史	收 Idempotency-Key；寫稽核事件	crates/oxledger/src/concepts.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	BM25F 以每欄位 TermQuery×權重加總實作：key 5、subject 3、description 1、cf_text 0.7、notes 0.5；key 用整串小寫 raw 比對	沿用 M0 查詢形狀；契約沒給 key、cf_text 權重（推論）	tantivy 單一 BM25F；key 斷詞	crates/oxledger/src/search.rs
+2026-11-10	M1	私有筆記、受限欄位（visible=false）不進索引，有權限的人也搜不到；key 與 cf 命中沒有 snippet，筆記證據 field=note 帶 note_id	Q-S2 保守做法；cf/key 沒有引用來源單位	索引內逐欄位 ACL；cf 證據	crates/oxledger/src/search.rs;crates/oxledger/src/service.rs
+2026-11-10	M1	search_rev v2 涵蓋所有索引來源，SQL 重驗依索引規則讀 key、筆記、cf；0027 為 notes、keys、issue_cf、field_defs、field_trackers、field_projects 加 outbox trigger	撤回、遮蔽、改受限在 sync 前就要擋（T-M1-62、63）	只靠 outbox 更新索引	crates/oxledger/src/search.rs;migrations/0027_concepts.sql
+2026-11-10	M1	索引 schema 2→3、query semantics 1→2；舊 generation 用舊語意繼續服務並自動背景藍綠重建，失敗 60 秒後重試	03 §4.8：舊 generation 必須用舊版查詢語意	啟動時直接丟棄舊索引（重建期間 search_unavailable）	crates/oxledger/src/search.rs;crates/oxledger/src/main.rs
+2026-11-10	M1	status、priority fast field 以 STRING term 實作；legacy generation 上視為全部，Not 底下有它們時整個視為全部	預先過濾必須是超集	legacy 時拒絕過濾	crates/oxledger/src/filter.rs;crates/oxledger/src/search.rs
+2026-11-10	M1	E1 門檻以 M0 實際值 0.80955 斷言（契約 0.810 是四捨五入），另以 E1 別名表當概念斷言 ≥ 0.810（待使用者確認）	M1.7 不展開時與 M0 逐題相同	嚴格 0.810 並為此調權重（等於對評估集過擬合）	crates/oxledger/src/search.rs
+2026-11-10	M1	E2 受阻：沒有獨立查詢集，不自行編造；只記錄 E1 別名表的參考數字	任務規定評估集不存在時停下回報	用 E1 查詢當 E2	docs/impl/m1-checklist.md
+2026-11-10	M1	outbox 事件在同一交易同一 issue 只發一筆：新增 outbox_issue_once，0027 的子表 trigger 與 0001 的 issues_enqueue 都改用它	S4 斷言一個命令一筆 outbox；加筆記、建 key 不該多發	每個子表寫入各發一筆（s4_commands 失敗）	migrations/0027_concepts.sql
+2026-11-10	M1	0027 修復概念名稱：每概念只留一個 active pref（降級的改 alt）；缺的從 active 標籤補（alt 優先、bytewise 最小）；沒有 active 標籤的概念 retired；改名時缺 pref 列就 INSERT；標籤清單的 pref 一律由 concepts.pref_label 產生	獨立驗證 D1：升級後有概念的名稱是 staging 標籤，改名影響 0 列、新名稱不展開也不受唯一索引保護	不修（原做法）；migration 失敗	migrations/0027_concepts.sql;crates/oxledger/src/concepts.rs
+2026-11-10	M1	E1 單元測試的 writer 單執行緒、同分依 E1 id 排序，數字固定為 0.809525；門檻為 M0（0.80955）四捨五入到 4 位的 0.8095	獨立驗證 D2：多執行緒寫入讓同分順序不定，約 1/3 失敗	門檻 0.80955（不穩定）；嚴格 0.810（待使用者確認）	crates/oxledger/src/search.rs
+2026-11-10	M1	hidden 標籤非管理員不列出、不能用 ?q= 找到；match.expanded 遇到 hidden 標籤時 label 顯示概念名稱（待使用者確認）	獨立驗證 D6：錯字與內部用語外露給所有人	非管理員可見、expanded 列出 hidden 標籤（原做法）	crates/oxledger/src/concepts.rs;crates/oxledger/src/service.rs
+2026-11-10	M1	概念清單 limit 在 HTTP 與服務層都 clamp 到 1–100	獨立驗證 D7b：兩層不一致；契約沒寫，比照其他清單端點	超出範圍回 invalid_argument	crates/oxledger/src/concepts.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	升級 rebuild 的 claim 用 drop guard 釋放（失敗或 panic），成功才保留	獨立驗證 D7a：panic 會讓 upgrading 永遠為 true	catch_unwind	crates/oxledger/src/main.rs
+2026-11-10	M1	不新增刪除標籤／概念的 API，列為後續項；upgrade-notes 改寫成保留 staging、改 hidden、改名、重新啟用	契約只列 GET／POST／PATCH；獨立驗證 D7c	新增 DELETE 端點	docs/impl/upgrade-notes.md

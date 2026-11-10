@@ -251,6 +251,16 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             "/admin/custom-fields/{id}/conversions",
             post(field_conversion_preview),
         )
+        .route("/admin/concepts", get(concepts_list).post(concepts_create))
+        .route(
+            "/admin/concepts/{id}",
+            get(concept_get).patch(concept_patch),
+        )
+        .route("/admin/concepts/{id}/labels", post(concept_label_add))
+        .route(
+            "/admin/concepts/{id}/labels/{label}",
+            patch(concept_label_patch),
+        )
         .route("/admin/conversions/{id}", get(conversion_get))
         .route("/admin/conversions/{id}/start", post(conversion_start))
         .route("/changesets", get(changeset_list))
@@ -2934,6 +2944,75 @@ async fn conversion_start(
         &st.cfg.session,
         ctx,
         id_param(&id)?,
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- concepts (design 05 §3.9)
+
+async fn concepts_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let p = crate::concepts::ConceptQuery {
+        q: q.get("q").cloned(),
+        limit: int_param(&q, "limit")?.map(|l| l.clamp(1, 100) as u32),
+        cursor: q.get("cursor").cloned(),
+    };
+    Ok(ok(crate::concepts::list(&st.app, ctx, &p).await?))
+}
+
+async fn concepts_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::concepts::NewConcept>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(crate::concepts::create(&st.app, ctx, &body).await?))
+}
+
+async fn concept_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::concepts::get(&st.app, ctx, &id).await?))
+}
+
+async fn concept_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::concepts::ConceptPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::concepts::patch(&st.app, ctx, &id, &body).await?))
+}
+
+async fn concept_label_add(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::concepts::NewLabel>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::concepts::add_label(&st.app, ctx, &id, &body).await?,
+    ))
+}
+
+async fn concept_label_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, label)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::concepts::LabelPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::concepts::patch_label(
+        &st.app, ctx, &id, &label, &body,
     )
     .await?))
 }

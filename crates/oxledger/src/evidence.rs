@@ -30,20 +30,53 @@ pub struct Highlight {
     pub strength: Strength,
 }
 
-/// The weighted terms of a query (`search::query_terms`).
+/// The weighted terms of a query (`search::query_terms`), plus the terms
+/// of expanded concept labels (design 05 §3.9) at a lower weight. Each
+/// term records whether it is a full term (a word, identifier or CJK
+/// bigram, not a lone character inside a run or an identifier segment):
+/// only full terms make a match `primary`.
 pub struct Terms {
-    weights: HashMap<String, f32>,
+    weights: HashMap<String, (f32, bool)>,
 }
 
 impl Terms {
     pub fn new(q: &str) -> Self {
-        Terms {
-            weights: query_terms(q).into_iter().collect(),
+        Self::with_expansions(q, &[], 1.0)
+    }
+
+    /// `q`'s terms, and each label's terms with their weight times
+    /// `factor` (a term in both keeps the higher weight).
+    pub fn with_expansions(q: &str, labels: &[String], factor: f32) -> Self {
+        let mut weights: HashMap<String, (f32, bool)> = HashMap::new();
+        let mut add = |t: String, w: f32, full: bool| {
+            let e = weights.entry(t).or_insert((w, full));
+            e.0 = e.0.max(w);
+            e.1 |= full;
+        };
+        for (t, w) in query_terms(q) {
+            add(t, w, w >= 1.0);
         }
+        for l in labels {
+            for (t, w) in query_terms(l) {
+                add(t, w * factor, w >= 1.0);
+            }
+        }
+        Terms { weights }
     }
 
     pub fn is_empty(&self) -> bool {
         self.weights.is_empty()
+    }
+
+    /// The (term, weight) pairs the index query uses, sorted by term.
+    pub fn weighted(&self) -> Vec<(String, f32)> {
+        let mut v: Vec<(String, f32)> = self
+            .weights
+            .iter()
+            .map(|(t, (w, _))| (t.clone(), *w))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
     }
 }
 
@@ -54,6 +87,7 @@ struct Occ {
     to: usize,
     term: String,
     weight: f32,
+    full: bool,
 }
 
 /// The matches of a query in one source text.
@@ -64,6 +98,29 @@ pub struct FieldMatch {
     /// occurrences that count (only primary ones when there is a primary).
     pub spans: Vec<(usize, usize)>,
     occs: Vec<Occ>,
+}
+
+impl FieldMatch {
+    /// A whole-source match (an issue key equal to a query piece): primary,
+    /// the whole text highlighted.
+    pub fn whole(term: &str, len: usize) -> FieldMatch {
+        FieldMatch {
+            strength: Strength::Primary,
+            spans: vec![(0, len)],
+            occs: vec![Occ {
+                from: 0,
+                to: len,
+                term: term.to_string(),
+                weight: 1.0,
+                full: true,
+            }],
+        }
+    }
+
+    /// The distinct terms that count in this match.
+    pub fn terms(&self) -> impl Iterator<Item = &str> {
+        self.occs.iter().map(|o| o.term.as_str())
+    }
 }
 
 /// Code point view of a text: its chars and each char's byte offset.
@@ -113,24 +170,25 @@ pub fn match_field(terms: &Terms, text: &str, cp: &CpText) -> Option<FieldMatch>
     let mut occs: Vec<Occ> = lexemes(text)
         .into_iter()
         .filter_map(|l| {
-            terms.weights.get(&l.term).map(|w| Occ {
+            terms.weights.get(&l.term).map(|(w, full)| Occ {
                 from: cp.cp(l.from),
                 to: cp.cp(l.to),
                 term: l.term,
                 weight: *w,
+                full: *full,
             })
         })
         .collect();
     if occs.is_empty() {
         return None;
     }
-    let strength = if occs.iter().any(|o| o.weight >= 1.0) {
+    let strength = if occs.iter().any(|o| o.full) {
         Strength::Primary
     } else {
         Strength::Fallback
     };
     if strength == Strength::Primary {
-        occs.retain(|o| o.weight >= 1.0);
+        occs.retain(|o| o.full);
     }
     let mut ranges: Vec<(usize, usize)> = occs.iter().map(|o| (o.from, o.to)).collect();
     ranges.sort();

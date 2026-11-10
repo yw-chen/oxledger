@@ -268,6 +268,31 @@ export type CompactValidation = {
   warning_codes: Array<string>;
 };
 
+export type ConceptList = {
+  items: Array<ConceptView>;
+  next_cursor: string | null;
+};
+
+export type ConceptPatch = {
+  lock_version: number;
+  /** Renames the concept (its pref label). */
+  pref_label?: string | null;
+  /** active | retired. */
+  status?: string | null;
+};
+
+export type ConceptView = {
+  created_at: string;
+  id: string;
+  /** The preferred label first, then by label. People who are not administrators see active labels only. */
+  labels: Array<LabelView>;
+  /** Pass back to `PATCH /admin/concepts/{id}`; every label change bumps it. */
+  lock_version: number;
+  pref_label: string;
+  /** active | retired (a retired concept does not expand). */
+  status: string;
+};
+
 /** One condition on a custom field. */
 export type CondInput = {
   /** Optional: the custom field's `definition_version` from `resolve(kind: "custom_field")`; if the definition changed since, the search fails with `field_definition_changed` (resolve again). Ignored for the built-in fields. */
@@ -538,7 +563,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -587,6 +612,16 @@ export type ExistingIssues = {
   sample_keys: Array<string>;
   scanned: number;
   violating: number;
+};
+
+/** One expanded label (`match.expanded`, §3.9): the query piece that equals a label, the concept (its preferred label) and the other label. */
+export type Expansion = {
+  /** The query piece as typed. */
+  from: string;
+  /** The label added to the query; for a hidden label (a misspelling or internal term) the concept's preferred label instead. */
+  label: string;
+  /** The concept's preferred label. */
+  via: string;
 };
 
 export type FieldAction = {
@@ -1021,6 +1056,22 @@ export type ItemResult = {
   version_id?: string | null;
 };
 
+export type LabelPatch = {
+  /** alt | hidden (the preferred label cannot change kind or status). */
+  kind?: string | null;
+  /** active | staging. */
+  status?: string | null;
+};
+
+/** One label of a concept. */
+export type LabelView = {
+  /** pref (the concept's name) | alt | hidden (a misspelling or internal term: matched and expanded like alt, listed to administrators only; `match.expanded` shows the concept's name in its place). */
+  kind: string;
+  label: string;
+  /** active | staging (staging labels are not expanded). */
+  status: string;
+};
+
 export type LaneOut = {
   count: Count | null;
   id: string;
@@ -1094,9 +1145,11 @@ export type LoginData = {
 
 /** Which fields matched, recomputed from the current text (design 03 §3.4 step 6). */
 export type MatchInfo = {
-  /** subject and/or description. */
+  /** Design 05 §3.9: concept labels added to the query that occur in this issue's text (a hidden label shows as the concept's name). Absent when none. */
+  expanded?: Array<Expansion>;
+  /** Of key, subject, description, cf_text (visible text custom fields), notes (public notes), in that order. */
   fields: Array<string>;
-  /** primary: a full term matched; fallback: only single CJK characters or identifier parts. */
+  /** primary: a full term matched (an expanded label's word counts); fallback: only single CJK characters or identifier parts. */
   strength: Strength;
 };
 
@@ -1113,6 +1166,12 @@ export type Named = {
 export type Named2 = {
   id: string;
   name: string;
+};
+
+export type NewConcept = {
+  labels?: Array<NewLabel>;
+  /** 1–60 characters; also an active label of the concept (kind pref). */
+  pref_label: string;
 };
 
 export type NewContextBody = {
@@ -1141,6 +1200,14 @@ export type NewForm = {
   /** Project key or id; omit for the site-level form. */
   project?: string | null;
   tracker_id: string;
+};
+
+export type NewLabel = {
+  /** alt (default) | hidden. */
+  kind?: string | null;
+  label: string;
+  /** active (default) | staging. */
+  status?: string | null;
 };
 
 export type NewOption = {
@@ -1699,10 +1766,12 @@ export type SearchEvidence = {
   citation_id: string;
   /** current | rechecked (the index may still rank by older text; the snippet is from the current text). */
   evidence_status: string;
-  /** subject | description */
+  /** subject | description | note (a public note; `note_id`). Keys and custom field values match without a snippet. */
   field: string;
   /** Ranges of `text` in code points, half-open. */
   highlights: Array<Highlight>;
+  /** The note the snippet is from (`field = note`). */
+  note_id?: string | null;
   /** The cited text, verbatim: pass it unchanged as `quote`. */
   text: string;
 };
@@ -1759,7 +1828,7 @@ export type SearchParams = {
   overdue?: boolean | null;
   /** Project key (e.g. "AUTH"), name, or alias. */
   project?: string | null;
-  /** Free text (BM25 over subject and description; Chinese works without word segmentation). */
+  /** Free text: BM25F over the issue keys (×5), subject (×3), description (×1), visible text custom fields (×0.7) and public notes (×0.5); Chinese works without word segmentation. A word (or the whole query) equal to a concept label also searches the concept's other labels (`match.expanded`). */
   q?: string | null;
   /** Order by up to 3 fields (then id): updated_at, created_at, due_date, start_date, priority, status, key, estimated_hours, cf:<id>. Default: updated_at desc without `q`, relevance with `q` (`rank` is still the relevance position when `sort` is given). */
   sort?: Array<SortInput> | null;
@@ -2826,6 +2895,12 @@ export interface Err {
 
 /** Every endpoint: request body (or never) and response data. */
 export interface Endpoints {
+  "GET /admin/concepts": { body: never; data: ConceptList };
+  "POST /admin/concepts": { body: NewConcept; data: ConceptView };
+  "GET /admin/concepts/{id}": { body: never; data: ConceptView };
+  "PATCH /admin/concepts/{id}": { body: ConceptPatch; data: ConceptView };
+  "POST /admin/concepts/{id}/labels": { body: NewLabel; data: ConceptView };
+  "PATCH /admin/concepts/{id}/labels/{label}": { body: LabelPatch; data: ConceptView };
   "GET /admin/conversions/{id}": { body: never; data: ConversionView };
   "POST /admin/conversions/{id}/start": { body: never; data: ConversionView };
   "GET /admin/custom-fields": { body: never; data: Array<FieldAdminView> };

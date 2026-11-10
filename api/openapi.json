@@ -977,6 +977,96 @@
         ],
         "type": "object"
       },
+      "ConceptList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConceptView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "ConceptPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "pref_label": {
+            "default": null,
+            "description": "Renames the concept (its pref label).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "default": null,
+            "description": "active | retired.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "ConceptView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "labels": {
+            "description": "The preferred label first, then by label. People who are not\nadministrators see active labels only.",
+            "items": {
+              "$ref": "#/components/schemas/LabelView"
+            },
+            "type": "array"
+          },
+          "lock_version": {
+            "description": "Pass back to `PATCH /admin/concepts/{id}`; every label change bumps it.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "pref_label": {
+            "type": "string"
+          },
+          "status": {
+            "description": "active | retired (a retired concept does not expand).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pref_label",
+          "status",
+          "lock_version",
+          "labels",
+          "created_at"
+        ],
+        "type": "object"
+      },
       "CondInput": {
         "description": "One condition on a custom field.",
         "properties": {
@@ -2203,6 +2293,11 @@
             "const": "form_publish_blocked",
             "description": "`mode = block` and existing issues break the rules; `details` is the\nimpact report.",
             "type": "string"
+          },
+          {
+            "const": "concept_label_taken",
+            "description": "Design 05 §3.9: the label already belongs (active) to another\nconcept; `details.concept_id`, `details.pref_label`, `details.label`.",
+            "type": "string"
           }
         ]
       },
@@ -2396,6 +2491,29 @@
           "sample_keys",
           "scanned",
           "complete"
+        ],
+        "type": "object"
+      },
+      "Expansion": {
+        "description": "One expanded label (`match.expanded`, §3.9): the query piece that\nequals a label, the concept (its preferred label) and the other label.",
+        "properties": {
+          "from": {
+            "description": "The query piece as typed.",
+            "type": "string"
+          },
+          "label": {
+            "description": "The label added to the query; for a hidden label (a misspelling\nor internal term) the concept's preferred label instead.",
+            "type": "string"
+          },
+          "via": {
+            "description": "The concept's preferred label.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "via",
+          "label"
         ],
         "type": "object"
       },
@@ -4081,6 +4199,50 @@
         ],
         "type": "object"
       },
+      "LabelPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "default": null,
+            "description": "alt | hidden (the preferred label cannot change kind or status).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "default": null,
+            "description": "active | staging.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "LabelView": {
+        "description": "One label of a concept.",
+        "properties": {
+          "kind": {
+            "description": "pref (the concept's name) | alt | hidden (a misspelling or internal\nterm: matched and expanded like alt, listed to administrators only;\n`match.expanded` shows the concept's name in its place).",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "description": "active | staging (staging labels are not expanded).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "kind",
+          "status"
+        ],
+        "type": "object"
+      },
       "LaneOut": {
         "properties": {
           "count": {
@@ -4343,8 +4505,15 @@
       "MatchInfo": {
         "description": "Which fields matched, recomputed from the current text (design 03 §3.4 step 6).",
         "properties": {
+          "expanded": {
+            "description": "Design 05 §3.9: concept labels added to the query that occur in\nthis issue's text (a hidden label shows as the concept's name).\nAbsent when none.",
+            "items": {
+              "$ref": "#/components/schemas/Expansion"
+            },
+            "type": "array"
+          },
           "fields": {
-            "description": "subject and/or description.",
+            "description": "Of key, subject, description, cf_text (visible text custom fields),\nnotes (public notes), in that order.",
             "items": {
               "type": "string"
             },
@@ -4352,7 +4521,7 @@
           },
           "strength": {
             "$ref": "#/components/schemas/Strength",
-            "description": "primary: a full term matched; fallback: only single CJK characters or identifier parts."
+            "description": "primary: a full term matched (an expanded label's word counts);\nfallback: only single CJK characters or identifier parts."
           }
         },
         "required": [
@@ -4407,6 +4576,25 @@
         "required": [
           "id",
           "name"
+        ],
+        "type": "object"
+      },
+      "NewConcept": {
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "items": {
+              "$ref": "#/components/schemas/NewLabel"
+            },
+            "type": "array"
+          },
+          "pref_label": {
+            "description": "1–60 characters; also an active label of the concept (kind pref).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pref_label"
         ],
         "type": "object"
       },
@@ -4532,6 +4720,34 @@
         },
         "required": [
           "tracker_id"
+        ],
+        "type": "object"
+      },
+      "NewLabel": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "default": null,
+            "description": "alt (default) | hidden.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "default": null,
+            "description": "active (default) | staging.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "label"
         ],
         "type": "object"
       },
@@ -6614,7 +6830,7 @@
             "type": "string"
           },
           "field": {
-            "description": "subject | description",
+            "description": "subject | description | note (a public note; `note_id`). Keys and\ncustom field values match without a snippet.",
             "type": "string"
           },
           "highlights": {
@@ -6623,6 +6839,14 @@
               "$ref": "#/components/schemas/Highlight"
             },
             "type": "array"
+          },
+          "note_id": {
+            "description": "The note the snippet is from (`field = note`).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "text": {
             "description": "The cited text, verbatim: pass it unchanged as `quote`.",
@@ -6855,7 +7079,7 @@
             ]
           },
           "q": {
-            "description": "Free text (BM25 over subject and description; Chinese works without word segmentation).",
+            "description": "Free text: BM25F over the issue keys (×5), subject (×3), description\n(×1), visible text custom fields (×0.7) and public notes (×0.5);\nChinese works without word segmentation. A word (or the whole query)\nequal to a concept label also searches the concept's other labels\n(`match.expanded`).",
             "type": [
               "string",
               "null"
@@ -10758,6 +10982,388 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/concepts": {
+      "get": {
+        "operationId": "get_admin_concepts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConceptList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Concepts and their labels for search alias expansion (design 05 §3.9), by preferred label. Every signed-in person; people who are not administrators see active concepts and their active labels that are not hidden. Query: q (part of a label, NFC + casefold), limit (clamped to 1–100, default 50), cursor.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_admin_concepts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewConcept"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConceptView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Create a concept (administrators; 201): {pref_label, labels:[{label, kind? alt|hidden, status? active|staging}]}. The preferred label is also an active label (kind pref). Labels are 1–60 characters, compared after NFC + casefold. A label active in another concept: concept_label_taken (409, details.concept_id, pref_label, label). invalid_value kinds: label_invalid, label_kind_invalid, label_status_invalid, duplicate_label, too_many_labels (50).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/concepts/{id}": {
+      "get": {
+        "operationId": "get_admin_concepts_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConceptView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One concept (not_found for a retired one unless you are an administrator).",
+        "x-access": "session"
+      },
+      "patch": {
+        "operationId": "patch_admin_concepts_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConceptPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConceptView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Rename or retire a concept (administrators): {lock_version, pref_label?, status? active|retired}. A retired concept does not expand; its active labels still hold their names. conflict carries current_lock_version; concept_label_taken as for POST; invalid_value kinds: label_invalid, label_exists, concept_status_invalid.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/concepts/{id}/labels": {
+      "post": {
+        "operationId": "post_admin_concepts_id_labels",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewLabel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConceptView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Add a label (administrators; 201): {label, kind? alt|hidden, status? active|staging}. invalid_value kinds: label_invalid, label_kind_invalid, label_status_invalid, label_exists, too_many_labels; concept_label_taken when active in another concept.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/concepts/{id}/labels/{label}": {
+      "patch": {
+        "operationId": "patch_admin_concepts_id_labels_label",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "label",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConceptView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change a label's status (active | staging; staging labels do not expand) or kind (alt | hidden). The path label is matched after NFC + casefold. The preferred label cannot change (invalid_value kind pref_label_fixed). Activating a label active in another concept: concept_label_taken.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/admin/conversions/{id}": {
       "get": {
         "operationId": "get_admin_conversions_id",

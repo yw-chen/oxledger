@@ -13,7 +13,7 @@
 | M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_4_time` 28 個、`m1_4_upgrade` 2 個測試；警告文案只驗證 API 回應，前端未接；未 commit）。**0023 一次給內建角色 M1 權限，所有 agent 工作脈絡失效** |
 | M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | 實作完成（2026-11-10；`m1_5_forms` 31 個、`m1_5_upgrade` 1 個測試；獨立驗證的 8 項缺陷已修、待複驗；前端未接；未 commit）。**0024、0025 不動權限、不 bump epoch** |
 | M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | 實作完成（2026-11-10；`m1_6_home` 6 個、`m1_6_upgrade` 1 個、`home` 單元測試 2 個；前端未接；未 commit）。**0026 不動權限、不 bump epoch** |
-| M1.7 搜尋 | 0027；BM25F 欄位與 fast field；別名展開；概念管理；藍綠重建切換 | T-M1-62…65；E1 nDCG＠10 不低於 0.810；E2 用獨立查詢集量別名增益（只記錄） | — |
+| M1.7 搜尋 | 0027；BM25F 欄位與 fast field；別名展開；概念管理；藍綠重建切換 | T-M1-62…65；E1 nDCG＠10 不低於 0.810；E2 用獨立查詢集量別名增益（只記錄） | 實作完成（2026-11-10；`m1_7_search` 12 個、`m1_7_upgrade` 1 個、E1 單元測試 2 個；獨立驗證 D1–D7 已修；前端未接；未 commit）。**0027 不動權限、不 bump epoch**；索引自動藍綠重建。E1 不展開 0.809525（固定；門檻 0.8095 = M0 四捨五入，待確認）；E2 受阻（沒有獨立查詢集） |
 | M1.8 通知 | 0028；`notify` consumer；`/notifications*`、`/issues/{key}/watch`、`/me/notification-preferences`；GC 與 lag 監控；保留清除 | T-M1-70…83、125、126、132；派送延遲 p95 ≤ 10 秒（本機 1 萬張單、50 人）；前端鈴鐺、通知中心、關注、偏好可用 | — |
 | M1.9 AI 團隊 | 0029；runtime、角色 principal、共用脈絡；token 綁 principal；principal／專案層暫停；鏈上限；`/ai-team*`、`/me/agent-runtimes*`；角色範本；`describe agent_context` | T-M1-84…99、66a、121、123、124、127、128、133；02 的 E4w、§9.6 受眾測試、§16.7b 全部重跑全綠；既有 agent token 升級後照常可用 | — |
 | M1.10 右欄 AI 對話 | 0030；feature `ai`；部署端點登記與 IP 驗證；兩種 provider 串流；執行層；`AuthMethod::BuiltinRun`；工時汙染；`/ai/*`、`/admin/ai/*`；D12 與保存清除；假 provider 測試伺服器 | T-M1-100…118、119、120、122、129、130、131、134；前端右欄對話與設定頁可用；真的 Anthropic key 與自架 OpenAI 相容端點各手動跑一次並記錄 | — |
@@ -350,3 +350,44 @@
 - `m1_5_forms.rs` 加 `g_manager_layout_unreadable_field`（M1.6-D13；mutant：版面改回完整目錄時，經理放讀不到的欄位會成功、測試失敗）。
 - 既有升級測試沒改（`m1_4_upgrade` 的 `MIGRATOR.run` 會連 0026 一起跑，0026 不 bump epoch）。
 - 沒測到：前端畫面（首次登入對話框、編輯首頁、以角色預覽）未接；`my_time_week` 的模組過濾沿用 M1.4 的 `/me/timesheet` 測試，沒在 M1.6 重測。
+
+## M1.7 疑點與照建議的做法
+
+- M1.7-D1 **權限**：不需要新權限，0027 不動 `role_permissions`、不 bump epoch。概念的新增、改名、退役、標籤新增與改狀態只給管理員（`is_admin`，human session；agent 走 `commands::executor` 被擋）；非管理員是 `forbidden_op`（`reason: permission`）。`GET /admin/concepts*` 給所有登入的人，但非管理員只看到 `active` 概念的 `active` 標籤（`staging` 與退役概念對他們是 `not_found`／不列出），因為 staging 標籤常是還沒審過的內部用語。
+- M1.7-D2 **正規化（R18）**：用 PostgreSQL 18 的 `casefold(normalize(x, NFC))`（兩者都是 IMMUTABLE），unique index 與應用程式比對用同一個 SQL 式子，不在 Rust 端正規化，所以沒有新依賴。`casefold` 跟資料庫 collation（目前 libc `en_US.utf8`：ß 不會變成 ss），和 views、versions、project tabs 的名稱規則一致；要完整 case folding 可以改成 `COLLATE pg_unicode_fast`，但要整個專案一起改，列為待決定。
+- M1.7-D3 **既有撞名（R18）**：migration 不失敗，每組正規化後相同的標籤留一個 `active`（`pref` 優先，再來是 uuidv7 最舊的概念、bytewise 最小的標籤），其他改 `staging` 並 `RAISE NOTICE` 筆數。同一個概念內大小寫不同的兩個標籤也算撞名。替代做法是讓 migration 失敗要求人工清理，但升級會卡住。**（獨立驗證 D1 後補）** 之後修復名稱：每個概念只留一個 `pref` 且必須是 `active`（被降級的或第二個 `pref` 改 `alt`）；沒有啟用 `pref` 的概念挑一個剩下的啟用標籤（`alt` 優先、bytewise 最小、1–60 字元）當名稱；沒有任何啟用標籤的概念改 `retired`。服務層也防禦：概念的標籤清單一律由 `concepts.pref_label` 產生 `pref` 項；改名時沒有 `pref` 列就先 `ensure_free` 再 INSERT 一列啟用的 `pref`。
+- M1.7-D4 **展開規則**：查詢的候選片段是「整個 q」加上「空白分隔的每個詞」（去重，最多 16 段）；片段正規化後等於某個 **啟用概念的啟用標籤**（含 `hidden`）時，加入該概念其他啟用標籤；每次查詢最多加 32 個標籤，已經等於某個片段的不再加。展開詞權重 ×0.5（`EXPANSION_WEIGHT`，E1 研究的 alias0.5 與 alias1 差距小，取保守值）。展開在查詢時做，改概念不用重建索引。片段不做子字串比對（「無法登入問題」不會因為包含「無法登入」而展開），避免中文長句誤展開；E1 的別名表用「包含」，所以本實作在 E1 上的展開題數比研究少。
+- M1.7-D5 **`hidden` 標籤**（獨立驗證 D6 後改，**待使用者確認**）：和 `alt` 一樣參與比對與展開（拼錯字、內部用語），但非管理員的 `GET /admin/concepts*` 不列出、`?q=` 也不能用它找到概念；`match.expanded` 遇到 hidden 標籤時 `label` 改顯示概念的偏好標籤（同一組 `{from, via, label}` 去重）。原做法（非管理員看得到、expanded 列出錯字）會外露內部用語。和契約的差異：契約只說 hidden，沒說誰看得到。
+- M1.7-D6 **`match.expanded`**：只列「展開標籤裡有原查詢沒有的完整詞，而且該詞在這張 issue 的命中欄位裡出現」的展開，形狀 `{from, via, label}`（`from` 是使用者打的片段、`via` 是概念的偏好標籤、`label` 是加入的標籤）；沒有時省略欄位。
+- M1.7-D7 **退役概念仍佔名稱**：`retired` 概念的 `active` 標籤仍算在 unique index 裡，新概念不能拿走同名標籤（之後恢復概念不會撞名）。要讓出名稱，先把標籤改 `staging`。
+- M1.7-D8 **偏好標籤**：`pref` 標籤就是概念名稱，不能改 kind 或改成 staging（`invalid_value`、`kind: pref_label_fixed`）；改名用 `PATCH /admin/concepts/{id}` 的 `pref_label`（舊名稱同時被移除）。每個概念最多 50 個標籤，標籤 1–60 字元。同一概念內重複是 `invalid_value`（`label_exists`／`duplicate_label`，422），撞到別的概念才是 `concept_label_taken`（409，`details` 帶 `label`、`concept_id`、`pref_label`；只有管理員會看到）。
+- M1.7-D9 **冪等與並行**：比照 M1.5 的欄位管理，概念 API 不收 `Idempotency-Key`；`PATCH /admin/concepts/{id}` 要 `lock_version`（標籤異動也會 bump），標籤操作鎖概念列（`FOR UPDATE`）序列化；最後一道是 unique index（`23505` 轉成 `concept_label_taken`）。概念變更不寫 `issue_events`（站台設定，不是 issue 歷史）。
+- M1.7-D10 **BM25F 的實作**：每個詞對每個欄位各一個 BM25 `TermQuery` 乘欄位權重後加總（Should），和 M0 的 subject／description 做法一樣，不是單一合併長度正規化的 BM25F；權重 key 5.0、subject 3、description 1、cf_text 0.7、notes 0.5（key 與 cf_text 契約沒給數字，是推論）。key 用整串（小寫）raw tokenizer，查詢每個空白分隔片段去掉頭尾標點後整串比對（`auth-12` 命中，`auth` 不命中）。
+- M1.7-D11 **哪些來源進索引**：所有 key（目前的與搬移前的）、公開且未撤回未遮蔽的筆記、`visible = true` 且 `index_state <> 'dropping'`、適用於該 issue 的 tracker 與專案的 string／text／link 自訂欄位值。私有筆記與受限欄位不進索引（有權限的人也搜不到）——Q-S2 的保守做法，避免要在索引裡做逐欄位 ACL。
+- M1.7-D12 **證據**：命中筆記時證據的 `field` 是 `note` 並帶 `note_id`，`citation_id` 指向 `issue_note` 來源（`verify_citations` 原本就支援，包含私有筆記與可見性的檢查）。key 與自訂欄位命中沒有 snippet（現在沒有對應的引用來源單位），`match.fields` 會列出 `key`／`cf_text`。
+- M1.7-D13 **SQL 重驗涵蓋新來源**：`search_rev` 改 v2，雜湊包含 subject、description、key、自訂欄位值與公開筆記（依索引的規則從 DB 讀出）；不一致時用目前的文字比對（`Texts::survives`），所以筆記改私有、被遮蔽、欄位改受限、不再適用時，在索引同步之前就不會命中（T-M1-62、63 都有「改了、還沒 sync」的斷言）。
+- M1.7-D14 **outbox**：0027 為 `issue_notes`、`issue_keys`、`issue_cf`、`field_defs`（visible／is_for_all／dropping）、`field_trackers`、`field_projects` 加 trigger，發 `topic = 'issue'`。正確性不靠它們（有 SQL 重驗），它們讓排序跟上。同一交易同一 issue 只發一筆（`outbox_issue_once`，`issues_enqueue` 也改用它），維持 S4「一個命令一筆 outbox」（`s4_commands` 驗證）。
+- M1.7-D15 **版本與藍綠升級**：schema 2→3、query semantics 1→2、analyzer 不變。新程式認得 legacy payload（2／1／1），照舊語意服務（只查 subject／description、不展開、重驗只看 subject／description 與 v1 rev），背景自動重建（`needs_upgrade` + `claim_upgrade`，失敗 60 秒後再試）；切換在既有的 `catch_up_and_switch`。舊 generation 永遠不會用新語意查。status／priority 過濾在 legacy generation 上視為全部（`Not` 底下有它們時整個視為全部，保持「超集」）。
+- M1.7-D16 **status／priority fast field**：以 STRING term 實作，`where` 的 `status`、`priority` 的 `eq`、`in`、`ne`（只在沒有適用性閘門時）轉成索引端預先過濾；其他運算子仍由 SQL 過濾。
+- M1.7-D17 **E1 的門檻**：契約寫「不低於 0.810」，這是 M0 研究結果 a+uni0.1 的四捨五入值（實際 0.80955）。獨立驗證 D2 發現原測試多執行緒寫入使同分文件順序不固定（約 1/3 得 0.80953）；改成單元測試的 writer 單執行緒、同分依 E1 id 排序後，連跑 10 次都是 **0.809525**（展開版 0.841755）。M0 的 0.80955 是另一種同分順序。門檻改成 M0 四捨五入到 4 位的 **0.8095**；E1 別名表當概念時斷言 ≥ 0.810。**待使用者確認門檻的解讀**。
+- M1.7-D19 **`limit`**（獨立驗證 D7b）：契約沒寫概念清單的 limit 規則；HTTP 層與服務層都改成 clamp 到 1–100（和其他清單端點一致），不回錯誤。
+- M1.7-D20 **升級認領**（獨立驗證 D7a）：`main.rs` 的升級工作用 drop guard 釋放 `claim_upgrade`，rebuild 失敗（等 60 秒）或 panic 都會釋放，下一輪可以重試；成功才保留。
+- M1.7-D21 **刪除 API**：沒有刪除標籤或概念的 API（契約只列 GET／POST／PATCH），列為後續項；upgrade-notes 改寫成可做的處理（保留 staging、改 hidden、改名、重新啟用）。
+- M1.7-D18 **E2 受阻**：E2 要的「獨立查詢集」不存在（`experiments/` 只有 E1 的 60 題與別名雛形、E9、sd），沒有自行編造。上面 E1＋別名表的數字只是參考，不是 E2。
+
+### 測試
+
+- 獨立驗證後追加（`m1_7_search.rs` 共 12 個）：`concept_without_pref_row_lists_and_renames`（D1：缺 pref 列的概念，carol 讀到的標籤含名稱且只有啟用、非 hidden；改名後有啟用的 pref 列、新名稱會展開、撞名被擋）、`hidden_labels_stay_hidden`（D6）、`legacy_index_ignores_status_prefilter`（D3：legacy 上 status 的 ne／not_in／eq／in 都得到 1 筆）、`legacy_generation_on_disk_is_opened`（D4：磁碟上的 schema 2 generation 被開成 legacy、不重建、可搜、`needs_upgrade`）；`t_m1_64` 補 D5（staging 後搜 sso 只有字面命中、沒有 expanded）。mutant：刪掉 legacy 的 `Not` 分支 → D3 測試失敗；`Layout::of` 只認 Current → D4 測試失敗（都已還原）。`m1_7_upgrade` 加 c4（pref 被降級、alt 補位）、c2 全部降級後 `retired`、每個啟用概念恰有一個與名稱相同的啟用 pref。
+- `m1_7_search.rs`（原 8 個）：
+  - `t_m1_62_private_notes_and_restricted_fields_do_not_match`：私有筆記、`visible = false` 欄位，有 `view_private_notes` 的人也搜不到；可見欄位命中時 `match.fields = ["cf_text"]`、沒有 snippet；改成受限後**還沒 sync** 就不命中；sync 後仍不命中；欄位不再適用於 tracker 時也不命中。
+  - `t_m1_63_public_notes_match_with_a_note_citation`：公開筆記命中、`match.fields = ["notes"]`、證據 `field = note` 帶 `note_id`、`verify_one` 是 `valid`；新增筆記會發 outbox；改私有、遮蔽後還沒 sync 就不命中。
+  - `keys_match_whole`：小寫 key 命中、排第一、`match.fields` 含 `key`。
+  - `t_m1_64_alias_expansion`：登入↔SSO，字面命中排第一，展開命中帶 `match.expanded = [{from: 登入, via: 登入, label: SSO}]`，字面命中沒有 expanded；反向、大小寫不分；改 staging 不展開、改回啟用又展開；退役概念不展開。
+  - `expansion_and_concepts_do_not_leak`：carol（只在 WEB）用概念名稱、標籤、組合查都拿不到 AUTH 的 issue；agent（委派 WEB）同樣；非管理員 GET 只看到啟用標籤、退役概念 `not_found`、清單是空的；非管理員新增概念 `forbidden_op`；agent 加標籤被擋。
+  - `t_m1_65_label_taken`：大小寫、NFD、前後空白都撞到別的概念的標籤，`concept_label_taken` 帶 `concept_id`、`pref_label`；新概念的偏好標籤撞名；staging 可以重複、改回啟用被擋；退役概念仍佔名稱；直接 INSERT 被 unique index 擋。
+  - `legacy_index_serves_until_the_upgrade_switches`：legacy generation 只用舊語意（筆記與展開都不命中）；`claim_upgrade` 只成功一次；重建卡在 `search.before_switch` 時新寫入照常 sync、搜尋照常回應、沒有 expanded；切換後筆記與展開都命中。
+  - `m1_7_http`：經 router：未登入 401、非管理員 POST 403 `forbidden_op`、POST 201、同概念重複 422 `label_exists`、別的概念撞名 409 `concept_label_taken`、hidden 標籤、PATCH 改 staging、非管理員 GET 只看到 2 個標籤、`?q=` 清單、`POST /issues/search` 帶 `match.expanded` 且回應不含 AUTH 的 key。
+- `m1_7_upgrade.rs`：0026 → 0027：R18 既有重複（同概念大小寫、跨概念、NFD vs NFC、pref 優先）都能升級，降級為 staging 的就是預期那幾個；概念列與偏好標籤；system principal；非概念 alias 不動；unique index 擋新的啟用撞名、接受 staging；epoch 不變。
+- `search.rs` 單元測試：`e1_ndcg_at_10_holds`（E1 60 題、不展開，0.809525，門檻 0.8095）、`e1_with_alias_concepts`（E1 別名表當概念，0.841755 ≥ 0.810）；`filter.rs` 的 `index_prefilter_is_a_superset` 加入 status／priority 與 legacy 改寫後的超集斷言。
+- 既有測試的修改：`s7_redaction::search_never_shows_redacted_text` 原本斷言公開筆記搜不到（T-S4 舊行為），M1.7 起公開筆記進索引（§3.9、T-M1-63），改成命中 1 筆；私有筆記仍是 0。
+- 沒測到：前端（概念管理畫面、搜尋結果的「透過 X 找到」）未接；BM25F 權重的排序品質只有 E1（沒有筆記、自訂欄位的評估資料）；`main.rs` 的自動升級迴圈沒有整合測試（測試直接呼叫 `claim_upgrade` + `rebuild`）。

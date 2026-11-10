@@ -90,3 +90,17 @@
 - 和契約 §2.8 的 DDL 差異：多一欄 `home_lock_version`（首頁有自己的樂觀鎖，改主題不會讓另一個分頁的首頁編輯衝突）；`home`、`nav_shortcuts`、`default_views` 加 `jsonb_typeof` CHECK。
 - CHECK 是新建的（`interface_roles`、`theme`、`density`），沒有重建既有清單；測試比對 `pg_get_constraintdef` 與 `home::ROLES`／`THEMES`／`DENSITIES`。
 - 偏好與首頁是個人狀態：不進 `issue_events`、不留稽核事件、不動任何 epoch。
+
+## 0027_concepts（M1.7，搜尋）
+
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`、角色或成員，`security_epoch` 不變（升級測試驗證）。概念管理只給管理員（`is_admin`），沒有新權限；所有登入的人都能讀概念（非管理員只看到啟用的概念與啟用的標籤）。
+- **升級後搜尋索引會自動重建一次（藍綠）。**
+  - 索引 schema 從 2 升到 3（新增 `key_text`、`cf_text`、`notes` 三個文字欄位與 `status`、`priority` 兩個過濾欄位，`search_rev` 改 v2 涵蓋全部索引來源），查詢語意版本從 1 升到 2（BM25F 權重、別名展開）；analyzer 版本不變（1）。
+  - 新版啟動時發現目前的 generation 是 schema 2／查詢語意 1：**照常用它服務，而且用舊語意查**（只查 subject ×3、description ×1，不查 key、筆記、自訂欄位，不做別名展開，`match.expanded` 一律沒有），同時在背景建新 generation；建好、追上 outbox、健康檢查通過後切換，舊 generation 依原規則保留 24 小時。切換前後搜尋都不中斷，也不會出現「舊 generation 用新語意查」的混搭。重建失敗時舊 generation 繼續服務，60 秒後再試；log 有 `search index upgrade failed`。
+  - 重建期間：有 `q` 的搜尋結果和升級前一樣（筆記、自訂欄位、key 還搜不到，別名不展開）；條件搜尋不受影響。重建時間和 `oxledger reindex` 一樣，與 issue 數量成正比。
+  - payload 是其他版本（比 schema 2 更舊、或比 3 更新，例如降版回舊程式）時，行為同 0018：從快照重建，完成前有 `q` 的搜尋回 `search_unavailable`。
+- **搜尋現在也查**：issue key（整串比對，大小寫不分）、公開且未撤回、未遮蔽的筆記、可見（`visible = true`）且適用於該 issue 的 string／text／link 自訂欄位。私有筆記與受限欄位（`visible = false`）**一律不進索引**，有權限讀它們的人也搜不到（02 §7.5、Q-S2）。每個命中都在 SQL 用目前的資料重驗，所以筆記改私有、被遮蔽、欄位改受限或不再適用時，在索引追上之前就不會命中。
+- 新增 outbox trigger：`issue_notes`、`issue_keys`、`issue_cf`（只有 string／text／link）、`field_defs`（`visible`、`is_for_all`、是否 dropping 有變時）、`field_trackers`／`field_projects`。欄位定義的變動會為每張有值的 issue 發一筆事件；欄位很多值時這是一次較大的寫入（管理員操作）。同一個交易裡同一張 issue 只發一筆（`outbox_issue_once`；0001 的 `issues_enqueue` 也改成這個規則），所以「改欄位＋加筆記」的命令仍是一筆訊息。
+- **既有概念標籤（R18）**：0027 之前用 seed 或匯入寫進 `aliases`（`entity_kind = 'concept'`）的標籤，每個概念 id 會補一列 `concepts`（偏好標籤取 `pref` 標籤，沒有就取 bytewise 最小的標籤；建立者是 system principal）。標籤用 `casefold(normalize(label, NFC))` 比較（大小寫、NFC／NFD 視為相同；`casefold` 跟資料庫的 collation，和其他名稱規則一樣），**撞名的不會讓 migration 失敗**：每組只留一個 `active`（`pref` 標籤優先，再來是最舊的概念、bytewise 最小的標籤），其他改成 `staging`（不展開），並以 `NOTICE` 印出筆數。接著每個概念保證只有一個啟用的 `pref` 標籤（就是概念名稱）：被降級的 `pref` 改成 `alt`；沒有啟用 `pref` 的概念從剩下的啟用標籤挑一個當名稱（`alt` 優先於 `hidden`，再取 bytewise 最小）；一個啟用標籤都不剩的概念改成 `retired`（標籤保留為 `staging`）。升級後請管理員到概念管理檢查 `staging` 標籤與被退役的概念，可以做的處理是：保留 `staging`（不展開、不佔名稱，非管理員看不到）、改成 `hidden`（`PATCH …/labels/{label} {kind: hidden}`）、把概念改名（`PATCH /admin/concepts/{id} {pref_label}`）或重新啟用。目前**沒有刪除標籤或概念的 API**（列為後續項）。
+- 新的部分唯一索引 `aliases_concept_label_uq`（只限 `entity_kind = 'concept' AND status = 'active'`）建立在正規化後的字串上；PostgreSQL 大版本升級若改了 Unicode 版本，依 PostgreSQL 的說明對這個索引 `REINDEX`。
+- 概念與標籤的變更不寫 `issue_events`，也不動任何 epoch；改了概念之後，下一次搜尋就用新的展開（展開在查詢時做，不需要重建索引）。

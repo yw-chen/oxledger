@@ -269,6 +269,31 @@ fn cond_prefilter(id: i32, test: &Test, ungated: bool) -> IxFilter {
             IxFilter::All
         }
     };
+    // Status and priority (index schema 3, M1.7): always set, so only the
+    // value tests narrow; the null tests are left to the SQL.
+    if id == STATUS_FIELD || id == PRIORITY_FIELD {
+        let one = |v: &Value| match v {
+            Value::Ref(u) if id == STATUS_FIELD => IxFilter::Status(*u),
+            Value::Ref(u) => IxFilter::Priority(*u),
+            _ => IxFilter::All,
+        };
+        return match test {
+            Test::Cmp(Cmp::Eq, v) => one(v),
+            Test::Cmp(Cmp::Ne, v) => match one(v) {
+                IxFilter::All => IxFilter::All,
+                x => not(x),
+            },
+            Test::In(vs) => {
+                let parts: Vec<IxFilter> = vs.iter().map(one).collect();
+                if parts.is_empty() || parts.contains(&IxFilter::All) {
+                    IxFilter::All
+                } else {
+                    IxFilter::Or(parts)
+                }
+            }
+            _ => IxFilter::All,
+        };
+    }
     if id == VERSION_FIELD {
         let one = |v: &Value| match v {
             Value::Ref(u) => IxFilter::Version(Some(*u)),
@@ -1339,6 +1364,8 @@ mod tests {
             version: Option<Uuid>,
             start: Option<NaiveDate>,
             due: Option<NaiveDate>,
+            status: Uuid,
+            priority: Uuid,
             gated: bool,
         }
         let vs = [Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3)];
@@ -1349,6 +1376,8 @@ mod tests {
         fn value_of(d: &Doc, id: i32) -> Option<Value> {
             match id {
                 VERSION_FIELD => d.version.map(Value::Ref),
+                STATUS_FIELD => Some(Value::Ref(d.status)),
+                PRIORITY_FIELD => Some(Value::Ref(d.priority)),
                 -2 => d.start.map(Value::Date),
                 _ => d.due.map(Value::Date),
             }
@@ -1430,6 +1459,8 @@ mod tests {
                 IxFilter::Or(ps) => ps.iter().any(|p| ix_keeps(p, d)),
                 IxFilter::Not(p) => !ix_keeps(p, d),
                 IxFilter::Version(v) => d.version == *v,
+                IxFilter::Status(u) => d.status == *u,
+                IxFilter::Priority(u) => d.priority == *u,
                 IxFilter::DateNull(DateField::Start) => d.start.is_none(),
                 IxFilter::DateNull(DateField::Due) => d.due.is_none(),
                 IxFilter::Date {
@@ -1442,6 +1473,24 @@ mod tests {
                     lo,
                     hi,
                 } => within(d.due, lo, hi),
+            }
+        }
+        fn mentions_ext(x: &IxFilter) -> bool {
+            match x {
+                IxFilter::Status(_) | IxFilter::Priority(_) => true,
+                IxFilter::And(ps) | IxFilter::Or(ps) => ps.iter().any(mentions_ext),
+                IxFilter::Not(p) => mentions_ext(p),
+                _ => false,
+            }
+        }
+        fn legacy(x: &IxFilter) -> IxFilter {
+            match x {
+                IxFilter::Status(_) | IxFilter::Priority(_) => IxFilter::All,
+                IxFilter::Not(p) if mentions_ext(p) => IxFilter::All,
+                IxFilter::Not(p) => IxFilter::Not(Box::new(legacy(p))),
+                IxFilter::And(ps) => IxFilter::And(ps.iter().map(legacy).collect()),
+                IxFilter::Or(ps) => IxFilter::Or(ps.iter().map(legacy).collect()),
+                x => x.clone(),
             }
         }
         let mut narrowed = 0;
@@ -1464,9 +1513,11 @@ mod tests {
                         Filter::Or(ps)
                     };
                 }
-                let id = [VERSION_FIELD, -2, -3][rng.random_range(0..3)];
+                let id =
+                    [VERSION_FIELD, STATUS_FIELD, PRIORITY_FIELD, -2, -3][rng.random_range(0..5)];
+                let is_ref = [VERSION_FIELD, STATUS_FIELD, PRIORITY_FIELD].contains(&id);
                 let val = |rng: &mut rand::rngs::StdRng| {
-                    if id == VERSION_FIELD {
+                    if is_ref {
                         Value::Ref(vs[rng.random_range(0..3)])
                     } else {
                         Value::Date(day(rng.random_range(0..8)))
@@ -1477,7 +1528,7 @@ mod tests {
                     0 => Test::Cmp(cmps[rng.random_range(0..6)], val(rng)),
                     1 => Test::In((0..rng.random_range(1..3)).map(|_| val(rng)).collect()),
                     5 => Test::NotIn((0..rng.random_range(1..3)).map(|_| val(rng)).collect()),
-                    2 if id != VERSION_FIELD => Test::Range {
+                    2 if !is_ref => Test::Range {
                         min: rng.random_bool(0.7).then(|| val(rng)),
                         max: Some(val(rng)),
                     },
@@ -1492,7 +1543,7 @@ mod tests {
                 Filter::Cond {
                     field: Field {
                         id,
-                        ty: if id == VERSION_FIELD {
+                        ty: if is_ref {
                             FieldType::List
                         } else {
                             FieldType::Date
@@ -1516,10 +1567,15 @@ mod tests {
                     version: rng.random_bool(0.7).then(|| vs[rng.random_range(0..3)]),
                     start: pick(&mut rng),
                     due: pick(&mut rng),
+                    status: vs[rng.random_range(0..3)],
+                    priority: vs[rng.random_range(0..3)],
                     gated: rng.random_bool(0.5),
                 };
                 if sql_keeps(&f, &d) {
                     assert!(ix_keeps(&ix, &d), "{f:?}\n→ {ix:?}");
+                    // A legacy generation (no status/priority terms) reads
+                    // them as All and a negation over them as All too.
+                    assert!(ix_keeps(&legacy(&ix), &d), "legacy {f:?}");
                 }
             }
         }

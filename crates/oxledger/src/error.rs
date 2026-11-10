@@ -157,6 +157,9 @@ pub enum ErrorCode {
     /// `mode = block` and existing issues break the rules; `details` is the
     /// impact report.
     FormPublishBlocked,
+    /// Design 05 §3.9: the label already belongs (active) to another
+    /// concept; `details.concept_id`, `details.pref_label`, `details.label`.
+    ConceptLabelTaken,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -173,7 +176,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 62] = [
+    pub const ALL: [ErrorCode; 63] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -236,6 +239,7 @@ impl ErrorCode {
         Self::FormRulesChanged,
         Self::FormInvalid,
         Self::FormPublishBlocked,
+        Self::ConceptLabelTaken,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -302,6 +306,7 @@ impl ErrorCode {
             Self::FormRulesChanged => "form_rules_changed",
             Self::FormInvalid => "form_invalid",
             Self::FormPublishBlocked => "form_publish_blocked",
+            Self::ConceptLabelTaken => "concept_label_taken",
         }
     }
 
@@ -365,6 +370,7 @@ impl ErrorCode {
             Self::ViewInUse => 409,
             Self::FormRulesChanged | Self::FormPublishBlocked => 409,
             Self::FormInvalid => 422,
+            Self::ConceptLabelTaken => 409,
         }
     }
 
@@ -444,6 +450,7 @@ impl ErrorCode {
             Self::ViewInUse => &[AskHuman],
             Self::FormRulesChanged | Self::FormInvalid => &[FixInput],
             Self::FormPublishBlocked => &[AskHuman],
+            Self::ConceptLabelTaken => &[FixInput, AskHuman],
         }
     }
 }

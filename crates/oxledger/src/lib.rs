@@ -8,6 +8,7 @@ pub mod auth;
 pub mod changesets;
 pub mod citations;
 pub mod commands;
+pub mod concepts;
 pub mod cursor;
 pub mod custom_fields;
 pub mod db;
