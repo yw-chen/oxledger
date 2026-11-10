@@ -45,6 +45,7 @@ pub const GET_FIELDS: &[&str] = &[
     "updated_at",
     "last_activity_at",
     "lock_version",
+    "triage",
 ];
 pub const INCLUDES: &[&str] = &["actions", "recent_notes", "recent_events", "dev"];
 pub const MAX_NOTE_LIMIT: u32 = 10;
@@ -65,7 +66,7 @@ pub struct GetParams {
     /// Issue fields to read: key, subject, description, project, tracker, status,
     /// status_category, status_since, assignee, priority, fixed_version,
     /// estimated_hours, is_private, created_at, updated_at, last_activity_at,
-    /// lock_version, cf:<custom field name>. Without
+    /// lock_version, triage, cf:<custom field name>. Without
     /// `fields`: the full current detail (no notes or history).
     pub fields: Option<Vec<String>>,
     /// "subject" and/or "description" (must also be in `fields`): a citation_id for
@@ -127,6 +128,7 @@ pub struct EventView {
     /// internal sequence number is never returned.
     pub event_id: Uuid,
     /// created | fields_changed | status_changed | note_added | duplicate_added
+    /// | triage_changed (contract 05 §3.4) | …
     pub kind: String,
     pub at: DateTime<Utc>,
     pub actor: String,
@@ -223,6 +225,10 @@ pub struct IssueView {
     pub last_activity_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_version: Option<i32>,
+    /// Contract 05 §3.4: `pending`, `snoozed`, `accepted`, `declined`,
+    /// `duplicate`; null when the issue never entered the Triage inbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triage: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_statuses: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,6 +391,12 @@ fn column(f: &str) -> Option<&'static str> {
         "is_private" => "i.is_private",
         "updated_at" => "i.updated_at",
         "lock_version" => "i.lock_version",
+        "triage" => {
+            "(SELECT CASE WHEN tr.state = 'pending' AND tr.snoozed_until > now()
+                               AND i.updated_at <= tr.snoozed_at
+                          THEN 'snoozed' ELSE tr.state END
+              FROM issue_triage tr WHERE tr.issue_id = i.id) AS triage"
+        }
         "estimated_hours" => "trim_scale(i.estimated_hours)::text AS estimated_hours",
         "fixed_version" => "fv.id AS fixed_version_id, fv.name AS fixed_version_name, fv.status AS fixed_version_status,
              fv.effective_date AS fixed_version_date, fv.deleted_at IS NOT NULL AS fixed_version_deleted",
@@ -628,6 +640,7 @@ async fn get_one(
             "created_at" => v.created_at = Some(created),
             "updated_at" => v.updated_at = Some(row.try_get("updated_at")?),
             "lock_version" => v.lock_version = Some(row.try_get("lock_version")?),
+            "triage" => v.triage = Some(row.try_get("triage")?),
             "status_since" => {
                 let status: Uuid = row.try_get("status_id")?;
                 let since = status_since(&mut *conn, id, status, created).await?;
@@ -691,6 +704,24 @@ async fn get_one(
     }
     attach_blocks(conn, reader, caller, &mut v, id, plan).await?;
     Ok(v)
+}
+
+/// The latest activity on an issue `reader` can see (its latest readable
+/// event, else `created`): the Triage inbox's `last_activity_at`.
+pub(crate) async fn last_activity_at(
+    conn: &mut PgConnection,
+    reader: &mut Reader,
+    caller: AuthContext,
+    (id, project, tracker): (Uuid, Uuid, Uuid),
+    created: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    let issue = IssueRef {
+        id,
+        project,
+        tracker,
+    };
+    let (latest, _) = visible_events(&mut *conn, reader, caller, issue, 1).await?;
+    Ok(latest.first().map_or(created, |e| e.at))
 }
 
 /// The issue an attached block is about.
@@ -1096,8 +1127,21 @@ async fn visible_events(
                         if changes && shown.is_empty() {
                             continue;
                         }
-                        Some(json!({ key: shown }))
+                        let mut d = json!({ key: shown });
+                        if let Some(t) = r.payload.get("triage") {
+                            d["triage"] = t.clone();
+                        }
+                        Some(d)
                     }
+                    // Contract 05 §3.4: the decision and its A5 flags
+                    // ("自建自分流" in the history).
+                    "triage_changed" => Some(json!({
+                        "old": r.payload["old"],
+                        "new": r.payload["new"],
+                        "self_triage": r.payload["self_triage"],
+                        "same_sponsor": r.payload["same_sponsor"],
+                        "snoozed_until": r.payload["snoozed_until"],
+                    })),
                     "status_changed" => Some(json!({
                         "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
                         "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,

@@ -72,6 +72,13 @@ pub const ESTIMATED_FIELD: i32 = -15;
 /// of the given principals, or by an agent on their behalf, in the last 30
 /// days (design 05 §3.3 built-in view `involving_me`). Takes `in` only.
 pub const WROTE_RECENTLY_FIELD: i32 = -16;
+/// Contract 05 §3.4: the issue's triage state as text: `pending` (waiting,
+/// not snoozed), `snoozed`, `accepted`, `declined`, `duplicate`, or `none`
+/// (never entered the inbox).
+pub const TRIAGE_FIELD: i32 = -17;
+/// A5: the decision was made by the issue's own agent author, or by an
+/// agent with the same sponsor (`self_triage OR same_sponsor`). Bool.
+pub const TRIAGE_SELF_FIELD: i32 = -18;
 
 /// v1 names of the built-in fields (contract 02 §17.15).
 const BUILTINS: &[(&str, i32, FieldType)] = &[
@@ -91,6 +98,10 @@ enum Col {
     Day(&'static str),
     /// [`WROTE_RECENTLY_FIELD`].
     Wrote,
+    /// [`TRIAGE_FIELD`].
+    Triage,
+    /// [`TRIAGE_SELF_FIELD`].
+    TriageSelf,
 }
 
 fn builtin_col(id: i32) -> Option<Col> {
@@ -111,6 +122,8 @@ fn builtin_col(id: i32) -> Option<Col> {
         UPDATED_FIELD => Col::Day("updated_at"),
         ESTIMATED_FIELD => Col::Issue("estimated_hours"),
         WROTE_RECENTLY_FIELD => Col::Wrote,
+        TRIAGE_FIELD => Col::Triage,
+        TRIAGE_SELF_FIELD => Col::TriageSelf,
         _ => return None,
     })
 }
@@ -131,8 +144,8 @@ pub fn builtin_type(id: i32) -> Option<FieldType> {
     builtin_col(id)?;
     Some(match id {
         START_FIELD | DUE_FIELD | CREATED_FIELD | UPDATED_FIELD => FieldType::Date,
-        CATEGORY_FIELD => FieldType::String,
-        PRIVATE_FIELD => FieldType::Bool,
+        CATEGORY_FIELD | TRIAGE_FIELD => FieldType::String,
+        PRIVATE_FIELD | TRIAGE_SELF_FIELD => FieldType::Bool,
         ESTIMATED_FIELD => FieldType::Float,
         _ => FieldType::List,
     })
@@ -986,6 +999,18 @@ fn push_builtin(qb: &mut QueryBuilder<Postgres>, a: &str, field: Field, test: &T
         Col::Category => {
             format!("(SELECT st.category FROM issue_statuses st WHERE st.id = {a}.status_id)")
         }
+        // Snoozed while snoozed_until is ahead and nothing changed since
+        // (contract 05 §2.4).
+        Col::Triage => format!(
+            "COALESCE((SELECT CASE WHEN tr.state = 'pending' AND tr.snoozed_until > now()
+                                        AND {a}.updated_at <= tr.snoozed_at
+                                   THEN 'snoozed' ELSE tr.state END
+                       FROM issue_triage tr WHERE tr.issue_id = {a}.id), 'none')"
+        ),
+        Col::TriageSelf => format!(
+            "COALESCE((SELECT tr.self_triage OR tr.same_sponsor
+                       FROM issue_triage tr WHERE tr.issue_id = {a}.id), false)"
+        ),
         Col::Day(c) => return push_day(qb, &format!("{a}.{c}"), test),
         Col::Wrote => {
             let Test::In(vs) = test else {

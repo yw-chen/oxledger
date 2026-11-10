@@ -291,6 +291,13 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<AgentViewRun>,
         ),
         agent_tool(
+            "triage_list",
+            "Issues waiting in the Triage inbox of a delegated project, or of every project where the agent may triage (design 05 §4.1).",
+            EffectClass::Read,
+            schema::<crate::triage::TriageListParams>,
+            schema::<crate::triage::TriageList>,
+        ),
+        agent_tool(
             "command_submit",
             "Write directly where the delegation's policy allows, else create a proposal (§16.4).",
             EffectClass::Propose,

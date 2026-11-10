@@ -259,6 +259,8 @@ export type Created = {
 
 export type Creation = {
   allowed: boolean;
+  /** Contract 05 §3.4: an issue this caller creates here enters the project's Triage inbox. */
+  enters_triage: boolean;
   initial_status_id: string | null;
   is_private: PrivateChoice;
 };
@@ -406,7 +408,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -577,6 +579,13 @@ export type ImpactResult = {
   today: string;
 };
 
+/** The project's settings as the inbox shows them. */
+export type InboxSettings = {
+  decline_status: Named | null;
+  enabled: boolean;
+  responsible: Named | null;
+};
+
 export type IncidentInput = {
   since: string;
 };
@@ -652,6 +661,8 @@ export type IssueDetail = {
   status_category: string;
   subject: string;
   tracker: string;
+  /** Contract 05 §3.4: the Triage state; null when the issue never entered the inbox. */
+  triage: IssueTriage | null;
   updated_at: string;
 };
 
@@ -664,6 +675,16 @@ export type IssueDev = {
   synced_at: string | null;
   /** More than 20 PRs: the rest are on GitHub. */
   truncated: boolean;
+};
+
+/** `GET /issues/{key}`'s `triage` (§3.4). */
+export type IssueTriage = {
+  /** The caller may send a `triage_decide` for it now (`triage_issues`; for an agent also the delegation's `triage_decide`). */
+  can_decide: boolean;
+  /** While snoozed. */
+  snoozed_until: string | null;
+  /** `pending`, `snoozed`, `accepted`, `declined` or `duplicate`. */
+  state: string;
 };
 
 export type IssuedCredential = {
@@ -745,6 +766,11 @@ export type MatchInfo = {
 export type Meta = {
   observed_at: string;
   request_id: string;
+};
+
+export type Named = {
+  id: string;
+  name: string;
 };
 
 export type NewContextBody = {
@@ -845,6 +871,16 @@ export type OpInput = {
   set: VersionFields;
   /** `{"type": "version", "id": …}`. */
   target: TargetRef;
+} | {
+  decision: TriageDecision;
+  /** `decision = duplicate` only: the original issue (same project). */
+  duplicate_of?: TargetRef | null;
+  kind: "triage_decide";
+  op_id: string;
+  /** `decision = snooze` only: RFC 3339, 1 hour to 90 days from now. */
+  snooze_until?: string | null;
+  /** The issue waiting in Triage (an existing issue). */
+  target: TargetRef;
 };
 
 export type OperationView = {
@@ -934,6 +970,15 @@ export type PreviewInput2 = {
   /** `personal` (default) or `project`: which save rules apply (R-VD3). */
   scope?: string | null;
   swimlane?: string | null;
+};
+
+/** An issue's author or a decider; `on_behalf_of` for agents. */
+export type PrincipalRef = {
+  id: string;
+  /** `user` or `agent`. */
+  kind: string;
+  name: string;
+  on_behalf_of?: Named | null;
 };
 
 export type PrivateChoice = {
@@ -1464,6 +1509,100 @@ export type TransitionAction = {
   to_status_id: string;
 };
 
+export type TriageCount = {
+  /** Pending issues the caller can see (not snoozed), at most 99. */
+  count: number;
+  /** More than 99 ("99+"). */
+  more: boolean;
+  project: TriageProject;
+};
+
+export type TriageCounts = {
+  projects: Array<TriageCount>;
+};
+
+/** What a `triage_decide` op decides (contract 05 §3.10.1). */
+export type TriageDecision = "accept" | "decline" | "duplicate" | "snooze" | "unsnooze";
+
+export type TriageItem = {
+  author: PrincipalRef;
+  created_at: string;
+  decided_at?: string | null;
+  decided_by?: PrincipalRef | null;
+  /** `view=decided`: `accepted`, `declined` or `duplicate`. */
+  decision?: string | null;
+  entered_at: string;
+  id: string;
+  key: string;
+  /** The latest activity the caller can see. */
+  last_activity_at: string;
+  lock_version: number;
+  priority: Named | null;
+  /** `GET /triage` (every project) only. */
+  project?: TriageProject | null;
+  /** A5: an agent decided another agent's issue, both for the same person. */
+  same_sponsor?: boolean | null;
+  /** A5: an agent decided an issue it created. */
+  self_triage?: boolean | null;
+  /** While snoozed (only listed with `include_snoozed`). */
+  snoozed_until: string | null;
+  subject: string;
+  tracker: Named;
+};
+
+/** `GET /projects/{id}/triage`, `GET /triage` and MCP `triage_list`. */
+export type TriageList = {
+  /** Project inbox only: the caller may decide here. */
+  can_decide?: boolean | null;
+  items: Array<TriageItem>;
+  next_cursor: string | null;
+  /** Project inbox only. */
+  settings?: InboxSettings | null;
+};
+
+export type TriageProject = {
+  id: string;
+  key: string;
+  name: string;
+};
+
+/** `GET /projects/{id}/triage-settings` and the PUT's result. */
+export type TriageSettings = {
+  /** `manage_project` in an active project. */
+  can_manage: boolean;
+  /** The closed status decline and duplicate preset. */
+  decline_status: Named | null;
+  enabled: boolean;
+  /** `creator_without_triage` (default) or `all_new`. */
+  entry_rule: string;
+  lock_version: number;
+  project_id: string;
+  /** The person on duty (display only). */
+  responsible: Named | null;
+  /** PUT with `enabled: true` only. */
+  warnings?: Array<TriageWarning>;
+};
+
+/** `PUT /projects/{id}/triage-settings` (header Idempotency-Key). */
+export type TriageSettingsPut = {
+  /** A status of category done; required when `enabled`. */
+  decline_status_id?: string | null;
+  enabled: boolean;
+  /** `creator_without_triage` or `all_new`. */
+  entry_rule: string;
+  lock_version: number;
+  /** An active user the project's issues may be assigned to; null clears. */
+  responsible_user_id?: string | null;
+};
+
+/** A role that has `triage_issues` but no workflow transition from a tracker's initial status to the decline status (warn only, §3.4). */
+export type TriageWarning = {
+  /** `decline_transition_missing`. */
+  kind: string;
+  message: string;
+  roles: Array<Named>;
+};
+
 /** Not done in a batch: a person picks (§16.7: "轉回 X", "關閉為誤建"). */
 export type UndoChoice = {
   issue_id: string;
@@ -1495,6 +1634,8 @@ export type UndoInput = {
   skip_notes?: Array<string>;
   /** Relation ids not to remove. */
   skip_relations?: Array<string>;
+  /** Issue ids whose triage decision stays (contract 05 §3.10.1). */
+  skip_triage?: Array<string>;
   /** Chosen transitions per issue (from `choices`). */
   transitions?: Record<string, string>;
 };
@@ -1517,6 +1658,8 @@ export type UndoPreview = {
   fields: Array<UndoField>;
   notes: Array<UndoNote>;
   relations: Array<UndoRelation>;
+  /** Triage decisions (contract 05 §3.10.1). */
+  triage: Array<UndoTriage>;
   version_created?: UndoVersionCreate | null;
   version_fields: Array<UndoVersionField>;
 };
@@ -1537,8 +1680,25 @@ export type UndoResult = {
   relations_removed: number;
   reverts_execution_id: string;
   transitions: number;
+  /** Triage decisions put back (contract 05 §3.10.1). */
+  triage_restored: number;
   version_deleted: boolean;
   version_fields_restored: number;
+};
+
+/** A triage decision this execution made (contract 05 §3.10.1): undo puts the issue back to its state before (pending; the A5 flags cleared). */
+export type UndoTriage = {
+  /** The state the decision wrote. */
+  after: string;
+  /** The triage state before the decision (`pending`). */
+  before: string;
+  /** The state now. */
+  current: string;
+  issue_id: string;
+  key: string;
+  /** `expired`, `redacted`, `changed_since` (a later triage write) or `permission` (no `triage_issues` now). */
+  reason?: string | null;
+  restorable: boolean;
 };
 
 /** The undo of `create_version`: a soft delete (§17.13). */
@@ -1910,9 +2070,14 @@ export interface Endpoints {
   "GET /projects/{id}/tabs/{tab}/issues": { body: never; data: SearchResult };
   "GET /projects/{id}/timeline": { body: never; data: Timeline };
   "GET /projects/{id}/trackers/{tracker_id}/schema": { body: never; data: TrackerSchema };
+  "GET /projects/{id}/triage": { body: never; data: TriageList };
+  "GET /projects/{id}/triage-settings": { body: never; data: TriageSettings };
+  "PUT /projects/{id}/triage-settings": { body: TriageSettingsPut; data: TriageSettings };
   "GET /projects/{id}/versions": { body: never; data: VersionList };
   "POST /projects/{id}/versions": { body: NewVersion; data: VersionWriteResult };
   "POST /resolve": { body: ResolveParams; data: ResolveResult };
+  "GET /triage": { body: never; data: TriageList };
+  "GET /triage/counts": { body: never; data: TriageCounts };
   "DELETE /versions/{id}": { body: never; data: VersionWriteResult };
   "GET /versions/{id}": { body: never; data: VersionView };
   "PATCH /versions/{id}": { body: VersionPatch; data: VersionWriteResult };

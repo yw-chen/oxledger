@@ -34,6 +34,7 @@ pub mod seed;
 pub mod service;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+pub mod triage;
 pub mod undo;
 pub mod versions;
 pub mod views;

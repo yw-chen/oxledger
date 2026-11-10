@@ -79,6 +79,7 @@ pub const COLUMNS: &[&str] = &[
     "created_at",
     "updated_at",
     "estimated_hours",
+    "triage",
 ];
 /// Built-in `group_by` keys (list, cf: list, user and bool types).
 pub const GROUP_BY: &[&str] = &[
@@ -99,9 +100,9 @@ pub const LANES_BY: &[&str] = &[
 ];
 pub const SWIMLANES_BY: &[&str] = &["assignee", "priority", "fixed_version", "project"];
 pub const TOTALS: &[&str] = &["estimated_hours"];
-/// Keys of later stages (design 05 §8 依賴倒置): `triage` needs 0022
-/// (M1.3), `spent_hours` 0023 (M1.4); until then they are unknown.
-const LATER: &[&str] = &["spent_hours", "triage"];
+/// Keys of later stages (design 05 §8 依賴倒置): `spent_hours` needs 0023
+/// (M1.4); until then it is unknown.
+const LATER: &[&str] = &["spent_hours"];
 const DEFAULT_LIST_COLUMNS: &[&str] = &[
     "key",
     "subject",
@@ -3058,6 +3059,9 @@ struct Display {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     estimated_hours: Option<String>,
+    /// Contract 05 §3.4: the triage state (`snoozed` while snoozed), or
+    /// `None` when the issue never entered the inbox.
+    triage: Option<String>,
 }
 
 async fn displays(conn: &mut PgConnection, ids: &[Uuid]) -> Result<HashMap<Uuid, Display>> {
@@ -3073,7 +3077,11 @@ async fn displays(conn: &mut PgConnection, ids: &[Uuid]) -> Result<HashMap<Uuid,
                 i.priority_id, pr.name AS priority_name,
                 i.fixed_version_id, v.name AS version_name,
                 i.is_private, i.start_date, i.due_date, i.created_at, i.updated_at,
-                trim_scale(i.estimated_hours)::text AS estimated_hours
+                trim_scale(i.estimated_hours)::text AS estimated_hours,
+                (SELECT CASE WHEN tr.state = 'pending' AND tr.snoozed_until > now()
+                                  AND i.updated_at <= tr.snoozed_at
+                             THEN 'snoozed' ELSE tr.state END
+                 FROM issue_triage tr WHERE tr.issue_id = i.id) AS triage
          FROM issues i
          JOIN projects p ON p.id = i.project_id
          JOIN trackers t ON t.id = i.tracker_id
@@ -3165,6 +3173,7 @@ fn value_of(col: &str, r: &Display, cf: &HashMap<String, Json>) -> Json {
         "created_at" => json!(r.created_at),
         "updated_at" => json!(r.updated_at),
         "estimated_hours" => json!(r.estimated_hours),
+        "triage" => json!(r.triage),
         k => cf.get(k).cloned().unwrap_or(Json::Null),
     }
 }

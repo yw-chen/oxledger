@@ -95,6 +95,9 @@ pub struct Creation {
     pub allowed: bool,
     pub initial_status_id: Option<Uuid>,
     pub is_private: PrivateChoice,
+    /// Contract 05 §3.4: an issue this caller creates here enters the
+    /// project's Triage inbox.
+    pub enters_triage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -567,6 +570,15 @@ async fn tracker_schema_in(
         perm::Reach::Delegated(d) => d.max_ops.min(MAX_OPS),
         _ => MAX_OPS,
     };
+    let triage: Option<(bool, String)> = sqlx::query_as(
+        "SELECT enabled, entry_rule FROM project_triage_settings WHERE project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let enters_triage = triage.is_some_and(|(enabled, rule)| {
+        enabled && (actor.is_agent() || rule == "all_new" || !pp.allowed_any(perm::TRIAGE_ISSUES))
+    });
     Ok(TrackerSchema {
         project_id,
         tracker_id,
@@ -582,6 +594,7 @@ async fn tracker_schema_in(
                 default: private_by_default,
                 allowed_values,
             },
+            enters_triage,
         },
         limits: Limits {
             max_ops,

@@ -83,6 +83,8 @@ pub const OP_ADD_NOTE: &str = "add_note";
 pub const OP_DUPLICATE_OF: &str = "duplicate_of";
 pub const OP_CREATE_VERSION: &str = "create_version";
 pub const OP_UPDATE_VERSION: &str = "update_version";
+/// Contract 05 §3.10.1 (M1.3).
+pub const OP_TRIAGE_DECIDE: &str = "triage_decide";
 
 /// One active delegation's scope.
 #[derive(Debug, Clone, PartialEq, Eq)]

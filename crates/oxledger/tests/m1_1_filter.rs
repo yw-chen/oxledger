@@ -447,10 +447,11 @@ async fn t_m1_02_unknown_and_invisible_look_alike() {
         "Secret",
         "Nope",
     );
+    // M1.3 opened `triage` (an enum): a bool is a bad value, not an unknown field.
     let e = where_err(&w, a, cond("triage", "eq", json!(true))).await;
     assert_eq!(
         (e.0, e.1.as_str(), e.2.as_str()),
-        (ErrorCode::InvalidFilter, "unknown_field", "where.field")
+        (ErrorCode::InvalidFilter, "invalid_value", "where.value")
     );
     let e = where_err(&w, a, cond("spent_hours", "gt", json!("1"))).await;
     assert_eq!(e.1, "unknown_field", "not in M1.1");
@@ -1394,7 +1395,9 @@ async fn m1_1_filter_fields() {
     ] {
         assert!(names.contains(&b), "{b} missing");
     }
-    assert!(!names.contains(&"triage"));
+    // M1.3 (05 §8 依賴倒置): triage and triage_self_decided are open.
+    assert!(names.contains(&"triage"));
+    assert!(names.contains(&"triage_self_decided"));
     assert!(!names.contains(&format!("cf:{restricted}").as_str()));
     assert!(names.contains(&format!("cf:{open_f}").as_str()));
     assert!(names.contains(&format!("cf:{auth_only}").as_str()));

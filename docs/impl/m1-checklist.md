@@ -9,7 +9,7 @@
 | M1.0 前置 | 0019、0020；`perm.rs` 權限清單；`estimated_hours` 進命令引擎、describe、事件、undo、政策；`issue_field_changes` 寫入與回填；D12 遮蔽刪投影 | 既有測試全綠；`estimated_hours` 走完 02 §16.7b 對應案例；T-M1-03 | 完成（2026-11-09，全套兩輪全綠，未 commit） |
 | M1.1 Filter AST v2 | `filter.rs` 擴充成 v2（內建欄位、`me`、相對日期、`ever_in`、排序）；舊參數轉 v2；`/filter-fields`、`describe filter_fields`；`search` 收 `where` | T-M1-01…05；E4 可見性測試加 v2 隨機條件；OpenAPI 與 `api/types.ts` 重產 | 完成（2026-11-10，含獨立驗證修正；全套兩輪全綠：test-support 197 過、test-support,github 205 過；未 commit） |
 | M1.2 視圖與看板 | 0021；`/views*`；內建視圖；`run`／`preview`；看板計數；專案分頁 `view`、`board`、`triage`；MCP `view_list`、`view_run` | T-M1-06…20；前端可接列表與看板 | 實作完成，含獨立驗證 9 項修正（2026-11-10；`m1_2_views` 26 個、`m1_2_upgrade` 1 個測試；全套兩輪全綠：test-support 226 過、test-support,github 234 過；前端未接；未 commit） |
-| M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | — |
+| M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_3_triage` 6 個、`m1_3_upgrade` 1 個測試；前端未接；未 commit）。**0022 不給任何角色 `triage_issues`，M1.4 給 Manager** |
 | M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | — |
 | M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | — |
 | M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | — |
@@ -154,3 +154,47 @@
   - 回應的 `groups` 與 `swimlanes` 只列本頁出現的值。`groups[].count` 則是該組全部可見單的數量。
 - M1.2-D22 **綁專案的個人視圖，專案看不到了**（例如被移出私有專案）：`GET /views` 與 `GET /views/{id}` 不回 `project`（不洩漏名稱），改回 `project_unavailable: true`；執行回 `invalid_view`／`project_unavailable`（`details.path` 是 `project_id`）。擁有者仍可以讀、改名或刪除它。
 - M1.2-D23 **獨立驗證後補的測試**（`m1_2_views.rs`）：user 型自訂欄位自動分欄（含 HTTP，不再 500）；不適用的分組、計數與看板 `unmapped`；人員欄不受計數逾時影響、超過 29 人的歸屬；停用選項進 `unmapped`；並行改名回 `view_name_taken`；來源改名、刪除後複製重放；移出專案後的個人視圖；DELETE 的 `lock_version`；`involving_me` 的 30 天邊界（29、31 天）；執行時一律 AND 綁定專案（存檔定義沒有 `project` 條件時）；agent 不能當視圖擁有者（DB trigger，INSERT 與 UPDATE）。已關閉版本進 `unmapped` 走的是和停用選項同一段程式，沒有單獨測；「計數預算從第一個計數開始」沒有計時測試。
+
+## M1.3 疑點與照建議的做法
+
+- M1.3-D1 **`triage_issues` 不在 0022 給任何角色**（使用者決定，2026-11-10）：0022 不動 `role_permissions`，不 bump epoch。**M1.4 的 migration 給 Manager**（和 `manage_public_views`、工時權限一起，一次 bump）。在那之前要用 Triage，由管理員手動給角色。
+- M1.3-D2 **R25 `issues_id_project_uq` 放在 0022**：`issue_triage` 用 `(issue_id, project_id)` 複合外鍵（`ON UPDATE CASCADE`）指向它；0023 不要再加。
+- M1.3-D3 **`duplicate` 決定要兩個委派操作**：agent 除了 `triage_decide`，委派也要有 `duplicate_of`；政策取兩者較嚴的（`policy_items` 兩個都列）。理由：duplicate 決定會建立重複關係，和直接送 `duplicate_of` 是同一件事，不該因為包在 triage 裡就繞過 `duplicate_of` 的政策。**待使用者確認，現行為預設。**
+- M1.3-D4 **文件結構（T-M1-23）**：一份文件最多一個 `triage_decide`；其他 op 都要是同一張單。可搭配的 op：`accept` 可帶 `update_fields`、`transition`、`add_note`；`decline`、`duplicate` 可帶 `transition`、`add_note`；`duplicate` 一定要有 `transition`（`decline` 見 D5）；`snooze`、`unsnooze` 只能帶 `add_note`。不能另放 `duplicate_of` op（`duplicate_of` 寫在 `triage_decide` 裡）。違反的都回 `invalid_request`。
+- M1.3-D5 **R27**：`decline`／`duplicate` 結束時單的狀態不是 done 類，回 `invalid_value`（`kind: "triage_requires_close"`、`path: "ops"`），因為要查資料庫。`duplicate` 完全沒帶 `transition` 是結構錯 `invalid_request`。
+  - **獨立驗證後（2a）**：pending 的單已被一般 `transition` 關成 done 類時，`decline` 可以不帶 `transition`，決定照常記錄；單還沒關時不帶 `transition` 的 `decline` 回 `invalid_value`／`triage_requires_close`（不是 T-M1-23 字面上的 `invalid_request`，理由同 R27）。收件匣照常列這種已關閉的 pending 單，直到被決定。
+- M1.3-D6 **snooze 範圍**：`snooze_until` 要在 1 小時到 90 天之間（下限有 1 分鐘寬限：≥ 59 分鐘即可，client 算的「現在＋1 小時」不會被拒），否則 `invalid_value`（`kind: "snooze_range"`）。`unsnooze` 一張沒有生效中 snooze 的單（沒 snooze、已到期、或之後有人改過單），回 `triage_state_invalid`（`details.state`、`snoozed: false`）。
+- M1.3-D7 **新錯誤碼 `triage_state_invalid`**（409，`next_actions` 是 refresh_and_revise、stop）：單不在 Triage 裡（`state: "none"`）或已經決定過（`state` 是現在的狀態）。
+- M1.3-D8 **審查佇列**：`accept`（不帶 note）與 `snooze` 可以勾選批准；`decline`、`duplicate`、`unsnooze` 有 `triage:<decision>` 原因，要開來看。審查 diff 多一列「Triage」（before 是現在的狀態，after 是 `{decision, snooze_until?, duplicate_of?}`）。
+- M1.3-D9 **人批准 agent 的提案**：決定者（`decided_by`）記成提出提案的 agent，A5 標記照 agent 算。**待使用者確認，現行為預設**（另一個做法：記成批准的人、標記 false）。
+- M1.3-D10 **設定變更歷史**：寫進 `project_setting_events`（新 kind `triage_settings_updated`，CHECK 用聯集重建）。
+- M1.3-D11 **設定權限**：`manage_project` 的人可改；agent 一律 `can_manage: false`、PUT 回 `forbidden_op`。回應帶 `warnings`：有 `triage_issues` 但 workflow 沒有轉到拒絕狀態的角色（`decline_transition_missing`，不擋）。驗證錯誤都是 `invalid_value`，`kind` 為 `triage_entry_rule`、`triage_decline_status_required`（啟用時要有拒絕狀態）、`triage_decline_status_invalid`（不是 done 類）、`triage_responsible_invalid`（不是這個專案可指派的人）。PUT 收 `Idempotency-Key`、`lock_version` 不符回 `conflict`（附 `current`、`current_lock_version`）。
+  - **獨立驗證後（1）**：同一個 key、同樣內容重送，回的是**原本那次寫入的回應**（當時的 `lock_version` 與 `warnings`，存在 `operation_requests.result_ref.settings`），不是現在的設定。`project_tabs.rs` 的 PUT 有同樣的模式（重送回現在的分頁設定），不在本階段範圍，列為後續項。
+  - **獨立驗證後（2c）**：只驗證這次有改的欄位。既有但已失效的負責人（不能再被指派）或拒絕狀態（不再是 done 類）不擋存檔（例如關閉 Triage），改由 `warnings` 提示：`responsible_invalid`、`decline_status_invalid`；有改到該欄位才擋。0022 的 check trigger 也只在該欄位新設或變更時檢查。`GET` 也回 `warnings`（只給 `can_manage` 的人）。
+- M1.3-D12 **進收件匣的規則**：專案 Triage 啟用時，agent 建的單一律進；`all_new` 全部進；`creator_without_triage`（預設）是建立者沒有 `triage_issues` 才進。`created` 事件 payload 多一個頂層 `"triage": "pending"`。`describe` 的 `creation.enters_triage` 照呼叫者算。Triage 關閉時建的單不進（之後再開也不補）。
+- M1.3-D13 **Triage 關閉後**：收件匣（`/projects/{id}/triage`、`/triage`、`/triage/counts`）不列關閉專案；已在 pending 的列保留，重新啟用就回來。`triage_decide` 在關閉時仍可送（不擋）。「最近決定」不看啟用與否。
+- M1.3-D14 **Filter `triage` 的值**：`pending`（不含生效中的 snooze）、`snoozed`、`accepted`、`declined`、`duplicate`、`none`（沒進過 Triage）。關閉專案的 pending 列在 filter 裡仍是 `pending`。`triage_self_decided` 是 `self_triage OR same_sponsor`。兩者都可用在視圖的 `where`；視圖欄位多了 `triage`（M1.2-D4 說的「這階段不開放」到此解除；`spent_hours` 仍未開）。
+- M1.3-D15 **`same_sponsor`**：決定者是 agent、作者是另一個 agent，兩者的 `agent_principals.delegator_user_id` 相同。同一個 agent client、同一個人的 agent principal 是同一個，所以舊委派與新委派的同一個 agent 建單後自己決定，算 `self_triage`。
+- M1.3-D16 **計數**（R28）：`/triage/counts` 用 `/triage` 的同一組專案（看得到、啟用、有 `triage_issues`；agent 再加委派），每專案 `count` 最多算到 99，超過時 `more: true`。只算呼叫者看得到的單。
+- M1.3-D17 **`GET /triage` 不收 `view=decided`**：回 `invalid_argument`；「最近決定」只在專案層（`/projects/{id}/triage?view=decided`），近 30 天，`self_triage=only|exclude|all`、`decided_by_kind=agent|user|all`，依 `decided_at` 由新到舊。
+- M1.3-D18 **undo**：決定記成 `_triage` 假欄位（整列快照），undo 放回決定前（pending、A5 標記清掉），決定本身的 `triage_changed` 事件保留原標記；之後有人改過（快照不同或來源不是這次執行）回 `changed_since`；現在沒有 `triage_issues` 回 `permission`。`UndoInput.skip_triage` 可以略過個別單；`UndoResult.triage_restored` 回放回幾張。undo 本身可以再 undo。
+  - **獨立驗證後（2d）**：undo 一個 `decline`／`duplicate` 決定，Triage 狀態回 pending、單回到收件匣，但單的狀態仍是 done 類（照契約，`transition` 是另一項，要在 undo 預覽裡另外選才會還原；`skip` 掉或不能還原時就停在 done）。分流者在收件匣看到的是一張已關閉的 pending 單，可以直接 `decline` 不帶 `transition`（見 D5）。
+- M1.3-D19 **agent 看不到私有單**（§3.5 既有規則）：所以 agent 也不能分流私有單，`triage_list` 不列私有單。
+- M1.3-D20 **既有委派**：0022 不改 `delegations.proposal_ops`、不加 `delegation_command_policies`；委派頁的 `available_commands` 會出現 `triage_decide`，委派人自己加。新委派照 §4.3 預設 direct。
+
+### 測試
+
+- `m1_3_triage.rs`：
+  - `m1_3_triage_people`：設定（權限、驗證、警告、冪等、衝突）、T-M1-21…27、T-M1-30、R28 計數、分頁 cursor、Filter `triage`、視圖欄位、單張詳情 `triage`、`describe` 的 `enters_triage`、審查佇列形狀。
+  - `m1_3_triage_agents`：T-M1-28（既有委派、direct、review、off、duplicate 要 `duplicate_of` 政策）、T-M1-29、T-M1-30a…30c、E4w（沒委派的專案、看不到的專案、委派人沒有 `triage_issues`）、MCP `triage_list`。
+  - `m1_3_constraints`：CHECK 清單與程式常數一致、trigger、複合外鍵。
+  - 獨立驗證後補：
+    - `m1_3_settings_replay_and_stale`：重送回原回應、換內容回 `idempotency_key_reused`、失效值變警告不擋、有改才擋。
+    - `m1_3_closed_pending_snooze_slack_counts`：已關閉的 pending 單（收件匣、`decline` 不帶 `transition`）、snooze 寬限、`issues_visibility=default` 的分流者計數不含看不到的私有單。
+    - `m1_3_http`：經 router 的 `/triage*`、`/triage-settings`（401、403、404、缺 Idempotency-Key、重送、`conflict`、未知欄位、cursor 翻頁、壞 cursor、`invalid_argument`、單張詳情）。
+    - `people` 加：人分流自己建的單標記為 false。
+    - `agents` 加：委派沒有 `triage_decide` 的 agent `triage_list`（不帶 project）是空的；人批准 agent 的 triage 提案（實際套用、A5 標記、`decided_by` 是 agent）；undo 的 undo 實際套用、之後再 undo 原決定是 `changed_since`（狀態相同但來源不同）、`skip_triage`。
+    - 手動 mutation 確認：拿掉 `undo.rs` 的 `from_here`、拿掉 `triage_projects` 的委派判斷，測試都會失敗。
+- `m1_3_upgrade.rs`：0021 → 0022。
+- 沒測到：MCP `triage_list` 只測了 `agent_list` 函式，沒經 MCP 協定。
+- 後續項：`project_tabs.rs` PUT 分頁設定的 Idempotency-Key 重送回現在的設定（同 D11 修正前的模式）。

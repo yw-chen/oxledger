@@ -114,6 +114,25 @@ pub struct UndoVersionField {
     pub reason: Option<String>,
 }
 
+/// A triage decision this execution made (contract 05 §3.10.1): undo puts
+/// the issue back to its state before (pending; the A5 flags cleared).
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct UndoTriage {
+    pub issue_id: Uuid,
+    pub key: String,
+    /// The triage state before the decision (`pending`).
+    pub before: String,
+    /// The state the decision wrote.
+    pub after: String,
+    /// The state now.
+    pub current: String,
+    pub restorable: bool,
+    /// `expired`, `redacted`, `changed_since` (a later triage write) or
+    /// `permission` (no `triage_issues` now).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// The undo of `create_version`: a soft delete (§17.13).
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub struct UndoVersionCreate {
@@ -139,11 +158,15 @@ pub struct UndoPreview {
     pub version_fields: Vec<UndoVersionField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_created: Option<UndoVersionCreate>,
+    /// Triage decisions (contract 05 §3.10.1).
+    #[serde(default)]
+    pub triage: Vec<UndoTriage>,
 }
 
 impl UndoPreview {
     fn automatic(&self) -> bool {
         self.fields.iter().any(|f| f.restorable)
+            || self.triage.iter().any(|t| t.restorable)
             || self.notes.iter().any(|n| n.restorable)
             || self.relations.iter().any(|r| r.restorable)
             || self.version_fields.iter().any(|f| f.restorable)
@@ -157,6 +180,11 @@ impl UndoPreview {
                 v.push(
                     json!({"key": f.key, "field": f.field, "reason": r, "subreason": f.subreason}),
                 );
+            }
+        }
+        for t in &self.triage {
+            if let Some(r) = &t.reason {
+                v.push(json!({"key": t.key, "field": "triage", "reason": r}));
             }
         }
         for n in &self.notes {
@@ -199,6 +227,9 @@ pub struct UndoInput {
     /// Chosen transitions per issue (from `choices`).
     #[serde(default)]
     pub transitions: BTreeMap<Uuid, Uuid>,
+    /// Issue ids whose triage decision stays (contract 05 §3.10.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_triage: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -209,6 +240,9 @@ pub struct UndoResult {
     pub notes_retracted: usize,
     pub relations_removed: usize,
     pub transitions: usize,
+    /// Triage decisions put back (contract 05 §3.10.1).
+    #[serde(default)]
+    pub triage_restored: usize,
     #[serde(default)]
     pub version_fields_restored: usize,
     #[serde(default)]
@@ -318,7 +352,8 @@ async fn touched_issues(conn: &mut PgConnection, id: Uuid) -> Result<Vec<Uuid>> 
         "SELECT issue_id FROM execution_field_changes WHERE execution_id = $1
          UNION SELECT issue_id FROM issue_events
                WHERE (command_execution_id = $1 OR execution_id = $1)
-                 AND kind IN ('note_added', 'created', 'duplicate_added', 'status_changed')
+                 AND kind IN ('note_added', 'created', 'duplicate_added', 'status_changed',
+                              'triage_changed')
          ORDER BY 1",
     )
     .bind(id)
@@ -448,12 +483,20 @@ async fn build_preview(
     .await?;
     let mut fields = Vec::new();
     let mut choices = Vec::new();
+    let mut triage = Vec::new();
     for (issue, field, before, after) in changes {
         let Some(key) = keys.get(&issue).cloned() else {
             continue; // not readable now: not even listed
         };
         let before = before.unwrap_or(Json::Null);
         let after = after.unwrap_or(Json::Null);
+        if field == crate::triage::FIELD_KEY {
+            triage.push(
+                triage_preview(&mut *conn, caller, id, issue, key, &before, &after, expired)
+                    .await?,
+            );
+            continue;
+        }
         let (lv, status, vals) = &current[&issue];
         let cur = vals.get(&field).cloned().unwrap_or(Json::Null);
         let from_here = field_origin(&mut *conn, issue, &field).await? == Some(id);
@@ -672,6 +715,53 @@ async fn build_preview(
         choices,
         version_fields,
         version_created,
+        triage,
+    })
+}
+
+/// One triage decision of the execution, as `caller` sees it now.
+#[allow(clippy::too_many_arguments)]
+async fn triage_preview(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    id: Uuid,
+    issue: Uuid,
+    key: String,
+    before: &Json,
+    after: &Json,
+    expired: bool,
+) -> Result<UndoTriage> {
+    let state = |v: &Json| v["state"].as_str().unwrap_or("[已遮蔽]").to_string();
+    let cur: Option<(Json, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {}, t.project_id FROM issue_triage t WHERE t.issue_id = $1",
+        crate::triage::SNAPSHOT_SQL
+    )))
+    .bind(issue)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let from_here = field_origin(&mut *conn, issue, crate::triage::FIELD_KEY).await? == Some(id);
+    let reason = if expired {
+        Some("expired")
+    } else if *before == json!("[已遮蔽]") || *after == json!("[已遮蔽]") {
+        Some("redacted")
+    } else if cur.as_ref().map(|c| &c.0) != Some(after) || !from_here {
+        Some("changed_since")
+    } else {
+        let project = cur.as_ref().map(|c| c.1).unwrap_or_default();
+        let actor = crate::perm::actor(&mut *conn, caller).await?;
+        let ok = crate::perm::project_perms(&mut *conn, &actor, project)
+            .await?
+            .is_some_and(|pp| pp.writable() && pp.allowed_any(crate::perm::TRIAGE_ISSUES));
+        (!ok).then_some("permission")
+    };
+    Ok(UndoTriage {
+        issue_id: issue,
+        key,
+        before: state(before),
+        after: state(after),
+        current: cur.map(|c| state(&c.0)).unwrap_or_else(|| "none".into()),
+        restorable: reason.is_none(),
+        reason: reason.map(String::from),
     })
 }
 
@@ -918,6 +1008,7 @@ pub async fn apply(
         })
         .collect();
     let mut n_transitions = 0usize;
+    let mut restored_triage: Vec<(Uuid, String)> = Vec::new();
     for (issue, to) in &input.transitions {
         let ok = pv.choices.iter().any(|c| {
             c.issue_id == *issue
@@ -946,7 +1037,12 @@ pub async fn apply(
         .iter()
         .filter(|r| r.restorable && !input.skip_relations.contains(&r.relation_id))
         .collect();
-    if ops.is_empty() && notes.is_empty() && rels.is_empty() {
+    let triage: Vec<&UndoTriage> = pv
+        .triage
+        .iter()
+        .filter(|t| t.restorable && !input.skip_triage.contains(&t.issue_id))
+        .collect();
+    if ops.is_empty() && notes.is_empty() && rels.is_empty() && triage.is_empty() {
         return Err(not_applicable(pv.reasons()));
     }
 
@@ -1039,6 +1135,50 @@ pub async fn apply(
             None,
         ));
     }
+    // Triage decisions back to the state before (§3.10.1; the A5 flags of
+    // the decision stay in its own event). Kept as a change of this undo,
+    // so it can be undone in turn.
+    let mut triage_changes: Vec<(Uuid, Json, Json)> = Vec::new();
+    for t in &triage {
+        let before: Option<Json> = sqlx::query_scalar(
+            "SELECT before_value FROM execution_field_changes
+             WHERE execution_id = $1 AND issue_id = $2 AND field_key = $3",
+        )
+        .bind(id)
+        .bind(t.issue_id)
+        .bind(crate::triage::FIELD_KEY)
+        .fetch_one(&mut *tx)
+        .await?;
+        let before = before.unwrap_or(Json::Null);
+        let (cur, now): (Json, Json) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "WITH old AS (SELECT {} AS v FROM issue_triage t WHERE t.issue_id = $1)
+             UPDATE issue_triage t SET
+                 state = $2->>'state',
+                 snoozed_until = ($2->>'snoozed_until')::timestamptz,
+                 snoozed_at = ($2->>'snoozed_at')::timestamptz,
+                 snoozed_by = ($2->>'snoozed_by')::uuid,
+                 decided_at = ($2->>'decided_at')::timestamptz,
+                 decided_by = ($2->>'decided_by')::uuid,
+                 self_triage = COALESCE(($2->>'self_triage')::boolean, false),
+                 same_sponsor = COALESCE(($2->>'same_sponsor')::boolean, false)
+             FROM old WHERE t.issue_id = $1
+             RETURNING old.v, {}",
+            crate::triage::SNAPSHOT_SQL,
+            crate::triage::SNAPSHOT_SQL
+        )))
+        .bind(t.issue_id)
+        .bind(&before)
+        .fetch_one(&mut *tx)
+        .await?;
+        bumps.entry(t.issue_id).or_default().push((
+            "triage_changed",
+            json!({"old": cur["state"], "new": now["state"],
+                   "self_triage": now["self_triage"], "same_sponsor": now["same_sponsor"],
+                   "snoozed_until": now["snoozed_until"]}),
+            None,
+        ));
+        triage_changes.push((t.issue_id, cur, now));
+    }
     for (issue, evs) in bumps {
         let seq: i64 = sqlx::query_scalar("SELECT last_event_seq FROM issues WHERE id = $1")
             .bind(issue)
@@ -1071,8 +1211,44 @@ pub async fn apply(
         .await?;
     }
 
+    for (issue, cur, now) in &triage_changes {
+        let event: Uuid = sqlx::query_scalar(
+            "SELECT id FROM issue_events WHERE issue_id = $1 AND command_execution_id = $2
+               AND kind = 'triage_changed' ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(issue)
+        .bind(exec_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO issue_field_origins (issue_id, field_key, origin_execution_id, origin_event_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (issue_id, field_key) DO UPDATE
+               SET origin_execution_id = EXCLUDED.origin_execution_id,
+                   origin_event_id = EXCLUDED.origin_event_id",
+        )
+        .bind(issue)
+        .bind(crate::triage::FIELD_KEY)
+        .bind(exec_id)
+        .bind(event)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO execution_field_changes (execution_id, issue_id, field_key, before_value, after_value)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(exec_id)
+        .bind(issue)
+        .bind(crate::triage::FIELD_KEY)
+        .bind(cur)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        restored_triage.push((*issue, crate::triage::FIELD_KEY.to_string()));
+    }
+
     // What was reverted, and the transitive source snapshot.
-    for (issue, field) in &restored {
+    for (issue, field) in restored.iter().chain(&restored_triage) {
         sqlx::query(
             "UPDATE execution_field_changes SET reverted_by = $4
              WHERE execution_id = $1 AND issue_id = $2 AND field_key = $3",
@@ -1102,6 +1278,7 @@ pub async fn apply(
         notes_retracted: notes.len(),
         relations_removed: rels.len(),
         transitions: n_transitions,
+        triage_restored: restored_triage.len(),
         version_fields_restored: 0,
         version_deleted: false,
         consistent_after,
@@ -1204,6 +1381,7 @@ async fn apply_version(
         notes_retracted: 0,
         relations_removed: 0,
         transitions: 0,
+        triage_restored: 0,
         version_fields_restored: restorable.len(),
         version_deleted: create.is_some(),
         consistent_after: token,

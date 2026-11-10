@@ -23,7 +23,7 @@ use sqlx::{PgConnection, PgPool};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const PROPOSAL_OPS: [&str; 7] = [
+pub const PROPOSAL_OPS: [&str; 8] = [
     "create_issue",
     "update_fields",
     "transition",
@@ -31,6 +31,7 @@ pub const PROPOSAL_OPS: [&str; 7] = [
     "duplicate_of",
     "create_version",
     "update_version",
+    "triage_decide",
 ];
 /// Commands that need the delegator's `manage_versions` for a policy row (§17.11).
 pub const VERSION_OPS: [&str; 2] = ["create_version", "update_version"];

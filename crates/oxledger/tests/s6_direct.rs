@@ -111,7 +111,10 @@ async fn s6_direct() {
         p.fields.keys().map(String::as_str).collect::<Vec<_>>(),
         ["assigned_to_id", "description", "subject"]
     );
-    assert_eq!(p.available_commands, ["create_version", "update_version"]);
+    assert_eq!(
+        p.available_commands,
+        ["create_version", "update_version", "triage_decide"]
+    );
     // status_id is not a field (a status change is the transition command).
     let e = agents::create_delegation(
         &pool,

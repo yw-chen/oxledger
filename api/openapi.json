@@ -949,6 +949,10 @@
           "allowed": {
             "type": "boolean"
           },
+          "enters_triage": {
+            "description": "Contract 05 §3.4: an issue this caller creates here enters the\nproject's Triage inbox.",
+            "type": "boolean"
+          },
           "initial_status_id": {
             "format": "uuid",
             "type": [
@@ -963,7 +967,8 @@
         "required": [
           "allowed",
           "initial_status_id",
-          "is_private"
+          "is_private",
+          "enters_triage"
         ],
         "type": "object"
       },
@@ -1598,6 +1603,11 @@
           {
             "const": "relation_not_allowed",
             "description": "Duplicate of itself, or across projects.",
+            "type": "string"
+          },
+          {
+            "const": "triage_state_invalid",
+            "description": "Contract 05 §3.10.1: the issue is not waiting in Triage (or, for\n`unsnooze`, not snoozed); `details.state` is its triage state.",
             "type": "string"
           },
           {
@@ -2332,6 +2342,40 @@
         ],
         "type": "object"
       },
+      "InboxSettings": {
+        "description": "The project's settings as the inbox shows them.",
+        "properties": {
+          "decline_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "responsible": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "responsible",
+          "decline_status"
+        ],
+        "type": "object"
+      },
       "IncidentInput": {
         "additionalProperties": false,
         "properties": {
@@ -2626,6 +2670,17 @@
           "tracker": {
             "type": "string"
           },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTriage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Contract 05 §3.4: the Triage state; null when the issue never\nentered the inbox."
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
@@ -2651,7 +2706,8 @@
           "updated_at",
           "lock_version",
           "allowed_statuses",
-          "custom_fields"
+          "custom_fields",
+          "triage"
         ],
         "type": "object"
       },
@@ -2689,6 +2745,33 @@
           "truncated",
           "merged_open",
           "synced_at"
+        ],
+        "type": "object"
+      },
+      "IssueTriage": {
+        "description": "`GET /issues/{key}`'s `triage` (§3.4).",
+        "properties": {
+          "can_decide": {
+            "description": "The caller may send a `triage_decide` for it now (`triage_issues`;\nfor an agent also the delegation's `triage_decide`).",
+            "type": "boolean"
+          },
+          "snoozed_until": {
+            "description": "While snoozed.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`pending`, `snoozed`, `accepted`, `declined` or `duplicate`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "snoozed_until",
+          "can_decide"
         ],
         "type": "object"
       },
@@ -2972,6 +3055,22 @@
         "required": [
           "request_id",
           "observed_at"
+        ],
+        "type": "object"
+      },
+      "Named": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ],
         "type": "object"
       },
@@ -3386,6 +3485,52 @@
               "set"
             ],
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Contract 05 §3.10.1: decide an issue waiting in Triage.",
+            "properties": {
+              "decision": {
+                "$ref": "#/components/schemas/TriageDecision"
+              },
+              "duplicate_of": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TargetRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "`decision = duplicate` only: the original issue (same project)."
+              },
+              "kind": {
+                "const": "triage_decide",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "snooze_until": {
+                "description": "`decision = snooze` only: RFC 3339, 1 hour to 90 days from now.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "$ref": "#/components/schemas/TargetRef",
+                "description": "The issue waiting in Triage (an existing issue)."
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "decision"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3735,6 +3880,38 @@
         },
         "required": [
           "def"
+        ],
+        "type": "object"
+      },
+      "PrincipalRef": {
+        "description": "An issue's author or a decider; `on_behalf_of` for agents.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`user` or `agent`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "on_behalf_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
         ],
         "type": "object"
       },
@@ -5623,6 +5800,378 @@
         ],
         "type": "object"
       },
+      "TriageCount": {
+        "properties": {
+          "count": {
+            "description": "Pending issues the caller can see (not snoozed), at most 99.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "more": {
+            "description": "More than 99 (\"99+\").",
+            "type": "boolean"
+          },
+          "project": {
+            "$ref": "#/components/schemas/TriageProject"
+          }
+        },
+        "required": [
+          "project",
+          "count",
+          "more"
+        ],
+        "type": "object"
+      },
+      "TriageCounts": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/TriageCount"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "type": "object"
+      },
+      "TriageDecision": {
+        "description": "What a `triage_decide` op decides (contract 05 §3.10.1).",
+        "oneOf": [
+          {
+            "const": "accept",
+            "description": "`state = accepted`; may come with update_fields, transition, add_note.",
+            "type": "string"
+          },
+          {
+            "const": "decline",
+            "description": "`state = declined`; needs a transition to a closed status.",
+            "type": "string"
+          },
+          {
+            "const": "duplicate",
+            "description": "`state = duplicate` and the duplicate relation to `duplicate_of`;\nneeds a transition to a closed status.",
+            "type": "string"
+          },
+          {
+            "const": "snooze",
+            "description": "Hide from the inbox until `snooze_until` or new activity.",
+            "type": "string"
+          },
+          {
+            "const": "unsnooze",
+            "description": "End a snooze now.",
+            "type": "string"
+          }
+        ]
+      },
+      "TriageItem": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/PrincipalRef"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrincipalRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decision": {
+            "description": "`view=decided`: `accepted`, `declined` or `duplicate`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "last_activity_at": {
+            "description": "The latest activity the caller can see.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TriageProject"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`GET /triage` (every project) only."
+          },
+          "same_sponsor": {
+            "description": "A5: an agent decided another agent's issue, both for the same person.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "self_triage": {
+            "description": "A5: an agent decided an issue it created.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "snoozed_until": {
+            "description": "While snoozed (only listed with `include_snoozed`).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "tracker": {
+            "$ref": "#/components/schemas/Named"
+          }
+        },
+        "required": [
+          "key",
+          "id",
+          "lock_version",
+          "subject",
+          "tracker",
+          "priority",
+          "author",
+          "created_at",
+          "entered_at",
+          "snoozed_until",
+          "last_activity_at"
+        ],
+        "type": "object"
+      },
+      "TriageList": {
+        "description": "`GET /projects/{id}/triage`, `GET /triage` and MCP `triage_list`.",
+        "properties": {
+          "can_decide": {
+            "description": "Project inbox only: the caller may decide here.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TriageItem"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Project inbox only."
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "TriageProject": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name"
+        ],
+        "type": "object"
+      },
+      "TriageSettings": {
+        "description": "`GET /projects/{id}/triage-settings` and the PUT's result.",
+        "properties": {
+          "can_manage": {
+            "description": "`manage_project` in an active project.",
+            "type": "boolean"
+          },
+          "decline_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The closed status decline and duplicate preset."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "entry_rule": {
+            "description": "`creator_without_triage` (default) or `all_new`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "responsible": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person on duty (display only)."
+          },
+          "warnings": {
+            "description": "PUT with `enabled: true` only.",
+            "items": {
+              "$ref": "#/components/schemas/TriageWarning"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_id",
+          "enabled",
+          "entry_rule",
+          "responsible",
+          "decline_status",
+          "lock_version",
+          "can_manage"
+        ],
+        "type": "object"
+      },
+      "TriageSettingsPut": {
+        "additionalProperties": false,
+        "description": "`PUT /projects/{id}/triage-settings` (header Idempotency-Key).",
+        "properties": {
+          "decline_status_id": {
+            "default": null,
+            "description": "A status of category done; required when `enabled`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "entry_rule": {
+            "description": "`creator_without_triage` or `all_new`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "responsible_user_id": {
+            "default": null,
+            "description": "An active user the project's issues may be assigned to; null clears.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version",
+          "enabled",
+          "entry_rule"
+        ],
+        "type": "object"
+      },
+      "TriageWarning": {
+        "description": "A role that has `triage_issues` but no workflow transition from a\ntracker's initial status to the decline status (warn only, §3.4).",
+        "properties": {
+          "kind": {
+            "description": "`decline_transition_missing`.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/Named"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "message",
+          "roles"
+        ],
+        "type": "object"
+      },
       "UndoChoice": {
         "description": "Not done in a batch: a person picks (§16.7: \"轉回 X\", \"關閉為誤建\").",
         "properties": {
@@ -5731,6 +6280,14 @@
             },
             "type": "array"
           },
+          "skip_triage": {
+            "description": "Issue ids whose triage decision stays (contract 05 §3.10.1).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "transitions": {
             "additionalProperties": {
               "format": "uuid",
@@ -5815,6 +6372,14 @@
             },
             "type": "array"
           },
+          "triage": {
+            "default": [],
+            "description": "Triage decisions (contract 05 §3.10.1).",
+            "items": {
+              "$ref": "#/components/schemas/UndoTriage"
+            },
+            "type": "array"
+          },
           "version_created": {
             "anyOf": [
               {
@@ -5841,7 +6406,8 @@
           "notes",
           "relations",
           "choices",
-          "version_fields"
+          "version_fields",
+          "triage"
         ],
         "type": "object"
       },
@@ -5908,6 +6474,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "triage_restored": {
+            "default": 0,
+            "description": "Triage decisions put back (contract 05 §3.10.1).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "version_deleted": {
             "default": false,
             "type": "boolean"
@@ -5926,9 +6499,53 @@
           "notes_retracted",
           "relations_removed",
           "transitions",
+          "triage_restored",
           "version_fields_restored",
           "version_deleted",
           "consistent_after"
+        ],
+        "type": "object"
+      },
+      "UndoTriage": {
+        "description": "A triage decision this execution made (contract 05 §3.10.1): undo puts\nthe issue back to its state before (pending; the A5 flags cleared).",
+        "properties": {
+          "after": {
+            "description": "The state the decision wrote.",
+            "type": "string"
+          },
+          "before": {
+            "description": "The triage state before the decision (`pending`).",
+            "type": "string"
+          },
+          "current": {
+            "description": "The state now.",
+            "type": "string"
+          },
+          "issue_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "`expired`, `redacted`, `changed_since` (a later triage write) or\n`permission` (no `triage_issues` now).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "issue_id",
+          "key",
+          "before",
+          "after",
+          "current",
+          "restorable"
         ],
         "type": "object"
       },
@@ -11252,6 +11869,192 @@
         "x-access": "session"
       }
     },
+    "/projects/{id}/triage": {
+      "get": {
+        "operationId": "get_projects_id_triage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TriageList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The project's Triage inbox (design 05 §3.4): settings {enabled, responsible, decline_status}, can_decide, and the pending issues the caller can see, oldest entered first (none while Triage is off). Query include_snoozed (default false), cursor, limit (1-100, default 50). view=decided: decisions of the last 30 days, newest first, each with decision, decided_by (agents: on_behalf_of), decided_at, self_triage, same_sponsor; filters self_triage=only|exclude|all (only = self_triage or same_sponsor) and decided_by_kind=agent|user|all. Decide with POST /commands (op triage_decide).",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/triage-settings": {
+      "get": {
+        "operationId": "get_projects_id_triage_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TriageSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Triage settings of a visible project: enabled, entry_rule (creator_without_triage | all_new), responsible, decline_status, lock_version, can_manage.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_projects_id_triage_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriageSettingsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TriageSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the Triage settings (manage_project, active project). Header Idempotency-Key. responsible_user_id: an active assignable user of the project; decline_status_id: a done status, required when enabled. invalid_value kinds: triage_entry_rule, triage_decline_status_required, triage_decline_status_invalid, triage_responsible_invalid. conflict carries details.current and current_lock_version. With enabled true, warnings (kind decline_transition_missing) name roles with triage_issues and no workflow transition from a tracker's initial status to the decline status; they do not block.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/projects/{id}/versions": {
       "get": {
         "operationId": "get_projects_id_versions",
@@ -11437,6 +12240,104 @@
         "summary": "Name, login, key or alias to ids the caller can see.",
         "x-access": "session",
         "x-csrf": true
+      }
+    },
+    "/triage": {
+      "get": {
+        "operationId": "get_triage",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TriageList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Every project where the caller has triage_issues and Triage is on, one inbox (each item has project). Query include_snoozed, cursor, limit.",
+        "x-access": "session"
+      }
+    },
+    "/triage/counts": {
+      "get": {
+        "operationId": "get_triage_counts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TriageCounts"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Pending (not snoozed) issues the caller can see per project of GET /triage; count stops at 99 with more true.",
+        "x-access": "session"
       }
     },
     "/versions/{id}": {

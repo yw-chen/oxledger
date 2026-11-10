@@ -59,6 +59,12 @@ pub fn shape_reasons(body: &Json) -> Vec<String> {
                 }
             }
             "transition" => transitions += 1,
+            // Contract 05 §4.3: accepting (without a note) and snoozing
+            // may be ticked; declining, duplicates and unsnooze may not.
+            "triage_decide" => match op["decision"].as_str().unwrap_or_default() {
+                "accept" | "snooze" => {}
+                d => reasons.push(format!("triage:{d}")),
+            },
             k => reasons.push(format!("op:{k}")),
         }
     }
@@ -369,6 +375,26 @@ pub async fn diff(
                 Json::Null,
                 json!({"is_private": op["is_private"]}),
             ),
+            "triage_decide" => {
+                let state: Option<String> =
+                    sqlx::query_scalar("SELECT state FROM issue_triage WHERE issue_id = $1")
+                        .bind(id)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                let mut after = json!({"decision": op["decision"]});
+                if let Some(u) = op.get("snooze_until") {
+                    after["snooze_until"] = u.clone();
+                }
+                if let Some(d) = op["duplicate_of"]["id"].as_str() {
+                    after["duplicate_of"] = json!(d);
+                }
+                push(
+                    "triage".into(),
+                    "Triage".into(),
+                    json!(state.unwrap_or_else(|| "none".into())),
+                    after,
+                );
+            }
             _ => {}
         }
     }
@@ -391,6 +417,10 @@ mod tests {
             {"kind": "transition", "target": t, "to_status_id": Uuid::nil()}
         ]));
         assert!(shape_reasons(&ok).is_empty());
+        for d in ["accept", "snooze"] {
+            let ok = doc(json!([{"kind": "triage_decide", "target": t, "decision": d}]));
+            assert!(shape_reasons(&ok).is_empty(), "{d}");
+        }
         for (bad, why) in [
             (
                 json!([{"kind": "add_note", "target": t, "body": "x"}]),
@@ -411,6 +441,14 @@ mod tests {
             (json!([{"kind": "create_issue"}]), "op:create_issue"),
             (json!([{"kind": "duplicate_of"}]), "op:duplicate_of"),
             (json!([{"kind": "create_version"}]), "op:create_version"),
+            (
+                json!([{"kind": "triage_decide", "decision": "decline"}]),
+                "triage:decline",
+            ),
+            (
+                json!([{"kind": "triage_decide", "decision": "duplicate"}]),
+                "triage:duplicate",
+            ),
             (
                 json!([{"kind": "transition"}, {"kind": "transition"}]),
                 "several_transitions",

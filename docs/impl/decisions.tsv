@@ -330,3 +330,22 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	改名撞唯一索引（23505）在 savepoint 內接住並回 view_name_taken	並行建立同名時原本回 500	改名也拿 per-owner advisory lock（多一把鎖，且專案視圖要另一把）	crates/oxledger/src/views.rs
 2026-11-10	M1	copy 先查 Idempotency-Key、fingerprint 只由請求算	來源改名或刪除後同 key 重送原本回 idempotency_key_reused／not_found	保留 source_lock_version（重放依賴來源現況）	crates/oxledger/src/views.rs
 2026-11-10	M1	看不到綁定專案的個人視圖：不回 project、回 project_unavailable；執行回 invalid_view/project_unavailable	原本洩漏私有專案名稱	直接 not_found（擁有者就刪不掉自己的視圖）	crates/oxledger/src/views.rs
+2026-11-10	M1	0022 不給任何角色 triage_issues；M1.4 給 Manager	使用者決定（2026-11-10）：M1 新權限在 M1.4 一次給完，只 bump 一次 epoch	0022 直接給 Manager（多 bump 一次 epoch）	migrations/0022_triage.sql
+2026-11-10	M1	duplicate 決定要委派同時有 triage_decide 與 duplicate_of，政策取較嚴	duplicate 決定會建立重複關係，不該繞過 duplicate_of 的政策	只看 triage_decide	crates/oxledger/src/commands.rs
+2026-11-10	M1	decline／duplicate 轉到非 done 狀態回 invalid_value(triage_requires_close)；沒帶 transition 回 invalid_request	R27：判斷 category 要查 DB，屬語意錯	全部 invalid_request	crates/oxledger/src/commands.rs
+2026-11-10	M1	snooze_until 限 1 小時到 90 天，超出回 invalid_value(snooze_range)	契約沒寫上下限；避免立刻到期或永久藏起來	不限	crates/oxledger/src/commands.rs
+2026-11-10	M1	unsnooze 沒有生效中 snooze 的單回 triage_state_invalid	和已決定的單同一種「狀態不對」	當成 no-op 成功	crates/oxledger/src/commands.rs
+2026-11-10	M1	審查佇列只有 accept（無 note）與 snooze 可勾選；unsnooze 不可勾選	§4.3 只列 accept、snooze 可快速批准	unsnooze 也可勾選	crates/oxledger/src/review_queue.rs
+2026-11-10	M1	人批准 agent 的 triage 提案時，決定者記為提案的 agent，A5 標記照 agent 算	提案內容是 agent 的判斷；稽核要能篩出自建自分流	記成批准的人，標記為 false	crates/oxledger/src/commands.rs
+2026-11-10	M1	Triage 設定變更寫進 project_setting_events（triage_settings_updated）	和分頁設定同一張歷史表	新開一張事件表	migrations/0022_triage.sql;crates/oxledger/src/triage.rs
+2026-11-10	M1	Triage 關閉時收件匣不列該專案，pending 列保留；triage_decide 仍可送；最近決定不看啟用	關閉是暫停入口，不是丟掉資料	關閉時清掉 pending 或擋決定	crates/oxledger/src/triage.rs
+2026-11-10	M1	Filter triage 的 pending 不含生效中的 snooze，另有 snoozed 與 none	收件匣預設不含 snoozed，篩選要能對得上	pending 含 snoozed	crates/oxledger/src/filter.rs;crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	/triage/counts 每專案最多算到 99，超過 more=true	R28：計數不能太貴，也不洩漏看不到的單	精確計數	crates/oxledger/src/triage.rs
+2026-11-10	M1	GET /triage 不收 view=decided（invalid_argument）；最近決定只在專案層	契約只在專案收件匣列最近決定	跨專案也給最近決定	crates/oxledger/src/api.rs
+2026-11-10	M1	agent 對 Triage 設定一律 can_manage=false、PUT 回 forbidden_op	設定是專案管理，不在委派操作內	照委派人的 manage_project	crates/oxledger/src/triage.rs
+2026-11-10	M1	same_sponsor 用 agent_principals.delegator_user_id 判斷	同一個人的不同 agent client 即同 sponsor	看委派列	crates/oxledger/src/commands.rs
+2026-11-10	M1	PUT triage-settings 同 Idempotency-Key 重送回原本那次的回應（存在 result_ref.settings）	獨立驗證：重放要回原結果，含當時 lock_version 與 warnings	回現在的設定（修正前）	crates/oxledger/src/triage.rs
+2026-11-10	M1	pending 單已被一般 transition 關成 done 類時，decline 可不帶 transition；沒關時回 invalid_value(triage_requires_close)	獨立驗證 2a：不要逼人先重開再關；判斷要查 DB 屬語意錯	一律要 transition（修正前，invalid_request）	crates/oxledger/src/commands.rs
+2026-11-10	M1	snooze 下限給 1 分鐘寬限（≥ 59 分鐘）	獨立驗證 2b：client 算的「現在＋1 小時」送到時已不足 1 小時	嚴格 1 小時	crates/oxledger/src/commands.rs
+2026-11-10	M1	Triage 設定只驗證這次有改的欄位；失效的既有值改回 warnings（responsible_invalid、decline_status_invalid）；DB trigger 也只在欄位變更時檢查	獨立驗證 2c：失效值不該擋關閉 Triage 等其他修改	每次全驗（修正前）	crates/oxledger/src/triage.rs;migrations/0022_triage.sql
+2026-11-10	M1	undo decline／duplicate 後單回收件匣但狀態仍是 done（transition 另外還原）	獨立驗證 2d：照契約，transition 是 undo 的另一項	triage undo 連帶還原狀態	docs/impl/m1-checklist.md

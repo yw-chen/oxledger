@@ -18,7 +18,8 @@
 use super::{
     ASSIGNEE_FIELD, AUTHOR_FIELD, CATEGORY_FIELD, CREATED_FIELD, DUE_FIELD, ESTIMATED_FIELD,
     ON_BEHALF_FIELD, PRIORITY_FIELD, PRIVATE_FIELD, PROJECT_FIELD, START_FIELD, STATUS_FIELD,
-    TRACKER_FIELD, UPDATED_FIELD, VERSION_FIELD, builtin_cond, operators, readable_fields,
+    TRACKER_FIELD, TRIAGE_FIELD, TRIAGE_SELF_FIELD, UPDATED_FIELD, VERSION_FIELD, builtin_cond,
+    operators, readable_fields,
 };
 use crate::auth::AuthContext;
 use crate::commands::canonical_number;
@@ -454,6 +455,10 @@ enum Fk {
     Day(i32),
     Estimated,
     Overdue,
+    /// Contract 05 §3.4: the triage state.
+    Triage,
+    /// A5: `triage_self_decided`.
+    TriageSelf,
     /// Index into the readable custom fields.
     Cf(usize),
 }
@@ -474,7 +479,7 @@ const DATE_OPS: &[WhereOp] = &[
 ];
 
 /// The built-in fields of v2 with their ops (design 05 §3.2), in the order
-/// `/filter-fields` lists them. `triage` waits for 0022 (M1.3).
+/// `/filter-fields` lists them.
 pub const BUILTIN_FIELDS: &[(&str, &str, &[WhereOp])] = &[
     ("project", "ref", REF_OPS),
     (
@@ -545,6 +550,18 @@ pub const BUILTIN_FIELDS: &[(&str, &str, &[WhereOp])] = &[
         ],
     ),
     ("overdue", "bool", &[O::Eq]),
+    ("triage", "enum", &[O::Eq, O::In]),
+    ("triage_self_decided", "bool", &[O::Eq]),
+];
+
+/// Values of the `triage` field (contract 05 §3.4).
+pub const TRIAGE_VALUES: [&str; 6] = [
+    "pending",
+    "snoozed",
+    "accepted",
+    "declined",
+    "duplicate",
+    "none",
 ];
 
 fn builtin_kind(name: &str) -> Option<Fk> {
@@ -564,6 +581,8 @@ fn builtin_kind(name: &str) -> Option<Fk> {
         "updated_at" => Fk::Day(UPDATED_FIELD),
         "estimated_hours" => Fk::Estimated,
         "overdue" => Fk::Overdue,
+        "triage" => Fk::Triage,
+        "triage_self_decided" => Fk::TriageSelf,
         _ => return None,
     })
 }
@@ -983,6 +1002,63 @@ async fn resolve_cond(
             Ok((
                 built(path, builtin_cond(CATEGORY_FIELD, test))?,
                 cond_json(&canonical, nop, Some(norm)),
+            ))
+        }
+        Fk::Triage => {
+            let vals: Vec<&Json> = match op {
+                WhereOp::Eq => vec![single(path, op, value)?],
+                _ => list(path, op, value)?.iter().collect(),
+            };
+            let mut states: Vec<String> = Vec::new();
+            for (i, v) in vals.iter().enumerate() {
+                let s = v.as_str().map(str::trim).unwrap_or("");
+                if !TRIAGE_VALUES.contains(&s) {
+                    let vpath = format!("{path}.value");
+                    return Err(bad_value(
+                        &if op == WhereOp::Eq {
+                            vpath
+                        } else {
+                            format!("{vpath}[{i}]")
+                        },
+                        format!(
+                            "{path}: triage is pending, snoozed, accepted, declined, duplicate or none, got {v}"
+                        ),
+                    ));
+                }
+                if !states.iter().any(|x| x == s) {
+                    states.push(s.to_string());
+                }
+            }
+            let (test, norm) = if op == WhereOp::Eq {
+                (
+                    Test::Cmp(Cmp::Eq, Value::Text(states[0].clone())),
+                    json!(states[0]),
+                )
+            } else {
+                (
+                    Test::In(states.iter().cloned().map(Value::Text).collect()),
+                    json!(states),
+                )
+            };
+            Ok((
+                built(path, builtin_cond(TRIAGE_FIELD, test))?,
+                cond_json(&canonical, op, Some(norm)),
+            ))
+        }
+        Fk::TriageSelf => {
+            let v = single(path, op, value)?;
+            let b = bool_of(v).ok_or_else(|| {
+                bad_value(
+                    &format!("{path}.value"),
+                    format!("{path}: expected true or false, got {v}"),
+                )
+            })?;
+            Ok((
+                built(
+                    path,
+                    builtin_cond(TRIAGE_SELF_FIELD, Test::Cmp(Cmp::Eq, Value::Bool(b))),
+                )?,
+                cond_json(&canonical, op, Some(json!(b))),
             ))
         }
         Fk::Private | Fk::Overdue => {
@@ -1893,6 +1969,8 @@ pub(crate) fn label(field: &str) -> &'static str {
         "updated_at" => "更新時間",
         "estimated_hours" => "預估工時",
         "overdue" => "逾期",
+        "triage" => "Triage",
+        "triage_self_decided" => "自建自分流",
         _ => "",
     }
 }
@@ -2007,6 +2085,27 @@ pub async fn filter_fields_in(
                         None,
                     )
                     .await?,
+                );
+            }
+            "triage" => {
+                info.options = Some(
+                    [
+                        ("pending", "待分流"),
+                        ("snoozed", "暫緩"),
+                        ("accepted", "已接受"),
+                        ("declined", "已拒絕"),
+                        ("duplicate", "重複"),
+                        ("none", "未進收件匣"),
+                    ]
+                    .into_iter()
+                    .map(|(id, l)| FilterOption {
+                        id: id.into(),
+                        label: l.into(),
+                        key: None,
+                        category: None,
+                        active: None,
+                    })
+                    .collect(),
                 );
             }
             "status_category" => {

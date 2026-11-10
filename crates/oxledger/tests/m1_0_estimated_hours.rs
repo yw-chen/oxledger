@@ -121,7 +121,7 @@ async fn m1_0_estimated_hours() {
     faults::clear();
     let w = World::build(&pool).await;
     let a = w.alice_ctx;
-    assert_eq!(oxledger::api::COMMAND_FEATURES, ["estimated_hours"]);
+    assert!(oxledger::api::COMMAND_FEATURES.contains(&"estimated_hours"));
 
     // ------------------------------------------------ create, canonical form, events, reads
     let r = human(

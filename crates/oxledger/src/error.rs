@@ -78,6 +78,9 @@ pub enum ErrorCode {
     InvalidTransition,
     /// Duplicate of itself, or across projects.
     RelationNotAllowed,
+    /// Contract 05 §3.10.1: the issue is not waiting in Triage (or, for
+    /// `unsnooze`, not snoozed); `details.state` is its triage state.
+    TriageStateInvalid,
     /// The newly chosen version is locked or closed (§17.3 R1).
     VersionNotOpen,
     /// Deleting a version still used by issues the caller can see (R5).
@@ -159,7 +162,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 58] = [
+    pub const ALL: [ErrorCode; 59] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -188,6 +191,7 @@ impl ErrorCode {
         Self::ReadonlyField,
         Self::InvalidTransition,
         Self::RelationNotAllowed,
+        Self::TriageStateInvalid,
         Self::VersionNotOpen,
         Self::VersionInUse,
         Self::VersionNameTaken,
@@ -250,6 +254,7 @@ impl ErrorCode {
             Self::ReadonlyField => "readonly_field",
             Self::InvalidTransition => "invalid_transition",
             Self::RelationNotAllowed => "relation_not_allowed",
+            Self::TriageStateInvalid => "triage_state_invalid",
             Self::VersionNotOpen => "version_not_open",
             Self::VersionInUse => "version_in_use",
             Self::VersionNameTaken => "version_name_taken",
@@ -310,6 +315,7 @@ impl ErrorCode {
             Self::ReadonlyField => 422,
             Self::InvalidTransition => 422,
             Self::RelationNotAllowed => 422,
+            Self::TriageStateInvalid => 409,
             Self::VersionNotOpen => 422,
             Self::VersionInUse => 409,
             Self::VersionNameTaken => 409,
@@ -388,6 +394,7 @@ impl ErrorCode {
             Self::ReadonlyField => &[FixInput],
             Self::InvalidTransition => &[FixInput, AskHuman],
             Self::RelationNotAllowed => &[AskHuman, Stop],
+            Self::TriageStateInvalid => &[RefreshAndRevise, Stop],
             Self::VersionNotOpen => &[FixInput, AskHuman],
             Self::VersionInUse => &[AskHuman],
             Self::VersionNameTaken => &[FixInput, AskHuman],

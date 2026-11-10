@@ -278,6 +278,9 @@ pub struct IssueDetail {
     /// Custom fields that apply to this issue (tracker and project) and that the
     /// caller may read, in display order; `value` is null when empty.
     pub custom_fields: Vec<CustomFieldValue>,
+    /// Contract 05 §3.4: the Triage state; null when the issue never
+    /// entered the inbox.
+    pub triage: Option<crate::triage::IssueTriage>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -2099,10 +2102,13 @@ pub(crate) async fn get_in(
     // Same answer as describe's issue actions (§5.2): workflow roles, the
     // transition conditions, edit permission and (agents) the delegation.
     let actor = crate::perm::actor(&mut *conn, caller).await?;
-    let allowed_statuses =
+    let (allowed_statuses, can_triage) =
         match crate::perm::project_perms(&mut *conn, &actor, row.project_id).await? {
-            None => Vec::new(),
+            None => (Vec::new(), false),
             Some(pp) => {
+                let can_triage = pp.writable()
+                    && pp.allowed_any(crate::perm::TRIAGE_ISSUES)
+                    && actor.delegation_allows(row.project_id, crate::perm::OP_TRIAGE_DECIDE, None);
                 let core = crate::describe::IssueCore {
                     id: row.id,
                     key: row.current_key.clone(),
@@ -2115,13 +2121,15 @@ pub(crate) async fn get_in(
                     is_private: row.is_private,
                     lock_version: row.lock_version,
                 };
-                crate::describe::allowed_transitions(&mut *conn, &actor, &pp, &core)
+                let names = crate::describe::allowed_transitions(&mut *conn, &actor, &pp, &core)
                     .await?
                     .into_iter()
                     .map(|(_, name)| name)
-                    .collect()
+                    .collect();
+                (names, can_triage)
             }
         };
+    let triage = crate::triage::issue_state(&mut *conn, row.id, can_triage).await?;
     let custom_fields = custom_field_values(
         &mut *conn,
         caller,
@@ -2159,6 +2167,7 @@ pub(crate) async fn get_in(
             lock_version: row.lock_version,
             allowed_statuses,
             custom_fields,
+            triage,
         },
     ))
 }

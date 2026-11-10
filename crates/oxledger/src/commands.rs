@@ -117,6 +117,8 @@ pub enum OpInput {
     CreateVersion(CreateVersionOp),
     /// §17.9a: agents only; the only op, one precondition on the version.
     UpdateVersion(UpdateVersionOp),
+    /// Contract 05 §3.10.1: decide an issue waiting in Triage.
+    TriageDecide(TriageDecideOp),
 }
 
 const KINDS: &[&str] = &[
@@ -127,6 +129,7 @@ const KINDS: &[&str] = &[
     "duplicate_of",
     "create_version",
     "update_version",
+    "triage_decide",
 ];
 
 /// A milestone's fields (§17.9a). Absent = not set; `effective_date: null`
@@ -224,6 +227,61 @@ pub struct DuplicateOfOp {
     pub op_id: Uuid,
     pub source: TargetRef,
     pub target: TargetRef,
+}
+
+/// What a `triage_decide` op decides (contract 05 §3.10.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageDecision {
+    /// `state = accepted`; may come with update_fields, transition, add_note.
+    Accept,
+    /// `state = declined`; needs a transition to a closed status.
+    Decline,
+    /// `state = duplicate` and the duplicate relation to `duplicate_of`;
+    /// needs a transition to a closed status.
+    Duplicate,
+    /// Hide from the inbox until `snooze_until` or new activity.
+    Snooze,
+    /// End a snooze now.
+    Unsnooze,
+}
+
+impl TriageDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Decline => "decline",
+            Self::Duplicate => "duplicate",
+            Self::Snooze => "snooze",
+            Self::Unsnooze => "unsnooze",
+        }
+    }
+    /// `issue_triage.state` after the decision.
+    pub fn new_state(self) -> &'static str {
+        match self {
+            Self::Accept => "accepted",
+            Self::Decline => "declined",
+            Self::Duplicate => "duplicate",
+            Self::Snooze | Self::Unsnooze => "pending",
+        }
+    }
+}
+
+/// Contract 05 §3.10.1. The A5 flags (`self_triage`, `same_sponsor`) are
+/// computed by the server; they are not parameters.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriageDecideOp {
+    pub op_id: Uuid,
+    /// The issue waiting in Triage (an existing issue).
+    pub target: TargetRef,
+    pub decision: TriageDecision,
+    /// `decision = duplicate` only: the original issue (same project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<TargetRef>,
+    /// `decision = snooze` only: RFC 3339, 1 hour to 90 days from now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_until: Option<String>,
 }
 
 /// `{"type":"issue","id"|"key"}` or `{"type":"temp","ref"}`.
@@ -758,6 +816,13 @@ enum Op {
         version_id: Uuid,
         set: VersionFields,
     },
+    Triage {
+        op_id: Uuid,
+        target: Target,
+        decision: TriageDecision,
+        dup: Option<Target>,
+        snooze_until: Option<chrono::DateTime<chrono::Utc>>,
+    },
 }
 
 impl Op {
@@ -769,7 +834,8 @@ impl Op {
             | Op::Note { op_id, .. }
             | Op::Duplicate { op_id, .. }
             | Op::CreateVersion { op_id, .. }
-            | Op::UpdateVersion { op_id, .. } => *op_id,
+            | Op::UpdateVersion { op_id, .. }
+            | Op::Triage { op_id, .. } => *op_id,
         }
     }
 }
@@ -809,6 +875,7 @@ impl Parsed {
                     Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
                     Op::CreateVersion { .. } => perm::OP_CREATE_VERSION,
                     Op::UpdateVersion { .. } => perm::OP_UPDATE_VERSION,
+                    Op::Triage { .. } => perm::OP_TRIAGE_DECIDE,
                 };
                 (o.op_id(), k)
             })
@@ -920,6 +987,14 @@ impl Parsed {
                     op_index: i,
                     kind: DestKind::Version(VersionDest::Existing(*version_id)),
                 }),
+                Op::Triage { target, dup, .. } => {
+                    for t in std::iter::once(target).chain(dup).filter_map(on) {
+                        out.push(Destination {
+                            op_index: i,
+                            kind: DestKind::Content(t),
+                        });
+                    }
+                }
             }
         }
         out
@@ -929,7 +1004,8 @@ impl Parsed {
     /// delegation policy (§16.3 rule 3: a create's fields count; defaults the
     /// server fills in do not).
     pub(crate) fn policy_items(&self) -> Vec<(usize, &'static str, Vec<String>)> {
-        self.ops
+        let mut out: Vec<(usize, &'static str, Vec<String>)> = self
+            .ops
             .iter()
             .enumerate()
             .map(|(i, o)| match o {
@@ -949,8 +1025,21 @@ impl Parsed {
                 // §17.9a: no field-level policy for versions.
                 Op::CreateVersion { .. } => (i, perm::OP_CREATE_VERSION, Vec::new()),
                 Op::UpdateVersion { .. } => (i, perm::OP_UPDATE_VERSION, Vec::new()),
+                Op::Triage { .. } => (i, perm::OP_TRIAGE_DECIDE, Vec::new()),
             })
-            .collect()
+            .collect();
+        // A duplicate decision also writes the duplicate relation: the
+        // duplicate_of policy applies too (the stricter of the two wins).
+        for (i, o) in self.ops.iter().enumerate() {
+            if let Op::Triage {
+                decision: TriageDecision::Duplicate,
+                ..
+            } = o
+            {
+                out.push((i, perm::OP_DUPLICATE_OF, Vec::new()));
+            }
+        }
+        out
     }
 
     /// Projects where an issue is created, with the tracker.
@@ -1078,6 +1167,12 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 collect(&o.target);
             }
             OpInput::CreateVersion(_) | OpInput::UpdateVersion(_) => {}
+            OpInput::TriageDecide(o) => {
+                collect(&o.target);
+                if let Some(d) = &o.duplicate_of {
+                    collect(d);
+                }
+            }
         }
     }
     for p in &doc.preconditions {
@@ -1293,12 +1388,73 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                     set: o.set.clone(),
                 }
             }
+            OpInput::TriageDecide(o) => {
+                let t = target(&o.target, &p("target"), &binds)?;
+                if matches!(t, Target::Temp(_)) {
+                    return Err(bad(&p("target"), "triage_decide targets an existing issue"));
+                }
+                let dup = match (o.decision, &o.duplicate_of) {
+                    (TriageDecision::Duplicate, Some(d)) => {
+                        let d = target(d, &p("duplicate_of"), &binds)?;
+                        if matches!(d, Target::Temp(_)) {
+                            return Err(bad(
+                                &p("duplicate_of"),
+                                "duplicate_of names an existing issue",
+                            ));
+                        }
+                        Some(d)
+                    }
+                    (TriageDecision::Duplicate, None) => {
+                        return Err(bad(
+                            &p("duplicate_of"),
+                            "a duplicate decision names the original issue in duplicate_of",
+                        ));
+                    }
+                    (_, Some(_)) => {
+                        return Err(bad(
+                            &p("duplicate_of"),
+                            "duplicate_of goes only with decision duplicate",
+                        ));
+                    }
+                    (_, None) => None,
+                };
+                let snooze_until = match (o.decision, &o.snooze_until) {
+                    (TriageDecision::Snooze, Some(s)) => Some(
+                        chrono::DateTime::parse_from_rfc3339(s)
+                            .map_err(|_| {
+                                bad(&p("snooze_until"), "snooze_until is an RFC 3339 time")
+                            })?
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    (TriageDecision::Snooze, None) => {
+                        return Err(bad(
+                            &p("snooze_until"),
+                            "a snooze decision needs snooze_until",
+                        ));
+                    }
+                    (_, Some(_)) => {
+                        return Err(bad(
+                            &p("snooze_until"),
+                            "snooze_until goes only with decision snooze",
+                        ));
+                    }
+                    (_, None) => None,
+                };
+                Op::Triage {
+                    op_id: o.op_id,
+                    target: t,
+                    decision: o.decision,
+                    dup,
+                    snooze_until,
+                }
+            }
         };
         if !op_ids.insert(parsed.op_id()) {
             return Err(bad(&p("op_id"), "op_id is unique in the document"));
         }
         ops.push(parsed);
     }
+    check_triage_doc(&ops)?;
     if has_dup && ops.len() != 1 {
         return Err(bad("ops", "duplicate_of is the only op of its document"));
     }
@@ -1348,6 +1504,12 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
             Op::Duplicate { source, target, .. } => {
                 add(source);
                 add(target);
+            }
+            Op::Triage { target, dup, .. } => {
+                add(target);
+                if let Some(d) = dup {
+                    add(d);
+                }
             }
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
         }
@@ -1420,6 +1582,95 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     })
 }
 
+/// Contract 05 §3.10.1 structure: at most one `triage_decide`; the other
+/// ops of its document target the same issue and are only those its
+/// decision allows; decline and duplicate carry a transition (whether the
+/// status is closed is checked at step 14); the duplicate relation comes
+/// with the decision, never as a separate `duplicate_of` op.
+fn check_triage_doc(ops: &[Op]) -> Result<()> {
+    let mut found = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| matches!(o, Op::Triage { .. }));
+    let Some((
+        ti,
+        Op::Triage {
+            target: tt,
+            decision,
+            ..
+        },
+    )) = found.next()
+    else {
+        return Ok(());
+    };
+    if let Some((j, _)) = found.next() {
+        return Err(bad(
+            &format!("ops[{j}]"),
+            "at most one triage_decide per document",
+        ));
+    }
+    let mut has_transition = false;
+    for (j, o) in ops.iter().enumerate() {
+        if j == ti {
+            continue;
+        }
+        let pj = format!("ops[{j}]");
+        let on = match (o, decision) {
+            (Op::Duplicate { .. }, _) => {
+                return Err(bad(
+                    &pj,
+                    "the duplicate relation comes with triage_decide (decision duplicate); no separate duplicate_of op",
+                ));
+            }
+            (Op::Note { target, .. }, _) => target,
+            (Op::Update { target, .. }, TriageDecision::Accept) => target,
+            (
+                Op::Transition { target, .. },
+                TriageDecision::Accept | TriageDecision::Decline | TriageDecision::Duplicate,
+            ) => {
+                has_transition |= target == tt;
+                target
+            }
+            _ => {
+                let allowed = match decision {
+                    TriageDecision::Accept => "update_fields, transition and add_note",
+                    TriageDecision::Decline | TriageDecision::Duplicate => {
+                        "a transition and add_note"
+                    }
+                    TriageDecision::Snooze | TriageDecision::Unsnooze => "add_note",
+                };
+                return Err(bad(
+                    &pj,
+                    format!(
+                        "triage_decide {} goes only with {allowed} on the same issue",
+                        decision.as_str()
+                    ),
+                ));
+            }
+        };
+        if on != tt {
+            return Err(bad(
+                &format!("{pj}.target"),
+                "every op of a triage document targets the triaged issue",
+            ));
+        }
+    }
+    // A decline may come without a transition when the issue is already
+    // closed (a plain transition closed it while it waited); whether it is
+    // is a semantic check (`triage_requires_close`). A duplicate always
+    // brings its transition.
+    if *decision == TriageDecision::Duplicate && !has_transition {
+        return Err(bad(
+            "ops",
+            format!(
+                "triage_decide {} needs a transition of the same issue to a closed status",
+                decision.as_str()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Rewrites `{"int"|"float": "…"}` values in ops and preconditions to
 /// [`canonical_number`] (values that do not parse are left; parsing rejects them).
 fn normalize_numbers(doc: &mut Json) {
@@ -1472,7 +1723,7 @@ fn normalize_refs(doc: &mut Json, resolved: &BTreeMap<String, Uuid>) {
     };
     if let Some(Json::Array(ops)) = doc.get_mut("ops") {
         for op in ops {
-            for f in ["target", "source"] {
+            for f in ["target", "source", "duplicate_of"] {
                 if let Some(t) = op.get_mut(f) {
                     fix(t);
                 }
@@ -1582,6 +1833,19 @@ struct Work {
     dups: Vec<(Uuid, Uuid, Uuid)>, // (relation id, source, target)
     fields_touched: bool,
     effect: bool,
+    /// A new issue that enters the Triage inbox (contract 05 §3.4).
+    enters_triage: bool,
+    /// The triage decision on this issue (§3.10.1).
+    triage: Option<TriagePlan>,
+}
+
+/// A planned `issue_triage` change.
+#[derive(Debug)]
+struct TriagePlan {
+    decision: TriageDecision,
+    /// The row before ([`crate::triage::SNAPSHOT_SQL`]).
+    before: Json,
+    snooze_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Per (project, tracker): what the actor's roles and the field definitions say.
@@ -2355,6 +2619,12 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 add(source);
                 add(target);
             }
+            Op::Triage { target, dup, .. } => {
+                add(target);
+                if let Some(d) = dup {
+                    add(d);
+                }
+            }
         }
     }
     let existing: Vec<Uuid> = existing.into_iter().collect();
@@ -2561,6 +2831,8 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 dups: Vec::new(),
                 fields_touched: false,
                 effect: false,
+                enters_triage: false,
+                triage: None,
             },
         );
     }
@@ -2587,6 +2859,9 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 Op::Note { .. } => perm::OP_ADD_NOTE,
                 Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
                 Op::Create { .. } => perm::OP_CREATE_ISSUE,
+                // The relation of a duplicate decision (checked as
+                // duplicate_of on both ends).
+                Op::Triage { .. } => perm::OP_DUPLICATE_OF,
             };
             if !ok || !actor.delegation_allows(w.project_id, kind, None) {
                 let reason = if pp.writable() {
@@ -2611,6 +2886,42 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             Op::Duplicate { source, target, .. } => {
                 check(source, "edit")?;
                 check(target, "edit")?;
+            }
+            Op::Triage {
+                target,
+                decision,
+                dup,
+                ..
+            } => {
+                // §3.10.1: perm(triage_issues), project level, plus the
+                // delegation's triage_decide.
+                let Target::Issue(id) = target else {
+                    unreachable!("parse rejects temp targets")
+                };
+                let w = &work[id];
+                let pp = &perms[&w.project_id];
+                if !(pp.writable() && pp.allowed_any(perm::TRIAGE_ISSUES))
+                    || !actor.delegation_allows(w.project_id, perm::OP_TRIAGE_DECIDE, None)
+                {
+                    let reason = if pp.writable() {
+                        "permission"
+                    } else {
+                        "project_not_writable"
+                    };
+                    return Err(op_err(
+                        ErrorCode::ForbiddenOp,
+                        i,
+                        op.op_id(),
+                        "you may not triage this issue",
+                        json!({"reason": reason}),
+                    ));
+                }
+                if *decision == TriageDecision::Duplicate {
+                    check(target, "edit")?;
+                    if let Some(d) = dup {
+                        check(d, "edit")?;
+                    }
+                }
             }
             Op::Create { .. } => {}
         }
@@ -2865,6 +3176,8 @@ async fn run_ops(
                     dups: Vec::new(),
                     fields_touched: true,
                     effect: true,
+                    enters_triage: false,
+                    triage: None,
                 };
                 let r = &rules[&(*project_id, *tracker_id)];
                 let ro = r.at(initial);
@@ -2887,6 +3200,21 @@ async fn run_ops(
                     values.insert(wr.key, v);
                 }
                 w.values = values;
+                // Contract 05 §3.4: the project's Triage is on, and the
+                // creator is an agent, or every new issue enters, or the
+                // creator may not triage.
+                let settings: Option<(bool, String)> = sqlx::query_as(
+                    "SELECT enabled, entry_rule FROM project_triage_settings WHERE project_id = $1",
+                )
+                .bind(project_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                w.enters_triage = settings.is_some_and(|(enabled, rule)| {
+                    enabled
+                        && (on_behalf.is_some()
+                            || rule == "all_new"
+                            || !pp.allowed_any(perm::TRIAGE_ISSUES))
+                });
                 let mut payload: Map<String, Json> = w
                     .values
                     .iter()
@@ -2896,10 +3224,14 @@ async fn run_ops(
                 payload.insert("status_id".into(), json!(initial));
                 payload.insert("is_private".into(), json!(private));
                 let fields_list: Vec<String> = payload.keys().cloned().collect();
+                let mut created = json!({"fields": payload});
+                if w.enters_triage {
+                    created["triage"] = json!("pending");
+                }
                 w.events.push(PendingEvent {
                     kind: "created",
                     op_id: *op_id,
-                    payload: json!({"fields": payload}),
+                    payload: created,
                     note_id: None,
                     fields: fields_list,
                 });
@@ -3082,64 +3414,130 @@ async fn run_ops(
                 target,
             } => {
                 let (s, t) = (resolve(source), resolve(target));
-                if s == t {
-                    return Err(fail(
-                        ErrorCode::RelationNotAllowed,
-                        "an issue cannot duplicate itself".into(),
-                        json!({"reason": "self"}),
-                    ));
-                }
-                let (ws, wt) = (&work[&s], &work[&t]);
-                if ws.project_id != wt.project_id {
-                    return Err(fail(
-                        ErrorCode::RelationNotAllowed,
-                        "duplicates must be in the same project".into(),
-                        json!({"reason": "cross_project"}),
-                    ));
-                }
-                let pp = &perms[&ws.project_id];
-                if !pp.allowed(perm::MANAGE_ISSUE_RELATIONS, ws.tracker_id) {
-                    return Err(fail(
-                        ErrorCode::ForbiddenOp,
-                        "you may not manage relations of this issue".into(),
-                        json!({"reason": "permission"}),
-                    ));
-                }
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM issue_duplicates WHERE source_issue_id = $1 AND target_issue_id = $2)",
-                )
-                .bind(s)
-                .bind(t)
-                .fetch_one(&mut *conn)
-                .await?;
-                if !exists {
-                    let rel = Uuid::now_v7();
-                    let src = work.get_mut(&s).expect("source");
-                    src.dups.push((rel, s, t));
-                    src.effect = true;
-                    src.events.push(PendingEvent {
-                        kind: "duplicate_added",
-                        op_id: *op_id,
-                        payload: json!({"role": "source", "other_issue_id": t}),
-                        note_id: None,
-                        fields: Vec::new(),
-                    });
-                    let tgt = work.get_mut(&t).expect("target");
-                    tgt.effect = true;
-                    tgt.events.push(PendingEvent {
-                        kind: "duplicate_added",
-                        op_id: *op_id,
-                        payload: json!({"role": "target", "other_issue_id": s}),
-                        note_id: None,
-                        fields: Vec::new(),
-                    });
-                }
+                let exists = add_duplicate(&mut *conn, work, perms, s, t, *op_id)
+                    .await?
+                    .map_err(|(code, msg, extra)| fail(code, msg.into(), extra))?;
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: if exists { "no_effect" } else { "applied" }.into(),
                     issue_id: Some(s),
                     version_id: None,
                 });
+            }
+            Op::Triage {
+                op_id,
+                target,
+                decision,
+                dup,
+                snooze_until,
+            } => {
+                let id = resolve(target);
+                let row: Option<(String, bool, Json, chrono::DateTime<chrono::Utc>)> =
+                    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                        "SELECT t.state,
+                                COALESCE(t.snoozed_until > now() AND i.updated_at <= t.snoozed_at, false),
+                                {}, now()
+                         FROM issue_triage t JOIN issues i ON i.id = t.issue_id
+                         WHERE t.issue_id = $1",
+                        crate::triage::SNAPSHOT_SQL
+                    )))
+                    .bind(id)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+                let Some((state, snoozed, before, now)) = row else {
+                    return Err(fail(
+                        ErrorCode::TriageStateInvalid,
+                        "this issue is not waiting in Triage".into(),
+                        json!({"state": "none"}),
+                    ));
+                };
+                if state != "pending" {
+                    return Err(fail(
+                        ErrorCode::TriageStateInvalid,
+                        format!("this issue was already triaged ({state})"),
+                        json!({"state": state}),
+                    ));
+                }
+                if *decision == TriageDecision::Unsnooze && !snoozed {
+                    return Err(fail(
+                        ErrorCode::TriageStateInvalid,
+                        "this issue is not snoozed".into(),
+                        json!({"state": state, "snoozed": false}),
+                    ));
+                }
+                if let Some(until) = snooze_until
+                    // One minute of slack: a client's "now + 1 hour" passes.
+                    && (*until < now + chrono::Duration::minutes(59)
+                        || *until > now + chrono::Duration::days(90))
+                {
+                    return Err(fail(
+                        ErrorCode::InvalidValue,
+                        "snooze_until is 1 hour to 90 days from now".into(),
+                        json!({"path": format!("ops[{i}].snooze_until"), "kind": "snooze_range"}),
+                    ));
+                }
+                if let (TriageDecision::Duplicate, Some(d)) = (decision, dup) {
+                    add_duplicate(&mut *conn, work, perms, id, resolve(d), *op_id)
+                        .await?
+                        .map_err(|(code, msg, extra)| fail(code, msg.into(), extra))?;
+                }
+                let w = work.get_mut(&id).expect("target");
+                let mut payload = json!({"old": state, "new": decision.new_state()});
+                match decision {
+                    TriageDecision::Snooze => payload["snoozed_until"] = json!(snooze_until),
+                    TriageDecision::Unsnooze => payload["snoozed_until"] = Json::Null,
+                    _ => {}
+                }
+                w.events.push(PendingEvent {
+                    kind: "triage_changed",
+                    op_id: *op_id,
+                    payload,
+                    note_id: None,
+                    fields: vec![crate::triage::FIELD_KEY.into()],
+                });
+                w.triage = Some(TriagePlan {
+                    decision: *decision,
+                    before,
+                    snooze_until: *snooze_until,
+                });
+                w.effect = true;
+                if *decision == TriageDecision::Accept {
+                    // C3/R7: an accepted issue gets the final-state checks.
+                    w.fields_touched = true;
+                }
+                items.push(ItemResult {
+                    op_id: *op_id,
+                    status: "applied".into(),
+                    issue_id: Some(id),
+                    version_id: None,
+                });
+            }
+        }
+    }
+
+    // §3.10.1: decline and duplicate end in a closed status (R27: a
+    // semantic check, invalid_value).
+    for w in work.values() {
+        if let Some(TriagePlan {
+            decision: TriageDecision::Decline | TriageDecision::Duplicate,
+            ..
+        }) = &w.triage
+        {
+            let done: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM issue_statuses WHERE id = $1 AND category = 'done')",
+            )
+            .bind(w.status)
+            .fetch_one(&mut *conn)
+            .await?;
+            if !done {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidValue,
+                    "declining or marking a duplicate needs the issue to end in a closed status (send a transition to one)",
+                )
+                .with_details(
+                    json!({"issue_id": w.id, "kind": "triage_requires_close", "path": "ops"}),
+                )
+                .into());
             }
         }
     }
@@ -3199,6 +3597,74 @@ async fn run_ops(
         }
     }
     Ok(items)
+}
+
+type OpFailure = (ErrorCode, &'static str, Json);
+
+/// The duplicate relation `s` → `t` (02 §6.2: not itself, same project,
+/// `manage_issue_relations`), planned on both issues. `Ok(Ok(true))` when
+/// it exists already (no effect).
+async fn add_duplicate(
+    conn: &mut PgConnection,
+    work: &mut BTreeMap<Uuid, Work>,
+    perms: &BTreeMap<Uuid, ProjectPerms>,
+    s: Uuid,
+    t: Uuid,
+    op_id: Uuid,
+) -> Result<std::result::Result<bool, OpFailure>> {
+    if s == t {
+        return Ok(Err((
+            ErrorCode::RelationNotAllowed,
+            "an issue cannot duplicate itself",
+            json!({"reason": "self"}),
+        )));
+    }
+    let (ws, wt) = (&work[&s], &work[&t]);
+    if ws.project_id != wt.project_id {
+        return Ok(Err((
+            ErrorCode::RelationNotAllowed,
+            "duplicates must be in the same project",
+            json!({"reason": "cross_project"}),
+        )));
+    }
+    let pp = &perms[&ws.project_id];
+    if !pp.allowed(perm::MANAGE_ISSUE_RELATIONS, ws.tracker_id) {
+        return Ok(Err((
+            ErrorCode::ForbiddenOp,
+            "you may not manage relations of this issue",
+            json!({"reason": "permission"}),
+        )));
+    }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM issue_duplicates WHERE source_issue_id = $1 AND target_issue_id = $2)",
+    )
+    .bind(s)
+    .bind(t)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !exists {
+        let rel = Uuid::now_v7();
+        let src = work.get_mut(&s).expect("source");
+        src.dups.push((rel, s, t));
+        src.effect = true;
+        src.events.push(PendingEvent {
+            kind: "duplicate_added",
+            op_id,
+            payload: json!({"role": "source", "other_issue_id": t}),
+            note_id: None,
+            fields: Vec::new(),
+        });
+        let tgt = work.get_mut(&t).expect("target");
+        tgt.effect = true;
+        tgt.events.push(PendingEvent {
+            kind: "duplicate_added",
+            op_id,
+            payload: json!({"role": "target", "other_issue_id": s}),
+            note_id: None,
+            fields: Vec::new(),
+        });
+    }
+    Ok(Ok(exists))
 }
 
 /// Steps 15–17: issues, custom fields, notes, relations, events, field
@@ -3279,8 +3745,22 @@ pub(crate) async fn write_effects(
                 .execute(&mut *conn)
                 .await?;
             }
+            // §3.10.1: the triage row first, so the event carries the A5 flags.
+            let triage_after = match &w.triage {
+                Some(plan) => Some(write_triage(&mut *conn, id, plan, at).await?),
+                None => None,
+            };
             let base = w.orig.as_ref().map(|o| o.last_event_seq).unwrap_or(0);
             for (n, ev) in w.events.iter().enumerate() {
+                let payload = match (&triage_after, ev.kind) {
+                    (Some(after), "triage_changed") => {
+                        let mut p = ev.payload.clone();
+                        p["self_triage"] = after["self_triage"].clone();
+                        p["same_sponsor"] = after["same_sponsor"].clone();
+                        p
+                    }
+                    _ => ev.payload.clone(),
+                };
                 // The issue_field_changes rows (design 05 §2.2) in the same
                 // statement, through the mapping the 0020 backfill uses.
                 let event_id: Uuid = sqlx::query_scalar(
@@ -3317,7 +3797,7 @@ pub(crate) async fn write_effects(
                 .bind(at.changeset_execution_id)
                 .bind(ev.op_id)
                 .bind(ev.note_id)
-                .bind(&ev.payload)
+                .bind(&payload)
                 .fetch_one(&mut *conn)
                 .await?;
                 for f in &ev.fields {
@@ -3352,6 +3832,13 @@ pub(crate) async fn write_effects(
                     .collect();
                 if o.status_id != w.status {
                     changed.push(("status_id".into(), json!(o.status_id), json!(w.status)));
+                }
+                if let (Some(plan), Some(after)) = (&w.triage, &triage_after) {
+                    changed.push((
+                        crate::triage::FIELD_KEY.into(),
+                        plan.before.clone(),
+                        after.clone(),
+                    ));
                 }
                 for (k, before, after) in changed {
                     sqlx::query(
@@ -3646,6 +4133,44 @@ async fn check_write(
     Ok(value)
 }
 
+/// Writes a decision to `issue_triage` and returns the new row
+/// ([`crate::triage::SNAPSHOT_SQL`]). A5 (§2.4): `self_triage` when an
+/// agent decides an issue it created; `same_sponsor` when an agent decides
+/// another agent's issue and both act for the same person. Only decisions
+/// (not snooze) set them.
+async fn write_triage(
+    conn: &mut PgConnection,
+    issue: Uuid,
+    plan: &TriagePlan,
+    at: &Attribution,
+) -> Result<Json> {
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE issue_triage t SET
+             state = $2::text,
+             snoozed_until = $3::timestamptz,
+             snoozed_at = CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE now() END,
+             snoozed_by = CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE $4::uuid END,
+             decided_at = CASE WHEN $2::text = 'pending' THEN NULL ELSE now() END,
+             decided_by = CASE WHEN $2::text = 'pending' THEN NULL ELSE $4::uuid END,
+             self_triage = ($2::text <> 'pending' AND $5::text = 'agent' AND i.author_id = $4::uuid),
+             same_sponsor = ($2::text <> 'pending' AND $5::text = 'agent' AND i.author_id <> $4::uuid
+                             AND EXISTS (SELECT 1 FROM agent_principals a
+                                         JOIN agent_principals b ON b.delegator_user_id = a.delegator_user_id
+                                         WHERE a.agent_principal_id = $4::uuid
+                                           AND b.agent_principal_id = i.author_id))
+         FROM issues i WHERE i.id = t.issue_id AND t.issue_id = $1
+         RETURNING {}",
+        crate::triage::SNAPSHOT_SQL
+    )))
+    .bind(issue)
+    .bind(plan.decision.new_state())
+    .bind(plan.snooze_until)
+    .bind(at.actor_id)
+    .bind(at.actor_kind)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     let (pkey, number): (String, i32) = sqlx::query_as(
         "UPDATE projects SET issue_counter = issue_counter + 1 WHERE id = $1 RETURNING key, issue_counter",
@@ -3689,6 +4214,16 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
         .execute(&mut *conn)
         .await?;
     write_cfs(&mut *conn, w).await?;
+    if w.enters_triage {
+        sqlx::query(
+            "INSERT INTO issue_triage (issue_id, project_id, state, entered_at)
+             VALUES ($1, $2, 'pending', now())",
+        )
+        .bind(w.id)
+        .bind(w.project_id)
+        .execute(&mut *conn)
+        .await?;
+    }
     Ok(key)
 }
 

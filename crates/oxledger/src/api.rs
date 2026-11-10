@@ -152,6 +152,13 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/projects/{id}/tabs/reset", post(tabs_reset))
         .route("/projects/{id}/tabs/{tab}/issues", get(tab_issues))
         .route("/projects/{id}/setting-events", get(setting_events))
+        .route("/projects/{id}/triage", get(triage_project))
+        .route(
+            "/projects/{id}/triage-settings",
+            get(triage_settings_get).put(triage_settings_put),
+        )
+        .route("/triage", get(triage_mine))
+        .route("/triage/counts", get(triage_counts))
         .route("/views", get(views_list).post(views_create))
         .route("/views/preview", post(views_preview))
         .route(
@@ -910,7 +917,7 @@ pub struct Capabilities {
 }
 
 /// See [`Capabilities::command_features`]; later M1 stages add theirs.
-pub const COMMAND_FEATURES: &[&str] = &["estimated_hours"];
+pub const COMMAND_FEATURES: &[&str] = &["estimated_hours", "triage_decide"];
 
 #[derive(Serialize, JsonSchema)]
 pub struct SessionData {
@@ -1417,6 +1424,99 @@ async fn setting_events(
         ctx,
         &id,
         q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- triage (design 05 §3.4, M1.3)
+
+fn triage_query(q: &HashMap<String, String>) -> Result<crate::triage::ListQuery, ApiFailure> {
+    let include_snoozed = match q.get("include_snoozed").map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            return Err(ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    "include_snoozed is true or false",
+                )
+                .with_details(json!({"path": "include_snoozed"}))
+                .into(),
+            ));
+        }
+    };
+    let decided = match q.get("view").map(String::as_str) {
+        None | Some("inbox") => false,
+        Some("decided") => true,
+        Some(_) => {
+            return Err(ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "view is inbox or decided")
+                    .with_details(json!({"path": "view"}))
+                    .into(),
+            ));
+        }
+    };
+    Ok(crate::triage::ListQuery {
+        include_snoozed,
+        decided,
+        self_triage: q.get("self_triage").cloned(),
+        decided_by_kind: q.get("decided_by_kind").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(q, "limit")?.map(|l| l.clamp(1, 100) as u32),
+    })
+}
+
+async fn triage_project(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lq = triage_query(&q)?;
+    Ok(ok(
+        crate::triage::project_inbox(&st.app, ctx, &id, &lq).await?
+    ))
+}
+
+async fn triage_mine(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lq = triage_query(&q)?;
+    Ok(ok(crate::triage::my_inbox(&st.app, ctx, &lq).await?))
+}
+
+async fn triage_counts(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::triage::counts(&st.app, ctx).await?))
+}
+
+async fn triage_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::triage::settings(&st.app, ctx, &id).await?))
+}
+
+async fn triage_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::triage::TriageSettingsPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::triage::put_settings(
+        &st.app, ctx, key, &id, &body,
     )
     .await?))
 }
