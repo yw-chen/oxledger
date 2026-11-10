@@ -235,6 +235,11 @@ pub struct IssueView {
     /// `duplicate`; null when the issue never entered the Triage inbox.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triage: Option<Option<String>>,
+    /// Contract 05 §3.6.3: full detail only, when rules published with
+    /// `accept_and_mark` found this issue breaking them: the rule ids. The
+    /// next write that passes the rules clears them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form_rule_marks: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_statuses: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -569,6 +574,7 @@ async fn get_one(
             lock_version: Some(d.lock_version),
             allowed_statuses: Some(d.allowed_statuses),
             custom_fields: Some(d.custom_fields),
+            form_rule_marks: (!d.form_rule_marks.is_empty()).then_some(d.form_rule_marks),
             ..Default::default()
         };
         attach_blocks(conn, reader, caller, &mut v, id, plan).await?;

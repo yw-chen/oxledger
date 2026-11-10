@@ -119,6 +119,13 @@ fn spawn_field_indexer(app: Arc<App>) {
                 Ok(n) => tracing::info!(fixed = n, "custom field indexes reconciled"),
                 Err(e) => tracing::warn!("custom field index job failed: {e:#}"),
             }
+            // Contract 05 §3.7: conversions a restart interrupted (each
+            // batch is idempotent, so a second runner is harmless).
+            match oxledger::field_admin::resume_conversions(&app.pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(resumed = n, "custom field conversions resumed"),
+                Err(e) => tracing::warn!("custom field conversion job failed: {e:#}"),
+            }
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });

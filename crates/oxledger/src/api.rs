@@ -21,7 +21,7 @@ use axum::extract::{ConnectInfo, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -220,6 +220,32 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/versions/{id}/events", get(version_events))
         .route("/resolve", post(resolve))
         .route("/commands", post(submit_command))
+        .route("/commands/validate", post(validate_command))
+        .route("/projects/{id}/trackers/{t}/form", get(form_describe))
+        .route("/admin/forms", get(forms_list).post(forms_ensure))
+        .route("/forms/{id}", get(form_get))
+        .route("/forms/{id}/versions", get(form_versions))
+        .route("/forms/{id}/drafts/{part}", put(form_draft_put))
+        .route("/forms/{id}/drafts/{part}/impact", post(form_impact))
+        .route("/forms/{id}/drafts/{part}/publish", post(form_publish))
+        .route("/forms/{id}/drafts/{part}/discard", post(form_discard))
+        .route("/forms/{id}/rollback", post(form_rollback))
+        .route("/admin/custom-fields", get(fields_list).post(fields_create))
+        .route(
+            "/admin/custom-fields/{id}",
+            get(field_get).patch(field_patch).delete(field_delete),
+        )
+        .route("/admin/custom-fields/{id}/options", post(field_option_add))
+        .route(
+            "/admin/custom-fields/{id}/options/{oid}",
+            patch(field_option_patch).delete(field_option_delete),
+        )
+        .route(
+            "/admin/custom-fields/{id}/conversions",
+            post(field_conversion_preview),
+        )
+        .route("/admin/conversions/{id}", get(conversion_get))
+        .route("/admin/conversions/{id}/start", post(conversion_start))
         .route("/changesets", get(changeset_list))
         .route("/changesets/{id}", get(changeset_get))
         .route("/changesets/{id}/versions/{v}", get(changeset_version))
@@ -2534,4 +2560,310 @@ async fn revoke_credential(
     let ctx = human(&ra)?;
     agents::revoke_credential(&st.app.pool, &ctx, id_param(&id)?).await?;
     Ok(ok(Done::default()))
+}
+
+// ---------------------------------------------------------------- forms and fields (design 05 §3.6, §3.7)
+
+/// `POST /commands/validate`: read-only, CSRF only, no Idempotency-Key.
+async fn validate_command(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::forms::ValidateCommandInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::validate_human(&st.app, ctx, &body).await?))
+}
+
+async fn form_describe(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, t)): Path<(String, String)>,
+    Query(q): Query<crate::forms::FormQuery>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let op = q.op.as_deref().unwrap_or("create");
+    Ok(ok(crate::forms::describe_form(
+        &st.app,
+        ctx,
+        &id,
+        &t,
+        op,
+        q.issue.as_deref(),
+    )
+    .await?))
+}
+
+async fn forms_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<crate::forms::FormsQuery>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::list(&st.app, ctx, &q).await?))
+}
+
+async fn forms_ensure(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::forms::NewForm>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::ensure(&st.app, ctx, &body).await?))
+}
+
+async fn form_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::get(&st.app, ctx, id_param(&id)?).await?))
+}
+
+fn form_part(s: &str) -> Result<crate::forms::Part, ApiFailure> {
+    crate::forms::Part::parse(s).map_err(ApiFailure)
+}
+
+async fn form_versions(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let part = form_part(q.get("part").map(String::as_str).unwrap_or("rules"))?;
+    Ok(ok(crate::forms::versions(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        part,
+    )
+    .await?))
+}
+
+async fn form_draft_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::forms::DraftInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(
+        crate::forms::put_draft(&st.app, ctx, id, part, &body).await?
+    ))
+}
+
+async fn form_impact(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(crate::forms::impact(&st.app, ctx, id, part).await?))
+}
+
+async fn form_publish(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::forms::PublishInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(crate::forms::publish(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id,
+        part,
+        &body,
+    )
+    .await?))
+}
+
+async fn form_discard(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(crate::forms::discard(&st.app, ctx, id, part).await?))
+}
+
+async fn form_rollback(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::forms::RollbackInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::rollback(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+async fn fields_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::list(&st.app, ctx).await?))
+}
+
+async fn fields_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::field_admin::NewFieldInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::field_admin::create(&st.app, ctx, &body).await?,
+    ))
+}
+
+async fn field_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Query<crate::field_admin::FieldQuery>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::get(&st.app, ctx, &id, &q).await?))
+}
+
+async fn field_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::field_admin::FieldPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::field_admin::patch(&st.app, ctx, &id, &body).await?
+    ))
+}
+
+fn lock_version_param(q: &HashMap<String, String>) -> Result<i32, ApiFailure> {
+    q.get("lock_version")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "lock_version is required")
+                    .with_details(json!({"path": "lock_version"}))
+                    .into(),
+            )
+        })
+}
+
+/// 202 with `Location`: the field stays `dropping` until the background
+/// delete finishes.
+async fn field_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lv = lock_version_param(&q)?;
+    let v = crate::field_admin::delete(&st.app, &st.cfg.session, ctx, &id, lv).await?;
+    let mut r = ok(&v);
+    *r.status_mut() = StatusCode::ACCEPTED;
+    if let Ok(h) = HeaderValue::from_str(&format!("/api/v1/admin/custom-fields/{}", v.id)) {
+        r.headers_mut().insert(header::LOCATION, h);
+    }
+    Ok(r)
+}
+
+async fn field_option_add(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::field_admin::NewOption>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::field_admin::add_option(&st.app, ctx, &id, &body).await?,
+    ))
+}
+
+async fn field_option_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, oid)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::field_admin::OptionPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let oid = id_param(&oid)?;
+    Ok(ok(crate::field_admin::patch_option(
+        &st.app, ctx, &id, oid, &body,
+    )
+    .await?))
+}
+
+async fn field_option_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, oid)): Path<(String, String)>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let oid = id_param(&oid)?;
+    let lv = lock_version_param(&q)?;
+    Ok(ok(crate::field_admin::delete_option(
+        &st.app, ctx, &id, oid, lv,
+    )
+    .await?))
+}
+
+async fn field_conversion_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::field_admin::ConversionInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::field_admin::preview_conversion(&st.app, ctx, &id, &body).await?,
+    ))
+}
+
+async fn conversion_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::get_conversion(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn conversion_start(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::start_conversion(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
 }

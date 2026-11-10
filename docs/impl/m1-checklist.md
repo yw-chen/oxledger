@@ -11,7 +11,7 @@
 | M1.2 視圖與看板 | 0021；`/views*`；內建視圖；`run`／`preview`；看板計數；專案分頁 `view`、`board`、`triage`；MCP `view_list`、`view_run` | T-M1-06…20；前端可接列表與看板 | 實作完成，含獨立驗證 9 項修正（2026-11-10；`m1_2_views` 26 個、`m1_2_upgrade` 1 個測試；全套兩輪全綠：test-support 226 過、test-support,github 234 過；前端未接；未 commit） |
 | M1.3 Triage | 0022（含 `self_triage`、`same_sponsor`）；建立時進收件匣；`triage_decide`；設定；`/triage*`；Filter `triage_self_decided`；MCP `triage_list`；政策與委派頁「新操作」 | T-M1-21…30c；收件匣「最近決定」可用 | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_3_triage` 6 個、`m1_3_upgrade` 1 個測試；前端未接；未 commit）。**0022 不給任何角色 `triage_issues`，M1.4 給 Manager** |
 | M1.4 工時 | 0023（含 `read_own_time`）；活動與設定；`log_time`／`update_time_entry`／`delete_time_entry`；日合計與鎖順序；可見性；報表、週表；agent 限制、預設 review、`time_list` 與 A1(c) 例外；委派精靈警告；undo、D12 | T-M1-31…44、39a、39b；鎖順序壓力測試不死結；警告文案出現在委派精靈（前端截圖檢查） | 實作完成，含獨立驗證後的修正（2026-11-10；`m1_4_time` 28 個、`m1_4_upgrade` 2 個測試；警告文案只驗證 API 回應，前端未接；未 commit）。**0023 一次給內建角色 M1 權限，所有 agent 工作脈絡失效** |
-| M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | — |
+| M1.5 表單與欄位管理 | 0024、0025；L1 規則進 `evaluate()`（所有入口）；L2；草稿／impact／發布／回溯；`describe_form`、`validate`、`/commands/validate`；`expected_rules_version`；自訂欄位管理與 Q-S9 轉換；conformance 向量 | T-M1-45…59 | 實作完成（2026-11-10；`m1_5_forms` 31 個、`m1_5_upgrade` 1 個測試；獨立驗證的 8 項缺陷已修、待複驗；前端未接；未 commit）。**0024、0025 不動權限、不 bump epoch** |
 | M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | — |
 | M1.7 搜尋 | 0027；BM25F 欄位與 fast field；別名展開；概念管理；藍綠重建切換 | T-M1-62…65；E1 nDCG＠10 不低於 0.810；E2 用獨立查詢集量別名增益（只記錄） | — |
 | M1.8 通知 | 0028；`notify` consumer；`/notifications*`、`/issues/{key}/watch`、`/me/notification-preferences`；GC 與 lag 監控；保留清除 | T-M1-70…83、125、126、132；派送延遲 p95 ≤ 10 秒（本機 1 萬張單、50 人）；前端鈴鐺、通知中心、關注、偏好可用 | — |
@@ -261,3 +261,55 @@
   - `agent_view_run_with_spent_hours`、`t39c_mcp_time_list`（經 MCP 協定）；`m1_4_http` 加 `POST /time-entries/{id}/redact`、`PUT /delegations/{id}/read-own-time`（開關各 +1、bob 改不了、step-up 過期拒絕）。
 - `m1_4_upgrade.rs` 加：所有角色 `time_entries_visibility = 'all'`；`m1_4_fresh_install_matches_migration`（全新安裝跑完 migration 再 `seed-demo`，內建角色的 M1 權限與 0023 給既有角色的一致）。
 - 沒測到：委派精靈的警告只驗證 API 回應的文案，畫面要等前端接（契約要求截圖檢查）。
+
+## M1.5 疑點與照建議的做法
+
+- M1.5-D1 **規則版本字串**（附錄 C R13）：`r{site}.{project}.s{L0}.w{workflow}`。`site`、`project` 是兩層已發布的規則版本號（0 = 沒有規則）；`L0` 是 0025 新加的 `org_settings.form_l0_version`，必填、停用、適用範圍、可見性、刪除中、選項出現／消失／停用時由 trigger +1（改名、排序、說明不動）；`w` 是既有的 workflow 版本。版面另有 `layout_version = l{site}.{project}`，所以只改版面時 `rules_version` 不變（T-M1-49）。
+- M1.5-D2 **一份文件動到多個 (專案, tracker)**：版本字串是各組的字串依 (專案, tracker) 排序去重後用 `,` 接起來；沒有 issue 目標（例如只有工時）時 `validate` 的 `rules_version` 是 `null`。
+- M1.5-D3 **`expected_rules_version` 不進冪等 hash**：它是送出時的條件，不是內容；不符時回 `form_rules_changed`（409，`details {expected, current}`），算 rejection（不寫 operation 結果、不留 changeset）。
+- M1.5-D4 **`readonly_if` 用交易開始時的狀態判斷**，值沒變也擋（同 workflow 的 readonly）。同一份文件建立的 issue 沒有基準，不檢查。
+- M1.5-D5 **讀不到的規則**（獨立驗證後改）：呼叫者讀得到規則目標**與**所有條件欄位時才受約束，錯誤與 `describe_form` 才給 `rule_id`。目標或任一條件欄位讀不到：人不受約束（`describe_form` 也不列）；agent 被擋（`required_field_missing`／`readonly_field`／`invalid_value` 帶 `blocked: true`，不帶 rule id、不帶讀不到的欄位名）。規則提到已停用或不適用的欄位時，誰都不受約束。`allowed_values_if` 會檢查所有違反的規則，不只第一條。原本「目標讀得到、條件讀不到」仍約束人，錯誤會透露隱藏值，已改。
+- M1.5-D6 **`describe_form` 的規則是陣列**：契約範例寫單一物件（`required_if: {…}`），實作是 `required_if: [{rule_id, when}]`（一個欄位可以有多條規則）。`allowed_values_if` 項目多 `values`。
+- M1.5-D7 **`form_invalid` 多兩種 `kind`**：契約列了六種；另加 `malformed`（JSON 形狀不對）與 `invalid_rule`（規則各部分對不上，例如 `subject` 不能有 `required_if`、`text` 欄位不能有 `allowed_values_if`、op 和型別不合、rule id 重複）。
+- M1.5-D8 **草稿**：每次 `PUT /forms/{id}/drafts/{part}` 都產生新的版本號，舊草稿變 `discarded`；`base_version` 是目前草稿的版本，沒有草稿時是已發布版本（0 = 沒有），不符回 `conflict`（`details.current_version`）。回溯（`POST /forms/{id}/rollback`）把舊版內容用新版本號再發布一次，規則照 `mode` 跑 impact，並把開著的草稿標 `discarded`（它的基底已被取代）。發布時草稿版本必須大於目前已發布版本，否則 `conflict`；發布已被丟棄的草稿也是 `conflict`（版本號只增不減，§3.6.3）。
+- M1.5-D9 **impact 的計數**（獨立驗證後改）：只算呼叫者看得到的：`existing_issues.scanned`／`violating`／`sample_keys` 只含看得到的單；有看不到的單違反時不給數字，`complete: false`，`block` 模式以同一句「無法證明沒有違反」擋下（和超過 20000 張一樣）。`pending_changesets` 只列呼叫者自己（`on_behalf_of`）且所有目標都看得到的提案，判斷是近似（把文件的欄位值與 transition 套在目前的值上，不是完整模擬）；`undo_records` 只算看得到的單上 30 天內 agent 的執行（direct 或 changeset）。`accept_and_mark` 仍標記範圍內**所有**違反的單（不論發布者看不看得到）。
+- M1.5-D9b **存下的 impact 只有計數**：發布時寫進版本列的 `impact` 把 `sample_keys` 與 `pending_changesets.ids` 清成空陣列，另加 `marked`；`GET /forms/{id}`、`/versions` 因此不會把發布者看得到的 key 給別人。計數仍是發布者視角。
+- M1.5-D10 **`POST /admin/forms`**（契約表沒有）：建立或取得 (tracker, 專案?) 的表單列，自然冪等。表單管理與欄位管理的寫入都**不收 Idempotency-Key**，用 `base_version`／`draft_version`／`lock_version` 防並行。
+- M1.5-D11 **權限**：欄位管理只給管理員；專案表單給管理員或該專案有 `manage_project` 的人；站台表單只給管理員。**不需要新權限**，0024／0025 不動 `role_permissions`，不 bump epoch。
+- M1.5-D12 **0024 之前存的提案**（`changeset_versions.rules_version` 是 NULL）：有任何 L1 規則生效時才算「規則已變」（佇列不能勾）；沒有規則時不受影響。新提案在 `INSERT` 時就寫入版本（`changeset_versions` 只能新增）；版本在驗證**之前**讀（提案與 owner 修訂都是），所以驗證期間有新規則發布時存的是較舊的版本，佇列會標「規則已變」。
+- M1.5-D13 **marks**（獨立驗證後改）：`accept_and_mark` 只記 rule id；`GET /issues/{key}`（`form_rule_marks`，一律是陣列）與 MCP `get`（沒有時省略）只列呼叫者讀得到所有欄位的規則。下一次動到欄位的寫入只清掉**寫入者受約束且最終狀態符合**的規則的 mark（從 `rule_ids` 移除；全部清完才設 `cleared_at`，保留原 id 當紀錄）；不受約束的人寫入不清（只加 note 也不清）。
+- M1.5-D14 **`validate`**：人經 `/commands/validate` 不計配額；agent 經 MCP 每個委派每小時 120 次（超過 `quota_exceeded`）。沒有 `op_id` 的錯誤（最終狀態檢查）掛到每個 op，狀態 `blocked`。`would_require_review` 只看委派政策（目前沒有 agent_chain，M1.9 才有）。
+- M1.5-D15 **自訂欄位管理**：
+  - 新 `DELETE /admin/custom-fields/{id}/options/{oid}`（契約沒列）：沒人用的選項才能刪，用到時 `invalid_value`（`kind: "option_in_use"`），改用停用。
+  - 改型別一律 `unsupported_operation`（`details.suggested = "conversion"`）。
+  - 停用的欄位：`describe`、`describe_form`、版面與規則都不列，寫新值是 `invalid_value`，舊值仍顯示、篩選仍可用；重新啟用即恢復。
+  - 改可見性或角色時，每個受影響的專案 epoch 至少 +1。**更正**：驗證實測同一個 PATCH 同時改可見性和角色是 +3、改 roles／projects／is_for_all 是 +5，原因是 0010 的 trigger 在 DELETE 與 INSERT 各觸發一次（原先寫的 +2 不對）。不改 trigger；測試維持「至少 +1」。和契約 T-M1-57 寫的「+1」不同，記為差異（**待使用者確認**）。
+  - PATCH 把欄位改成受限（`visible` true→false）且已發布規則的條件提到它時，回應多 `warnings: [{kind: "restricted_condition_field", field, form_id, rule_ids}]`，不擋：讀不到它的人從此不受那些規則約束（D5）。
+- M1.5-D16 **Q-S9 轉換**：`mapping` 格式：list→list 是 `{"options": {舊選項 id: 新標籤}}`；文字→list 是 `{"values": {文字: 新標籤}}`；文字→int／float／date／bool 與轉成文字是 `{}`。每批 500 張，依 issue id 排序，先依 id 順序鎖住該批 issue 再讀舊值，批次與游標同一個交易提交，所以失敗後 `POST /admin/conversions/{id}/start` 從 `failed` 續跑不會重寫；服務重啟時欄位背景工作接手 `running` 的轉換，每個轉換各自一個 task（錯誤互不影響，也不卡住索引工作；同一行程不會重複跑同一個）。開始時來源與目標欄位都不能是停用或刪除中（`conflict`，`kind: "field_inactive"`）。新欄位不適用的 issue（tracker／專案不符）不寫，計入報告的 `not_applicable`。事件 `origin = import`、`actor_kind = system`、`system_operation = cf_convert:<id>`；舊欄位不會自動停用。報告只有計數與 issue id／key 加原因代碼（`unmapped`、`unparseable`、`too_long`），不含值。
+- M1.5-D17 **`issue_field_changes` 不含自訂欄位**：M1.0 的投影只收狀態、指派、版本、優先度，轉換寫的事件照規則不進去。
+- M1.5-D18 **undo 的 `rules_changed`**：欄位層級的原因多 `code`（新規則給的錯誤碼）與 `rule_id`（讀得到時）；整批 undo 被規則擋下時回 `undo_not_applicable`（`reasons[{reason: "rules_changed", code, rule_id}]`）。
+- M1.5-D19 **condition 的空字串**：自訂文字欄位的 `""` 視為沒有值（`not_set` 成立），和指令文件一致；conformance 檔有對應向量。
+- M1.5-D20 **轉換中的舊欄位唯讀**（**待使用者確認**）：轉換在 `running` 時，寫入舊欄位（值有變）回 `invalid_value`（`kind: "field_converting"`）；轉換結束（`succeeded`／`failed`）就解除。完成後是否停用舊欄位仍由管理員決定。`failed` 時不凍結：期間寫進舊欄位、而游標已經過的單，續跑不會再轉。
+- M1.5-D21 **非管理員寫規則**：專案經理寫或發布規則時，欄位目錄只含他讀得到的欄位；讀不到的欄位不論在目標或條件都回 `unknown_field`（不留存在性 oracle）。`restricted_condition_field` 只對讀得到該欄位的人出現。管理員看到全部。版面檢查仍用完整目錄。
+- M1.5-D22 **版面**：`hides_required` 也看 workflow 的必填（任何角色在某狀態設 `required`，就當作「狀態是那個時必填」）；`describe_form` 的版面區塊如果欄位全被濾掉，整塊不回（不回標題）。
+
+### 測試
+
+- `m1_5_forms.rs`（31 個）：
+  - `t45_required_if_on_every_entry_point`：`/commands`、MCP `command_submit`（經協定）、`validate`（人與 agent）、ChangeSet 套用、undo 五個入口都回 `required_field_missing` 與 `rule_id`；同時驗 T-M1-52（佇列 `rules_changed`、`review_modes` 只有 detail、queue 模式核准回 `review_outdated`、逐份核准用新規則失敗）與 T-M1-53。
+  - `t46_allowed_values_and_t47_readonly_baseline`：T-M1-46、T-M1-47、T-M1-55。
+  - `t48_form_invalid_before_publishing`：`restricted_condition_field`、`condition_too_complex`（三層、六項）、`unknown_field`、`hides_required`（`subject` 與發布後的 `required_if`）、`cycle`。
+  - `t49_t50_expected_rules_version`：只改版面時舊版本仍成功；改規則後 agent、人、`validate`、MCP `validate` 都回 `form_rules_changed`；版面回溯。
+  - `t51_publish_modes_and_marks`：impact、`block` 被擋、草稿版本過期 `conflict`、`accept_and_mark` 寫 marks、note 不清、通過的寫入清掉、非管理員不能管理。
+  - `t54_validate_writes_nothing`：1000 次 `validate` 後 `operation_requests`、`changesets`、`issue_events`、`lock_version` 都沒變；agent 第 121 次 `quota_exceeded`。
+  - `t56_conformance_vectors`：`api/form-conformance.json` 49 個向量全部一致（伺服器端；前端評估器要另外跑同一個檔）。獨立驗證後補：明確 null、`ne`／`in` 遇缺值、大小寫（id 不分、字串分）、停用的選項、看不到的欄位（等同缺值）。
+  - `describe_form_leaks_nothing_unreadable`：讀不到的欄位、選項、rule id 都不出現在 `describe_form`、版面、錯誤、`validate`、議題頁 marks；讀得到的角色看得到；agent 被擋時不帶名稱。
+  - `mcp_describe_form_and_validate`：經 MCP 協定的 `describe_form`（create、update）與 `validate`（valid、invalid、`would_require_review`）。
+  - `t57_visibility_quarantines_agents`、`field_lock_version_and_errors`（兩個 PATCH 同時送只有一個成功、`unsupported_operation`、`required_impact`、`name_taken`、非管理員、`option_in_use`、停用的選項不能寫）、`t58_conversion_with_failure_and_resume`（string→int 預檢 3 張、注入失敗後續跑、事件與值各一次、list→list 對照、轉換中刪舊欄位 `conflict`）、`t59_deactivated_field`。
+  - `check_lists_match_constants`：0024／0025 的 CHECK 與程式常數一致。
+  - `m1_5_http`：經 router 的表單、表單管理、`/commands/validate`、欄位管理（201、409、202 與 `Location`）、轉換預檢、議題頁 `form_rule_marks`。
+  - 獨立驗證的重現（`v1`…`v7`）：impact／block 不透露看不到的單、經理不能替讀不到的欄位寫規則、條件欄位發布後改受限、回溯後發布舊草稿、R19 `then_required` 含 L1、存下的 impact 不含 key、不受約束的寫入不清 mark。
+  - 補的缺口（`g_*`，各自用 mutant 確認會失敗）：條件讀不到時不約束人、agent 被擋且不帶 rule id、PATCH 警告（`g_condition_unreadable_target_readable`）；0024 前 NULL 版本（`g_pre_0024_proposal_counts_as_changed`）；impact 只列自己的提案（`g_impact_pending_only_own_proposals`）；發布等寫入的 FOR SHARE（`g_publish_waits_for_write_in_flight`，用 `apply.after_locks` 擋住套用）；改 workflow 版本會變（`g_workflow_change_moves_rules_version`）；發布、回溯、轉換開始、刪欄位經 HTTP 都要 step-up（`g_step_up_over_http`）；Triage accept 與 log_time 混合文件經過 L1（`g_triage_accept_and_log_time_mixed_checked`）；轉換凍結舊欄位、不適用的單跳過、停用欄位不能開始（`g_conversion_guards`）；workflow 必填與全濾掉的區塊（`g_layout_workflow_required_and_hidden_sections`）。
+- `m1_5_upgrade.rs`：0023 → 0025：epoch 不變、工作脈絡仍可用、既有欄位 `lock_version = 0`、`form_l0_version` 從 1 開始、L0 trigger 只在該動時動（改名、選項改名不動；必填、停用、選項停用、角色、專案、is_for_all、tracker、可見性、選項增刪、刪除中各 +1）、表單列動 `schema_version`、站台表單每個 tracker 一個。
+- 改了既有測試：`s6b_queue` 的 `eligibility` 多一個參數。`m1_4_upgrade` 原本改成 `run_to(23)`，驗證者實測 `MIGRATOR.run` 可過，已改回（**待使用者確認**）。
+- 沒測到：前端的 `show_if` 評估器（前端未接）；`resume_conversions` 只在續跑路徑間接測到，沒有模擬服務重啟。

@@ -612,6 +612,10 @@
             },
             "type": "array"
           },
+          "rules_changed": {
+            "description": "Contract 05 §3.6.3: the form rules changed since this version.",
+            "type": "boolean"
+          },
           "state": {
             "type": "string"
           },
@@ -659,7 +663,8 @@
           "diff",
           "warnings",
           "validation",
-          "review_modes"
+          "review_modes",
+          "rules_changed"
         ],
         "type": "object"
       },
@@ -736,6 +741,10 @@
           "review_url": {
             "type": "string"
           },
+          "rules_changed": {
+            "description": "Contract 05 §3.6.3: the form rules of the targets changed since this\nversion was stored (review it in full; it cannot be queue-ticked).",
+            "type": "boolean"
+          },
           "state": {
             "type": "string"
           },
@@ -778,7 +787,8 @@
           "targets",
           "requires_human_approval",
           "review_url",
-          "last_execution"
+          "last_execution",
+          "rules_changed"
         ],
         "type": "object"
       },
@@ -818,6 +828,13 @@
           },
           "exec_mode": {
             "description": "Only `\"atomic\"` (the default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_rules_version": {
+            "description": "Contract 05 §3.6: the `rules_version` from `describe_form`; when the\nrules in force differ, the document fails with `form_rules_changed`.\nNot part of the idempotency hash.",
             "type": [
               "string",
               "null"
@@ -1037,6 +1054,130 @@
           "closed_at",
           "source_projects",
           "changed_projects"
+        ],
+        "type": "object"
+      },
+      "ConversionFailures": {
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sample_issue_keys": {
+            "description": "Visible issues only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "sample_issue_keys"
+        ],
+        "type": "object"
+      },
+      "ConversionInput": {
+        "additionalProperties": false,
+        "description": "`POST /admin/custom-fields/{id}/conversions`.",
+        "properties": {
+          "mapping": {
+            "default": null,
+            "description": "list → list: `{\"options\": {\"<old option id>\": \"<new label>\"}}`;\nstring/link/text → list: `{\"values\": {\"<text>\": \"<new label>\"}}`;\nstring/link/text → int/float/date/bool and the textual targets: `{}`\n(parsed; list → string uses the option label)."
+          },
+          "to": {
+            "$ref": "#/components/schemas/NewFieldInput",
+            "description": "The new field (created now; values are copied by `start`)."
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "type": "object"
+      },
+      "ConversionPreview": {
+        "properties": {
+          "conversion_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "convertible": {
+            "description": "Values that convert.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "failures": {
+            "$ref": "#/components/schemas/ConversionFailures"
+          },
+          "mapping_echo": true,
+          "to_field_id": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conversion_id",
+          "to_field_id",
+          "convertible",
+          "failures",
+          "mapping_echo"
+        ],
+        "type": "object"
+      },
+      "ConversionView": {
+        "properties": {
+          "batches_done": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_field_id": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "report": {
+            "description": "`{converted, failed, skipped, failures: [{issue_id, key, reason}]}`:\nreason codes (`unmapped`, `unparseable`, `too_long`), never values."
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "previewed, running, succeeded, failed, canceled.",
+            "type": "string"
+          },
+          "to_field_id": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "from_field_id",
+          "to_field_id",
+          "state",
+          "batches_done",
+          "report",
+          "created_at",
+          "started_at",
+          "finished_at"
         ],
         "type": "object"
       },
@@ -1547,6 +1688,22 @@
         ],
         "type": "object"
       },
+      "DraftInput": {
+        "additionalProperties": false,
+        "properties": {
+          "base_version": {
+            "description": "The current draft's version, or (no draft) the published version (0: none).",
+            "format": "int32",
+            "type": "integer"
+          },
+          "body": true
+        },
+        "required": [
+          "base_version",
+          "body"
+        ],
+        "type": "object"
+      },
       "DuplicateActions": {
         "properties": {
           "can_propose": {
@@ -1931,6 +2088,21 @@
             "const": "view_in_use",
             "description": "A project tab still shows this view; `details.tabs` (tab titles).",
             "type": "string"
+          },
+          {
+            "const": "form_rules_changed",
+            "description": "Contract 05 §3.6: `expected_rules_version` is not the rules version\nin force; `details.current`. Describe the form again.",
+            "type": "string"
+          },
+          {
+            "const": "form_invalid",
+            "description": "A form draft is not valid: `details.kind` (`unknown_field`,\n`restricted_condition_field`, `condition_too_complex`, `cycle`,\n`hides_required`, `field_not_applicable`, `malformed`,\n`invalid_rule`), `details.path`, `rule_id` or `section_id`.",
+            "type": "string"
+          },
+          {
+            "const": "form_publish_blocked",
+            "description": "`mode = block` and existing issues break the rules; `details` is the\nimpact report.",
+            "type": "string"
           }
         ]
       },
@@ -2099,6 +2271,34 @@
         ],
         "type": "object"
       },
+      "ExistingIssues": {
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "sample_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scanned": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "violating": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "violating",
+          "sample_keys",
+          "scanned",
+          "complete"
+        ],
+        "type": "object"
+      },
       "FieldAction": {
         "properties": {
           "editable": {
@@ -2127,6 +2327,138 @@
         ],
         "type": "object"
       },
+      "FieldAdminView": {
+        "properties": {
+          "deactivated": {
+            "description": "Deactivated: not in describe or forms and takes no new values; old\nvalues stay readable and filterable.",
+            "type": "boolean"
+          },
+          "deactivated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "definition_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "ftype": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "index_state": {
+            "description": "pending (filters work without the index), ready, none (text), dropping.",
+            "type": "string"
+          },
+          "is_for_all": {
+            "type": "boolean"
+          },
+          "is_required": {
+            "type": "boolean"
+          },
+          "key": {
+            "description": "`cf:<id>`, the key in command documents and forms.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionAdminView"
+            },
+            "type": "array"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "role_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tracker_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name",
+          "ftype",
+          "description",
+          "is_required",
+          "is_for_all",
+          "visible",
+          "position",
+          "index_state",
+          "deactivated",
+          "deactivated_at",
+          "lock_version",
+          "definition_version",
+          "tracker_ids",
+          "project_ids",
+          "role_ids",
+          "options"
+        ],
+        "type": "object"
+      },
+      "FieldDetail": {
+        "properties": {
+          "field": {
+            "$ref": "#/components/schemas/FieldAdminView"
+          },
+          "required_impact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequiredImpact"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`?preview_required=true`, or a PATCH that made the field required."
+          },
+          "warnings": {
+            "description": "PATCH: what the change does not block but the administrator should\nknow (`restricted_condition_field`: published form rules name the\nfield in conditions; people who cannot read it are no longer held\nto them, agents are blocked).",
+            "items": true,
+            "type": "array"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
+      },
       "FieldOptionInfo": {
         "properties": {
           "active": {
@@ -2144,6 +2476,23 @@
           "id",
           "label",
           "active"
+        ],
+        "type": "object"
+      },
+      "FieldPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "set": {
+            "$ref": "#/components/schemas/FieldSet"
+          }
+        },
+        "required": [
+          "lock_version",
+          "set"
         ],
         "type": "object"
       },
@@ -2200,6 +2549,100 @@
           "required",
           "ops"
         ],
+        "type": "object"
+      },
+      "FieldSet": {
+        "additionalProperties": false,
+        "description": "What `PATCH /admin/custom-fields/{id}` may change.",
+        "properties": {
+          "deactivated": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "description": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ftype": {
+            "default": null,
+            "description": "Never changes: `unsupported_operation` (`details.suggested = \"conversion\"`)."
+          },
+          "is_for_all": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_required": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "project_ids": {
+            "default": null,
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "role_ids": {
+            "default": null,
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tracker_ids": {
+            "default": null,
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "visible": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "FilterFieldInfo": {
@@ -2376,6 +2819,453 @@
         "required": [
           "id",
           "label"
+        ],
+        "type": "object"
+      },
+      "FormCreation": {
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "enters_triage": {
+            "type": "boolean"
+          },
+          "initial_status_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_private": {
+            "$ref": "#/components/schemas/PrivateChoice"
+          }
+        },
+        "required": [
+          "allowed",
+          "initial_status_id",
+          "enters_triage",
+          "is_private"
+        ],
+        "type": "object"
+      },
+      "FormDescription": {
+        "description": "`GET /projects/{id}/trackers/{t}/form` and MCP `describe_form`.",
+        "properties": {
+          "creation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormCreation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FormField"
+            },
+            "type": "array"
+          },
+          "issue_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "layout": {
+            "$ref": "#/components/schemas/Layout",
+            "description": "A display hint only; every field you may set is in some section."
+          },
+          "layout_version": {
+            "type": "string"
+          },
+          "lock_version": {
+            "description": "op update: the issue's lock_version (for the precondition).",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "op": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "rules_version": {
+            "description": "Send it back as expected_rules_version to detect rule changes.",
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tracker": {
+            "$ref": "#/components/schemas/TrackerRef"
+          }
+        },
+        "required": [
+          "project",
+          "project_id",
+          "tracker",
+          "op",
+          "rules_version",
+          "layout_version",
+          "schema_version",
+          "fields",
+          "layout"
+        ],
+        "type": "object"
+      },
+      "FormDetail": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/PartView"
+          },
+          "layout_draft": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "layout_version": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_id": {
+            "description": "`null`: site level.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_layout_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "published_rules_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/PartView"
+          },
+          "rules_draft": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rules_version": {
+            "description": "Effective rules version of this form's layer (site: rN.0…).",
+            "type": "string"
+          },
+          "tracker_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "tracker_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracker_id",
+          "tracker_name",
+          "project_id",
+          "project_key",
+          "published_rules_version",
+          "published_layout_version",
+          "rules_draft",
+          "layout_draft",
+          "lock_version",
+          "rules",
+          "layout",
+          "rules_version",
+          "layout_version"
+        ],
+        "type": "object"
+      },
+      "FormField": {
+        "properties": {
+          "allowed_values_if": {
+            "items": {
+              "$ref": "#/components/schemas/RuleRef"
+            },
+            "type": "array"
+          },
+          "constraints": true,
+          "editable": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/OptionView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "options_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy": {
+            "description": "Agents: `\"review\"` when writing it sends the document for review.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "readonly_if": {
+            "items": {
+              "$ref": "#/components/schemas/RuleRef"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "description": "Why not editable: `not_editable`, `workflow_readonly`,\n`project_not_writable`, `policy` (delegation off), `form_rule`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "description": "Required always (definition, or workflow at the status in question).",
+            "type": "boolean"
+          },
+          "required_if": {
+            "items": {
+              "$ref": "#/components/schemas/RuleRef"
+            },
+            "type": "array"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "required",
+          "editable"
+        ],
+        "type": "object"
+      },
+      "FormImpact": {
+        "description": "`POST /forms/{id}/drafts/{part}/impact` (§3.6.3). Counts only what the\ncaller can see; sample keys are visible issues.",
+        "properties": {
+          "draft_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "existing_issues": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExistingIssues"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "layout_version_after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "layout_warnings": {
+            "items": true,
+            "type": "array"
+          },
+          "pending_changesets": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingChangesets"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules_version_after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "undo_records": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRecords"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "draft_version",
+          "layout_warnings"
+        ],
+        "type": "object"
+      },
+      "FormSummary": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "layout_draft": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_id": {
+            "description": "`null`: site level.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_layout_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "published_rules_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "rules_draft": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tracker_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "tracker_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracker_id",
+          "tracker_name",
+          "project_id",
+          "project_key",
+          "published_rules_version",
+          "published_layout_version",
+          "rules_draft",
+          "layout_draft",
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "FormVersionView": {
+        "properties": {
+          "body": true,
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "impact": true,
+          "publish_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_by": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "draft, published, superseded, discarded.",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "state",
+          "body",
+          "publish_mode",
+          "impact",
+          "created_by",
+          "created_at",
+          "published_by",
+          "published_at"
         ],
         "type": "object"
       },
@@ -2796,6 +3686,13 @@
               "null"
             ]
           },
+          "form_rule_marks": {
+            "description": "Contract 05 §3.6.3: rule ids of open `accept_and_mark` marks (the\nissue broke rules published after it was written); the next write\nthat passes the rules clears them. Empty when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "is_private": {
             "type": "boolean"
           },
@@ -2886,7 +3783,8 @@
           "lock_version",
           "allowed_statuses",
           "custom_fields",
-          "triage"
+          "triage",
+          "form_rule_marks"
         ],
         "type": "object"
       },
@@ -3095,6 +3993,80 @@
           "count",
           "items",
           "next_cursor"
+        ],
+        "type": "object"
+      },
+      "Layout": {
+        "properties": {
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutSection"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sections"
+        ],
+        "type": "object"
+      },
+      "LayoutField": {
+        "properties": {
+          "help": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "show_if": true,
+          "span": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "LayoutSection": {
+        "description": "A section of the effective layout (§3.6.1).",
+        "properties": {
+          "columns": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutField"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "show_if": {
+            "description": "A display hint, not a rule (the same condition language as rules)."
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "columns",
+          "fields"
         ],
         "type": "object"
       },
@@ -3311,6 +4283,135 @@
         "required": [
           "agent_client_id",
           "fresh_context_ack"
+        ],
+        "type": "object"
+      },
+      "NewFieldInput": {
+        "additionalProperties": false,
+        "description": "`POST /admin/custom-fields` (and the new field of a conversion).",
+        "properties": {
+          "description": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ftype": {
+            "description": "int, float, date, string, text, list, user, bool, link.",
+            "type": "string"
+          },
+          "is_for_all": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_required": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "description": "list fields: 1–200 options.",
+            "items": {
+              "$ref": "#/components/schemas/OptionLabel"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "project_ids": {
+            "default": null,
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "role_ids": {
+            "default": null,
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tracker_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "visible": {
+            "default": null,
+            "description": "Default true. false: only administrators and holders of `role_ids`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "ftype",
+          "tracker_ids"
+        ],
+        "type": "object"
+      },
+      "NewForm": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "default": null,
+            "description": "Project key or id; omit for the site-level form.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracker_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tracker_id"
+        ],
+        "type": "object"
+      },
+      "NewOption": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "position": {
+            "default": null,
+            "description": "Default: after the last option.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "label"
         ],
         "type": "object"
       },
@@ -3906,6 +5007,80 @@
         ],
         "type": "object"
       },
+      "OptionAdminView": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "position",
+          "active"
+        ],
+        "type": "object"
+      },
+      "OptionLabel": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "OptionPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "default": null,
+            "description": "false: kept on issues that have it, not offered for new values.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "label": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "description": "The field's lock_version.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "position": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
       "OptionView": {
         "properties": {
           "active": {
@@ -3982,6 +5157,35 @@
         ],
         "type": "object"
       },
+      "PartView": {
+        "properties": {
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormVersionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "published": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormVersionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "published",
+          "draft"
+        ],
+        "type": "object"
+      },
       "PasswordBody": {
         "additionalProperties": false,
         "properties": {
@@ -3991,6 +5195,26 @@
         },
         "required": [
           "password"
+        ],
+        "type": "object"
+      },
+      "PendingChangesets": {
+        "properties": {
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "would_fail": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "would_fail",
+          "ids"
         ],
         "type": "object"
       },
@@ -4440,6 +5664,62 @@
         ],
         "type": "object"
       },
+      "PublishInput": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "mode": {
+            "default": null,
+            "description": "Rules: `block` or `accept_and_mark`. Layout: omit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "draft_version"
+        ],
+        "type": "object"
+      },
+      "PublishResult": {
+        "properties": {
+          "form_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "layout_version": {
+            "type": "string"
+          },
+          "marked": {
+            "description": "Issues marked as not meeting the new rules (accept_and_mark).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "part": {
+            "type": "string"
+          },
+          "rules_version": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "form_id",
+          "part",
+          "version",
+          "rules_version",
+          "layout_version",
+          "marked"
+        ],
+        "type": "object"
+      },
       "ReadOwnTimeBody": {
         "additionalProperties": false,
         "properties": {
@@ -4608,6 +5888,35 @@
         "required": [
           "items",
           "can_manage"
+        ],
+        "type": "object"
+      },
+      "RequiredImpact": {
+        "description": "Issues the field applies to that have no value: what making it required\nwould leave failing (only the caller's visible issues are counted).",
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "sample_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scanned": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "violating": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "violating",
+          "sample_keys",
+          "scanned",
+          "complete"
         ],
         "type": "object"
       },
@@ -4796,6 +6105,53 @@
           "security_epoch",
           "link_id",
           "pr_ids"
+        ],
+        "type": "object"
+      },
+      "RollbackInput": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part": {
+            "description": "\"rules\" or \"layout\".",
+            "type": "string"
+          },
+          "to_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "part",
+          "to_version"
+        ],
+        "type": "object"
+      },
+      "RuleRef": {
+        "description": "One rule as `describe_form` lists it on its target field.",
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "values": {
+            "description": "`allowed_values_if`: the values allowed while `when` holds.",
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "when": true
+        },
+        "required": [
+          "rule_id",
+          "when"
         ],
         "type": "object"
       },
@@ -6714,6 +8070,22 @@
         ],
         "type": "object"
       },
+      "TrackerRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
       "TrackerSchema": {
         "description": "Static schema of an issue in a project × tracker (§5.1).",
         "properties": {
@@ -7224,6 +8596,13 @@
         "properties": {
           "after": true,
           "before": true,
+          "code": {
+            "description": "reason `rules_changed` (contract 05 §3.6.3): the error code the new\nform rules give (`required_field_missing`, `invalid_value`,\n`readonly_field`) and the rule, when its fields are readable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "current": true,
           "field": {
             "type": "string"
@@ -7243,6 +8622,12 @@
           },
           "restorable": {
             "type": "boolean"
+          },
+          "rule_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "subreason": {
             "description": "`version_not_open` (§17.13 L2889).",
@@ -7437,6 +8822,18 @@
           "version_fields",
           "triage",
           "time_entries"
+        ],
+        "type": "object"
+      },
+      "UndoRecords": {
+        "properties": {
+          "not_applicable_after": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "not_applicable_after"
         ],
         "type": "object"
       },
@@ -7737,6 +9134,45 @@
         ],
         "type": "object"
       },
+      "ValidateCommandInput": {
+        "additionalProperties": false,
+        "description": "`POST /commands/validate` and MCP `validate`.",
+        "properties": {
+          "command": {
+            "description": "A command document, as for command_submit."
+          },
+          "expected_rules_version": {
+            "default": null,
+            "description": "The rules_version from describe_form; overrides one inside `command`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "ValidateError": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": true,
+          "fields": true,
+          "message": {
+            "type": "string"
+          },
+          "rule_id": true
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
       "ValidateInput": {
         "additionalProperties": false,
         "properties": {
@@ -7747,6 +9183,62 @@
         },
         "required": [
           "version"
+        ],
+        "type": "object"
+      },
+      "ValidateItem": {
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ValidateError"
+            },
+            "type": "array"
+          },
+          "op_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "description": "`ok`, `no_effect`, `blocked`, or `not_checked` (an earlier op failed).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op_id",
+          "status",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "ValidateResult": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ValidateItem"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "description": "`valid` or `invalid`.",
+            "type": "string"
+          },
+          "rules_version": {
+            "description": "The rules version of the document's targets (null: no issue targets).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "would_require_review": {
+            "description": "Agents: whether command_submit would send it for review (policy).\nAlways false for people.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "outcome",
+          "rules_version",
+          "items",
+          "would_require_review"
         ],
         "type": "object"
       },
@@ -8708,6 +10200,814 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/conversions/{id}": {
+      "get": {
+        "operationId": "get_admin_conversions_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "A conversion's state, batches done and report (counts; failing issue ids and keys with reason codes, never values).",
+        "x-access": "session"
+      }
+    },
+    "/admin/conversions/{id}/start": {
+      "post": {
+        "operationId": "post_admin_conversions_id_start",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Start (or, after failed, resume) copying values in batches of 500 in the background (step-up). Each batch commits its writes with the resume cursor, so a rerun never writes an issue twice; events have system_operation cf_convert:<id>. The old field is not deactivated automatically.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/admin/custom-fields": {
+      "get": {
+        "operationId": "get_admin_custom_fields",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/FieldAdminView"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Every custom field with its scope, roles, options, lock_version and state (administrators).",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_admin_custom_fields",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewFieldInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldAdminView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Create a custom field (administrators; 201). The per-field index is built before the answer; index_state pending means filters work without it. invalid_value kinds: name_invalid, name_taken, ftype_invalid, trackers_required, options_invalid, label_invalid, label_taken, builtin_role, unknown_reference.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/custom-fields/{id}": {
+      "delete": {
+        "operationId": "delete_admin_custom_fields_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldAdminView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Delete a custom field and its values (step-up; query lock_version). 202 with Location: index_state stays dropping until the background delete finishes. conflict (kind conversion_running) while a conversion of it runs.",
+        "x-access": "stepup",
+        "x-csrf": true
+      },
+      "get": {
+        "operationId": "get_admin_custom_fields_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One custom field (id or cf:<id>). Query preview_required=true adds required_impact: the issues the field applies to that have no value.",
+        "x-access": "session"
+      },
+      "patch": {
+        "operationId": "patch_admin_custom_fields_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change a custom field: {lock_version, set:{name?, description?, is_required?, is_for_all?, project_ids?, tracker_ids?, visible?, role_ids?, position?, deactivated?}}. conflict carries current_lock_version. set.ftype is unsupported_operation (details.suggested conversion). Visibility and scope changes quarantine agent contexts (security_epoch). Making the field required answers with required_impact.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/custom-fields/{id}/conversions": {
+      "post": {
+        "operationId": "post_admin_custom_fields_id_conversions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversionPreview"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Q-S9 type conversion, step 1: {to: a new field definition, mapping}. Creates the new field and the conversion (previewed) and reports how many values convert and which issues would fail (count and sample keys you can see). Nothing is copied yet. Unsupported pairs: unsupported_operation; a bad mapping: invalid_value (kind mapping_invalid).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/custom-fields/{id}/options": {
+      "post": {
+        "operationId": "post_admin_custom_fields_id_options",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewOption"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldAdminView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Add an option to a list field: {label, position?} (201).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/custom-fields/{id}/options/{oid}": {
+      "delete": {
+        "operationId": "delete_admin_custom_fields_id_options_oid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "oid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldAdminView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Delete an option no issue uses (query lock_version); in use: invalid_value (kind option_in_use), deactivate it instead.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "patch": {
+        "operationId": "patch_admin_custom_fields_id_options_oid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "oid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FieldAdminView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Rename, reorder or (de)activate an option: {lock_version, label?, position?, active?}. An inactive option stays on issues that have it.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/admin/forms": {
+      "get": {
+        "operationId": "get_admin_forms",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/FormSummary"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Forms of the site (no query) or of a project (query project: key or id). Site: administrators; project: administrators or manage_project in an active project.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_admin_forms",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FormDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The form of {tracker_id, project?}, created when missing (naturally idempotent; no Idempotency-Key).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/admin/github": {
       "get": {
         "operationId": "get_admin_github",
@@ -10624,6 +12924,66 @@
         "x-csrf": true
       }
     },
+    "/commands/validate": {
+      "post": {
+        "operationId": "post_commands_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateCommandInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ValidateResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Check a command document as POST /commands would, without writing (design 05 §3.6.4). Read-only: CSRF, no Idempotency-Key. Body {command, expected_rules_version?}. Rejections (not_found, forbidden_op, invalid_request, form_rules_changed) come back as errors; anything else as items[].errors with outcome invalid. would_require_review is always false for people.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/delegations": {
       "get": {
         "operationId": "get_delegations",
@@ -11235,6 +13595,489 @@
           }
         },
         "summary": "What search's `where` and `sort` take (design 05 §3.2): fields, ops, options or options_source, dynamic values, sortable keys, today and week_start. Query project=<id or key> limits to one project (unknown or invisible → not_found).",
+        "x-access": "session"
+      }
+    },
+    "/forms/{id}": {
+      "get": {
+        "operationId": "get_forms_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FormDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "A form with its published and draft rules and layout and the version strings.",
+        "x-access": "session"
+      }
+    },
+    "/forms/{id}/drafts/{part}": {
+      "put": {
+        "operationId": "put_forms_id_drafts_part",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "part",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FormVersionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the draft of part rules or layout: {base_version, body}. base_version is the current draft's version, or the published version when there is no draft (conflict with details.current_version otherwise). The new draft gets the next version number. form_invalid (details.kind: unknown_field, restricted_condition_field, condition_too_complex, cycle, hides_required, field_not_applicable, malformed, invalid_rule; details.path, rule_id or section_id).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/forms/{id}/drafts/{part}/discard": {
+      "post": {
+        "operationId": "post_forms_id_drafts_part_discard",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "part",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FormDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Drop the draft (not_found when there is none).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/forms/{id}/drafts/{part}/impact": {
+      "post": {
+        "operationId": "post_forms_id_drafts_part_impact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "part",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FormImpact"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "What publishing the draft would do: for rules, existing issues that break it (scan limit 20000; complete false above it), pending proposals that would fail and agent changes whose undo would stop applying (counts of what you can see); for a layout, layout_warnings only.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/forms/{id}/drafts/{part}/publish": {
+      "post": {
+        "operationId": "post_forms_id_drafts_part_publish",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "part",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PublishResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Publish the draft (step-up): {draft_version, mode}. Rules: mode block (form_publish_blocked with the impact when any issue breaks the rules or the scan was incomplete) or accept_and_mark (issues that break them get form_rule_marks, cleared by their next write that passes). Layout: no mode; changes layout_version only.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/forms/{id}/rollback": {
+      "post": {
+        "operationId": "post_forms_id_rollback",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PublishResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Publish an earlier version again under a new version number (step-up): {part, to_version, mode?}. Rules run the impact and honour mode as a publish does.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/forms/{id}/versions": {
+      "get": {
+        "operationId": "get_forms_id_versions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/FormVersionView"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Every version of a part (query part: rules, default, or layout), newest first.",
         "x-access": "session"
       }
     },
@@ -13418,6 +16261,73 @@
           }
         },
         "summary": "Fields, ops and creation rules of an issue in this project × tracker (describe, static).",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/trackers/{t}/form": {
+      "get": {
+        "operationId": "get_projects_id_trackers_t_form",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "t",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FormDescription"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The issue form (describe_form, design 05 §3.6.1). Query op (create, default; update) and issue (op update: the key). Fields you cannot read are left out, and so are rules about them; layout is a display hint (show_if is evaluated in the browser with api/form-conformance.json); rules_version goes back as expected_rules_version.",
         "x-access": "session"
       }
     },

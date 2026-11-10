@@ -1,0 +1,308 @@
+{
+  "description": "Contract 05 §3.6.2 / T-M1-56: vectors for the form condition language. The server (crates/oxledger/tests/m1_5_forms.rs, forms::eval_vector) and the SPA's show_if evaluator must both give `expected` for every vector. `values` are keyed by condition field name; core list fields (tracker, status, priority, assignee, fixed_version) are ids, custom fields are typed values as in command documents. A missing key, null or a typed null (`{\"list\": null}`) means the field is empty; so does a field the reader cannot see (the SPA never has its value). Ids compare without regard to letter case, strings with it; a deactivated option still compares by id.",
+  "version": 1,
+  "cf_types": {
+    "7": "list",
+    "8": "int",
+    "9": "date",
+    "10": "bool",
+    "11": "string",
+    "12": "float"
+  },
+  "vectors": [
+    {
+      "name": "eq on status matches",
+      "when": {"all": [{"field": "status", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}]},
+      "values": {"status": "00000000-0000-7000-8000-000000000001"},
+      "expected": true
+    },
+    {
+      "name": "eq on status differs",
+      "when": {"all": [{"field": "status", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}]},
+      "values": {"status": "00000000-0000-7000-8000-000000000002"},
+      "expected": false
+    },
+    {
+      "name": "ne matches a missing value",
+      "when": {"all": [{"field": "assignee", "op": "ne", "value": "00000000-0000-7000-8000-000000000001"}]},
+      "values": {},
+      "expected": true
+    },
+    {
+      "name": "ne on the same value",
+      "when": {"all": [{"field": "assignee", "op": "ne", "value": "00000000-0000-7000-8000-000000000001"}]},
+      "values": {"assignee": "00000000-0000-7000-8000-000000000001"},
+      "expected": false
+    },
+    {
+      "name": "eq on a missing value",
+      "when": {"all": [{"field": "assignee", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "in is any-equal",
+      "when": {"all": [{"field": "status", "op": "in", "value": ["00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000002"]}]},
+      "values": {"status": "00000000-0000-7000-8000-000000000002"},
+      "expected": true
+    },
+    {
+      "name": "in without a match",
+      "when": {"all": [{"field": "status", "op": "in", "value": ["00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000002"]}]},
+      "values": {"status": "00000000-0000-7000-8000-000000000003"},
+      "expected": false
+    },
+    {
+      "name": "is_set on a missing value",
+      "when": {"all": [{"field": "due_date", "op": "is_set"}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "not_set on a missing value",
+      "when": {"all": [{"field": "due_date", "op": "not_set"}]},
+      "values": {},
+      "expected": true
+    },
+    {
+      "name": "is_set with a value",
+      "when": {"all": [{"field": "assignee", "op": "is_set"}]},
+      "values": {"assignee": "00000000-0000-7000-8000-000000000009"},
+      "expected": true
+    },
+    {
+      "name": "date lt, the day before",
+      "when": {"all": [{"field": "due_date", "op": "lt", "value": "2026-12-01"}]},
+      "values": {"due_date": "2026-11-30"},
+      "expected": true
+    },
+    {
+      "name": "date lt, the same day",
+      "when": {"all": [{"field": "due_date", "op": "lt", "value": "2026-12-01"}]},
+      "values": {"due_date": "2026-12-01"},
+      "expected": false
+    },
+    {
+      "name": "date le, the same day",
+      "when": {"all": [{"field": "due_date", "op": "le", "value": "2026-12-01"}]},
+      "values": {"due_date": "2026-12-01"},
+      "expected": true
+    },
+    {
+      "name": "date gt on a missing value",
+      "when": {"all": [{"field": "start_date", "op": "gt", "value": "2026-01-01"}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "date order across months",
+      "when": {"all": [{"field": "start_date", "op": "gt", "value": "2026-09-30"}]},
+      "values": {"start_date": "2026-10-01"},
+      "expected": true
+    },
+    {
+      "name": "estimated_hours ge, equal by value",
+      "when": {"all": [{"field": "estimated_hours", "op": "ge", "value": "2.5"}]},
+      "values": {"estimated_hours": "2.50"},
+      "expected": true
+    },
+    {
+      "name": "estimated_hours ge, below",
+      "when": {"all": [{"field": "estimated_hours", "op": "ge", "value": "2.5"}]},
+      "values": {"estimated_hours": "2.49"},
+      "expected": false
+    },
+    {
+      "name": "is_private eq true on a public issue",
+      "when": {"all": [{"field": "is_private", "op": "eq", "value": true}]},
+      "values": {"is_private": false},
+      "expected": false
+    },
+    {
+      "name": "status_category in",
+      "when": {"all": [{"field": "status_category", "op": "in", "value": ["todo", "doing"]}]},
+      "values": {"status_category": "doing"},
+      "expected": true
+    },
+    {
+      "name": "status_category eq done on todo",
+      "when": {"all": [{"field": "status_category", "op": "eq", "value": "done"}]},
+      "values": {"status_category": "todo"},
+      "expected": false
+    },
+    {
+      "name": "any: one item holds",
+      "when": {"any": [{"field": "status", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}, {"field": "assignee", "op": "is_set"}]},
+      "values": {"status": "00000000-0000-7000-8000-000000000002", "assignee": "00000000-0000-7000-8000-000000000009"},
+      "expected": true
+    },
+    {
+      "name": "any: no item holds",
+      "when": {"any": [{"field": "status", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}, {"field": "assignee", "op": "is_set"}]},
+      "values": {"status": "00000000-0000-7000-8000-000000000002"},
+      "expected": false
+    },
+    {
+      "name": "all: one item fails",
+      "when": {"all": [{"field": "status_category", "op": "eq", "value": "todo"}, {"field": "assignee", "op": "is_set"}]},
+      "values": {"status_category": "todo"},
+      "expected": false
+    },
+    {
+      "name": "nested any inside all holds",
+      "when": {"all": [{"field": "status_category", "op": "eq", "value": "done"}, {"any": [{"field": "assignee", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}, {"field": "due_date", "op": "is_set"}]}]},
+      "values": {"status_category": "done", "due_date": "2026-11-10"},
+      "expected": true
+    },
+    {
+      "name": "nested any inside all, outer fails",
+      "when": {"all": [{"field": "status_category", "op": "eq", "value": "done"}, {"any": [{"field": "assignee", "op": "eq", "value": "00000000-0000-7000-8000-000000000001"}, {"field": "due_date", "op": "is_set"}]}]},
+      "values": {"status_category": "todo", "due_date": "2026-11-10"},
+      "expected": false
+    },
+    {
+      "name": "custom list eq",
+      "when": {"all": [{"field": "cf:7", "op": "eq", "value": {"list": "00000000-0000-7000-8000-0000000000a1"}}]},
+      "values": {"cf:7": {"list": "00000000-0000-7000-8000-0000000000a1"}},
+      "expected": true
+    },
+    {
+      "name": "custom list in, other option",
+      "when": {"all": [{"field": "cf:7", "op": "in", "value": [{"list": "00000000-0000-7000-8000-0000000000a1"}, {"list": "00000000-0000-7000-8000-0000000000a2"}]}]},
+      "values": {"cf:7": {"list": "00000000-0000-7000-8000-0000000000a3"}},
+      "expected": false
+    },
+    {
+      "name": "custom int compares as a number (9 < 10)",
+      "when": {"all": [{"field": "cf:8", "op": "gt", "value": {"int": "10"}}]},
+      "values": {"cf:8": {"int": "9"}},
+      "expected": false
+    },
+    {
+      "name": "custom int gt",
+      "when": {"all": [{"field": "cf:8", "op": "gt", "value": {"int": "10"}}]},
+      "values": {"cf:8": {"int": "11"}},
+      "expected": true
+    },
+    {
+      "name": "custom float le",
+      "when": {"all": [{"field": "cf:12", "op": "le", "value": {"float": "1.5"}}]},
+      "values": {"cf:12": {"float": "1.25"}},
+      "expected": true
+    },
+    {
+      "name": "custom date ge",
+      "when": {"all": [{"field": "cf:9", "op": "ge", "value": {"date": "2026-11-01"}}]},
+      "values": {"cf:9": {"date": "2026-10-31"}},
+      "expected": false
+    },
+    {
+      "name": "custom bool eq on a missing value",
+      "when": {"all": [{"field": "cf:10", "op": "eq", "value": {"bool": true}}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "custom bool ne on a missing value",
+      "when": {"all": [{"field": "cf:10", "op": "ne", "value": {"bool": true}}]},
+      "values": {},
+      "expected": true
+    },
+    {
+      "name": "custom string eq",
+      "when": {"all": [{"field": "cf:11", "op": "eq", "value": {"string": "abc"}}]},
+      "values": {"cf:11": {"string": "abc"}},
+      "expected": true
+    },
+    {
+      "name": "custom string not_set with an empty string",
+      "when": {"all": [{"field": "cf:11", "op": "not_set"}]},
+      "values": {"cf:11": {"string": ""}},
+      "expected": true
+    },
+    {
+      "name": "tracker eq",
+      "when": {"all": [{"field": "tracker", "op": "eq", "value": "00000000-0000-7000-8000-0000000000b1"}]},
+      "values": {"tracker": "00000000-0000-7000-8000-0000000000b1"},
+      "expected": true
+    },
+    {
+      "name": "explicit null is empty: is_set",
+      "when": {"all": [{"field": "cf:7", "op": "is_set"}]},
+      "values": {"cf:7": null},
+      "expected": false
+    },
+    {
+      "name": "explicit null is empty: not_set",
+      "when": {"all": [{"field": "assignee", "op": "not_set"}]},
+      "values": {"assignee": null},
+      "expected": true
+    },
+    {
+      "name": "explicit null is empty: eq fails",
+      "when": {"all": [{"field": "assignee", "op": "eq", "value": "00000000-0000-7000-8000-00000000000a"}]},
+      "values": {"assignee": null},
+      "expected": false
+    },
+    {
+      "name": "explicit null is empty: ne holds",
+      "when": {"all": [{"field": "cf:7", "op": "ne", "value": {"list": "00000000-0000-7000-8000-00000000000a"}}]},
+      "values": {"cf:7": {"list": null}},
+      "expected": true
+    },
+    {
+      "name": "in on a missing value",
+      "when": {"all": [{"field": "priority", "op": "in", "value": ["00000000-0000-7000-8000-00000000000a", "00000000-0000-7000-8000-00000000000b"]}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "custom list ne on a missing value",
+      "when": {"all": [{"field": "cf:7", "op": "ne", "value": {"list": "00000000-0000-7000-8000-00000000000a"}}]},
+      "values": {},
+      "expected": true
+    },
+    {
+      "name": "custom list in on a missing value",
+      "when": {"all": [{"field": "cf:7", "op": "in", "value": [{"list": "00000000-0000-7000-8000-00000000000a"}, {"list": "00000000-0000-7000-8000-00000000000b"}]}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "custom string eq is case-sensitive",
+      "when": {"all": [{"field": "cf:11", "op": "eq", "value": {"string": "abc"}}]},
+      "values": {"cf:11": {"string": "ABC"}},
+      "expected": false
+    },
+    {
+      "name": "custom string ne is case-sensitive",
+      "when": {"all": [{"field": "cf:11", "op": "ne", "value": {"string": "abc"}}]},
+      "values": {"cf:11": {"string": "Abc"}},
+      "expected": true
+    },
+    {
+      "name": "ids compare without regard to letter case",
+      "when": {"all": [{"field": "status", "op": "eq", "value": "00000000-0000-7000-8000-00000000000A"}]},
+      "values": {"status": "00000000-0000-7000-8000-00000000000a"},
+      "expected": true
+    },
+    {
+      "name": "a deactivated option still compares by id",
+      "when": {"all": [{"field": "cf:7", "op": "eq", "value": {"list": "00000000-0000-7000-8000-00000000000b"}}]},
+      "values": {"cf:7": {"list": "00000000-0000-7000-8000-00000000000b"}},
+      "expected": true
+    },
+    {
+      "name": "a field the reader cannot see is absent: is_set",
+      "when": {"all": [{"field": "cf:8", "op": "is_set"}]},
+      "values": {},
+      "expected": false
+    },
+    {
+      "name": "a field the reader cannot see is absent: any falls to the other item",
+      "when": {"any": [{"field": "cf:8", "op": "gt", "value": {"int": "3"}}, {"field": "status_category", "op": "eq", "value": "todo"}]},
+      "values": {"status_category": "todo"},
+      "expected": true
+    }
+  ]
+}

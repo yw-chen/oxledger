@@ -358,15 +358,15 @@ async fn eligibility_needs_short_fields_and_validation() {
     let body =
         |k: String| json!({"ops": [{"kind": "update_fields", "target": t, "set": {k: "x"}}]});
     let mut c = pool.acquire().await.unwrap();
-    let ok = eligibility(&mut c, alice, &body(format!("cf:{short}")), "passed")
+    let ok = eligibility(&mut c, alice, &body(format!("cf:{short}")), "passed", None)
         .await
         .unwrap();
     assert!(ok.queue_ok(), "{:?}", ok.reasons);
-    let e = eligibility(&mut c, alice, &body(format!("cf:{long}")), "passed")
+    let e = eligibility(&mut c, alice, &body(format!("cf:{long}")), "passed", None)
         .await
         .unwrap();
     assert_eq!(e.reasons, vec![format!("long_field:cf:{long}")]);
-    let e = eligibility(&mut c, alice, &body(format!("cf:{short}")), "failed")
+    let e = eligibility(&mut c, alice, &body(format!("cf:{short}")), "failed", None)
         .await
         .unwrap();
     assert_eq!(e.reasons, vec!["validation:failed".to_string()]);

@@ -305,6 +305,20 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<crate::time_reports::TimeEntryPage>,
         ),
         agent_tool(
+            "describe_form",
+            "The issue form of a project and tracker: fields, options, required, the L1 rules and rules_version (design 05 §3.6.1).",
+            EffectClass::Read,
+            schema::<crate::forms::DescribeFormParams>,
+            schema::<crate::forms::FormDescription>,
+        ),
+        agent_tool(
+            "validate",
+            "Check a command document as command_submit would, without writing; counts against the validate quota (design 05 §3.6.4).",
+            EffectClass::Read,
+            schema::<crate::forms::ValidateCommandInput>,
+            schema::<crate::forms::ValidateResult>,
+        ),
+        agent_tool(
             "command_submit",
             "Write directly where the delegation's policy allows, else create a proposal (§16.4).",
             EffectClass::Propose,

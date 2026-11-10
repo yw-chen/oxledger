@@ -146,6 +146,17 @@ pub enum ErrorCode {
     ViewNameTaken,
     /// A project tab still shows this view; `details.tabs` (tab titles).
     ViewInUse,
+    /// Contract 05 §3.6: `expected_rules_version` is not the rules version
+    /// in force; `details.current`. Describe the form again.
+    FormRulesChanged,
+    /// A form draft is not valid: `details.kind` (`unknown_field`,
+    /// `restricted_condition_field`, `condition_too_complex`, `cycle`,
+    /// `hides_required`, `field_not_applicable`, `malformed`,
+    /// `invalid_rule`), `details.path`, `rule_id` or `section_id`.
+    FormInvalid,
+    /// `mode = block` and existing issues break the rules; `details` is the
+    /// impact report.
+    FormPublishBlocked,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -162,7 +173,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 59] = [
+    pub const ALL: [ErrorCode; 62] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -222,6 +233,9 @@ impl ErrorCode {
         Self::InvalidView,
         Self::ViewNameTaken,
         Self::ViewInUse,
+        Self::FormRulesChanged,
+        Self::FormInvalid,
+        Self::FormPublishBlocked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -285,6 +299,9 @@ impl ErrorCode {
             Self::InvalidView => "invalid_view",
             Self::ViewNameTaken => "view_name_taken",
             Self::ViewInUse => "view_in_use",
+            Self::FormRulesChanged => "form_rules_changed",
+            Self::FormInvalid => "form_invalid",
+            Self::FormPublishBlocked => "form_publish_blocked",
         }
     }
 
@@ -346,6 +363,8 @@ impl ErrorCode {
             Self::InvalidView => 422,
             Self::ViewNameTaken => 409,
             Self::ViewInUse => 409,
+            Self::FormRulesChanged | Self::FormPublishBlocked => 409,
+            Self::FormInvalid => 422,
         }
     }
 
@@ -423,6 +442,8 @@ impl ErrorCode {
             Self::QueryTimeout => &[FixInput, AskHuman],
             Self::InvalidView | Self::ViewNameTaken => &[FixInput],
             Self::ViewInUse => &[AskHuman],
+            Self::FormRulesChanged | Self::FormInvalid => &[FixInput],
+            Self::FormPublishBlocked => &[AskHuman],
         }
     }
 }

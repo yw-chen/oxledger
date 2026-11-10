@@ -260,6 +260,9 @@ pub struct ChangesetView {
     pub requires_human_approval: bool,
     pub review_url: String,
     pub last_execution: Option<ExecutionView>,
+    /// Contract 05 §3.6.3: the form rules of the targets changed since this
+    /// version was stored (review it in full; it cannot be queue-ticked).
+    pub rules_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -282,6 +285,8 @@ pub struct ChangesetSummary {
     pub validation: Option<SummaryValidation>,
     /// `["detail"]`, or `["detail","queue"]` when it may be ticked.
     pub review_modes: Vec<String>,
+    /// Contract 05 §3.6.3: the form rules changed since this version.
+    pub rules_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -407,6 +412,8 @@ struct VerRow {
     created_at: DateTime<Utc>,
     body: Option<Json>,
     content_state: String,
+    /// Contract 05 §3.6.3 (0024): the form rules version at storing.
+    rules_version: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -455,7 +462,8 @@ async fn load_cs(conn: &mut PgConnection, id: Uuid, lock: bool) -> Result<Option
 async fn load_version(conn: &mut PgConnection, cs: Uuid, version: i32) -> Result<Option<VerRow>> {
     Ok(sqlx::query_as(
         "SELECT v.proposal_hash, v.authority_ceiling, v.editor_id, v.edit_method,
-                v.based_on_version, v.validation, v.created_at, c.body, c.state AS content_state
+                v.based_on_version, v.validation, v.created_at, c.body, c.state AS content_state,
+                v.rules_version
          FROM changeset_versions v JOIN proposal_contents c ON c.id = v.content_id
          WHERE v.changeset_id = $1 AND v.version = $2",
     )
@@ -774,6 +782,15 @@ fn body_targets(body: &Json) -> Vec<Uuid> {
         .filter(|p| p["target"]["type"] == "issue")
         .filter_map(|p| p["target"]["id"].as_str()?.parse().ok())
         .collect()
+}
+
+/// `caller` can see every target of a proposal body (forms impact).
+pub(crate) async fn targets_readable(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    body: &Json,
+) -> Result<bool> {
+    Ok(readable_targets(conn, caller, body).await?.is_some())
 }
 
 /// Targets as (id, key) when `caller` can see every one; `None` otherwise.
@@ -1446,6 +1463,10 @@ async fn agent_write_tx(
         deadlines: Vec::new(),
         author: Some((who.agent, Some(who.delegator))),
     };
+    // Contract 05 §3.6.3: the rules version is read before the check, so
+    // rules published while it runs leave the version looking changed.
+    let pre_pairs = crate::forms::doc_pairs(&mut *conn, &parsed.norm).await?;
+    let pre_rules = crate::forms::pairs_version(&mut *conn, &pre_pairs).await?;
     let sim = commands::simulate(&mut *conn, &ectx, &parsed).await;
     if let Err(e) = &sim
         && commands::is_rejection(e)
@@ -1502,6 +1523,7 @@ async fn agent_write_tx(
         edit_method,
         based_on,
         validation: &validation,
+        rules_version: pre_rules,
     };
     let hash = store_version(&mut *conn, &parsed, &stored).await?;
     commands::complete_request(
@@ -1728,6 +1750,9 @@ struct StoreVersion<'a> {
     edit_method: &'static str,
     based_on: Option<i32>,
     validation: &'a Json,
+    /// The effective rules version of the targets, read before the
+    /// validation (§3.6.3).
+    rules_version: Option<String>,
 }
 
 /// Step 10: normalizes, hashes and stores a version (and the ChangeSet for
@@ -1789,12 +1814,16 @@ async fn store_version(
     .bind(&body_sha[..])
     .fetch_one(&mut *conn)
     .await?;
+    // Contract 05 §3.6.3: the form rules the version was checked under
+    // (changeset_versions is append-only, so it goes in with the row).
+    let rules_version = &s.rules_version;
     sqlx::query(
         "INSERT INTO changeset_versions (changeset_id, version, content_id, proposal_hash,
                                          command_schema_version, exec_mode, expires_at,
                                          authority_ceiling, security_epoch, editor_id, edit_method,
-                                         based_on_version, validation, audience_contract_ver)
-         VALUES ($1, $2, $3, $4, $5, 'atomic', $6, $7, $8, $9, $10, $11, $12, $13)",
+                                         based_on_version, validation, audience_contract_ver,
+                                         rules_version)
+         VALUES ($1, $2, $3, $4, $5, 'atomic', $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(s.cs_id)
     .bind(s.version)
@@ -1809,6 +1838,7 @@ async fn store_version(
     .bind(s.based_on)
     .bind(s.validation)
     .bind(AUDIENCE_CONTRACT_VER)
+    .bind(rules_version)
     .execute(&mut *conn)
     .await?;
     for (p, e) in s.sources {
@@ -2358,6 +2388,63 @@ pub async fn agent_validate(
     })
 }
 
+/// MCP `validate` (contract 05 §3.6.4): `command_submit`'s checks without
+/// writing anything; counts against the validate quota (§8.9, 120/hour).
+pub async fn validate_command(
+    app: &App,
+    caller: AuthContext,
+    input: &crate::forms::ValidateCommandInput,
+) -> Result<crate::forms::ValidateResult> {
+    let raw = crate::forms::command_of(input);
+    quota::check_raw_payload(&raw)?;
+    // Step 1 first (who, where, the delegation), then the quota, then the
+    // trial run in a transaction that is rolled back.
+    let deleg_id = {
+        let mut tx = app.pool.begin().await?;
+        let who = agent_who(&mut tx, caller).await?;
+        let parsed = commands::parse(&mut tx, &raw, MAX_OPS as usize).await?;
+        let dest = destination(&mut tx, &parsed).await?;
+        let (deleg, _) = agent_step1(&mut tx, &who, dest, !parsed.creates().is_empty()).await?;
+        tx.rollback().await?;
+        quota::reserve_validate(&app.pool, who.agent, who.context, deleg.id).await?;
+        deleg.id
+    };
+    let mut tx = app.pool.begin().await?;
+    let who = agent_who(&mut tx, caller).await?;
+    let parsed = commands::parse(&mut tx, &raw, MAX_OPS as usize).await?;
+    let dest = destination(&mut tx, &parsed).await?;
+    let (deleg, sources) = agent_step1(&mut tx, &who, dest, !parsed.creates().is_empty()).await?;
+    if deleg.id != deleg_id {
+        return Err(delegation_gone());
+    }
+    if parsed.op_list().len() > deleg.max_ops as usize {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            format!("the delegation allows at most {} ops", deleg.max_ops),
+        )
+        .with_details(json!({"reason": "max_ops", "max_ops": deleg.max_ops}))
+        .into());
+    }
+    let decision = policy::load(&mut tx, deleg.id).await?.decide(&parsed);
+    if let Some(e) = decision.refusal() {
+        return Err(e);
+    }
+    let source_ids: Vec<Uuid> = sources.iter().map(|s| s.0).collect();
+    crate::audience::check(&mut tx, &parsed, &source_ids, who.delegator).await?;
+    let ectx = EvalCtx {
+        mode: Mode::Validate,
+        caller,
+        ceiling: None,
+        deadlines: Vec::new(),
+        author: Some((who.agent, Some(who.delegator))),
+    };
+    let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
+    let review = decision == policy::Decision::Review;
+    let r = crate::forms::outcome(&mut tx, &parsed, sim, review).await;
+    tx.rollback().await?;
+    r
+}
+
 /// MCP `operation_get` (§8.8): what one of the agent's keys did.
 pub async fn agent_operation(
     app: &App,
@@ -2607,6 +2694,7 @@ pub async fn list(
         let mut diff = Vec::new();
         let mut warnings = Vec::new();
         let mut review_modes = vec!["detail".to_string()];
+        let mut rules_changed = false;
         let (title, targets) = match v.as_ref().and_then(|v| v.body.clone()) {
             Some(b) => match readable_targets(&mut tx, caller, &b).await? {
                 Some(t) => {
@@ -2620,8 +2708,11 @@ pub async fn list(
                             .and_then(|j| j["status"].as_str())
                             .unwrap_or("blocked")
                             .to_string();
+                        let stored = v.as_ref().and_then(|v| v.rules_version.as_deref());
                         let e =
-                            crate::review_queue::eligibility(&mut tx, caller, &b, &status).await?;
+                            crate::review_queue::eligibility(&mut tx, caller, &b, &status, stored)
+                                .await?;
+                        rules_changed = e.reasons.iter().any(|r| r == "rules_changed");
                         warnings = e.warnings.clone();
                         review_modes = e.review_modes();
                     }
@@ -2654,6 +2745,7 @@ pub async fn list(
             warnings,
             validation,
             review_modes,
+            rules_changed,
         });
     }
     tx.commit().await?;
@@ -2696,6 +2788,10 @@ pub async fn get(
         Some(e) => Some(exec_view(&mut tx, caller, &e).await?),
         None => None,
     };
+    let rules_changed = match &proposal {
+        Some(b) => crate::forms::rules_changed(&mut tx, b, ver.rules_version.as_deref()).await?,
+        None => false,
+    };
     Ok(ChangesetView {
         changeset_id: id,
         state: cs.state,
@@ -2718,6 +2814,7 @@ pub async fn get(
         requires_human_approval: true,
         review_url: review_path(id, v),
         last_execution: last,
+        rules_changed,
     })
 }
 
@@ -3329,6 +3426,10 @@ async fn owner_version_in(
         deadlines: Vec::new(),
         author: Some((cs.proposer_id, Some(cs.on_behalf_of_id))),
     };
+    // Contract 05 §3.6.3: the rules version is read before the check, so
+    // rules published while it runs leave the version looking changed.
+    let pre_pairs = crate::forms::doc_pairs(&mut *conn, &parsed.norm).await?;
+    let pre_rules = crate::forms::pairs_version(&mut *conn, &pre_pairs).await?;
     let sim = commands::simulate(&mut *conn, &ectx, parsed).await;
     if let Err(e) = &sim
         && commands::is_rejection(e)
@@ -3358,6 +3459,7 @@ async fn owner_version_in(
             edit_method: "owner_revise",
             based_on: Some(cs.current_version),
             validation: &validation,
+            rules_version: pre_rules,
         },
     )
     .await?;
@@ -3655,6 +3757,7 @@ async fn accept(
             caller,
             ver.body.as_ref().expect("checked"),
             &status,
+            ver.rules_version.as_deref(),
         )
         .await?;
         if !e.queue_ok() {
@@ -3883,7 +3986,14 @@ async fn apply_tx(
     .fetch_one(&mut *conn)
     .await?;
     if mode == "queue" {
-        let e = crate::review_queue::eligibility(&mut *conn, caller, &body, "passed").await?;
+        let e = crate::review_queue::eligibility(
+            &mut *conn,
+            caller,
+            &body,
+            "passed",
+            ver.rules_version.as_deref(),
+        )
+        .await?;
         if !e.queue_ok() {
             return Err(crate::review_queue::outdated(&e));
         }

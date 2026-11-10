@@ -62,6 +62,13 @@ pub struct UndoField {
     /// `version_not_open` (§17.13 L2889).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subreason: Option<String>,
+    /// reason `rules_changed` (contract 05 §3.6.3): the error code the new
+    /// form rules give (`required_field_missing`, `invalid_value`,
+    /// `readonly_field`) and the rule, when its fields are readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
@@ -182,9 +189,13 @@ impl UndoPreview {
         let mut v: Vec<Json> = Vec::new();
         for f in &self.fields {
             if let Some(r) = &f.reason {
-                v.push(
-                    json!({"key": f.key, "field": f.field, "reason": r, "subreason": f.subreason}),
-                );
+                let mut item =
+                    json!({"key": f.key, "field": f.field, "reason": r, "subreason": f.subreason});
+                if let Some(c) = &f.code {
+                    item["code"] = json!(c);
+                    item["rule_id"] = json!(f.rule_id);
+                }
+                v.push(item);
             }
         }
         for t in &self.triage {
@@ -418,7 +429,18 @@ fn subreason_of(e: &anyhow::Error) -> Option<&'static str> {
     }
 }
 
+/// Contract 05 §3.6.3: the error came from a form rule (L1).
+fn form_rule_error(e: &anyhow::Error) -> Option<Json> {
+    let a = crate::error::classify(e)?;
+    let d = a.details.as_ref()?;
+    let by_rule = d["reason"] == "form_rule" || d["kind"] == "rule_disallowed";
+    by_rule.then(|| d.get("rule_id").cloned().unwrap_or(Json::Null))
+}
+
 fn reason_of(e: &anyhow::Error) -> &'static str {
+    if form_rule_error(e).is_some() {
+        return "rules_changed";
+    }
     match crate::error::classify(e).map(|a| a.code) {
         Some(ErrorCode::ForbiddenOp | ErrorCode::ReadonlyField | ErrorCode::NotFound) => {
             "permission"
@@ -548,6 +570,7 @@ async fn build_preview(
             continue;
         }
         let mut subreason = None;
+        let mut rule = None;
         if reason.is_none()
             && let Err(e) = commands::check_as(
                 &mut *conn,
@@ -558,9 +581,16 @@ async fn build_preview(
         {
             reason = Some(reason_of(&e));
             subreason = subreason_of(&e).map(String::from);
+            if let Some(id) = form_rule_error(&e) {
+                let code = crate::error::classify(&e).map(|a| a.code.as_str().to_string());
+                rule = Some((code, id.as_str().map(String::from)));
+            }
         }
+        let (code, rule_id) = rule.unwrap_or((None, None));
         fields.push(UndoField {
             subreason,
+            code,
+            rule_id,
             issue_id: issue,
             key,
             field,
@@ -1141,6 +1171,11 @@ pub async fn apply(
             // whole undo is refused (§16.7 L2371).
             Err(e) if crate::error::classify(&e).is_some() => {
                 let code = crate::error::classify(&e).map(|a| a.code.as_str().to_string());
+                if let Some(rule_id) = form_rule_error(&e) {
+                    return Err(not_applicable(
+                        json!([{"reason": "rules_changed", "code": code, "rule_id": rule_id}]),
+                    ));
+                }
                 return Err(not_applicable(
                     json!([{"reason": "dependency", "code": code}]),
                 ));
@@ -1399,6 +1434,11 @@ async fn apply_version(
             Ok(r) => (r.execution_id, r.search.consistent_after),
             Err(e) if crate::error::classify(&e).is_some() => {
                 let code = crate::error::classify(&e).map(|a| a.code.as_str().to_string());
+                if let Some(rule_id) = form_rule_error(&e) {
+                    return Err(not_applicable(
+                        json!([{"reason": "rules_changed", "code": code, "rule_id": rule_id}]),
+                    ));
+                }
                 return Err(not_applicable(
                     json!([{"reason": "dependency", "code": code}]),
                 ));

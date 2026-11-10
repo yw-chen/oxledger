@@ -287,6 +287,10 @@ pub struct IssueDetail {
     /// Contract 05 §3.4: the Triage state; null when the issue never
     /// entered the inbox.
     pub triage: Option<crate::triage::IssueTriage>,
+    /// Contract 05 §3.6.3: rule ids of open `accept_and_mark` marks (the
+    /// issue broke rules published after it was written); the next write
+    /// that passes the rules clears them. Empty when none.
+    pub form_rule_marks: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -2136,6 +2140,8 @@ pub(crate) async fn get_in(
             }
         };
     let triage = crate::triage::issue_state(&mut *conn, row.id, can_triage).await?;
+    let form_rule_marks =
+        crate::forms::open_marks(&mut *conn, caller, row.id, row.project_id).await?;
     let spent_hours = match caller.user_id() {
         Some(me) => {
             crate::time_reports::issue_spent(&mut *conn, me, row.project_id, row.id).await?
@@ -2181,6 +2187,7 @@ pub(crate) async fn get_in(
             allowed_statuses,
             custom_fields,
             triage,
+            form_rule_marks,
         },
     ))
 }

@@ -103,6 +103,11 @@ pub struct CommandDoc {
     /// Citations (`{citation_id, quote}`); checked for agent proposals (S6).
     #[serde(default)]
     pub evidence: Vec<Evidence>,
+    /// Contract 05 §3.6: the `rules_version` from `describe_form`; when the
+    /// rules in force differ, the document fails with `form_rules_changed`.
+    /// Not part of the idempotency hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_rules_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -506,7 +511,7 @@ pub(crate) fn issue_not_found(what: &str) -> anyhow::Error {
 
 /// A field a command may write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Key {
+pub(crate) enum Key {
     Subject,
     Description,
     AssignedTo,
@@ -519,7 +524,7 @@ enum Key {
 }
 
 impl Key {
-    fn parse(k: &str) -> Option<Key> {
+    pub(crate) fn parse(k: &str) -> Option<Key> {
         Some(match k {
             "subject" => Key::Subject,
             "description" => Key::Description,
@@ -539,7 +544,7 @@ impl Key {
         })
     }
 
-    fn name(self) -> String {
+    pub(crate) fn name(self) -> String {
         match self {
             Key::Subject => "subject".into(),
             Key::Description => "description".into(),
@@ -667,7 +672,7 @@ const CF_TYPES: &[&str] = &[
 /// A custom field value as written: `{"<type>": v}` or `null`. Returns the
 /// type and the canonical value (`Json::Null` = no value). Syntax only; the
 /// field's own type is checked later.
-fn parse_cf(path: &str, v: &Json) -> Result<(Option<&'static str>, Json)> {
+pub(crate) fn parse_cf(path: &str, v: &Json) -> Result<(Option<&'static str>, Json)> {
     let Json::Object(m) = v else {
         if v.is_null() {
             return Ok((None, Json::Null));
@@ -714,7 +719,7 @@ fn parse_cf(path: &str, v: &Json) -> Result<(Option<&'static str>, Json)> {
 }
 
 /// A built-in field value → canonical JSON (`Json::Null` = empty).
-fn parse_builtin(path: &str, key: Key, v: &Json) -> Result<Json> {
+pub(crate) fn parse_builtin(path: &str, key: Key, v: &Json) -> Result<Json> {
     let uuid_or_null = |what: &str| -> Result<Json> {
         match v {
             Json::Null => Ok(Json::Null),
@@ -1001,6 +1006,8 @@ pub(crate) struct Parsed {
     version_lock: Option<i32>,
     /// update_time_entry's / delete_time_entry's precondition.
     time_lock: Option<i32>,
+    /// Contract 05 §3.6: the rules version the caller saw.
+    pub expected_rules: Option<String>,
 }
 
 impl Parsed {
@@ -1961,6 +1968,9 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     // The hash covers the normalized document (§16.5): keys replaced by ids,
     // numbers in canonical form, so "12.50" and "12.5" are the same request.
     let mut norm = raw.clone();
+    if let Json::Object(m) = &mut norm {
+        m.remove("expected_rules_version");
+    }
     normalize_refs(&mut norm, &resolved);
     normalize_numbers(&mut norm);
     let hash: [u8; 32] =
@@ -1973,6 +1983,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         norm,
         version_lock,
         time_lock,
+        expected_rules: doc.expected_rules_version.clone(),
     })
 }
 
@@ -2231,6 +2242,9 @@ struct Work {
     enters_triage: bool,
     /// The triage decision on this issue (§3.10.1).
     triage: Option<TriagePlan>,
+    /// Form rules the actor was held to and the final state meets (step
+    /// 14): a write clears only their marks (§3.6.3).
+    form_passed: Vec<String>,
 }
 
 /// A planned `issue_triage` change.
@@ -2242,12 +2256,28 @@ struct TriagePlan {
     snooze_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// How a form rule binds the caller ([`Rules::rule_hold`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// Held to it, and may see it named.
+    Bound,
+    /// An agent and a field of the rule is restricted: blocked, unnamed.
+    Blocked,
+    /// Not held to it.
+    Free,
+}
+
 /// Per (project, tracker): what the actor's roles and the field definitions say.
 struct Rules {
     roles: Vec<Uuid>,
     by_status: BTreeMap<Uuid, Vec<FieldRule>>,
     cfs: Vec<CfDef>,
     hidden: Vec<HiddenField>,
+    /// The form rules in force (contract 05 §3.6).
+    form: crate::forms::Effective,
+    /// Custom fields a running type conversion copies from: read-only until
+    /// it ends (§3.7).
+    converting: BTreeSet<i32>,
 }
 
 impl Rules {
@@ -2263,6 +2293,56 @@ impl Rules {
     }
     fn cf(&self, id: i32) -> Option<&CfDef> {
         self.cfs.iter().find(|c| c.id == id)
+    }
+    /// The caller may read `key` (built-ins always; a custom field that
+    /// applies and is readable).
+    fn key_readable(&self, key: &str, actor: &Actor, pp: &ProjectPerms) -> bool {
+        match Key::parse(key) {
+            Some(Key::Cf(id)) => self.cf(id).is_some_and(|d| readable(d, actor, pp)),
+            Some(_) => true,
+            None => false,
+        }
+    }
+    /// Whether the caller is held to a form rule (§3.6): only when its
+    /// target and every condition field are readable. A person is never
+    /// held to a rule naming a field they cannot read; an agent is blocked
+    /// (without names) when such a field is restricted here. A rule naming
+    /// a field that no longer applies (inactive, not for this tracker) holds
+    /// no one.
+    fn rule_hold(&self, r: &crate::forms::Rule, actor: &Actor, pp: &ProjectPerms) -> Hold {
+        let mut hold = Hold::Bound;
+        for k in std::iter::once(&r.field).chain(r.when.fields.iter()) {
+            if let Some(Key::Cf(id)) = Key::parse(k) {
+                match self.cf(id) {
+                    None => return Hold::Free,
+                    Some(d) if readable(d, actor, pp) => {}
+                    Some(_) => {
+                        hold = if actor.is_agent() {
+                            Hold::Blocked
+                        } else {
+                            Hold::Free
+                        }
+                    }
+                }
+            }
+        }
+        hold
+    }
+    /// A state for form conditions.
+    fn form_state(
+        &self,
+        tracker: Uuid,
+        status: Uuid,
+        is_private: bool,
+        values: &BTreeMap<Key, Json>,
+    ) -> crate::forms::State {
+        crate::forms::State::of(
+            tracker,
+            status,
+            self.form.category(status),
+            is_private,
+            values.iter().map(|(k, v)| (k.name(), v)),
+        )
     }
 }
 
@@ -2766,6 +2846,36 @@ pub(crate) async fn current_values(
     Ok(Some((r.lock_version, r.status_id, m)))
 }
 
+/// An issue's tracker, status, privacy and field values by key name (the
+/// state form conditions see, contract 05 §3.6). Archived issues too.
+pub(crate) async fn issue_state(
+    conn: &mut PgConnection,
+    issue: Uuid,
+) -> Result<Option<(Uuid, Uuid, bool, BTreeMap<String, Json>)>> {
+    let r: Option<IssueRow> = sqlx::query_as(
+        "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
+                i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
+                i.fixed_version_id, i.start_date, i.due_date,
+                trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
+                i.last_event_seq
+         FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         WHERE i.id = $1",
+    )
+    .bind(issue)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(r) = r else { return Ok(None) };
+    let mut m: BTreeMap<String, Json> = r
+        .builtin()
+        .into_iter()
+        .map(|(k, v)| (k.name(), v))
+        .collect();
+    for (k, v) in load_cf_values(&mut *conn, r.id).await? {
+        m.insert(k.name(), v);
+    }
+    Ok(Some((r.tracker_id, r.status_id, r.is_private, m)))
+}
+
 /// The key was used before (§8.7). Same content → the stored result, with
 /// visibility re-checked; different content → `idempotency_key_reused`.
 pub(crate) async fn replay(
@@ -2940,6 +3050,7 @@ pub(crate) fn is_rejection(e: &anyhow::Error) -> bool {
                 | ErrorCode::UnsupportedOperation
                 | ErrorCode::UnsupportedExecutionMode
                 | ErrorCode::TemporarilyUnavailable
+                | ErrorCode::FormRulesChanged
         ),
     }
 }
@@ -3046,8 +3157,8 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         }
     }
     let existing: Vec<Uuid> = existing.into_iter().collect();
-    let issue_projects: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id, project_id FROM issues WHERE id = ANY($1) AND archived_at IS NULL",
+    let issue_projects: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id, project_id, tracker_id FROM issues WHERE id = ANY($1) AND archived_at IS NULL",
     )
     .bind(&existing)
     .fetch_all(&mut *conn)
@@ -3060,6 +3171,20 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
     }
     let mut projects: BTreeSet<Uuid> = issue_projects.iter().map(|r| r.1).collect();
     projects.extend(create_projects.iter().copied());
+    // Contract 05 §3.6: the (project, tracker) pairs whose forms apply. A
+    // tracker never changes, so reading it before the locks is safe.
+    let mut form_pairs: BTreeSet<(Uuid, Uuid)> =
+        issue_projects.iter().map(|r| (r.1, r.2)).collect();
+    for op in &doc.ops {
+        if let Op::Create {
+            project_id,
+            tracker_id,
+            ..
+        } = op
+        {
+            form_pairs.insert((*project_id, *tracker_id));
+        }
+    }
 
     // Step 6: projects in UUID order; FOR UPDATE where an issue is created.
     for p in &projects {
@@ -3077,6 +3202,11 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         if found.is_none() {
             return Err(api(ErrorCode::NotFound, "no project"));
         }
+    }
+    // Step 6b (contract 05 §3.6): the forms of those pairs FOR SHARE, so a
+    // publish (FOR UPDATE) lands wholly before or after this write.
+    if locks {
+        crate::forms::lock_forms(&mut *conn, &form_pairs).await?;
     }
 
     // Step 7: issues FOR UPDATE in id order.
@@ -3223,6 +3353,18 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             format!("custom field cf:{f} is being deleted"),
         ));
     }
+    // Contract 05 §3.6: the rules the caller saw are still the rules.
+    if let Some(expected) = &doc.expected_rules
+        && let Some(current) = crate::forms::pairs_version(&mut *conn, &form_pairs).await?
+        && *expected != current
+    {
+        return Err(ApiError::new(
+            ErrorCode::FormRulesChanged,
+            "the form rules changed since you read them; describe the form again",
+        )
+        .with_details(json!({"expected": expected, "current": current}))
+        .into());
+    }
 
     let mut perms: BTreeMap<Uuid, ProjectPerms> = BTreeMap::new();
     for p in &projects {
@@ -3257,6 +3399,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 effect: false,
                 enters_triage: false,
                 triage: None,
+                form_passed: Vec::new(),
             },
         );
     }
@@ -3651,6 +3794,7 @@ async fn run_ops(
                     effect: true,
                     enters_triage: false,
                     triage: None,
+                    form_passed: Vec::new(),
                 };
                 let r = &rules[&(*project_id, *tracker_id)];
                 let ro = r.at(initial);
@@ -4022,6 +4166,7 @@ async fn run_ops(
     }
 
     // Step 14: final state — date order (R4) and required fields (§6.3).
+    let mut form_passed: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
     for w in work.values() {
         if !w.fields_touched {
             continue;
@@ -4073,6 +4218,105 @@ async fn run_ops(
             )
             .with_details(d)
             .into());
+        }
+        // Contract 05 §3.6: the L1 form rules on the final state.
+        if r.form.rules.is_empty() {
+            continue;
+        }
+        let names: BTreeMap<String, Json> = w
+            .values
+            .iter()
+            .map(|(k, v)| (k.name(), v.clone()))
+            .collect();
+        let fin = r.form_state(w.tracker_id, w.status, w.is_private, &w.values);
+        let mut fields: Vec<String> = Vec::new();
+        let mut rule_ids: Vec<String> = Vec::new();
+        let mut blocked = false;
+        for rule in crate::forms::missing(&r.form, &fin, &names) {
+            match r.rule_hold(rule, actor, pp) {
+                Hold::Free => {}
+                Hold::Blocked => blocked = true,
+                Hold::Bound => {
+                    if !fields.contains(&rule.field) {
+                        fields.push(rule.field.clone());
+                    }
+                    rule_ids.push(rule.id.clone());
+                }
+            }
+        }
+        if !fields.is_empty() || blocked {
+            let mut d = json!({"issue_id": w.id, "fields": fields, "reason": "form_rule"});
+            if let Some(first) = rule_ids.first() {
+                d["rule_id"] = json!(first);
+                d["rule_ids"] = json!(rule_ids);
+            }
+            if blocked {
+                d["blocked"] = json!(true);
+            }
+            return Err(ApiError::new(
+                ErrorCode::RequiredFieldMissing,
+                "the form rules require fields that are empty",
+            )
+            .with_details(d)
+            .into());
+        }
+        let orig_names: Option<BTreeMap<String, Json>> = w.orig.as_ref().map(|_| {
+            w.orig_values
+                .iter()
+                .map(|(k, v)| (k.name(), v.clone()))
+                .collect()
+        });
+        let mut agent_blocked: Option<&crate::forms::Rule> = None;
+        for rule in crate::forms::disallowed(&r.form, &fin, &names, orig_names.as_ref()) {
+            match r.rule_hold(rule, actor, pp) {
+                Hold::Free => {}
+                Hold::Blocked => {
+                    // The agent wrote the value: name the field when it can
+                    // read it, never the rule.
+                    agent_blocked.get_or_insert(rule);
+                }
+                Hold::Bound => {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidValue,
+                        format!("the form rules do not allow this value of {}", rule.field),
+                    )
+                    .with_details(json!({"issue_id": w.id, "field": rule.field,
+                                         "kind": "rule_disallowed", "rule_id": rule.id,
+                                         "allowed": rule.values}))
+                    .into());
+                }
+            }
+        }
+        if let Some(rule) = agent_blocked {
+            let mut d = json!({"issue_id": w.id, "kind": "rule_disallowed", "blocked": true});
+            if r.key_readable(&rule.field, actor, pp) {
+                d["field"] = json!(rule.field);
+            }
+            return Err(ApiError::new(
+                ErrorCode::InvalidValue,
+                "the form rules do not allow a value here",
+            )
+            .with_details(d)
+            .into());
+        }
+        // The rules this write was held to and meets: only their marks clear.
+        let broken = crate::forms::violations(&r.form.rules, &fin, &names);
+        let passed: Vec<String> = r
+            .form
+            .rules
+            .iter()
+            .filter(|x| {
+                x.kind != crate::forms::RuleKind::ReadonlyIf
+                    && !broken.contains(&x.id)
+                    && r.rule_hold(x, actor, pp) == Hold::Bound
+            })
+            .map(|x| x.id.clone())
+            .collect();
+        form_passed.insert(w.id, passed);
+    }
+    for (id, p) in form_passed {
+        if let Some(w) = work.get_mut(&id) {
+            w.form_passed = p;
         }
     }
     Ok(items)
@@ -4191,6 +4435,11 @@ pub(crate) async fn write_effects(
             };
             if w.effect {
                 write_cfs(&mut *conn, w).await?;
+                // Contract 05 §3.6.3: a write that passed the form checks
+                // clears the issue's accept_and_mark marks.
+                if w.fields_touched && !w.form_passed.is_empty() {
+                    crate::forms::clear_marks(&mut *conn, w.id, &w.form_passed).await?;
+                }
             }
         } else {
             key = insert_issue(&mut *conn, w).await?;
@@ -4390,6 +4639,14 @@ async fn load_rules(
             by_status,
             cfs,
             hidden,
+            form: crate::forms::effective(&mut *conn, project, tracker).await?,
+            converting: sqlx::query_scalar::<_, i32>(
+                "SELECT from_field_id FROM custom_field_conversions WHERE state = 'running'",
+            )
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect(),
         },
     );
     Ok(())
@@ -4466,6 +4723,18 @@ async fn check_write(
         },
         _ => None,
     };
+    if let Key::Cf(id) = wr.key
+        && rules.converting.contains(&id)
+        && orig.and_then(|o| o.get(&wr.key)) != Some(&wr.value)
+        && !(wr.value.is_null() && orig.is_some_and(|o| !o.contains_key(&wr.key)))
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            format!("{name} is being converted into a new field; it is read-only until that ends"),
+        )
+        .with_details(detail(json!({"kind": "field_converting"})))
+        .into());
+    }
     let op = op_kind;
     if !actor.delegation_allows(w.project_id, op, Some(&name)) {
         return Err(ApiError::new(
@@ -4482,6 +4751,34 @@ async fn check_write(
         )
         .with_details(detail(json!({})))
         .into());
+    }
+    // Contract 05 §3.6: readonly_if, judged on the issue as it was at the
+    // start of the transaction (an issue created in this document has none).
+    if let Some(o) = &w.orig {
+        let base = rules.form_state(o.tracker_id, o.status_id, o.is_private, &w.orig_values);
+        let mut blocked = false;
+        for r in crate::forms::readonly_rules(&rules.form, &name, &base) {
+            match rules.rule_hold(r, actor, pp) {
+                Hold::Free => {}
+                Hold::Blocked => blocked = true,
+                Hold::Bound => {
+                    return Err(ApiError::new(
+                        ErrorCode::ReadonlyField,
+                        format!("{name} is read-only here under the form rules"),
+                    )
+                    .with_details(detail(json!({"reason": "form_rule", "rule_id": r.id})))
+                    .into());
+                }
+            }
+        }
+        if blocked {
+            return Err(ApiError::new(
+                ErrorCode::ReadonlyField,
+                format!("{name} is read-only here under the form rules"),
+            )
+            .with_details(detail(json!({"reason": "form_rule", "blocked": true})))
+            .into());
+        }
     }
     let value = wr.value.clone();
     let original = orig.and_then(|o| o.get(&wr.key)).cloned();

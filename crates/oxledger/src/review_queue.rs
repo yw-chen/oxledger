@@ -168,11 +168,17 @@ pub async fn eligibility(
     viewer: AuthContext,
     body: &Json,
     validation_status: &str,
+    stored_rules_version: Option<&str>,
 ) -> Result<Eligibility> {
     let mut reasons = shape_reasons(body);
     reasons.extend(long_custom_fields(&mut *conn, body).await?);
     if validation_status != "passed" {
         reasons.push(format!("validation:{validation_status}"));
+    }
+    // Contract 05 §3.6.3 (appendix C R14): the form rules changed since the
+    // version was stored.
+    if crate::forms::rules_changed(&mut *conn, body, stored_rules_version).await? {
+        reasons.push("rules_changed".into());
     }
     let warnings = evidence_warnings(&mut *conn, viewer, body).await?;
     Ok(Eligibility { reasons, warnings })

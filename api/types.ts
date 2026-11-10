@@ -172,6 +172,8 @@ export type ChangesetSummary = {
   proposal_hash: string | null;
   /** `["detail"]`, or `["detail","queue"]` when it may be ticked. */
   review_modes: Array<string>;
+  /** Contract 05 §3.6.3: the form rules changed since this version. */
+  rules_changed: boolean;
   state: string;
   targets: Array<TargetView>;
   title: string | null;
@@ -199,6 +201,8 @@ export type ChangesetView = {
   proposer_id: string;
   requires_human_approval: boolean;
   review_url: string;
+  /** Contract 05 §3.6.3: the form rules of the targets changed since this version was stored (review it in full; it cannot be queue-ticked). */
+  rules_changed: boolean;
   state: string;
   targets: Array<TargetView>;
   /** The check at creation: codes and statuses only. */
@@ -220,6 +224,8 @@ export type CommandDoc = {
   evidence?: Array<Evidence>;
   /** Only `"atomic"` (the default). */
   exec_mode?: string | null;
+  /** Contract 05 §3.6: the `rules_version` from `describe_form`; when the rules in force differ, the document fails with `form_rules_changed`. Not part of the idempotency hash. */
+  expected_rules_version?: string | null;
   /** 1–10 operations, applied in order, all or nothing. */
   ops: Array<OpInput>;
   /** Exactly one per existing target issue, each with `lock_version`. */
@@ -278,6 +284,43 @@ export type ContextView = {
   /** R: every project ever granted to this context, with the epoch recorded then. */
   source_projects: Array<SourceProject>;
   state: string;
+};
+
+export type ConversionFailures = {
+  count: number;
+  /** Visible issues only. */
+  sample_issue_keys: Array<string>;
+};
+
+/** `POST /admin/custom-fields/{id}/conversions`. */
+export type ConversionInput = {
+  /** list → list: `{"options": {"<old option id>": "<new label>"}}`; string/link/text → list: `{"values": {"<text>": "<new label>"}}`; string/link/text → int/float/date/bool and the textual targets: `{}` (parsed; list → string uses the option label). */
+  mapping?: unknown;
+  /** The new field (created now; values are copied by `start`). */
+  to: NewFieldInput;
+};
+
+export type ConversionPreview = {
+  conversion_id: string;
+  /** Values that convert. */
+  convertible: number;
+  failures: ConversionFailures;
+  mapping_echo: unknown;
+  to_field_id: number;
+};
+
+export type ConversionView = {
+  batches_done: number;
+  created_at: string;
+  finished_at: string | null;
+  from_field_id: number;
+  id: string;
+  /** `{converted, failed, skipped, failures: [{issue_id, key, reason}]}`: reason codes (`unmapped`, `unparseable`, `too_long`), never values. */
+  report: unknown;
+  started_at: string | null;
+  /** previewed, running, succeeded, failed, canceled. */
+  state: string;
+  to_field_id: number;
 };
 
 /** R-VD6: a count of visible issues, at most 999 (`capped`: more than that). */
@@ -429,6 +472,12 @@ export type Done = {
   ok: boolean;
 };
 
+export type DraftInput = {
+  /** The current draft's version, or (no draft) the published version (0: none). */
+  base_version: number;
+  body: unknown;
+};
+
 export type DuplicateActions = {
   can_propose: boolean;
 };
@@ -456,7 +505,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -500,6 +549,13 @@ export type ExecutionView = {
   version: number;
 };
 
+export type ExistingIssues = {
+  complete: boolean;
+  sample_keys: Array<string>;
+  scanned: number;
+  violating: number;
+};
+
 export type FieldAction = {
   /** Can be changed (for agents: can be changed in a proposal). */
   editable: boolean;
@@ -510,10 +566,47 @@ export type FieldAction = {
   required: boolean;
 };
 
+export type FieldAdminView = {
+  /** Deactivated: not in describe or forms and takes no new values; old values stay readable and filterable. */
+  deactivated: boolean;
+  deactivated_at: string | null;
+  definition_version: number;
+  description: string;
+  ftype: string;
+  id: number;
+  /** pending (filters work without the index), ready, none (text), dropping. */
+  index_state: string;
+  is_for_all: boolean;
+  is_required: boolean;
+  /** `cf:<id>`, the key in command documents and forms. */
+  key: string;
+  lock_version: number;
+  name: string;
+  options: Array<OptionAdminView>;
+  position: number;
+  project_ids: Array<string>;
+  role_ids: Array<string>;
+  tracker_ids: Array<string>;
+  visible: boolean;
+};
+
+export type FieldDetail = {
+  field: FieldAdminView;
+  /** `?preview_required=true`, or a PATCH that made the field required. */
+  required_impact?: RequiredImpact | null;
+  /** PATCH: what the change does not block but the administrator should know (`restricted_condition_field`: published form rules name the field in conditions; people who cannot read it are no longer held to them, agents are blocked). */
+  warnings?: Array<unknown>;
+};
+
 export type FieldOptionInfo = {
   active: boolean;
   id: string;
   label: string;
+};
+
+export type FieldPatch = {
+  lock_version: number;
+  set: FieldSet;
 };
 
 export type FieldSchema = {
@@ -532,6 +625,22 @@ export type FieldSchema = {
   required: boolean;
   /** string | text | date | decimal | principal_ref | priority_ref | status_ref | version_ref, or a custom field type (int, float, date, string, text, list, user, bool, link). `decimal` values are decimal strings. */
   type: string;
+};
+
+/** What `PATCH /admin/custom-fields/{id}` may change. */
+export type FieldSet = {
+  deactivated?: boolean | null;
+  description?: string | null;
+  /** Never changes: `unsupported_operation` (`details.suggested = "conversion"`). */
+  ftype?: unknown;
+  is_for_all?: boolean | null;
+  is_required?: boolean | null;
+  name?: string | null;
+  position?: number | null;
+  project_ids?: Array<string> | null;
+  role_ids?: Array<string> | null;
+  tracker_ids?: Array<string> | null;
+  visible?: boolean | null;
 };
 
 export type FilterFieldInfo = {
@@ -583,6 +692,108 @@ export type FilterOption = {
   /** Projects: the key. */
   key?: string | null;
   label: string;
+};
+
+export type FormCreation = {
+  allowed: boolean;
+  enters_triage: boolean;
+  initial_status_id: string | null;
+  is_private: PrivateChoice;
+};
+
+/** `GET /projects/{id}/trackers/{t}/form` and MCP `describe_form`. */
+export type FormDescription = {
+  creation?: FormCreation | null;
+  fields: Array<FormField>;
+  issue_key?: string | null;
+  /** A display hint only; every field you may set is in some section. */
+  layout: Layout;
+  layout_version: string;
+  /** op update: the issue's lock_version (for the precondition). */
+  lock_version?: number | null;
+  op: string;
+  project: string;
+  project_id: string;
+  /** Send it back as expected_rules_version to detect rule changes. */
+  rules_version: string;
+  schema_version: number;
+  tracker: TrackerRef;
+};
+
+export type FormDetail = {
+  id: string;
+  layout: PartView;
+  layout_draft: number | null;
+  layout_version: string;
+  lock_version: number;
+  /** `null`: site level. */
+  project_id: string | null;
+  project_key: string | null;
+  published_layout_version: number;
+  published_rules_version: number;
+  rules: PartView;
+  rules_draft: number | null;
+  /** Effective rules version of this form's layer (site: rN.0…). */
+  rules_version: string;
+  tracker_id: string;
+  tracker_name: string;
+};
+
+export type FormField = {
+  allowed_values_if?: Array<RuleRef>;
+  constraints?: unknown;
+  editable: boolean;
+  key: string;
+  name?: string | null;
+  options?: Array<OptionView> | null;
+  options_source?: string | null;
+  /** Agents: `"review"` when writing it sends the document for review. */
+  policy?: string | null;
+  readonly_if?: Array<RuleRef>;
+  /** Why not editable: `not_editable`, `workflow_readonly`, `project_not_writable`, `policy` (delegation off), `form_rule`. */
+  reason?: string | null;
+  /** Required always (definition, or workflow at the status in question). */
+  required: boolean;
+  required_if?: Array<RuleRef>;
+  type: string;
+};
+
+/** `POST /forms/{id}/drafts/{part}/impact` (§3.6.3). Counts only what the caller can see; sample keys are visible issues. */
+export type FormImpact = {
+  draft_version: number;
+  existing_issues?: ExistingIssues | null;
+  layout_version_after?: string | null;
+  layout_warnings: Array<unknown>;
+  pending_changesets?: PendingChangesets | null;
+  rules_version_after?: string | null;
+  undo_records?: UndoRecords | null;
+};
+
+export type FormSummary = {
+  id: string;
+  layout_draft: number | null;
+  lock_version: number;
+  /** `null`: site level. */
+  project_id: string | null;
+  project_key: string | null;
+  published_layout_version: number;
+  published_rules_version: number;
+  rules_draft: number | null;
+  tracker_id: string;
+  tracker_name: string;
+};
+
+export type FormVersionView = {
+  body: unknown;
+  created_at: string;
+  created_by: string;
+  impact: unknown;
+  publish_mode: string | null;
+  published_at: string | null;
+  published_by: string | null;
+  /** draft, published, superseded, discarded. */
+  state: string;
+  version: number;
 };
 
 export type GroupHead = {
@@ -696,6 +907,8 @@ export type IssueDetail = {
   due_date: string | null;
   /** Decimal string such as "1.5" (design 05 §3.10.3); null when not set. */
   estimated_hours: string | null;
+  /** Contract 05 §3.6.3: rule ids of open `accept_and_mark` marks (the issue broke rules published after it was written); the next write that passes the rules clears them. Empty when none. */
+  form_rule_marks: Array<string>;
   is_private: boolean;
   key: string;
   /** Pass back as `expected_lock_version` when updating (M1). */
@@ -774,6 +987,27 @@ export type LaneOut = {
   wip?: Wip | null;
 };
 
+export type Layout = {
+  sections: Array<LayoutSection>;
+};
+
+export type LayoutField = {
+  help?: string | null;
+  key: string;
+  show_if?: unknown;
+  span?: number | null;
+};
+
+/** A section of the effective layout (§3.6.1). */
+export type LayoutSection = {
+  columns: number;
+  fields: Array<LayoutField>;
+  id: string;
+  /** A display hint, not a rule (the same condition language as rules). */
+  show_if?: unknown;
+  title: string;
+};
+
 export type Limits = {
   max_description_bytes: number;
   max_note_bytes: number;
@@ -839,6 +1073,35 @@ export type Named2 = {
 export type NewContextBody = {
   agent_client_id: string;
   fresh_context_ack: boolean;
+};
+
+/** `POST /admin/custom-fields` (and the new field of a conversion). */
+export type NewFieldInput = {
+  description?: string | null;
+  /** int, float, date, string, text, list, user, bool, link. */
+  ftype: string;
+  is_for_all?: boolean | null;
+  is_required?: boolean | null;
+  name: string;
+  /** list fields: 1–200 options. */
+  options?: Array<OptionLabel> | null;
+  project_ids?: Array<string> | null;
+  role_ids?: Array<string> | null;
+  tracker_ids: Array<string>;
+  /** Default true. false: only administrators and holders of `role_ids`. */
+  visible?: boolean | null;
+};
+
+export type NewForm = {
+  /** Project key or id; omit for the site-level form. */
+  project?: string | null;
+  tracker_id: string;
+};
+
+export type NewOption = {
+  label: string;
+  /** Default: after the last option. */
+  position?: number | null;
 };
 
 /** `POST /projects/{id}/versions`. */
@@ -977,6 +1240,26 @@ export type OperationView = {
   version: number | null;
 };
 
+export type OptionAdminView = {
+  active: boolean;
+  id: string;
+  label: string;
+  position: number;
+};
+
+export type OptionLabel = {
+  label: string;
+};
+
+export type OptionPatch = {
+  /** false: kept on issues that have it, not offered for new values. */
+  active?: boolean | null;
+  label?: string | null;
+  /** The field's lock_version. */
+  lock_version: number;
+  position?: number | null;
+};
+
 export type OptionView = {
   active: boolean;
   id: string;
@@ -996,8 +1279,18 @@ export type OrgScheduleSettingsInput = {
   lock_version: number;
 };
 
+export type PartView = {
+  draft: FormVersionView | null;
+  published: FormVersionView | null;
+};
+
 export type PasswordBody = {
   password: string;
+};
+
+export type PendingChangesets = {
+  ids: Array<string>;
+  would_fail: number;
 };
 
 export type PersonRef = {
@@ -1120,6 +1413,22 @@ export type ProjectTimeSettings = {
   project_id: string;
 };
 
+export type PublishInput = {
+  draft_version: number;
+  /** Rules: `block` or `accept_and_mark`. Layout: omit. */
+  mode?: string | null;
+};
+
+export type PublishResult = {
+  form_id: string;
+  layout_version: string;
+  /** Issues marked as not meeting the new rules (accept_and_mark). */
+  marked: number;
+  part: string;
+  rules_version: string;
+  version: number;
+};
+
 export type ReadOwnTimeBody = {
   /** Required (true) when enabling: the §6.14 warning was acknowledged. */
   ack?: boolean;
@@ -1173,6 +1482,14 @@ export type RepoLink = {
 export type RepoLinks = {
   can_manage: boolean;
   items: Array<RepoLink>;
+};
+
+/** Issues the field applies to that have no value: what making it required would leave failing (only the caller's visible issues are counted). */
+export type RequiredImpact = {
+  complete: boolean;
+  sample_keys: Array<string>;
+  scanned: number;
+  violating: number;
 };
 
 export type ResolveParams = {
@@ -1229,6 +1546,21 @@ export type Revoked = {
   link_id: string | null;
   pr_ids: Array<string>;
   security_epoch: number;
+};
+
+export type RollbackInput = {
+  mode?: string | null;
+  /** "rules" or "layout". */
+  part: string;
+  to_version: number;
+};
+
+/** One rule as `describe_form` lists it on its target field. */
+export type RuleRef = {
+  rule_id: string;
+  /** `allowed_values_if`: the values allowed while `when` holds. */
+  values?: Array<unknown> | null;
+  when: unknown;
 };
 
 /** `POST /views/{id}/run`. */
@@ -1756,6 +2088,11 @@ export type Total = {
   value: string | null;
 };
 
+export type TrackerRef = {
+  id: string;
+  name: string;
+};
+
 /** Static schema of an issue in a project × tracker (§5.1). */
 export type TrackerSchema = {
   command_schema_version: number;
@@ -1889,12 +2226,15 @@ export type UndoChoice = {
 export type UndoField = {
   after: unknown;
   before: unknown;
+  /** reason `rules_changed` (contract 05 §3.6.3): the error code the new form rules give (`required_field_missing`, `invalid_value`, `readonly_field`) and the rule, when its fields are readable. */
+  code?: string | null;
   current: unknown;
   field: string;
   issue_id: string;
   key: string;
   reason?: string | null;
   restorable: boolean;
+  rule_id?: string | null;
   /** `version_not_open` (§17.13 L2889). */
   subreason?: string | null;
 };
@@ -1939,6 +2279,10 @@ export type UndoPreview = {
   triage: Array<UndoTriage>;
   version_created?: UndoVersionCreate | null;
   version_fields: Array<UndoVersionField>;
+};
+
+export type UndoRecords = {
+  not_applicable_after: number;
 };
 
 export type UndoRelation = {
@@ -2030,8 +2374,41 @@ export type Unmapped = {
   status_count?: number | null;
 };
 
+/** `POST /commands/validate` and MCP `validate`. */
+export type ValidateCommandInput = {
+  /** A command document, as for command_submit. */
+  command: unknown;
+  /** The rules_version from describe_form; overrides one inside `command`. */
+  expected_rules_version?: string | null;
+};
+
+export type ValidateError = {
+  code: ErrorCode;
+  details?: unknown;
+  fields?: unknown;
+  message: string;
+  rule_id?: unknown;
+};
+
 export type ValidateInput = {
   version: number;
+};
+
+export type ValidateItem = {
+  errors: Array<ValidateError>;
+  op_id: string;
+  /** `ok`, `no_effect`, `blocked`, or `not_checked` (an earlier op failed). */
+  status: string;
+};
+
+export type ValidateResult = {
+  items: Array<ValidateItem>;
+  /** `valid` or `invalid`. */
+  outcome: string;
+  /** The rules version of the document's targets (null: no issue targets). */
+  rules_version: string | null;
+  /** Agents: whether command_submit would send it for review (policy). Always false for people. */
+  would_require_review: boolean;
 };
 
 /** `POST /changesets/{id}/validations` (§8.5). */
@@ -2295,6 +2672,19 @@ export interface Err {
 
 /** Every endpoint: request body (or never) and response data. */
 export interface Endpoints {
+  "GET /admin/conversions/{id}": { body: never; data: ConversionView };
+  "POST /admin/conversions/{id}/start": { body: never; data: ConversionView };
+  "GET /admin/custom-fields": { body: never; data: Array<FieldAdminView> };
+  "POST /admin/custom-fields": { body: NewFieldInput; data: FieldAdminView };
+  "DELETE /admin/custom-fields/{id}": { body: never; data: FieldAdminView };
+  "GET /admin/custom-fields/{id}": { body: never; data: FieldDetail };
+  "PATCH /admin/custom-fields/{id}": { body: FieldPatch; data: FieldDetail };
+  "POST /admin/custom-fields/{id}/conversions": { body: ConversionInput; data: ConversionPreview };
+  "POST /admin/custom-fields/{id}/options": { body: NewOption; data: FieldAdminView };
+  "DELETE /admin/custom-fields/{id}/options/{oid}": { body: never; data: FieldAdminView };
+  "PATCH /admin/custom-fields/{id}/options/{oid}": { body: OptionPatch; data: FieldAdminView };
+  "GET /admin/forms": { body: never; data: Array<FormSummary> };
+  "POST /admin/forms": { body: NewForm; data: FormDetail };
   "GET /admin/github": { body: never; data: AdminGithub };
   "PUT /admin/github": { body: AdminGithubPut; data: AdminGithub };
   "PUT /admin/time-activities": { body: ActivitiesPut; data: Array<Activity> };
@@ -2326,6 +2716,7 @@ export interface Endpoints {
   "POST /changesets/{id}/validations": { body: ValidateInput; data: Validation };
   "GET /changesets/{id}/versions/{v}": { body: never; data: ChangesetView };
   "POST /commands": { body: CommandDoc; data: CommandResult };
+  "POST /commands/validate": { body: ValidateCommandInput; data: ValidateResult };
   "GET /delegations": { body: never; data: Array<DelegationView> };
   "POST /delegations": { body: DelegationBody; data: DelegationView };
   "GET /delegations/{id}/policies": { body: never; data: PolicyView };
@@ -2336,6 +2727,13 @@ export interface Endpoints {
   "POST /executions/{id}/undo": { body: UndoInput; data: UndoResult };
   "GET /executions/{id}/undo-preview": { body: never; data: UndoPreview };
   "GET /filter-fields": { body: never; data: FilterFields };
+  "GET /forms/{id}": { body: never; data: FormDetail };
+  "PUT /forms/{id}/drafts/{part}": { body: DraftInput; data: FormVersionView };
+  "POST /forms/{id}/drafts/{part}/discard": { body: never; data: FormDetail };
+  "POST /forms/{id}/drafts/{part}/impact": { body: never; data: FormImpact };
+  "POST /forms/{id}/drafts/{part}/publish": { body: PublishInput; data: PublishResult };
+  "POST /forms/{id}/rollback": { body: RollbackInput; data: PublishResult };
+  "GET /forms/{id}/versions": { body: never; data: Array<FormVersionView> };
   "GET /home/agent-summary": { body: never; data: AgentSummary };
   "POST /issues/search": { body: SearchParams; data: SearchResult };
   "GET /issues/{key}": { body: never; data: IssueDetail };
@@ -2371,6 +2769,7 @@ export interface Endpoints {
   "GET /projects/{id}/time-users": { body: never; data: Array<Named> };
   "GET /projects/{id}/timeline": { body: never; data: Timeline };
   "GET /projects/{id}/trackers/{tracker_id}/schema": { body: never; data: TrackerSchema };
+  "GET /projects/{id}/trackers/{t}/form": { body: never; data: FormDescription };
   "GET /projects/{id}/triage": { body: never; data: TriageList };
   "GET /projects/{id}/triage-settings": { body: never; data: TriageSettings };
   "PUT /projects/{id}/triage-settings": { body: TriageSettingsPut; data: TriageSettings };

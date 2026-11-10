@@ -346,7 +346,7 @@ pub(crate) async fn applicable_fields(
                 ARRAY(SELECT fr.role_id FROM field_roles fr WHERE fr.field_id = d.id ORDER BY fr.role_id) AS roles
          FROM field_defs d
          JOIN field_trackers ft ON ft.field_id = d.id AND ft.tracker_id = $1
-         WHERE d.index_state <> 'dropping'
+         WHERE d.index_state <> 'dropping' AND d.deactivated_at IS NULL
            AND (d.is_for_all OR EXISTS (SELECT 1 FROM field_projects fp
                                         WHERE fp.field_id = d.id AND fp.project_id = $2))
          ORDER BY d.position, d.name",
@@ -426,7 +426,7 @@ pub async fn tracker_schema(
     Ok(r)
 }
 
-async fn tracker_schema_in(
+pub(crate) async fn tracker_schema_in(
     conn: &mut PgConnection,
     caller: AuthContext,
     project: &str,
@@ -866,6 +866,15 @@ pub(crate) async fn issue_actions_in(
                 (Some(Rule::Required), true) => then_required.push(key.clone()),
                 (Some(Rule::Readonly), true) => then_readonly.push(key.clone()),
                 (Some(Rule::Required), false) => blocked = true,
+                _ => {}
+            }
+        }
+        // Contract 05 appendix C R19: form required_if rules that hold
+        // once the issue is in `to`, with its current values.
+        for key in crate::forms::then_required(&mut *conn, issue.id, p, t, to).await? {
+            match keys.iter().find(|k| k.0 == key) {
+                Some((_, _, true)) if !then_required.contains(&key) => then_required.push(key),
+                Some((_, _, false)) if actor.is_agent() => blocked = true,
                 _ => {}
             }
         }

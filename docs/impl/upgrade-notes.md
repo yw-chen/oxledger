@@ -72,3 +72,14 @@
 - **既有委派不會多出工時操作**：`proposal_ops` 與命令政策不變，`read_own_time` 是 `false`。委派頁的「新操作」會列出 `log_time`、`update_time_entry`；新委派這兩個預設「需要核准」。
 - 新增 SQL 函式 `time_role_visibility(project, viewer)`（只看角色）與 `time_visibility(project, viewer)`（工時模組開著才回前者），讀取與寫入都靠它判斷工時可見性。
 - 四個 CHECK 用聯集重建：`delegation_command_policies_command_kind_check`、`delegations_proposal_ops_check`、`changeset_version_ops_kind_check` 加 `log_time`、`update_time_entry`（`delete_time_entry` 只給人，不在 agent 清單）；`agent_write_log_kind_check` 加 `time_write`。
+
+## 0024_forms、0025_field_admin（M1.5，表單與欄位管理）
+
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`、角色或成員，`security_epoch` 不變（升級測試驗證）。不需要新權限：欄位管理限管理員，專案表單給管理員與有 `manage_project` 的人。
+- 0024 新增 `form_defs`（每個 tracker 一張站台表單，另可有專案表單）、`form_rule_versions`、`form_layout_versions`、`form_rule_marks`；全部是空的，**升級後沒有任何 L1 規則**，寫入行為不變。`form_defs` 的變更會讓 `describe` 的 `schema_version` +1。
+- `changeset_versions` 加 `rules_version`。**既有提案是 NULL**：在沒有 L1 規則之前不受影響；一旦有規則生效，這些提案在待審佇列標「規則已變」，只能逐份審查（不能勾選核准）。新提案建立時就寫入版本。
+- 0025：`field_defs` 加 `deactivated_at`（停用）與 `lock_version`（既有欄位從 0 開始，PATCH 要帶）；新增 `custom_field_conversions`（Q-S9 型別轉換工作）。
+- `org_settings` 加 `form_l0_version`（從 1 開始）：欄位的必填、停用、適用 tracker／專案、可見性與角色、刪除，以及選項的新增、刪除、停用會讓它 +1（trigger），規則版本字串（`rules_version` 的 `s` 段）跟著變；改名、排序、說明不會。agent 帶舊的 `expected_rules_version` 送出會收到 `form_rules_changed`，重新 `describe_form` 即可。
+- 欄位的可見性與角色變更仍照 0010 的 trigger bump 相關專案 epoch（每個變更的部分各一次）。
+- 型別轉換在背景分批跑；服務重啟時，欄位背景工作會接手 `running` 的轉換。轉完舊欄位不會自動停用，由管理員確認報告後自己停用。
+- CHECK：都是新表的新 CHECK（`form_rule_versions`／`form_layout_versions` 的 `state`、`publish_mode`，`custom_field_conversions.state`），沒有重建既有 CHECK。

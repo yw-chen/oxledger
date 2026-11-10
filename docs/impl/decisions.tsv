@@ -371,3 +371,32 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	日合計逐列鎖（(user, day) 排序）；混合文件在 field option 與 search token 前先鎖日合計	§3.5.5；獨立驗證 D5	一個 SELECT ORDER BY … FOR UPDATE（原做法）	crates/oxledger/src/time_entries.rs;crates/oxledger/src/commands.rs
 2026-11-10	M1	update／delete 看不到的工時一律 not_found，先於 module_disabled；0023 拆出 time_role_visibility（不看模組）	獨立驗證 D7(3)：錯誤不洩漏存在；看得到的人仍知道模組關了	模組關了一律 not_found	crates/oxledger/src/time_entries.rs;migrations/0023_time_tracking.sql
 2026-11-10	M1	日上限錯誤對 agent 一律不帶 remaining；/me/timesheet 只列啟用工時模組的專案	獨立驗證 D1、D7(1)：委派者的當日合計跨專案	agent 有 read_own_time 時給	crates/oxledger/src/time_entries.rs;crates/oxledger/src/time_reports.rs
+2026-11-10	M1	rules_version = r{site}.{project}.s{L0}.w{workflow}；L0 是 org_settings.form_l0_version（0025 trigger），版面另有 layout_version	附錄 C R13；只改版面不能讓 agent 失敗（T-M1-49）	規則與版面共用一個版本	crates/oxledger/src/forms.rs;migrations/0025_field_admin.sql
+2026-11-10	M1	expected_rules_version 不進冪等 hash；不符回 form_rules_changed（rejection）	它是送出條件不是內容；重送同一 operation_id 不該因版本變化變成 idempotency_key_reused	放進 hash	crates/oxledger/src/commands.rs
+2026-11-10	M1	readonly_if 依交易開始時的狀態判斷，值沒變也擋	§3.6.2；同 workflow readonly 的行為	值沒變就放行	crates/oxledger/src/commands.rs
+2026-11-10	M1	讀不到目標或條件欄位時不給 rule_id；讀不到目標的 required_if 人不受約束、agent blocked	不洩漏讀不到的欄位與規則（§5.2 同做法）	一律給 rule_id	crates/oxledger/src/commands.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	describe_form 的 required_if／allowed_values_if／readonly_if 是陣列	一個欄位可有多條規則	契約範例的單一物件	crates/oxledger/src/forms.rs
+2026-11-10	M1	form_invalid 加 malformed、invalid_rule 兩種 kind	契約六種不涵蓋 JSON 形狀錯與規則各部分不合	都歸 malformed	crates/oxledger/src/forms.rs
+2026-11-10	M1	每次 PUT 草稿產生新版本號，舊草稿 discarded；base_version 防並行	保留歷史、impact 綁定版本號	草稿原地更新	crates/oxledger/src/forms.rs
+2026-11-10	M1	加 POST /admin/forms（建立或取得表單列）；表單與欄位管理寫入不收 Idempotency-Key	契約表沒有建表單的端點；版本號與 lock_version 已防重送與並行	第一次 PUT 草稿時隱式建立	crates/oxledger/src/api.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	0024 前的提案 rules_version 為 NULL：有 L1 規則生效時才算規則已變；新版本在 INSERT 時寫入	changeset_versions 只能新增；沒有規則時舊提案不該被擋	NULL 一律算已變	crates/oxledger/src/forms.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	marks 只記 rule id；議題頁只列呼叫者讀得到所有欄位的規則	不洩漏受限欄位的規則	全部列出	crates/oxledger/src/forms.rs;crates/oxledger/src/service.rs
+2026-11-10	M1	不需要新權限：欄位管理限管理員，專案表單用 manage_project；0024／0025 不 bump epoch	任務說明要求新權限時先停；現有權限足夠	新增 manage_forms 權限	migrations/0024_forms.sql;migrations/0025_field_admin.sql
+2026-11-10	M1	加 DELETE /admin/custom-fields/{id}/options/{oid}（沒人用的選項才能刪）	建錯的選項要能移除；用到時引導停用	只能停用	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	欄位轉換每批 500、批次與游標同交易；failed 後用 start 續跑；舊欄位不自動停用	Q-S9：每批冪等、續跑不重寫；停用與否由管理員確認結果後決定	轉完自動停用舊欄位	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	停用的欄位不出現在 describe／表單，寫新值 invalid_value，篩選仍可用	T-M1-59	停用即隱藏舊值	crates/oxledger/src/describe.rs;crates/oxledger/src/commands.rs
+2026-11-10	M1	validate：人不計配額，agent 每委派每小時 120 次；無 op_id 的錯誤掛到每個 op	§8.9 配額只針對 agent；最終狀態檢查不屬於單一 op	人也計配額	crates/oxledger/src/forms.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	undo 的 rules_changed 原因帶 code 與 rule_id	T-M1-45 要求 undo 也看得到同一個錯誤碼與規則	只給 reason	crates/oxledger/src/undo.rs
+2026-11-10	M1	目標或任一條件欄位讀不到的規則：人不受約束，agent blocked 不帶 rule id；提到停用／不適用欄位的規則不約束任何人	獨立驗證缺陷 1：條件欄位發布後改受限，讀不到的人仍受約束且錯誤透露隱藏值	只看目標可讀；或禁止把被引用的條件欄位改受限	crates/oxledger/src/commands.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	欄位 PATCH 改成受限且已發布規則的條件提到它時回 warnings（不擋）	獨立驗證缺陷 1：管理員要知道規則對誰不再生效	擋下 PATCH	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	impact 只算呼叫者看得到的單；有看不到的違反時不給數字、complete false，block 擋下；pending 只列自己的提案；undo 只算看得到的單	獨立驗證缺陷 2：非管理員經理經 scanned／block 得知看不到的單存在	全部照管理員視角算	crates/oxledger/src/forms.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	發布時存的 impact 只存計數（sample_keys、ids 清空）	獨立驗證缺陷 3：GET /forms、/versions 把發布者視角的 key 給經理	讀取時依讀者重新過濾	crates/oxledger/src/forms.rs
+2026-11-10	M1	非管理員寫規則的欄位目錄只含讀得到的欄位，讀不到的一律 unknown_field	獨立驗證缺陷 4：經理可替讀不到的欄位寫規則並用 impact 探測	保留 restricted_condition_field 給所有人	crates/oxledger/src/forms.rs
+2026-11-10	M1	回溯把開著的草稿標 discarded；發布要求草稿版本大於已發布版本，否則 conflict	獨立驗證缺陷 5：回溯後發布舊草稿讓版本倒退（§3.6.3 版本不倒退）	發布時自動改號	crates/oxledger/src/forms.rs
+2026-11-10	M1	寫入只清寫入者受約束且最終狀態符合的規則的 mark	獨立驗證缺陷 6：不受約束的人寫入清掉仍違反規則的 mark	清掉全部（原做法）	crates/oxledger/src/commands.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	轉換批次先依 id 順序 FOR UPDATE 鎖 issue 再讀舊值；新欄位不適用的單跳過並計入 not_applicable；開始時兩個欄位都不能停用或刪除中；續跑每個轉換獨立 task	獨立驗證缺陷 7、8	讀值不鎖；不適用也寫	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	提案與 owner 修訂的 rules_version 在驗證前讀	獨立驗證缺陷 8：驗證期間發布的規則要讓提案標規則已變	存入時再讀（原做法）	crates/oxledger/src/changesets.rs
+2026-11-10	M1	hides_required 也看 workflow 必填；欄位全被濾掉的版面區塊整塊不回	獨立驗證缺陷 8	只看 L0 與 L1；回空區塊	crates/oxledger/src/forms.rs
+2026-11-10	M1	待使用者確認：轉換 running 時舊欄位唯讀（invalid_value kind field_converting），結束後解除；完成後是否停用仍由管理員決定	轉換期間寫進舊欄位的值可能被游標略過	不凍結；凍結到取消	crates/oxledger/src/commands.rs
+2026-11-10	M1	待使用者確認：T-M1-57 同時改可見性與角色 epoch +3、改 roles／projects／is_for_all +5（0010 trigger 的 DELETE／INSERT 各觸發）；不改 trigger，測試維持至少 +1	和契約 T-M1-57 的 +1 不同；改 trigger 會動到既有權限行為	改 0010 trigger 讓每個 PATCH 只 +1	docs/impl/m1-checklist.md
+2026-11-10	M1	待使用者確認：m1_4_upgrade 改回 MIGRATOR.run	驗證者實測可過；run_to(23) 只是避開 0024／0025 的保險	維持 run_to(23)	crates/oxledger/tests/m1_4_upgrade.rs
