@@ -394,6 +394,12 @@ async fn eligibility_needs_short_fields_and_validation() {
     .fetch_one(&pool)
     .await
     .unwrap();
+    let pts: i32 = sqlx::query_scalar(
+        "INSERT INTO field_defs (name, ftype) VALUES ('Points', 'int') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let who: i32 = sqlx::query_scalar(
         "INSERT INTO field_defs (name, ftype) VALUES ('Reviewer', 'user') RETURNING id",
     )
@@ -402,7 +408,7 @@ async fn eligibility_needs_short_fields_and_validation() {
     .unwrap();
     let i = w.issue(w.web, "typed diff").await;
     let doc = json!({"ops": [{"kind": "update_fields", "target": {"type": "issue", "id": i},
-        "set": {format!("cf:{list}"): {"list": high}, format!("cf:{est}"): {"float": "5.5"},
+        "set": {format!("cf:{list}"): {"list": high}, format!("cf:{est}"): {"float": "5.5"}, format!("cf:{pts}"): {"int": "8"},
                 format!("cf:{who}"): {"user": w.bob}, format!("cf:{short}"): {"string": "x"}}}]});
     let keys = std::collections::BTreeMap::from([(i, "WEB-1".to_string())]);
     let rows = oxledger::review_queue::diff(&mut c, alice, &doc, &keys)
@@ -417,6 +423,7 @@ async fn eligibility_needs_short_fields_and_validation() {
     };
     assert_eq!(after(list), json!({"id": high, "label": "High"}));
     assert_eq!(after(est), json!(5.5));
+    assert_eq!(after(pts), json!(8));
     assert_eq!(after(who)["name"], "bob");
     assert_eq!(after(short), json!("x"));
 }

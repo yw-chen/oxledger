@@ -44,6 +44,7 @@ type Opts<R extends Route> = {
 
 let csrfToken: string | null = null;
 let onUnauthenticated: (() => void) | null = null;
+let onCsrfFailed: (() => Promise<boolean>) | null = null;
 
 export function setCsrf(token: string | null) {
 	csrfToken = token;
@@ -54,6 +55,16 @@ export function hasCsrf() {
 /** Called once when any request answers `unauthenticated` (session ended). */
 export function setUnauthenticatedHandler(fn: (() => void) | null) {
 	onUnauthenticated = fn;
+}
+
+/**
+ * Called when a write answers `csrf_failed` (the session was replaced, e.g.
+ * signed out and in again in another tab). Resolves true when a fresh token
+ * for the same person is in place, so the write is sent once more with the
+ * same Idempotency-Key (csrf_failed changed nothing).
+ */
+export function setCsrfFailedHandler(fn: (() => Promise<boolean>) | null) {
+	onCsrfFailed = fn;
 }
 
 export function newOperationId(): string {
@@ -84,6 +95,16 @@ export function setFetch(f: FetchLike) {
 }
 
 export async function api<R extends Route>(route: R, opts: Opts<R> = {} as Opts<R>): Promise<Data<R>> {
+	try {
+		return await send(route, opts);
+	} catch (e) {
+		if (!(e instanceof ApiError) || e.code !== 'csrf_failed' || !onCsrfFailed || route.includes(' /auth/')) throw e;
+		if (!(await onCsrfFailed().catch(() => false))) throw e;
+		return send(route, { ...opts, operationId: e.operationId ?? opts.operationId } as Opts<R>);
+	}
+}
+
+async function send<R extends Route>(route: R, opts: Opts<R>): Promise<Data<R>> {
 	const method = route.split(' ', 1)[0];
 	const url = buildUrl(route, opts.path, opts.query);
 	const headers: Record<string, string> = { Accept: 'application/json' };

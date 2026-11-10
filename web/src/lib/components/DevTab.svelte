@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeHref } from '$lib/format';
 	// 開發（GitHub）分頁 (§19.7): issues with PRs, newest PR activity first,
 	// only issues the viewer can see, never a total. GitHub's text is shown
 	// as written; a repository the App lost shows data "as of" its last sync.
@@ -66,7 +67,7 @@
 		</div>
 		{#each it.prs as pr (pr.pr_id)}
 			<div class="row hint" style="gap:6px;margin-top:3px">
-				<a href={pr.url} target="_blank" rel="noopener noreferrer">{pr.repo}#{pr.number}</a>
+				<a href={safeHref(pr.url)} target="_blank" rel="noopener noreferrer">{pr.repo}#{pr.number}</a>
 				<span>{pr.title}</span>
 				<span class="chip c-dim">{PR[pr.state] ?? pr.state}</span>
 				{#if pr.ci_state}<span class="chip {CI[pr.ci_state]?.c ?? 'c-dim'}">{CI[pr.ci_state]?.t ?? pr.ci_state}</span>{/if}

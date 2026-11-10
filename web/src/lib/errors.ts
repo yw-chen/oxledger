@@ -3,6 +3,8 @@
 // any data changed, and the next step. Programs decide on `code` only.
 
 import { ApiError } from './api';
+import type { ErrorBody } from '$api/types';
+import { fieldLabel } from './format';
 
 export type Shown = {
 	title: string;
@@ -44,6 +46,13 @@ function rowOf(path: unknown): string {
 	const m = typeof path === 'string' ? /^tabs\[(\d+)\]/.exec(path) : null;
 	return m ? `第 ${Number(m[1]) + 1} 列：` : '';
 }
+
+const FILTER_REASON: Record<string, string> = {
+	project_scope_required: '用名稱或 next 指定里程碑時，要再加上一個專案（例如 project:AUTH）',
+	no_next_version: '這個專案沒有「下一個里程碑」（要是開啟、有日期、還沒過期的里程碑）',
+	unknown_version: '這個專案沒有這個名稱的里程碑'
+};
+const LOOKUP: Record<string, string> = { project: '專案', tracker: '類型', status: '狀態', assignee: '指派對象', priority: '優先度', author: '作者' };
 
 export function describeError(e: unknown): Shown {
 	if (!(e instanceof ApiError)) return { title: '發生未預期的錯誤', changed: UNKNOWN, next: '重新整理', action: 'refresh' };
@@ -141,8 +150,12 @@ export function describeError(e: unknown): Shown {
 		case 'repo_link_limit':
 			return { title: '這個專案已連動 20 個 repo，已達上限', changed: NOTHING };
 		case 'invalid_query':
-		case 'invalid_filter':
 			return { title: '查詢語法有誤', changed: NOTHING };
+		case 'invalid_filter': {
+			const why = typeof d.reason === 'string' ? FILTER_REASON[d.reason] : d.path === 'version' ? FILTER_REASON.unknown_version : undefined;
+			if (why) return { title: why, changed: NOTHING };
+			return { title: typeof d.path === 'string' ? `查詢條件有誤（${fieldLabel(d.path)}）` : '查詢條件有誤', changed: NOTHING };
+		}
 		case 'search_unavailable':
 			return { title: '搜尋暫時無法使用；議題本身仍可開啟', changed: NOTHING, next: '重試', action: 'retry' };
 		case 'idempotency_key_reused':
@@ -153,6 +166,11 @@ export function describeError(e: unknown): Shown {
 			return { title: '第一版不支援這個操作', changed: NOTHING };
 		case 'invalid_request':
 		case 'invalid_argument': {
+			// A name the person typed (search, ⌘K) that matches nothing they can see.
+			if (typeof d.path === 'string' && d.path in LOOKUP) {
+				const allowed = names(d.allowed);
+				return { title: `找不到這個${LOOKUP[d.path]}，或你沒有權限查看${allowed ? `；可以用：${allowed}` : ''}`, changed: NOTHING };
+			}
 			const where = typeof d.path === 'string' ? `（${d.path}）` : '';
 			return { title: `送出的內容有誤${where}`, changed: NOTHING, next: '重新整理', action: 'refresh' };
 		}
@@ -178,4 +196,15 @@ export function describeError(e: unknown): Shown {
 		default:
 			return { title: e.message || '操作沒有完成', changed: e.status >= 500 ? UNKNOWN : NOTHING };
 	}
+}
+
+/**
+ * An execution's stored error (proposal applied by the queue or the proposal
+ * page), said the §15.5 way instead of the server's English message.
+ */
+export function describeFailure(err: { code: string; message: string; details?: unknown } | null | undefined): string {
+	if (!err) return '套用失敗，尚未套用任何變更';
+	if (err.code === 'conflict') return '這張單在提案後被改過，尚未套用任何變更';
+	const body = { ...err, next_actions: [], request_id: '', retry_after_ms: null } as unknown as ErrorBody;
+	return describeError(new ApiError(409, body, null)).title;
 }

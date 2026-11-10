@@ -1,11 +1,15 @@
 <script lang="ts">
 	// One error, said the §15.5 way: what happened, whether data changed, next step.
+	import { ApiError } from '$lib/api';
 	import { describeError, type Shown } from '$lib/errors';
+	import { session } from '$lib/session.svelte';
 	let { error, onaction }: { error: unknown; onaction?: (a: NonNullable<Shown['action']>) => void } = $props();
 	const shown = $derived(describeError(error));
+	// "登入已過期" stops being true once the person signed in again.
+	const stale = $derived(error instanceof ApiError && error.code === 'unauthenticated' && !!session.user);
 </script>
 
-{#if error}
+{#if error && !stale}
 	<div class="err" role="alert" data-testid="error">
 		<b>{shown.title}</b>
 		<div class="chg">{shown.changed}</div>

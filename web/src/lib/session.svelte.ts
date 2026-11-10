@@ -3,7 +3,7 @@
 // memory; a reload asks GET /auth/session for it again.
 
 import type { ProjectItem, SessionData } from '$api/types';
-import { api, ApiError, setCsrf, setUnauthenticatedHandler } from './api';
+import { api, ApiError, setCsrf, setCsrfFailedHandler, setUnauthenticatedHandler } from './api';
 
 export const session = $state<{
 	user: SessionData | null;
@@ -17,6 +17,26 @@ setUnauthenticatedHandler(() => {
 	if (session.user) session.expired = true;
 	session.user = null;
 	setCsrf(null);
+});
+
+// The CSRF token went stale (session replaced in another tab): take the new
+// one only when it is still the same person; otherwise ask them to sign in.
+setCsrfFailedHandler(async () => {
+	const before = session.user?.user_id;
+	try {
+		const s = await api('GET /auth/session');
+		if (!before || s.user_id !== before) {
+			if (session.user) session.expired = true;
+			session.user = null;
+			setCsrf(null);
+			return false;
+		}
+		setCsrf(s.csrf_token);
+		session.user = s;
+		return true;
+	} catch {
+		return false;
+	}
 });
 
 export async function loadSession(): Promise<SessionData | null> {

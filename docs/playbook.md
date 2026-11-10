@@ -219,6 +219,9 @@ E2E（`web/playwright.config.ts`）自己起後端 127.0.0.1:18082 與 SPA http:
 | seed-demo 後前端看不到「編輯」「新增 note」 | seed 的角色只有 view_issues／manage_project | E2E 與開發 DB 套 `web/e2e/fixture.sql`（`node web/e2e/backend.mjs reset oxledger_fe_dev` 會一起做） |
 | 用 bash heredoc 一次寫多個 .svelte 檔，結果一個都沒寫進去 | `{#if}`、`$state` 等字元讓 heredoc 解析失敗（unexpected EOF） | .svelte 檔用編輯器工具寫，不要用 heredoc |
 | `npm run dev` 時 Vite 讀不到 `../api/types.ts` | Vite 預設只允許專案根目錄 | `server.fs.allow: ['..']`，alias `$api: '../api'` |
+| 衝突後按「載入最新內容」再存，別人剛改的欄位被改回去 | `start` 換成最新值，但 `form` 還是開啟時的整份舊值，`changedFields` 把沒動的欄位也當成有改 | 先算出使用者改過的欄位，再疊到最新值上（`routes/issue/[key]/+page.svelte` `reloadKeep`） |
+| 另一個分頁登出再登入後，原頁送出一直「安全檢查沒有通過」 | CSRF token 只在記憶體，舊 token 跟著舊 session 失效 | `api.ts` 遇到 `csrf_failed` 會重讀 `/auth/session`，同一人就換 token 重送一次 |
+| 用 python 改 .svelte 時 `\u0085` 之類跳脫變成真的字元 | heredoc 內的 python 字串把跳脫解開了 | 正規式這種內容用 Edit 工具或先寫成檔再插入 |
 
 ## 設計上的防呆
 

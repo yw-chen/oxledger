@@ -27,3 +27,5 @@
 | G21 | 未修（環境） | Windows 上 E2E 第一次跑時 tantivy 寫索引 `PermissionDenied (os error 5)`，`index sync failed` 警告；之後的同步成功 | 不影響（搜尋走 DB 複驗） | 可能是防毒軟體鎖檔；重試或把索引目錄排除掃描。同類現象：後端全套單執行緒跑時 `s7_redaction::search_never_shows_redacted_text`、`s8_gate::t_s2_outbox_consumed_twice` 各失敗一次（索引 20 秒內沒追上），單獨重跑兩次都通過 |
 | G22 | 未修 | 時程 `range.truncated_by_version` 回字串 id，契約 §17.12 寫的是 `{id,name,effective_date}` | 前端另讀 `/projects/{id}/versions` 把 id 換成「名稱（日期）」 | 照契約回物件 |
 | G23 | 已修補 | 里程碑清單與健康度門檻沒有「呼叫者能不能改」的旗標，沒有 manage_versions 的人也看到「新增里程碑」「改日期」「儲存門檻」，送出才被擋（F6 驗證發現） | `VersionList.can_manage`、`ScheduleSettings.can_manage`（= manage_versions）；`tests/s6b_schedule.rs` 加 viewer／manager 斷言；`api/` 重新產生 | — |
+| G24 | 未修 | `GET /agents/{id}/activity` 沒有時間與單號參數（§16.10 要求可篩），也沒有分頁 | 前端只對已回傳的項目做時間／單號過濾 | 加 `since`、`key`、cursor |
+| G25 | 已修補（測試） | `review_queue::render` 的 int 分支沒有測試（F0–F5 驗證的 mutation 存活） | `tests/s6b_queue.rs` 加 int 欄位斷言 | — |

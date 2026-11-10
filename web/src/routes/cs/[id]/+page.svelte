@@ -9,12 +9,14 @@
 	import { page } from '$app/state';
 	import type { Assignee, ChangesetView, ExecutionView, RevisionPreview, SpaIssue, Validation, VersionView } from '$api/types';
 	import { api, ApiError, newOperationId } from '$lib/api';
-	import { describeError } from '$lib/errors';
+	import { describeError, describeFailure } from '$lib/errors';
+	import { goto } from '$app/navigation';
 	import { fmtShort, fmtTime } from '$lib/format';
 	import { refreshCounts, counts } from '$lib/counts.svelte';
 	import { session } from '$lib/session.svelte';
 	import { issueValues, labelOf, sameValue, show, type Lookups } from '$lib/render';
 	import { toast } from '$lib/toast.svelte';
+	import { projectLookups } from '$lib/trackers';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 
 	type Op = Record<string, unknown> & { kind: string; op_id: string };
@@ -50,7 +52,13 @@
 			api('GET /projects/{id}/assignees', { path: { id: projectId } }).catch(() => ({ assignees: [] as Assignee[], project_id: '' })),
 			api('GET /projects/{id}/versions', { path: { id: projectId }, query: { status: 'open,locked,closed' } }).catch(() => null)
 		]);
-		return { fields: s?.fields ?? [], assignees: a.assignees, versions: (v?.versions ?? []) as VersionView[] };
+		// A proposal may name a field the target tracker does not have (it will
+		// fail validation): still show its name and option labels, from the
+		// project's other trackers, like the review queue does.
+		const fields = [...(s?.fields ?? [])];
+		const all = await projectLookups([projectId]).catch(() => null);
+		for (const f of all?.fields ?? []) if (!fields.some((x) => x.key === f.key)) fields.push(f);
+		return { fields, assignees: a.assignees, versions: (v?.versions ?? []) as VersionView[] };
 	}
 
 	async function load() {
@@ -288,6 +296,9 @@
 		if (a === 'latest') location.href = `/cs/${id}`;
 		else if (a === 'conflict') conflictOpen = true;
 		else if (a === 'retry') last?.kind === 'revise' ? reviseAndApply(true) : approve(true);
+		else if (a === 'delegations') goto('/agents');
+		else if (a === 'queue') goto('/review');
+		else if (a === 'login') session.expired = true;
 		else load();
 	}
 	const STATE: Record<string, string> = { proposed: '待審', failed: '套用失敗', succeeded: '已套用', applied: '已套用', rejected: '已拒絕', canceled: '已取消', expired: '已到期', superseded: '已取代' };
@@ -413,7 +424,7 @@
 					{#each result.effects as e (e.issue_id)}<a class="btn sm" href="/issue/{e.key}">開啟 {e.key}</a>{/each}
 					<div class="hint">搜尋可能要幾秒才找得到；單本身已經可以開啟。</div>
 				{:else if result.status === 'failed'}
-					<span class="chip c-bad">沒有套用</span> <span class="hint">{result.error?.code === 'conflict' ? '這張單在提案後被改過，尚未套用任何變更' : (result.error?.message ?? '')}</span>
+					<span class="chip c-bad">沒有套用</span> <span class="hint">{describeFailure(result.error)}</span>
 				{:else}
 					<span class="chip c-warn">確認中</span>
 				{/if}

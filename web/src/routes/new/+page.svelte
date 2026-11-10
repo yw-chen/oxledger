@@ -30,7 +30,11 @@
 	let error = $state<unknown>(null);
 	let busy = $state(false);
 	// Same document + Idempotency-Key when retrying a transient failure (§8.7).
-	let last: { body: ReturnType<typeof doc>; op: string } | null = null;
+	// While it is set the outcome is unknown: the form is locked so the only way
+	// on is the same request again (a second 建立 would create a second issue,
+	// and edits would silently not be what gets sent).
+	let last = $state<{ body: ReturnType<typeof doc>; op: string } | null>(null);
+	const uncertain = $derived(last !== null && !busy);
 
 	const project = $derived(session.projects.find((p) => p.key === projectKey) ?? null);
 
@@ -131,10 +135,10 @@
 		{:else if schema}
 			<div class="card" data-testid="new-form">
 				{#each fields as f (f.key)}
-					<FieldInput field={f} bind:value={form[f.key]} {assignees} {versions} required={f.required} disabled={busy} />
+					<FieldInput field={f} bind:value={form[f.key]} {assignees} {versions} required={f.required} disabled={busy || uncertain} />
 				{/each}
 				{#if privateChoice.length > 1}
-					<label class="row" style="gap:6px;margin-top:6px"><input type="checkbox" bind:checked={isPrivate} disabled={busy} data-testid="new-private" />私有（只有有權看私有單的成員看得到）</label>
+					<label class="row" style="gap:6px;margin-top:6px"><input type="checkbox" bind:checked={isPrivate} disabled={busy || uncertain} data-testid="new-private" />私有（只有有權看私有單的成員看得到）</label>
 				{:else if privateChoice[0] === true}
 					<div class="hint">這個類型的單一律是私有的。</div>
 				{/if}
@@ -142,8 +146,11 @@
 					<div class="hint" style="margin-top:6px">還要填：{missing.map((f) => f.name ?? (f.key === 'subject' ? '標題' : f.key)).join('、')}</div>
 				{/if}
 				<ErrorBox {error} onaction={() => create(true)} />
+				{#if uncertain}
+					<div class="hint" data-testid="new-uncertain">還不確定剛才那筆有沒有建立：按「重試」會用同一筆內容確認，不會重複建立。要改內容請先重試確認結果。</div>
+				{/if}
 				<div class="row" style="gap:8px;margin-top:10px">
-					<button class="btn pri" onclick={() => create()} disabled={busy || !!missing.length} data-testid="new-submit">{busy ? '建立中…' : '建立'}</button>
+					<button class="btn pri" onclick={() => create()} disabled={busy || uncertain || !!missing.length} data-testid="new-submit">{busy ? '建立中…' : '建立'}</button>
 					<a class="btn" href="/">取消</a>
 				</div>
 			</div>

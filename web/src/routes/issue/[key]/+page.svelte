@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeHref } from '$lib/format';
 	// One issue inside its project frame (§18.6), with direct operations
 	// (human_direct, §6.8): edit fields, move status (only allowed ones), add a
 	// note (optionally private), mark as duplicate. A conflict never
@@ -9,6 +10,7 @@
 	import { changedFields, doc, issueRef, submit, wireFields } from '$lib/commands';
 	import { fmtTime, fmtValue, fieldLabel } from '$lib/format';
 	import { refreshCounts } from '$lib/counts.svelte';
+	import { session } from '$lib/session.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import { FLAG } from '$lib/health';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
@@ -32,6 +34,8 @@
 	let dupKey = $state('');
 	let actionError = $state<unknown>(null);
 	let conflict = $state(false);
+	/** Fields the person had changed when a conflict reload merged the newest values. */
+	let kept = $state<string[]>([]);
 	let busy = $state(false);
 	let ripple = $state(false);
 
@@ -83,6 +87,7 @@
 		mode = 'edit';
 		actionError = null;
 		conflict = false;
+		kept = [];
 	}
 	function openMode(m: 'note' | 'dup' | 'transition') {
 		mode = m;
@@ -93,7 +98,9 @@
 	// The last document sent and its Idempotency-Key: a transient failure
 	// ("尚未確認是否完成") is retried with exactly the same pair (§8.7);
 	// anything else gets a fresh key next time.
-	let last: { d: CommandDoc; op: string; done: string } | null = null;
+	let last = $state<{ d: CommandDoc; op: string; done: string } | null>(null);
+	/** Outcome unknown: only the same request may go out again (no edits, no new key). */
+	const uncertain = $derived(last !== null && !busy);
 
 	async function send(d: CommandDoc, done: string, op = newOperationId()) {
 		busy = true;
@@ -123,6 +130,12 @@
 		if (last) send(last.d, last.done, last.op);
 	}
 	const op = () => newOperationId();
+	function onErrorAction(a: string) {
+		if (a === 'retry') retry();
+		else if (a === 'transitions') reloadKeep().then(() => openMode('transition'));
+		else if (a === 'login') session.expired = true;
+		else reloadKeep();
+	}
 
 	function saveEdit() {
 		if (!issue) return;
@@ -169,8 +182,16 @@
 	}
 	/** Conflict: show the newest values, keep the person's input. */
 	async function reloadKeep() {
+		// Only what the person actually changed survives; every other field
+		// takes the newest value, so saving never reverts someone else's edit.
+		const mine = mode === 'edit' ? changedFields(start, form) : {};
 		await load(key);
-		if (mode === 'edit' && issue) start = currentValues(issue);
+		if (mode === 'edit' && issue) {
+			const fresh = currentValues(issue);
+			start = fresh;
+			form = { ...fresh, ...mine };
+			kept = Object.keys(mine);
+		}
 		conflict = false;
 		actionError = null;
 	}
@@ -262,10 +283,10 @@
 		{/if}
 
 		<div class="actbar" data-testid="actbar">
-			{#if editable.length}<button class="btn" onclick={openEdit} data-testid="edit">編輯</button>{/if}
-			{#if v.actions?.transitions.length}<button class="btn" onclick={() => openMode('transition')} data-testid="transition">轉狀態</button>{/if}
-			{#if v.actions?.notes?.can_add}<button class="btn" onclick={() => openMode('note')} data-testid="add-note">新增 note</button>{/if}
-			{#if v.actions?.duplicate_of?.can_propose}<button class="btn" onclick={() => openMode('dup')} data-testid="dup">標為重複</button>{/if}
+			{#if editable.length}<button class="btn" onclick={openEdit} disabled={uncertain} data-testid="edit">編輯</button>{/if}
+			{#if v.actions?.transitions.length}<button class="btn" onclick={() => openMode('transition')} disabled={uncertain} data-testid="transition">轉狀態</button>{/if}
+			{#if v.actions?.notes?.can_add}<button class="btn" onclick={() => openMode('note')} disabled={uncertain} data-testid="add-note">新增 note</button>{/if}
+			{#if v.actions?.duplicate_of?.can_propose}<button class="btn" onclick={() => openMode('dup')} disabled={uncertain} data-testid="dup">標為重複</button>{/if}
 		</div>
 
 		{#if conflict}
@@ -274,17 +295,20 @@
 				<span class="sp"></span><button class="btn sm" onclick={reloadKeep}>載入最新內容（保留我的輸入）</button>
 			</div>
 		{:else}
-			<ErrorBox error={actionError} onaction={(a) => (a === 'retry' ? retry() : a === 'refresh' ? reloadKeep() : null)} />
+			<ErrorBox error={actionError} onaction={onErrorAction} />
 		{/if}
 
 		{#if mode === 'edit'}
 			<div class="card">
 				<h3>編輯</h3>
+				{#if kept.length}
+					<div class="hint" data-testid="kept">已載入最新內容；只保留你改過的欄位：{kept.map((k) => labelOf(k, lookups)).join('、')}。其他欄位是別人剛改的最新值。</div>
+				{/if}
 				{#each editable as e (e.f.key)}
 					<FieldInput field={e.f} bind:value={form[e.f.key]} {assignees} {versions} required={e.required} />
 				{/each}
 				<div class="row">
-					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
+					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -294,7 +318,7 @@
 				<p class="hint">只列出你現在可以用的轉換。</p>
 				<div class="row">
 					{#each v.actions?.transitions ?? [] as t (t.to_status_id)}
-						<button class="btn" disabled={busy || t.blocked || conflict} title={t.blocked ? '有你看不到的條件擋住這個轉換' : t.then_required.length ? `轉換後必填：${t.then_required.map(fieldLabel).join('、')}` : ''} onclick={() => transition(t.to_status_id, t.name)}>{t.name}</button>
+						<button class="btn" disabled={busy || t.blocked || conflict || uncertain} title={t.blocked ? '有你看不到的條件擋住這個轉換' : t.then_required.length ? `轉換後必填：${t.then_required.map(fieldLabel).join('、')}` : ''} onclick={() => transition(t.to_status_id, t.name)}>{t.name}</button>
 					{/each}
 					<button class="btn ghost" onclick={() => (mode = null)}>取消</button>
 				</div>
@@ -302,11 +326,11 @@
 		{:else if mode === 'note'}
 			<div class="card">
 				<h3>新增 note</h3>
-				<textarea bind:value={note.body} placeholder="寫給專案成員看的補充" data-testid="note-body"></textarea>
+				<textarea bind:value={note.body} disabled={uncertain} placeholder="寫給專案成員看的補充" data-testid="note-body"></textarea>
 				<div class="row" style="margin-top:6px">
 					{#if v.actions?.notes?.can_set_private}<label><input type="checkbox" bind:checked={note.private} /> 私有（只有能看私有 note 的人看得到）</label>{/if}
 					<span style="flex:1"></span>
-					<button class="btn pri" onclick={addNote} disabled={busy || !note.body.trim() || conflict} data-testid="note-submit">新增</button>
+					<button class="btn pri" onclick={addNote} disabled={busy || !note.body.trim() || conflict || uncertain} data-testid="note-submit">新增</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -318,7 +342,7 @@
 					<span>{v.key} 是</span>
 					<input type="text" bind:value={dupKey} placeholder="{v.project_key}-1" style="width:140px" data-testid="dup-target" />
 					<span>的重複</span>
-					<button class="btn pri" onclick={markDup} disabled={busy || !dupKey.trim() || conflict} data-testid="dup-submit">建立關係</button>
+					<button class="btn pri" onclick={markDup} disabled={busy || !dupKey.trim() || conflict || uncertain} data-testid="dup-submit">建立關係</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -352,7 +376,7 @@
 						{#if v.dev.merged_open}<div class="banner i" style="font-size:12.5px">有 PR 已合併，但這張單還沒結案（只提示，不會自動改單）。</div>{/if}
 						{#each v.dev.prs as pr (pr.pr_id)}
 							<div class="dyn">
-								<a href={pr.url} target="_blank" rel="noopener noreferrer">{pr.repo}#{pr.number}</a> <span class="chip c-dim">{PR[pr.state] ?? pr.state}</span>
+								<a href={safeHref(pr.url)} target="_blank" rel="noopener noreferrer">{pr.repo}#{pr.number}</a> <span class="chip c-dim">{PR[pr.state] ?? pr.state}</span>
 								{#if pr.ci_state}<span class="chip {CI[pr.ci_state]?.c ?? 'c-dim'}">{CI[pr.ci_state]?.t ?? pr.ci_state}</span>{/if}
 								<div style="font-size:12.5px">{pr.title}</div>
 								<div class="hint">{REVIEW[pr.review_state] ?? pr.review_state}{pr.accessible ? '' : '・App 已無法讀取此 repo'}</div>

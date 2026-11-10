@@ -24,6 +24,8 @@
 	let loadError = $state<unknown>(null);
 	let issueFilter = $state('');
 	let kindFilter = $state('');
+	/** Hours back, 0 = all (§16.10: filter by time and issue). */
+	let sinceHours = $state(0);
 	let open = $state<string | null>(null);
 	let preview = $state<UndoPreview | null>(null);
 	let previewError = $state<unknown>(null);
@@ -50,7 +52,12 @@
 		load();
 	});
 	const shown = $derived(
-		items.filter((i) => (!kindFilter || i.kind === kindFilter) && (!issueFilter.trim() || i.keys.some((k) => k.toUpperCase().includes(issueFilter.trim().toUpperCase()))))
+		items.filter(
+			(i) =>
+				(!kindFilter || i.kind === kindFilter) &&
+				(!sinceHours || Date.parse(i.at) >= Date.now() - sinceHours * 3600_000) &&
+				(!issueFilter.trim() || i.keys.some((k) => k.toUpperCase().includes(issueFilter.trim().toUpperCase())))
+		)
 	);
 	const KIND: Record<string, { t: string; c: string }> = {
 		direct: { t: '直接寫入', c: 'c-act' },
@@ -60,6 +67,12 @@
 	};
 
 	async function openUndo(executionId: string) {
+		// The preview is drawn inside the item's row: make sure it is listed.
+		if (!shown.some((i) => i.execution_id === executionId)) {
+			issueFilter = '';
+			kindFilter = '';
+			sinceHours = 0;
+		}
 		open = executionId;
 		preview = null;
 		previewError = null;
@@ -155,6 +168,39 @@
 	});
 </script>
 
+{#snippet undoPanel()}
+	<div class="card" data-testid="undo-preview">
+		<ErrorBox error={previewError} />
+		{#if preview}
+			<b>回復預覽</b>
+			{#if preview.expired}<div class="banner w">超過 30 天，這筆已不能回復。</div>{/if}
+			{#each preview.fields as f (f.issue_id + f.field)}
+				<div class="row" style="gap:6px">
+					{#if f.restorable}<input type="checkbox" checked={!skipFields[`${f.issue_id}/${f.field}`]} onchange={(e) => (skipFields[`${f.issue_id}/${f.field}`] = !e.currentTarget.checked)} aria-label="還原 {f.key} {labelOf(f.field, look)}" />{:else}<span class="chip c-dim">跳過</span>{/if}
+					<span class="mono">{f.key}</span> {labelOf(f.field, look)}：現在 {show(f.field, f.current, look)} → 還原成 <b>{show(f.field, f.before, look)}</b>
+					{#if !f.restorable}<span class="hint">（{REASON[f.reason ?? ''] ?? f.reason}）</span>{/if}
+				</div>
+			{/each}
+			{#each preview.notes as n (n.note_id)}<div>{n.restorable ? '撤回' : '不能撤回'} {n.key} 的 note{#if !n.restorable}<span class="hint">（{REASON[n.reason ?? ''] ?? n.reason}）</span>{/if}</div>{/each}
+			{#each preview.relations as r (r.relation_id)}<div>{r.restorable ? '移除' : '不能移除'}「{r.source_key} 是 {r.target_key} 的重複」{#if !r.restorable}<span class="hint">（{REASON[r.reason ?? ''] ?? r.reason}）</span>{/if}</div>{/each}
+			{#each preview.choices as c (c.issue_id)}
+				<label class="row" style="gap:6px">{c.key}：{c.kind === 'close_as_mistaken' ? '關閉為誤建' : '轉回'}
+					<select bind:value={transitions[c.issue_id]} aria-label="{c.key} 要轉到">
+						<option value="">不動</option>
+						{#each c.options as o (o.to_status_id)}<option value={o.to_status_id}>{o.name}</option>{/each}
+					</select>
+					{#if c.reason}<span class="hint">{REASON[c.reason] ?? c.reason}</span>{/if}
+				</label>
+			{/each}
+			<ErrorBox error={undoError} />
+			<div class="row" style="gap:8px;margin-top:6px">
+				<button class="btn pri" onclick={doUndo} disabled={busy || !restorable || preview.expired} data-testid="undo-confirm">回復選取的部分</button>
+				<button class="btn" onclick={() => (open = null)}>取消</button>
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
 <svelte:head><title>{label} 的活動・oxledger</title></svelte:head>
 <div class="page">
 	<a href="/agents" class="hint">← 我的 agent 委派</a>
@@ -166,6 +212,12 @@
 
 	<div class="row" style="gap:8px;margin:8px 0">
 		<input type="search" bind:value={issueFilter} placeholder="篩選單號，例如 AUTH-12" aria-label="篩選單號" style="width:200px" />
+		<select bind:value={sinceHours} aria-label="篩選時間" data-testid="act-since">
+			<option value={0}>全部時間</option>
+			<option value={1}>最近 1 小時</option>
+			<option value={24}>最近 24 小時</option>
+			<option value={168}>最近 7 天</option>
+		</select>
 		<select bind:value={kindFilter} aria-label="篩選種類">
 			<option value="">全部</option>
 			{#each Object.entries(KIND) as [k, v] (k)}<option value={k}>{v.t}</option>{/each}
@@ -173,6 +225,9 @@
 	</div>
 	<ErrorBox error={loadError} onaction={load} />
 
+	{#if open && !shown.some((x) => x.execution_id === open)}
+		{@render undoPanel()}
+	{/if}
 	{#each shown as it, i (it.execution_id ?? `${it.at}-${i}`)}
 		<div class="card" style="padding:8px 12px" data-testid="activity">
 			<div class="row" style="gap:8px">
@@ -191,36 +246,7 @@
 				</table>
 			{/if}
 			{#if open && open === it.execution_id}
-				<div class="card" data-testid="undo-preview">
-					<ErrorBox error={previewError} />
-					{#if preview}
-						<b>回復預覽</b>
-						{#if preview.expired}<div class="banner w">超過 30 天，這筆已不能回復。</div>{/if}
-						{#each preview.fields as f (f.issue_id + f.field)}
-							<div class="row" style="gap:6px">
-								{#if f.restorable}<input type="checkbox" checked={!skipFields[`${f.issue_id}/${f.field}`]} onchange={(e) => (skipFields[`${f.issue_id}/${f.field}`] = !e.currentTarget.checked)} aria-label="還原 {f.key} {labelOf(f.field, look)}" />{:else}<span class="chip c-dim">跳過</span>{/if}
-								<span class="mono">{f.key}</span> {labelOf(f.field, look)}：現在 {show(f.field, f.current, look)} → 還原成 <b>{show(f.field, f.before, look)}</b>
-								{#if !f.restorable}<span class="hint">（{REASON[f.reason ?? ''] ?? f.reason}）</span>{/if}
-							</div>
-						{/each}
-						{#each preview.notes as n (n.note_id)}<div>{n.restorable ? '撤回' : '不能撤回'} {n.key} 的 note{#if !n.restorable}<span class="hint">（{REASON[n.reason ?? ''] ?? n.reason}）</span>{/if}</div>{/each}
-						{#each preview.relations as r (r.relation_id)}<div>{r.restorable ? '移除' : '不能移除'}「{r.source_key} 是 {r.target_key} 的重複」{#if !r.restorable}<span class="hint">（{REASON[r.reason ?? ''] ?? r.reason}）</span>{/if}</div>{/each}
-						{#each preview.choices as c (c.issue_id)}
-							<label class="row" style="gap:6px">{c.key}：{c.kind === 'close_as_mistaken' ? '關閉為誤建' : '轉回'}
-								<select bind:value={transitions[c.issue_id]} aria-label="{c.key} 要轉到">
-									<option value="">不動</option>
-									{#each c.options as o (o.to_status_id)}<option value={o.to_status_id}>{o.name}</option>{/each}
-								</select>
-								{#if c.reason}<span class="hint">{REASON[c.reason] ?? c.reason}</span>{/if}
-							</label>
-						{/each}
-						<ErrorBox error={undoError} />
-						<div class="row" style="gap:8px;margin-top:6px">
-							<button class="btn pri" onclick={doUndo} disabled={busy || !restorable || preview.expired} data-testid="undo-confirm">回復選取的部分</button>
-							<button class="btn" onclick={() => (open = null)}>取消</button>
-						</div>
-					{/if}
-				</div>
+				{@render undoPanel()}
 			{/if}
 		</div>
 	{:else}

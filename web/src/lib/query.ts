@@ -17,6 +17,8 @@ export type Query = {
 	assignee?: string;
 	version?: string;
 	text: string[];
+	/** Where each `project:` began (code points), for the one-project error. */
+	projectAt?: number[];
 };
 
 export class SyntaxError_ extends Error {
@@ -28,7 +30,10 @@ export class SyntaxError_ extends Error {
 	}
 }
 
-const isWs = (c: string) => /\s/u.test(c);
+// Rust's char::is_whitespace (Unicode White_Space), not JS \s: U+0085 counts,
+// U+FEFF does not, so positions match the server's.
+const WS = /[\t-\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/u;
+const isWs = (c: string) => WS.test(c);
 
 export function parse(input: string): Query {
 	const chars = Array.from(input);
@@ -66,6 +71,7 @@ export function parse(input: string): Query {
 			if (!value) throw new SyntaxError_(vstart, '條件沒有值');
 			if (key === 'project') {
 				q.projects.push(value);
+				(q.projectAt ??= []).push(start);
 				continue;
 			}
 			const k = key as 'status' | 'tracker' | 'assignee' | 'version';
@@ -81,7 +87,7 @@ export function parse(input: string): Query {
 	return q;
 }
 
-const quote = (v: string) => (/\s/u.test(v) ? `"${v}"` : v);
+const quote = (v: string) => (Array.from(v).some(isWs) ? `"${v}"` : v);
 
 export function normalized(q: Query): string {
 	const parts = q.projects.map((p) => `project:${quote(p)}`);
@@ -93,20 +99,21 @@ export function hasConditions(q: Query): boolean {
 	return q.projects.length > 0 || KEYS.slice(1).some((k) => q[k as 'status'] !== undefined);
 }
 
+function parseAt(input: string): number {
+	try {
+		return parse(input).projectAt?.[1] ?? 0;
+	} catch {
+		return 0;
+	}
+}
+
 /** The search takes one project: a second `project:` is an error at its
  *  position (`input` is the text that was parsed). */
 export function toParams(q: Query, input = ''): SearchParams {
 	if (q.projects.length > 1) {
-		const lower = Array.from(input.toLowerCase());
-		let at = 0;
-		let seen = 0;
-		for (let i = 0; i + 8 <= lower.length; i++) {
-			if (lower.slice(i, i + 8).join('') === 'project:' && (i === 0 || /\s/u.test(lower[i - 1])) && ++seen === 2) {
-				at = i;
-				break;
-			}
-		}
-		throw new SyntaxError_(at, '一次只能查一個專案');
+		// Positions recorded while parsing (code points), so case mapping or a
+		// quoted value containing "project:" cannot shift them.
+		throw new SyntaxError_(q.projectAt?.[1] ?? parseAt(input), '一次只能查一個專案');
 	}
 	const s = q.status;
 	const cat = s && CATEGORIES.includes(s.toLowerCase()) ? s.toLowerCase() : null;

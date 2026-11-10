@@ -324,3 +324,103 @@ test('登入的 next 只接受本站路徑', async ({ browser }) => {
 		expect(u.pathname, next).toBe(want);
 	}
 });
+
+function sqlValue(text: string): string {
+	return execFileSync('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-q', '-t', '-A', '-U', 'oxledger', '-d', 'oxledger_fe_e2e'], { input: text }).toString().trim();
+}
+
+test('議題頁衝突：載入最新後只送我改的欄位，不蓋掉別人的修改', async ({ browser }) => {
+	const page = await alice(browser, '/issue/AUTH-4');
+	await page.getByTestId('edit').click();
+	const subject = `alice 改的標題 ${Date.now()}`;
+	await page.getByLabel(/^標題/).fill(subject);
+	// Someone else changes the due date meanwhile.
+	const lock = (await papi(page, 'GET', '/issues/AUTH-4')).json.data.lock_version;
+	const other = await papi(page, 'POST', '/commands', {
+		command_schema_version: 1,
+		ops: [{ kind: 'update_fields', op_id: uuid(), target: ref('AUTH-4'), set: { due_date: '2027-01-31' } }],
+		preconditions: [{ target: ref('AUTH-4'), lock_version: lock }]
+	});
+	expect(other.status).toBe(200);
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('conflict')).toBeVisible();
+	await page.getByTestId('conflict').getByRole('button').click();
+	await expect(page.getByTestId('kept')).toContainText('標題');
+	await expect(page.getByLabel(/^標題/)).toHaveValue(subject);
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('issue-subject')).toHaveText(subject);
+	const now = (await papi(page, 'GET', '/issues/AUTH-4')).json.data;
+	expect(now.due_date).toBe('2027-01-31');
+	expect(now.subject).toBe(subject);
+});
+
+test('/new：回應遺失時鎖住表單，重試用同一筆，不會建兩張', async ({ browser }) => {
+	const page = await alice(browser, '/new');
+	await page.getByTestId('new-project').selectOption('AUTH');
+	await page.waitForLoadState('networkidle'); // the form is rebuilt for the chosen project
+	const subject = `回應遺失 ${Date.now()}`;
+	await page.getByTestId('new-form').getByLabel(/^標題/).fill(subject);
+	await expect(page.getByTestId('new-submit')).toBeEnabled();
+	let dropped = false;
+	await page.route('**/api/v1/commands', async (route) => {
+		if (dropped) return route.continue();
+		dropped = true;
+		await route.fetch(); // reaches the server…
+		await route.abort('connectionreset'); // …but the answer is lost
+	});
+	await page.getByTestId('new-submit').click();
+	await expect(page.getByTestId('new-uncertain')).toBeVisible();
+	await expect(page.getByTestId('new-submit')).toBeDisabled();
+	await expect(page.getByTestId('new-form').getByLabel(/^標題/)).toBeDisabled();
+	await page.getByTestId('error').getByRole('button', { name: '重試' }).click();
+	await page.waitForURL(/\/issue\/AUTH-\d+/);
+	expect(sqlValue(`SELECT count(*) FROM issues WHERE subject = '${subject}'`)).toBe('1');
+});
+
+test('CSRF：另一個分頁登出再登入後，原頁送出 note 自動換新 token', async ({ browser }) => {
+	const page = await alice(browser, '/issue/AUTH-3');
+	await page.getByTestId('add-note').click();
+	await page.getByTestId('note-body').fill('換 token 後送出的 note');
+	const other = await page.context().newPage();
+	await other.goto('/account');
+	await papi(other, 'POST', '/auth/logout');
+	await login(other, 'alice', '/account');
+	await page.getByTestId('note-submit').click();
+	await expect(page.getByTestId('note').last()).toContainText('換 token 後送出的 note');
+	await expect(page.getByTestId('error')).toHaveCount(0);
+});
+
+test('佇列：同一張單的兩份提案不能同時勾；出錯後剩下的不送出', async ({ browser }) => {
+	const a = await propose('AUTH-1 互斥甲', [{ kind: 'update_fields', op_id: uuid(), target: ref('AUTH-1'), set: { due_date: '2027-02-01' } }], ['AUTH-1']);
+	const b = await propose('AUTH-1 互斥乙', [{ kind: 'update_fields', op_id: uuid(), target: ref('AUTH-1'), set: { due_date: '2027-02-02' } }], ['AUTH-1']);
+	const page = await alice(browser, '/review');
+	const tick = (id: string) => page.locator(`[data-testid=cs-row][data-id="${id}"] [data-testid=tick]`);
+	await tick(a.changeset_id).check();
+	await expect(tick(b.changeset_id)).toBeDisabled();
+	await tick(a.changeset_id).uncheck();
+	await expect(tick(b.changeset_id)).toBeEnabled();
+
+	// Five on different issues; the first answer is a server error, which
+	// stops new sends: the fifth is never sent.
+	const ids: string[] = [];
+	for (const k of ['AUTH-1', 'AUTH-2', 'AUTH-3', 'AUTH-4', 'AUTH-6']) {
+		const p = await propose(`${k} 停止測試`, [{ kind: 'update_fields', op_id: uuid(), target: ref(k), set: { due_date: '2027-03-01' } }], [k]);
+		ids.push(p.changeset_id);
+	}
+	await page.reload();
+	let n = 0;
+	await page.route('**/approve-and-apply', async (route) => {
+		if (n++ === 0) return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unauthenticated', message: 'x', next_actions: [], request_id: 'r', retry_after_ms: null } }) });
+		await new Promise((r) => setTimeout(r, 1500));
+		return route.abort('connectionreset');
+	});
+	for (const id of ids) await tick(id).check();
+	await page.getByTestId('apply-picked').click();
+	// Which row met the error depends on arrival order; at most four run at
+	// once, so the fifth is never started.
+	const result = (id: string) => page.locator(`[data-testid=cs-row][data-id="${id}"] [data-testid=row-result]`);
+	await expect.poll(async () => (await Promise.all(ids.map((id) => result(id).textContent()))).filter((t) => t?.includes('未送出')).length).toBe(1);
+	const texts = await Promise.all(ids.map((id) => result(id).textContent()));
+	const unsent = ids[texts.findIndex((t) => t?.includes('未送出'))];
+	expect(sqlValue(`SELECT count(*) FROM changesets WHERE id = '${unsent}' AND state = 'proposed'`)).toBe('1');
+});

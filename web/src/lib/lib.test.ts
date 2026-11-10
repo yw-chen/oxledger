@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, buildUrl, pool, setCsrf, setFetch, setUnauthenticatedHandler } from './api';
+import { api, ApiError, buildUrl, pool, setCsrf, setCsrfFailedHandler, setFetch, setUnauthenticatedHandler } from './api';
 import { changedFields, doc, wireFields } from './commands';
 import { pendingCreated, rememberCreated } from './created.svelte';
-import { describeError } from './errors';
+import { describeError, describeFailure } from './errors';
+import { parse, SyntaxError_, toParams } from './query';
 import { splitHighlights } from './highlight';
 import { route } from './intent';
 import { normalizeWidgets } from './prefs.svelte';
@@ -14,6 +15,7 @@ describe('api client', () => {
 	afterEach(() => {
 		setCsrf(null);
 		setUnauthenticatedHandler(null);
+		setCsrfFailedHandler(null);
 		setFetch((i, init) => fetch(i, init));
 	});
 
@@ -62,6 +64,30 @@ describe('api client', () => {
 		expect(e.code).toBe('network');
 		expect(e.retryable).toBe(true);
 		expect(e.operationId).toBe('op-9');
+	});
+
+	it('a stale CSRF token is refreshed once and the write resent with the same key', async () => {
+		const seen: Record<string, string>[] = [];
+		setCsrf('old');
+		setFetch(async (_u, init) => {
+			const h = init.headers as Record<string, string>;
+			seen.push(h);
+			return h['X-CSRF-Token'] === 'new' ? json(200, { data: { ok: 1 }, meta: {} }) : json(403, { error: { code: 'csrf_failed', message: 'x' } });
+		});
+		let asked = 0;
+		setCsrfFailedHandler(async () => {
+			asked++;
+			setCsrf('new');
+			return true;
+		});
+		await expect(api('POST /commands', { body: {} as never })).resolves.toEqual({ ok: 1 });
+		expect(asked).toBe(1);
+		expect(seen.map((h) => h['X-CSRF-Token'])).toEqual(['old', 'new']);
+		expect(seen[0]['Idempotency-Key']).toBe(seen[1]['Idempotency-Key']);
+		// Someone else signed in: no resend, the error stays.
+		setCsrf('old');
+		setCsrfFailedHandler(async () => false);
+		await expect(api('POST /commands', { body: {} as never })).rejects.toMatchObject({ code: 'csrf_failed' });
 	});
 
 	it('pool keeps order and never exceeds the limit', async () => {
@@ -176,6 +202,11 @@ describe('⌘K intent (01 §15.11)', () => {
 	it('a broken query is never sent anywhere', () => {
 		const r = route('status:');
 		expect(r).toMatchObject({ kind: 'structured_search', href: null, errorAt: 7 });
+		expect(route('project:A project:B')).toMatchObject({ href: null, errorAt: 10 });
+	});
+	it('a key next to a condition is a search, not a question', () => {
+		expect(route('AUTH-1 status:open')).toMatchObject({ kind: 'structured_search' });
+		expect(route('AUTH-1 status:open')?.href).toBeTruthy();
 	});
 	it('the built-in AI choice is shown disabled', () => {
 		const r = route('AUTH-1 和 AUTH-2 合併');
@@ -197,6 +228,19 @@ describe('errors (02 §15.5)', () => {
 		expect(describeError(err('invalid_value', { kind: 'tab_default_invalid', path: 'default_tab' })).title).toMatch(/^預設分頁/);
 		expect(describeError(err('invalid_value', { allowed: ['a', 'b'] })).title).toBe('值不合法；可以用：a、b');
 		expect(describeError(err('conflict')).title).not.toContain('這張單');
+	});
+	it('the wording itself, not just that some exists', () => {
+		expect(describeError(err('conflict')).title).toBe('這筆資料在你開啟之後被別人改過，尚未套用任何變更');
+		expect(describeFailure({ code: 'conflict', message: 'AUTH-6 changed since you read it' })).toBe('這張單在提案後被改過，尚未套用任何變更');
+		expect(describeFailure({ code: 'agent_suspended', message: 'x' })).toBe('這個 agent 的寫入已暫停');
+		expect(describeFailure(null)).toMatch(/尚未套用/);
+	});
+	it('search errors say why (version needs a project, unknown names)', () => {
+		expect(describeError(err('invalid_filter', { path: 'version', reason: 'project_scope_required' })).title).toMatch(/加上一個專案/);
+		expect(describeError(err('invalid_filter', { path: 'version' })).title).toMatch(/沒有這個名稱的里程碑/);
+		const p = describeError(err('invalid_argument', { path: 'project', allowed: [] }));
+		expect(p.title).toMatch(/^找不到這個專案/);
+		expect(p.action).toBeUndefined();
 	});
 	it('every error code the server can send has its own wording', async () => {
 		const src = await import('../../../api/types.ts?raw').catch(() => null);
@@ -248,5 +292,26 @@ describe('render (names, not ids)', () => {
 		expect(sameValue('', null)).toBe(true);
 		expect(sameValue({ list: 'o1' }, 'o1')).toBe(true);
 		expect(sameValue('a', 'b')).toBe(false);
+	});
+});
+
+describe('query positions match the Rust parser', () => {
+	const at = (input: string) => {
+		try {
+			toParams(parse(input), input);
+		} catch (e) {
+			if (e instanceof SyntaxError_) return e.position;
+			throw e;
+		}
+		return -1;
+	};
+	it('a second project: is found by parse position, not by text search', () => {
+		expect(at('İİ project:A project:B')).toBe(13);
+		expect(at('project:"x project:y" project:B')).toBe(22);
+		expect(at('login project:A  project:B')).toBe(17);
+	});
+	it('whitespace is Unicode White_Space (U+0085 yes, U+FEFF no)', () => {
+		expect(parse('a\u0085b').text).toEqual(['a', 'b']);
+		expect(parse('a\uFEFFb').text).toEqual(['a\uFEFFb']);
 	});
 });

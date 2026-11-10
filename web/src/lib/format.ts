@@ -63,3 +63,14 @@ export const COMMAND_LABELS: Record<string, string> = {
 export const MODE_LABELS: Record<string, string> = { direct: '直接寫入', review: '需要核准', off: '不允許' };
 
 export const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
+
+/** Only http(s) links leave the app (a PR URL comes from outside data). */
+export function safeHref(url: string | null | undefined): string | undefined {
+	if (!url) return undefined;
+	try {
+		const u = new URL(url);
+		return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : undefined;
+	} catch {
+		return undefined;
+	}
+}

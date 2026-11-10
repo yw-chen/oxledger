@@ -83,6 +83,7 @@
 		return { direct: by('direct'), review: by('review'), off: by('off') };
 	});
 
+	let made = $state<{ d: Awaited<ReturnType<typeof api<'POST /delegations'>>>; needToken: boolean } | null>(null);
 	async function create() {
 		error = null;
 		if (!steppedUpRecently() && !askPassword) {
@@ -96,11 +97,17 @@
 				password = '';
 				askPassword = false;
 			}
-			const hadContext = !!activeContext;
-			const d = await api('POST /delegations', { body: body() });
+			// The delegation is created once: if issuing the first token fails,
+			// pressing again only retries the token (a second POST would make a
+			// second delegation, and the context would then look "existing").
+			if (!made) {
+				const needToken = !activeContext;
+				made = { d: await api('POST /delegations', { body: body() }), needToken };
+			}
 			// A new work context needs its first token; an existing one keeps its token.
-			const token = hadContext ? null : await api('POST /agent-contexts/{id}/credentials', { path: { id: d.context_id }, body: { label: 'spa' } });
-			done = { delegation: d, token };
+			const token = made.needToken ? await api('POST /agent-contexts/{id}/credentials', { path: { id: made.d.context_id }, body: { label: 'spa' } }) : null;
+			done = { delegation: made.d, token };
+			made = null;
 			refreshCounts();
 		} catch (e) {
 			if (e instanceof ApiError && e.code === 'reauthentication_required') askPassword = true;
@@ -213,7 +220,7 @@
 				<ErrorBox {error} />
 				<div class="row" style="gap:8px;margin-top:8px">
 					<button class="btn" onclick={() => (step = 3)} disabled={busy}>上一步</button>
-					<button class="btn pri" onclick={create} disabled={busy || (askPassword && !password)} data-testid="create-delegation">{busy ? '建立中…' : askPassword ? '確認密碼並建立' : '建立委派'}</button>
+					<button class="btn pri" onclick={create} disabled={busy || (askPassword && !password)} data-testid="create-delegation">{busy ? '建立中…' : askPassword ? '確認密碼並建立' : made ? '再試一次取得 token' : '建立委派'}</button>
 				</div>
 			</div>
 		{/if}

@@ -299,3 +299,8 @@ date	stage	decision	why	alternatives	source
 2026-11-09	P1-F6v	健康度覆寫時空欄位 = 不檢查那一項（後端 null 的語意），前端驗證 0–90 天、0–100%	後端 check_ranges	空值補組織值	src/routes/project/[key]/settings/+page.svelte
 2026-11-09	P1-F6v	時程加日期範圍與「跳過去」（里程碑前 4 週到後 2 週）	§17.12	只有預設範圍	src/lib/components/Timeline.svelte
 2026-11-09	P1-F7v	登入 next 用 new URL 解析後比對 origin（瀏覽器會吃掉 tab／換行、把 \ 當 /）	open redirect 防護	字串前綴檢查	src/routes/login/+page.svelte
+2026-11-10	P1-F05v	衝突後「載入最新」只保留使用者改過的欄位，其他欄位換成最新值，並列出保留了哪些	§15.5 衝突不覆蓋	整份表單沿用	src/routes/issue/[key]/+page.svelte
+2026-11-10	P1-F05v	寫入結果未確認時鎖住表單與操作，只能用同一筆內容與同一個 Idempotency-Key 重試	§8.7	允許改內容後換 key 再送	src/routes/new/+page.svelte、issue 頁
+2026-11-10	P1-F05v	csrf_failed 時重新讀 /auth/session；仍是同一人就換新 token、用同一個 key 重送一次；換了人就跳重新登入	§3.3	只顯示「請重新整理」	src/lib/api.ts、session.svelte.ts
+2026-11-10	P1-F05v	活動頁時間篩選用前端過濾（全部／1 小時／24 小時／7 天）	§16.10	後端參數（目前沒有）	src/routes/agents/[id]/activity/+page.svelte
+2026-11-10	P1-F05v	外部 PR 連結只允許 http(s)	防 javascript: URL	直接放 href	src/lib/format.ts safeHref

@@ -7,7 +7,7 @@
 	// "停止" only affects rows not yet sent. Partial success is shown per row.
 	import type { ChangesetSummary } from '$api/types';
 	import { api, ApiError, newOperationId, pool } from '$lib/api';
-	import { describeError } from '$lib/errors';
+	import { describeError, describeFailure } from '$lib/errors';
 	import { fieldLabel, fmtShort, fmtValue } from '$lib/format';
 	import { refreshCounts } from '$lib/counts.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
@@ -86,7 +86,7 @@
 						body: { version: p.version, proposal_hash: p.hash, review_mode: 'queue' },
 						operationId: op
 					});
-					results[c.changeset_id] = outcome(ex.status, ex.effects.map((e) => e.key), ex.error?.message, op);
+					results[c.changeset_id] = outcome(ex.status, ex.effects.map((e) => e.key), ex.error, op);
 					if (ex.status === 'queued' || ex.status === 'running') void follow(c.changeset_id, op);
 				} catch (e) {
 					const code = e instanceof ApiError ? e.code : 'internal_error';
@@ -107,9 +107,9 @@
 		running = false;
 		refreshCounts();
 	}
-	function outcome(status: string, keys: string[], msg: string | undefined, op: string): RowResult {
+	function outcome(status: string, keys: string[], err: Parameters<typeof describeFailure>[0], op: string): RowResult {
 		if (status === 'succeeded') return { state: 'ok', keys, op };
-		if (status === 'failed') return { state: 'failed', text: msg ?? '套用失敗', op };
+		if (status === 'failed') return { state: 'failed', text: describeFailure(err), op };
 		return { state: 'pending', text: '結果確認中', op };
 	}
 	/** Looks the original operation up (never a new request, §15.5). */
@@ -120,7 +120,7 @@
 				const o = await api('GET /operations/{id}', { path: { id: op } });
 				if (o.status === 'in_progress') continue;
 				const ex = o.execution;
-				results[id] = ex ? outcome(ex.status, ex.effects.map((e) => e.key), ex.error?.message, op) : { state: 'failed', text: '操作沒有完成', op };
+				results[id] = ex ? outcome(ex.status, ex.effects.map((e) => e.key), ex.error, op) : { state: 'failed', text: '操作沒有完成', op };
 				if (ex && (ex.status === 'queued' || ex.status === 'running')) continue;
 				return;
 			} catch (e) {

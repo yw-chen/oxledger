@@ -4,7 +4,7 @@
 // goes to text search and says so; nothing is sent to a model.
 
 import { ISSUE_KEY } from './format';
-import { hasConditions, parse, SyntaxError_ } from './query';
+import { hasConditions, parse, SyntaxError_, toParams } from './query';
 
 export type RouteKind = 'issue_open' | 'structured_search' | 'command_draft' | 'ai_task' | 'text_search' | 'clarify';
 
@@ -73,6 +73,7 @@ export function route(raw: string, aiEnabled = false): Intent | null {
 	}
 	try {
 		const q = parse(text);
+		toParams(q, text); // e.g. a second project: — the same error the search page would show
 		if (hasConditions(q)) return { kind: 'structured_search', href: search(text) };
 	} catch (e) {
 		if (e instanceof SyntaxError_) {
