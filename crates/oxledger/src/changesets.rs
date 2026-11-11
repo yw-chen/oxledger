@@ -952,7 +952,15 @@ async fn check_evidence(
     .into())
 }
 
-async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
+/// `seen` (an agent's own write): what the agent reads. An issue or entry
+/// outside it is `not_found` exactly like a missing one, before any
+/// project is compared (M1.11 gate); `None` for a person's revision of a
+/// proposal they own.
+async fn destination(
+    conn: &mut PgConnection,
+    parsed: &Parsed,
+    seen: Option<&ox_core::visibility::Scope>,
+) -> Result<Uuid> {
     // Contract 05 §3.5.4: deleting time is for people only (T-M1-38), refused
     // before any policy.
     if parsed.deletes_time() {
@@ -970,6 +978,20 @@ async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
     }
     let mut projects: BTreeSet<Uuid> = parsed.creates().iter().map(|c| c.1).collect();
     let targets = parsed.targets();
+    if let Some(scope) = seen {
+        let found = crate::time_entries::seen_issue_projects(&mut *conn, &targets, scope).await?;
+        if let Some(unseen) = targets.iter().find(|t| !found.contains_key(t)) {
+            return Err(parsed.issue_not_found(*unseen));
+        }
+        projects.extend(found.values().copied());
+        if parsed.has_time() {
+            projects.extend(
+                crate::time_entries::cmd_projects_seen(&mut *conn, &parsed.time_cmds(), scope)
+                    .await?,
+            );
+        }
+        return one_project(projects);
+    }
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT id, project_id FROM issues WHERE id = ANY($1) AND archived_at IS NULL",
     )
@@ -983,6 +1005,10 @@ async fn destination(conn: &mut PgConnection, parsed: &Parsed) -> Result<Uuid> {
     if parsed.has_time() {
         projects.extend(crate::time_entries::cmd_projects(&mut *conn, &parsed.time_cmds()).await?);
     }
+    one_project(projects)
+}
+
+fn one_project(projects: BTreeSet<Uuid>) -> Result<Uuid> {
     let mut it = projects.into_iter();
     match (it.next(), it.next()) {
         (Some(p), None) => Ok(p),
@@ -1384,8 +1410,6 @@ async fn agent_write_tx(
 ) -> Result<SubmitResult> {
     let who = agent_who(&mut *conn, caller).await?;
     // Steps 2–4.
-    let parsed = commands::parse(&mut *conn, proposal, MAX_OPS as usize).await?;
-    quota::check_normalized(commands::canonical_json(&parsed.norm).len())?;
     let action = match (revise, submit) {
         (Some(_), _) => ACTION_REVISE,
         (None, Some(_)) => ACTION_SUBMIT,
@@ -1393,28 +1417,53 @@ async fn agent_write_tx(
     };
     // §16.5: the fingerprint covers require_review.
     let review_flag = [submit.map(|r| 1 + r as u8).unwrap_or(0)];
-    let payload: [u8; 32] = Sha256::digest(
-        [
-            &parsed.hash[..],
-            who.context.as_bytes(),
-            revise.map(|r| r.0).unwrap_or_default().as_bytes(),
-            &revise.map(|r| r.1).unwrap_or(0).to_be_bytes(),
-            &review_flag[..],
-            // The group is part of the request (not of the proposal hash).
-            match group {
-                None => b"".as_slice(),
-                Some(GroupRef::Label(l)) => l.as_bytes(),
-                Some(GroupRef::Id(_)) => b"\0id".as_slice(),
-            },
-            match group {
-                Some(GroupRef::Id(g)) => g.as_bytes().as_slice(),
-                _ => b"".as_slice(),
-            },
-        ]
-        .concat(),
-    )
-    .into();
-    let fp = commands::fingerprint(action, &payload);
+    let fp_of = |parsed: &commands::Parsed| -> [u8; 32] {
+        let payload: [u8; 32] = Sha256::digest(
+            [
+                &parsed.hash[..],
+                who.context.as_bytes(),
+                revise.map(|r| r.0).unwrap_or_default().as_bytes(),
+                &revise.map(|r| r.1).unwrap_or(0).to_be_bytes(),
+                &review_flag[..],
+                // The group is part of the request (not of the proposal hash).
+                match group {
+                    None => b"".as_slice(),
+                    Some(GroupRef::Label(l)) => l.as_bytes(),
+                    Some(GroupRef::Id(_)) => b"\0id".as_slice(),
+                },
+                match group {
+                    Some(GroupRef::Id(g)) => g.as_bytes().as_slice(),
+                    _ => b"".as_slice(),
+                },
+            ]
+            .concat(),
+        )
+        .into();
+        commands::fingerprint(action, &payload)
+    };
+    // A resend of a request the agent already made replays (the replay
+    // re-checks visibility), so the visibility cut is for new requests only.
+    let (parsed, resent) =
+        match commands::parse_for(&mut *conn, proposal, MAX_OPS as usize, caller).await {
+            Ok(p) => (p, false),
+            Err(e) => {
+                let again = commands::resent(
+                    &mut *conn,
+                    proposal,
+                    MAX_OPS as usize,
+                    who.agent,
+                    operation_id,
+                    fp_of,
+                )
+                .await?;
+                match again {
+                    Some(p) => (p, true),
+                    None => return Err(e),
+                }
+            }
+        };
+    quota::check_normalized(commands::canonical_json(&parsed.norm).len())?;
+    let fp = fp_of(&parsed);
 
     // A revision locks the ChangeSet first (the order approve-and-apply uses).
     let base = match revise {
@@ -1429,7 +1478,8 @@ async fn agent_write_tx(
     };
 
     // Step 1 (also before a replay: a replay re-authenticates).
-    let dest = destination(&mut *conn, &parsed).await?;
+    let seen = db::write_scope(&mut *conn, caller).await?;
+    let dest = destination(&mut *conn, &parsed, (!resent).then_some(&seen)).await?;
     let (deleg, sources) =
         agent_step1(&mut *conn, &who, dest, !parsed.creates().is_empty()).await?;
 
@@ -2632,8 +2682,9 @@ pub async fn validate_command(
     let deleg_id = {
         let mut tx = app.pool.begin().await?;
         let who = agent_who(&mut tx, caller).await?;
-        let parsed = commands::parse(&mut tx, &raw, MAX_OPS as usize).await?;
-        let dest = destination(&mut tx, &parsed).await?;
+        let parsed = commands::parse_for(&mut tx, &raw, MAX_OPS as usize, caller).await?;
+        let seen = db::write_scope(&mut tx, caller).await?;
+        let dest = destination(&mut tx, &parsed, Some(&seen)).await?;
         let (deleg, _) = agent_step1(&mut tx, &who, dest, !parsed.creates().is_empty()).await?;
         tx.rollback().await?;
         quota::reserve_validate(&app.pool, who.agent, who.context, deleg.id).await?;
@@ -2641,8 +2692,9 @@ pub async fn validate_command(
     };
     let mut tx = app.pool.begin().await?;
     let who = agent_who(&mut tx, caller).await?;
-    let parsed = commands::parse(&mut tx, &raw, MAX_OPS as usize).await?;
-    let dest = destination(&mut tx, &parsed).await?;
+    let parsed = commands::parse_for(&mut tx, &raw, MAX_OPS as usize, caller).await?;
+    let seen = db::write_scope(&mut tx, caller).await?;
+    let dest = destination(&mut tx, &parsed, Some(&seen)).await?;
     let (deleg, sources) = agent_step1(&mut tx, &who, dest, !parsed.creates().is_empty()).await?;
     if deleg.id != deleg_id {
         return Err(delegation_gone());
@@ -3560,7 +3612,7 @@ pub async fn owner_revise(
             );
             let context = cs.context_id.ok_or_else(not_found)?;
             lock_context_row(&mut tx, context).await?;
-            let dest = destination(&mut tx, &parsed).await?;
+            let dest = destination(&mut tx, &parsed, None).await?;
             let sources = lock_sources(
                 &mut tx,
                 context,
@@ -4870,7 +4922,7 @@ pub async fn revise_and_apply(
             let cs = load_owned(&mut tx, user, id, true).await?;
             let context = cs.context_id.ok_or_else(not_found)?;
             lock_context_row(&mut tx, context).await?;
-            let dest = destination(&mut tx, &parsed).await?;
+            let dest = destination(&mut tx, &parsed, None).await?;
             let sources = lock_sources(
                 &mut tx,
                 context,

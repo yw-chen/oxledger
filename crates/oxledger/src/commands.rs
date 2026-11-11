@@ -1011,6 +1011,11 @@ pub(crate) struct Parsed {
 }
 
 impl Parsed {
+    /// `not_found` for issue `id`, named as the caller wrote it.
+    pub(crate) fn issue_not_found(&self, id: Uuid) -> anyhow::Error {
+        issue_not_found(self.refs.get(&id).map_or(&id.to_string(), |r| r))
+    }
+
     /// (op_id, kind) in document order.
     pub fn op_list(&self) -> Vec<(Uuid, &'static str)> {
         self.ops
@@ -1451,6 +1456,57 @@ fn check_time_doc(
 }
 
 pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -> Result<Parsed> {
+    parse_seen(conn, raw, max_ops, None).await
+}
+
+/// [`parse`] for `caller`: an existing target the caller cannot see is
+/// `not_found` before any check about its precondition, the same answer
+/// as for an issue that does not exist (看不到＝不存在, M1.11 gate).
+pub(crate) async fn parse_for(
+    conn: &mut PgConnection,
+    raw: &Json,
+    max_ops: usize,
+    caller: AuthContext,
+) -> Result<Parsed> {
+    let scope = db::write_scope(&mut *conn, caller).await?;
+    parse_seen(conn, raw, max_ops, Some(&scope)).await
+}
+
+/// After [`parse_for`] refused `raw`: a resend of the very request
+/// `caller_id` already made under `operation_id` replays (the replay re-checks
+/// visibility itself, 02 M05), so it is parsed without the cut. Any other
+/// document keeps the cut's answer (`None`); `fp` is the caller's fingerprint
+/// of a parsed document.
+pub(crate) async fn resent(
+    conn: &mut PgConnection,
+    raw: &Json,
+    max_ops: usize,
+    caller_id: Uuid,
+    operation_id: Uuid,
+    fp: impl Fn(&Parsed) -> [u8; 32],
+) -> Result<Option<Parsed>> {
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT fingerprint FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+    )
+    .bind(caller_id)
+    .bind(operation_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let Ok(p) = parse(&mut *conn, raw, max_ops).await else {
+        return Ok(None);
+    };
+    Ok((stored.as_slice() == fp(&p).as_slice()).then_some(p))
+}
+
+async fn parse_seen(
+    conn: &mut PgConnection,
+    raw: &Json,
+    max_ops: usize,
+    seen: Option<&ox_core::visibility::Scope>,
+) -> Result<Parsed> {
     let Json::Object(top) = raw else {
         return Err(bad("", "the body is a command document object"));
     };
@@ -1986,6 +2042,13 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
             return Err(bad(&path, "one precondition per target issue"));
         }
     }
+    if let Some(scope) = seen {
+        let ids: Vec<Uuid> = existing.iter().copied().collect();
+        let found = crate::time_entries::seen_issue_projects(&mut *conn, &ids, scope).await?;
+        if let Some(unseen) = existing.iter().find(|id| !found.contains_key(id)) {
+            return Err(issue_not_found(&refs[unseen]));
+        }
+    }
     if let Some(missing) = existing.iter().find(|id| !pre.contains_key(id)) {
         return Err(bad(
             "preconditions",
@@ -2484,7 +2547,25 @@ async fn run(
     operation_id: Uuid,
     doc: &Json,
 ) -> Result<Outcome> {
-    let parsed = parse(&mut *tx, doc, MAX_OPS as usize).await?;
+    let parsed = match parse_for(&mut *tx, doc, MAX_OPS as usize, caller).await {
+        Ok(p) => p,
+        Err(e) => {
+            let fp = |p: &Parsed| fingerprint(ACTION_COMMAND, &p.hash);
+            match resent(
+                &mut *tx,
+                doc,
+                MAX_OPS as usize,
+                who.user_id,
+                operation_id,
+                fp,
+            )
+            .await?
+            {
+                Some(p) => p,
+                None => return Err(e),
+            }
+        }
+    };
     if parsed.version_cmd().is_some() {
         return Err(ApiError::new(
             ErrorCode::UnsupportedOperation,
@@ -2835,7 +2916,7 @@ pub(crate) async fn check_as(
     caller: AuthContext,
     doc: &Json,
 ) -> Result<()> {
-    let parsed = parse(&mut *conn, doc, MAX_OPS as usize).await?;
+    let parsed = parse_for(&mut *conn, doc, MAX_OPS as usize, caller).await?;
     let ectx = EvalCtx {
         mode: Mode::Validate,
         caller,

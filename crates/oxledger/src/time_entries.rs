@@ -626,6 +626,69 @@ pub(crate) async fn cmd_projects(
     Ok(out)
 }
 
+/// The project of each of `ids` that `scope` sees. Missing, archived and
+/// unseen issues are all left out, so a caller cannot tell them apart
+/// (看不到＝不存在, M1.11 gate).
+pub(crate) async fn seen_issue_projects(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+    scope: &Scope,
+) -> Result<BTreeMap<Uuid, Uuid>> {
+    Ok(issue_bits(&mut *conn, ids, false)
+        .await?
+        .into_iter()
+        .filter(|(_, b)| scope.can_see(&b.facts))
+        .map(|(id, b)| (id, b.project_id))
+        .collect())
+}
+
+/// [`cmd_projects`] for an agent's proposal (`scope` is what the agent
+/// reads): an issue it cannot see is `not_found` like a missing one, and so
+/// is an entry in a project it does not read, before any project is
+/// compared (M1.11 gate).
+pub(crate) async fn cmd_projects_seen(
+    conn: &mut PgConnection,
+    cmds: &[TimeCmd<'_>],
+    scope: &Scope,
+) -> Result<BTreeSet<Uuid>> {
+    let readable: BTreeSet<Uuid> = scope.project_ids().collect();
+    let mut out = BTreeSet::new();
+    for c in cmds {
+        let (entry, project, issue) = match c {
+            TimeCmd::Log {
+                project_id, issue, ..
+            } => (None, *project_id, *issue),
+            TimeCmd::Update {
+                entry_id, issue, ..
+            } => (Some(*entry_id), None, issue.flatten()),
+            TimeCmd::Delete { entry_id, .. } => (Some(*entry_id), None, None),
+        };
+        if let Some(e) = entry {
+            let p: Option<Uuid> =
+                sqlx::query_scalar("SELECT project_id FROM time_entries WHERE id = $1")
+                    .bind(e)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            match p.filter(|p| readable.contains(p)) {
+                Some(p) => {
+                    out.insert(p);
+                }
+                None => return Err(entry_not_found()),
+            }
+        }
+        if let Some(i) = issue {
+            match seen_issue_projects(&mut *conn, &[i], scope).await?.get(&i) {
+                Some(p) => {
+                    out.insert(*p);
+                }
+                None => return Err(issue_not_found(&i.to_string())),
+            }
+        }
+        out.extend(project);
+    }
+    Ok(out)
+}
+
 /// Plans the time ops of a document (§3.5.4, §3.5.5). `issue_ctx` is set for
 /// a mixed document, whose issue the engine already locked and checked.
 /// Returns the plan and, when locking and the document has only time ops,
@@ -677,6 +740,10 @@ pub(crate) async fn plan(
     let pre_issues = issue_bits(&mut *conn, &issue_ids, false).await?;
     // The project of every op.
     let mut projects: Vec<Uuid> = Vec::new();
+    // A project_id that differs from the issue's project is reported only
+    // after the issue's visibility is known (else the answer tells an
+    // unseen issue's project apart from a missing issue; M1.11 gate).
+    let mut differs: Option<usize> = None;
     for c in cmds {
         let p = match c {
             TimeCmd::Log {
@@ -690,11 +757,8 @@ pub(crate) async fn plan(
                         .get(i)
                         .map(|b| b.project_id)
                         .ok_or_else(|| issue_not_found(&i.to_string()))?;
-                    if project_id.is_some_and(|p| p != ip) {
-                        return Err(bad(
-                            &format!("ops[{index}].project_id"),
-                            "project_id and the issue's project differ",
-                        ));
+                    if project_id.is_some_and(|p| p != ip) && differs.is_none() {
+                        differs = Some(*index);
                     }
                     ip
                 }
@@ -775,6 +839,28 @@ pub(crate) async fn plan(
                 return Err(entry_not_found());
             }
         }
+    }
+    // Likewise an issue the caller cannot read: before its project is
+    // looked at, or an issue in a project they cannot see would answer
+    // "no project" where a missing one answers "no issue" (M1.11 gate).
+    for c in cmds {
+        let named = match c {
+            TimeCmd::Log { issue: Some(i), .. } => Some(*i),
+            TimeCmd::Update {
+                issue: Some(Some(i)),
+                ..
+            } => Some(*i),
+            _ => None,
+        };
+        if let Some(i) = named.filter(|i| !issue_visible(*i)) {
+            return Err(issue_not_found(&i.to_string()));
+        }
+    }
+    if let Some(index) = differs {
+        return Err(bad(
+            &format!("ops[{index}].project_id"),
+            "project_id and the issue's project differ",
+        ));
     }
     let mut perms: BTreeMap<Uuid, ProjectPerms> = BTreeMap::new();
     for p in &project_set {

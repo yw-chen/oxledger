@@ -3857,7 +3857,7 @@ pub async fn validate_human(
     commands::executor(&caller)?;
     let mut tx = read_tx(app).await?;
     let raw = command_of(input);
-    let parsed = commands::parse(&mut tx, &raw, describe::MAX_OPS as usize).await?;
+    let parsed = commands::parse_for(&mut tx, &raw, describe::MAX_OPS as usize, caller).await?;
     let ectx = commands::EvalCtx {
         mode: commands::Mode::Validate,
         caller,

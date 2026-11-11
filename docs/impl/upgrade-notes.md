@@ -142,6 +142,7 @@
   ```
 
   升級時要不要自動改名，**待使用者決定**。
+- **同名 `oxledger-ai` client 要先改名**：02 時代建的一般 agent client 如果叫 `oxledger-ai`，從 0029 升級到 0030 時會中止。檢查在 0030 執行，改名方式見下一節「升級前要處理」。0029 本身不擋。
 - `agent_write_log.kind` 的 CHECK 重建為既有值的聯集再加 `chain_review`、`time_taint_review`（後者給 M1.10）。
 - 新 API（前端要接）：`GET|POST /ai-team`、`GET /ai-team/templates`、`GET /ai-team/{id}`、`GET /ai-team/{id}/activity`、`POST /ai-team/{id}/pause|resume|retire|credentials`、`GET /me/agent-runtimes`、`PATCH /me/agent-runtimes/{id}`、`POST /me/agent-runtimes/{id}/new-context|retire`。`POST /delegations` 新增 `agent_principal_id`（和 `agent_client_id` 擇一）；`/agent-contexts*` 保留為相容別名。
 
@@ -173,4 +174,16 @@
   - 管理員：`GET|PUT /admin/ai/settings`、`GET /admin/ai/endpoints`、`GET|POST /admin/ai/providers`、`PATCH /admin/ai/providers/{id}`、`POST /admin/ai/providers/{id}/test`、`POST /admin/ai/providers/{id}/retire`、`GET /admin/ai/usage`、`GET /admin/ai/events`。
   - `POST /me/agent-runtimes/{id}/new-context` 的 `carry_over_delegations: true` 現在可用（M1.9 是拒絕）。
   - 新通知種類 `ai_budget`（月預算 80%、100%，給啟用中的站台管理員）。
+
+## M1.11（發布門檻，沒有 migration）
+
+沒有 schema 變更，`security_epoch` 不變。兩個行為修正，前端與整合方可能看得到：
+
+- `log_time`，或 `update_time_entry` 改到另一張單時，如果指向的單看不到，現在回 `not_found`（`no issue …`），和單不存在時完全相同。之前回的是「沒有專案」的錯誤，等於洩漏「這張單存在」。
+- `POST /admin/ai/providers` 先檢查站台管理員，非管理員一律 403。之前會先驗端點，回 422 `ai_endpoint_invalid`（`unregistered`、`no_key`、`endpoint_blocked`），非管理員可以藉此探測部署登記了哪些端點，也會觸發 DNS 查詢。
+- 獨立驗證後的修正（同樣沒有 schema 變更）：
+  - 命令（`POST /commands`、`/commands/validate`、表單驗證、agent 送出與提案）指名一張已存在但呼叫者看不到的單時，一律回 `not_found`，而且先於「缺 precondition」「`project_id` 和單的專案不一致」「`cross_project`」等錯誤。之前這些錯誤會先回，等於告訴呼叫者這張單存在。整合方原本靠「缺 precondition」錯誤來確認單存在的話，要改用讀取 API。
+  - agent 的提案與寫入（`changeset_propose`／`revise`、`command_submit`）指名從沒委派過的專案裡的單，或看不到的單時，回 `not_found`，和單不存在相同；之前回 `cross_project`、「沒有目的地」或 `delegation_unavailable`。曾經委派、後來撤銷的專案不變，仍回 `delegation_unavailable`。
+  - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
+  - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 

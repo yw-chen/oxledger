@@ -17,7 +17,7 @@
 | M1.8 通知 | 0028；`notify` consumer；`/notifications*`、`/issues/{key}/watch`、`/me/notification-preferences`；GC 與 lag 監控；保留清除 | T-M1-70…83、125、126、132；派送延遲 p95 ≤ 10 秒（本機 1 萬張單、50 人）；前端鈴鐺、通知中心、關注、偏好可用 | 後端實作完成，獨立驗證 D1–D7 已修（2026-11-11；`m1_8_notifications` 32 個＋效能 1 個（`#[ignore]`）、`m1_8_upgrade` 1 個；前端未接；未 commit）。**0028 不動權限、不 bump epoch**。派送延遲 p95 5.45 秒（加上收件人鎖之後；本機、10 人同時寫入 600 個事件，量法見 M1.8-D15） |
 | M1.9 AI 團隊 | 0029；runtime、角色 principal、共用脈絡；token 綁 principal；principal／專案層暫停；鏈上限；`/ai-team*`、`/me/agent-runtimes*`；角色範本；`describe agent_context` | T-M1-84…99、66a、121、123、124、127、128、133；02 的 E4w、§9.6 受眾測試、§16.7b 全部重跑全綠；既有 agent token 升級後照常可用 | 後端實作完成，獨立驗證的缺陷 D1…D10、M14 已修（2026-11-11；`m1_9_ai_team` 32 個、`m1_9_upgrade` 2 個；全套 test-support 與 test-support,github 全綠，含 s8_gate 的 E4w-2…6、s8_gate_extra、s6_audience、m1_0_estimated_hours；前端未接；未 commit）。**0029 不動權限、不 bump epoch**。待使用者決定：qa 範本的 transition 白名單（M1.9-D6）、pm_assistant 改 subject 走 review（M1.9-D7）、`oxledger-ai@…` 外觀 handle 要不要自動改名（M1.9-D15） |
 | M1.10 右欄 AI 對話 | 0030；feature `ai`；部署端點登記與 IP 驗證；兩種 provider 串流；執行層；`AuthMethod::BuiltinRun`；工時汙染；`/ai/*`、`/admin/ai/*`；D12 與保存清除；假 provider 測試伺服器 | T-M1-100…118、119、120、122、129、130、131、134；前端右欄對話與設定頁可用；真的 Anthropic key 與自架 OpenAI 相容端點各手動跑一次並記錄 | — |
-| M1.11 發布門檻 | E4w 對新命令與新身分全套、T-M1-66…69、E5 子集、通知與 AI 對話的 canary 洩漏測試；T-M1-119、120、121、122、127 | 越權、繞過政策、重複效果、canary 洩漏 = 0；key 送往非登記主機 = 0、內建 AI 讀工時後的 direct 寫入 = 0；核心情境正確率 ≥ 90%；`upgrade-notes.md` 寫好 0029、0030 | — |
+| M1.11 發布門檻 | E4w 對新命令與新身分全套、T-M1-66…69、E5 子集、通知與 AI 對話的 canary 洩漏測試；T-M1-119、120、121、122、127 | 越權、繞過政策、重複效果、canary 洩漏 = 0；key 送往非登記主機 = 0、內建 AI 讀工時後的 direct 寫入 = 0；核心情境正確率 ≥ 90%；`upgrade-notes.md` 寫好 0029、0030 | 實作完成（2026-11-11；獨立驗證後修正 D1–D8：`m1_11_gate` 13 個、`m1_11_gate_ai` 7 個、`m1_11_e5` 1 個＋1 個 ignored）。各項 = 0 都由測試斷言；**核心情境 ≥ 90% 還沒驗證**，要使用者提供真的 key 與端點跑 `e5_live`（`m1-11-e5.md`） |
 
 ## M1.0 疑點與照建議的做法
 
@@ -517,3 +517,126 @@
   - T-M1-130 是前端元件測試，後端不做。
   - key 不進日誌：只檢查了錯誤、回應、DB 與 `Debug` 輸出，沒有攔截 tracing 輸出。
   - 真的 provider 沒有跑（見 `m1-10-manual-check.md`）。前端未接。
+
+## M1.11 發布門檻
+
+### 命令 × 身分矩陣（T-M1-66）
+
+命令（列）：
+- `add_note`：02 的對照組。
+- `update_fields`（`estimated_hours`，M1.0）。
+- `triage_decide accept`（M1.3）。
+- `log_time`、`update_time_entry`、`delete_time_entry`（M1.4）。
+
+每一格都在全新的目標上執行，並比對寫入前後的領域指紋。
+
+| 身分 | note | estimate | triage | log | update time | delete time |
+|---|---|---|---|---|---|---|
+| 人，有權限（alice） | applied | applied | applied | applied | applied | applied |
+| 人，沒權限（erin，Viewer） | forbidden_op | forbidden_op | forbidden_op | forbidden_op | not_found | not_found |
+| 人，看不到（frank） | not_found | not_found | not_found | not_found | not_found | not_found |
+| agent direct | applied | applied | applied | applied | applied | invalid_request |
+| agent review | review:policy | review:policy | review:policy | review:policy | review:policy | invalid_request |
+| agent off | forbidden_op | forbidden_op | forbidden_op | forbidden_op | forbidden_op | invalid_request |
+| agent 脈絡失效（STL 受眾變動） | context_unavailable | context_unavailable | context_unavailable | context_unavailable | context_unavailable | context_unavailable |
+| agent principal 暫停 | agent_paused | agent_paused | agent_paused | agent_paused | agent_paused | invalid_request |
+| agent 專案暫停 | agent_paused | agent_paused | agent_paused | agent_paused | agent_paused | invalid_request |
+| 人，讀全部工時、只有 `edit_own_time_entries` | forbidden_op | forbidden_op | forbidden_op | applied | forbidden_op（permission） | forbidden_op（permission） |
+| 人，只讀自己工時、只有 `edit_own_time_entries` | forbidden_op | forbidden_op | forbidden_op | applied | not_found | not_found |
+| 同 runtime 的角色（R 含 AUTH） | audience_expansion_forbidden | audience_expansion_forbidden | audience_expansion_forbidden | applied | applied | invalid_request |
+| 不同 runtime 的角色 | applied | applied | applied | applied | applied | invalid_request |
+| 內建 AI direct／review／off | 同外部 agent | | | | | |
+| 內建 AI principal 暫停 | run 以 `ai_unavailable` 結束（沒有工具執行） | | | | | |
+| 內建 AI 專案暫停 | agent_paused ×5 | | | | | invalid_request |
+| 內建 AI 脈絡失效 | 送出被拒 `context_unavailable` | | | | | |
+
+- 角色 bot 與 oracle 比對（T-M1-66a）：
+  - 同 runtime 的 bot 要和「一個 agent 同時委派 WEB＋AUTH」的結果完全相同。
+  - 不同 runtime 的 bot 要和 direct 完全相同。
+- 每個 `not_found` 都另外送一份「目標不存在」的同一份文件，兩個回應去掉 id 後要完全相同。
+- HTTP：
+  - OpenAPI 的每一條非 GET 路由：帶 agent token 一律 401；不帶憑證是 401，或 400 `invalid_body`（JSON 解析先於驗證）。都沒有寫入。
+  - 約 44 條 M1 路由（視圖、triage、工時、表單與欄位、首頁、概念、通知、AI 團隊、AI 對話與管理），由沒有權限的已登入使用者用真實 id 與不存在 id 各打一次：兩個回應完全相同，都是 404 或 403，沒有寫入。另外檢查涵蓋：OpenAPI 的每一條寫入路由都要在表裡，或在「只動自己的東西」「前面階段已測」清單裡（D6）。
+
+### 各項 = 0 的證據
+
+| 項目 | 測試 |
+|---|---|
+| 越權 | `t_m1_66_command_identity_matrix` 的 `overreach == 0`；兩個 HTTP 測試；`t_m1_66_builtin_ai_column`；`t_m1_67_agents_cannot_name_people_or_decisions`（13 案例全拒） |
+| 繞過政策 | 矩陣的 review／off／暫停列；`t_m1_69_prompt_injection_external_agent`、`t_m1_69_prompt_injection_builtin_ai` |
+| 重複效果 | `t_m1_68_idempotency_of_new_commands`（estimate、triage、log、update time 各重送：同一結果、效果只有一次） |
+| 被拒仍有效果 | 矩陣的 `refused_effects == 0`；內建 AI 欄同樣檢查 |
+| canary 洩漏 | `canary_notifications`（通知列表、未讀數、已讀／未讀、派送；沒有 SSE 端點）；`canary_ai_everywhere`（模型請求、`ai_messages`、`chat::messages`、run 的 SSE 與檢視；看不到的與不存在的工具結果相同） |
+| key 送往非登記主機 | `t_m1_120_key_only_to_its_registered_host`（攻擊者伺服器收到 0 個帶 key 的請求，所有帶 key 的請求都送到登記主機）；`t_m1_119_names_and_addresses`；另見 M1.10 的 `t_m1_119_dns_rebinding`、`t_m1_111_119_120_provider_errors_and_breaker` |
+| 內建 AI 讀工時後的 direct 寫入 | `t_m1_122_no_direct_write_after_reading_time`（5 種寫入在 `time_list` 之後都是 `review:time_taint`，同對話的下一個 run 也一樣；計數 0） |
+
+### 疑點與照預設的做法
+
+- M1.11-D1 **修正：工時存在性 oracle**：`log_time`，或 `update_time_entry` 改單，指向看不到的單時，原本回「沒有專案」，和不存在的單不同。現在先檢查單的可見性，回同一個 `not_found`（`time_entries.rs`）。
+- M1.11-D2 **修正：`POST /admin/ai/providers` 先查管理員**：原本非管理員會先拿到 422 `ai_endpoint_invalid`，可以藉此探測端點登記，也會觸發 DNS 查詢。現在一律 403（`ai/admin.rs`）。
+- M1.11-D3 **站台層表單**：非管理員對真實的站台表單回 403，對不存在的回 404。站台表單不屬於任何專案，它的存在不算祕密，照預設接受；存在性比對改用專案層表單（AUTH），那邊一律 404。
+- M1.11-D4 **匿名請求送錯 body** 回 400 `invalid_body`，不是 401：axum 的 Json extractor 先於驗證執行，只會洩漏公開的 schema。照預設接受。
+- M1.11-D5 **內建 AI 的 principal 暫停**：run 直接以 `ai_unavailable` 結束，沒有工具結果，所以不是逐筆的 `agent_paused`。效果相同（0 寫入）。
+- M1.11-D6 **provider 的 `model`／`name`** 可以填任意字串（包括 URL），但不影響請求送往哪裡。T-M1-120 把這兩個欄位視為無害。
+- M1.11-D7 **E5 判定**：每次 run 都在全新的世界上跑；跑完模擬使用者核准所有待審提案，再看資料狀態。唯讀案例另外看回答文字。外部 agent 由測試裡的迴圈呼叫模型，工具走 MCP。詳見 `m1-11-e5.md`。
+- M1.11-D8 **待使用者決定**：
+  - `agent_principals` 的 handle trigger 用 `LIKE 'oxledger-ai@%'`，大小寫有別，`OXLEDGER-AI@…` 擋不到。API 只產生小寫 slug，所以目前做不出這種 handle；要從 DB 層補，需要新的 migration（改用 `lower(handle)`），本階段依規則沒有做。
+  - 要用真模型跑 E5（`e5_live`），需要使用者提供：公司帳號的 Anthropic key（`claude-sonnet-5-5`），以及一個自架 OpenAI 相容端點。
+
+### 獨立驗證後的修正（2026-11-11）
+
+- D1 **`log_time` 帶 `project_id`**：`project_id` 和單的專案不一致時，原本先於單的可見性回錯誤。現在先記下，確認單看得到才回（`time_entries.rs`）。
+- D2 **agent 提案的 destination**：`destination` 帶 agent 的寫入範圍（`db::write_scope`：委派者的範圍切到這個 context 曾經委派過的所有專案，含已撤銷、已過期；沒有私人單）。從沒委派過的專案的單、看不到的單回 `not_found`，和不存在相同，再判斷 `cross_project`。曾經委派、後來撤銷的專案照 02 T-X19 回 `delegation_unavailable`（`s5_changesets`、`s6_audience` 要求；只用有效委派會讓這兩個 02 測試失敗）。這表示對已撤銷的專案，agent 仍能分辨「單存在」與「不存在」；它在撤銷前本來就讀得到這些單，照預設接受。工時命令也只算看得到的專案（`cmd_projects_seen`）。擁有者修訂路徑不帶範圍，受眾規則（M9）不變（`changesets.rs`）。
+- D3 **缺 precondition 的 oracle（02 就有）**：新增 `commands::parse_for`，帶呼叫者的可見範圍；已存在但看不到的目標先回 `not_found`（用呼叫者自己寫的 key 或 id），再檢查 precondition。`run`、`check_as`（validate）、表單驗證、agent 送出與提案都改用它。`parse` 不帶範圍，給已經查過權限的路徑用（`commands.rs`、`forms.rs`）。
+  - 重送同一個 Idempotency-Key 的同一份請求（指紋相同）仍然 replay，不受這個範圍限制：02 的 M05（單變成看不到後重送，回 0 個效果）要維持（`s4_commands` 驗證）。做法是 `commands::resent`：`parse_for` 拒絕後，只有在這個 key 已存在而且指紋相同時，才改用不帶範圍的解析；用過的 key 搭配新文件，仍然回範圍的答案。人與 agent（`agent_write_tx`）都一樣。`t_m1_66_reused_key_is_no_existence_oracle` 驗證；拿掉指紋比對的 mutation 會讓它失敗。
+- D4 **矩陣多兩列**：讀全部工時但只有 `edit_own_time_entries` 的人（改別人的工時 → `forbidden_op/permission`），以及只讀自己工時的人（→ 和不存在相同）。兩人也是 AUTH 成員（只有 view_issues），否則受眾規則會讓寬委派 oracle 的 log_time 變成 `audience_expansion_forbidden`。
+- D5 **`PATCH /admin/ai/providers/{id}`、`PUT /admin/ai/settings`** 先查站台管理員再驗 body 與 id（`ai/admin.rs`）。
+- D6 **HTTP 涵蓋**：以 OpenAPI 全部寫入路由為母體。表外的路由要在「只動自己的東西」或「前面階段已測」清單，各附理由；拿掉永遠比對不到的項目。`/delegations*`、`/agent-contexts*`、`/executions/{id}/undo`、`/changesets/*`、`/commands`（body 裡放真實與不存在的 id）都加進比對；`/admin/ai/providers/{id}` 三條用真實 provider id（在 `m1_11_gate_ai`）。`revise-and-apply` 先驗 `revision_review_token` 簽章，真實與不存在的 id 都是 400，回應相同。
+- D7 **canary**：c2 拿掉 `spent_hours`，改讀 `cf:Internal`（`issue_view` 的 `fields` 用欄位名稱，不是 id）；RFIELD 改用 `update_fields` 寫入；兩個 canary 測試都加正向對照：有權限的人讀得到每一個 canary。
+- D8 **T-M1-120**：OTHER 用自己的假伺服器；攻擊者伺服器收到的請求數 = 0（不只是不帶 key）。
+- mutation 確認（各自暫時還原，跑 `m1_11_gate`，再復原）：
+  - D1 還原 → `t_m1_66_existence_oracles_beyond_the_matrix` 失敗。
+  - D2 還原（destination 不帶範圍）→ 同上失敗。
+  - D3 還原（parse 不檢查看不到的目標）→ 同上與 `t_m1_66_http_m1_routes_for_a_person_without_rights` 失敗。
+  - D4 拿掉 `row.user_id == me &&` → `t_m1_66_command_identity_matrix` 失敗。
+- 已知的小差異：工時的 `not_found` 訊息裡是單的 uuid，不是呼叫者寫的 key（原本就這樣）。比對時去掉 id 後完全相同。
+
+### 測試
+
+- `m1_11_gate.rs`（8 個，不需要 feature）：
+  - `t_m1_66_command_identity_matrix`（13 身分 × 6 命令）
+  - `t_m1_66_existence_oracles_beyond_the_matrix`（獨立驗證 V1：46 組「看不到 vs 不存在」比對，涵蓋缺 precondition、`project_id` 不一致、agent 提案的 destination）
+  - `t_m1_66_more_command_shapes`（triage decline／duplicate／snooze／unsnooze、只帶 `project_id` 的 log_time、同時帶單與 `project_id`、`update_time_entry` 改單）
+  - `t_m1_66_propose_new_ops_off_and_paused`（V3：MCP `changeset_propose`／`revise` 帶新命令）
+  - `t_m1_66_removed_member_and_settings`（V5）
+  - `t_m1_66_reused_key_is_no_existence_oracle`（用過的 key＋新文件指向看不到的單，有沒有 precondition，都和不存在相同；人與 agent）
+  - `t_m1_66_http_every_write_route_refuses_agents_and_strangers`
+  - `t_m1_66_http_m1_routes_for_a_person_without_rights`
+  - `t_m1_67_agents_cannot_name_people_or_decisions`
+  - `t_m1_68_idempotency_of_new_commands`
+  - `t_m1_69_prompt_injection_external_agent`
+  - `canary_notifications`
+  - `t_m1_127_reserved_handles`
+- `m1_11_gate_ai.rs`（7 個，feature `ai`）：
+  - `t_m1_66_http_admin_ai_real_ids_for_a_non_admin`（VA1：真實與不存在的 provider id 回應相同且 403；settings、建立 provider 一律 403；沒有寫入）
+  - `t_m1_66_builtin_ai_column`
+  - `t_m1_122_no_direct_write_after_reading_time`
+  - `t_m1_69_prompt_injection_builtin_ai`
+  - `canary_ai_everywhere`
+  - `t_m1_120_key_only_to_its_registered_host`
+  - `t_m1_119_names_and_addresses`
+- `m1_11_e5.rs`（feature `ai`）：
+  - `e5_harness_self_check`：假 provider；參考答案全過、空答案全不過，兩種跑法都驗。
+  - `e5_live`：ignored，要 `OXLEDGER_E5=1`。
+- 共用的假 provider 移到 `tests/ai_fake/mod.rs`。`m1_10_ai_run.rs` 沒改，仍用自己那份。
+- 引用、沒有重寫的既有測試：
+  - T-M1-121：`m1_9` 的 `t_m1_121_one_runtime_per_client`（`tokio::join` 並行）與 `v_q2_trigger_concurrent_sql`（兩條 SQL 連線並行）。
+  - T-M1-127 主體：`t_m1_127_builtin`。
+  - T-M1-104：`t_m1_102_audience_and_injection`。
+  - 通知撤權：T-M1-74。
+  - 別人的對話與 run：`iv8_not_found_is_identical`、`t_m1_108`。
+- 沒測到：
+  - 核心情境 ≥ 90%：沒有真模型，還不能驗證。
+  - 通知沒有 SSE 端點，所以沒有測 SSE 的 canary。
+  - `OXLEDGER-AI@` 大寫 handle 只透過 API 測了（API 做不出來），沒有直接寫 DB 去測 trigger。
+  - HTTP 矩陣只用一個沒有權限的使用者；不同角色組合的細部差異沿用各階段自己的測試。

@@ -504,3 +504,18 @@ date	stage	decision	why	alternatives	source
 2026-11-11	M1	BuiltinRun 憑證查詢在可寫交易 FOR SHARE OF ai_runs；READ ONLY 交易不加	獨立驗證 D6a：寫入與取消／清掃／結束互斥；READ ONLY 交易不允許列鎖	一律 FOR SHARE	crates/oxledger/src/db.rs
 2026-11-11	M1	租約 30 秒、每 10 秒續期、每 15 秒清掃（最慢 45 秒結束死掉的 run）	獨立驗證 D6b：原本 60＋30＝90 秒超過契約 60 秒	租約 60／續期 15／清掃 30	crates/oxledger/src/ai/config.rs
 2026-11-11	M1	runner 在工具呼叫前有 test-support 注入點 ai.before_tool	測試要在 runner 自己的檢查之後改 DB，才能驗證工具呼叫本身的憑證重驗（M6、M8、M10）	直接呼叫 crate 內部函式	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	log_time／update_time_entry 指向看不到的單回 not_found（no issue），先於專案檢查	M1.11 門檻發現：原本回「沒有專案」，和不存在的單不同，是存在性 oracle	維持原錯誤	crates/oxledger/src/time_entries.rs
+2026-11-11	M1	POST /admin/ai/providers 先查站台管理員（403），再驗端點	M1.11 門檻發現：非管理員拿到 422 ai_endpoint_invalid（unregistered／no_key／endpoint_blocked）可探測端點登記，也會觸發 DNS	先驗輸入再查權限	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	站台層表單對非管理員：真實的 403、不存在的 404，照預設接受	站台表單不屬於任何專案，存在不算祕密；存在性比對改用專案層表單	站台表單也一律 404	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	匿名請求的 body 不合法時回 400 invalid_body，不是 401	axum 的 Json extractor 先於驗證執行；只洩漏公開的 schema	每個 handler 改成先驗證再解析	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	E5 判定：每次 run 用全新世界；跑完模擬使用者核准所有待審提案，再看資料狀態；唯讀案例看回答文字	政策送審的寫入（如 T-M1-122）只要內容對就算對；內建 AI 與外部 agent 用同一套判定	只看工具呼叫的參數	crates/oxledger/tests/m1_11_e5.rs
+2026-11-11	M1	E5 的外部 agent 由測試內的迴圈呼叫模型（ai::client），工具清單是 MCP 的完整清單，呼叫走 MCP 與 agent token	不需要外部程式或新 crate；和真的 MCP 客戶端走同一條伺服器路徑	用 Claude Code 等真的 agent 手動跑	crates/oxledger/tests/m1_11_e5.rs
+2026-11-11	M1	e5_live 預設 ignored，而且要 OXLEDGER_E5=1；核心組低於 90% 就失敗	不在一般測試連真 provider；門檻寫在測試裡	只印數字、不設門檻	crates/oxledger/tests/m1_11_e5.rs
+2026-11-11	M1	命令解析帶呼叫者的可見範圍（parse_for）：已存在但看不到的目標先回 not_found，再檢查 precondition、專案不一致、跨專案	M1.11 獨立驗證 D1–D3：原本「缺 precondition」「project_id 不一致」「cross_project」都會先於可見性回應，是存在性 oracle（D3 自 02 就有）	只修 log_time	crates/oxledger/src/commands.rs
+2026-11-11	M1	同一個 key 的同一份請求（指紋相同）重送時不套可見範圍，照舊 replay（結果再依可見性過濾）；用過的 key＋新文件仍套範圍	02 M05：單變成看不到後重送要回 0 個效果，不是 not_found；只比對指紋才放行，否則用過的 key 會變成存在性 oracle	重送也一律套範圍（違反 M05）	crates/oxledger/src/commands.rs
+2026-11-11	M1	寫入的可見範圍（db::write_scope）對 agent 是委派者的範圍切到「這個 context 曾經委派過的所有專案」（含已撤銷、已過期），沒有私人單；那些專案裡的單交給委派檢查（delegation_unavailable），其他專案的單是 not_found	02 T-X19（s5_changesets、s6_audience）規定委派撤銷後寫入回 delegation_unavailable；只用有效委派會把它變成 not_found	只用有效委派（load_scope）	crates/oxledger/src/db.rs
+2026-11-11	M1	agent 提案的 destination 用 agent 的寫入範圍（db::write_scope）；從沒委派過的專案或看不到的單和不存在的單同一個 not_found；擁有者修訂（revise／revise-and-apply）維持不帶範圍	D2：原本回 cross_project／no destination；擁有者路徑已在前面查過權限，受眾規則（M9）不變	destination 一律不帶範圍	crates/oxledger/src/changesets.rs
+2026-11-11	M1	PATCH /admin/ai/providers/{id} 與 PUT /admin/ai/settings 先查站台管理員再驗 body 與 id	D5：非管理員原本可由 422 與 404 的差別探測 provider id	先驗輸入	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	HTTP 涵蓋檢查以 OpenAPI 全部寫入路由為母體；沒在表裡的要在「只動自己的東西」或「前面階段已測」清單，各附理由	D6：原本只列 M1 路由，還有一條永遠比對不到的項目	只檢查 M1 路由	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	changesets revise-and-apply 對真實與不存在的 id 都回 400（先驗 revision_review_token 簽章）	token 是伺服器簽的，驗不過就不查 changeset，兩者回應相同，不構成 oracle	改成先查存在	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	矩陣的工時讀者（timerall／timerown）同時是 AUTH 成員（只有 view_issues）	受眾規則：WEB 的工時讀者若不在 AUTH，寬委派 oracle 的 log_time 會變 audience_expansion_forbidden，矩陣就測不到原本的列	不加 AUTH，改 oracle 預期	crates/oxledger/tests/m1_11_gate.rs

@@ -440,6 +440,13 @@ pub async fn create_provider(
     ctx: AuthContext,
     input: &NewProvider,
 ) -> anyhow::Result<ProviderView> {
+    // Administrators first: the checks below consult the deployment's
+    // endpoint registration (names, keys, address classes) and would
+    // answer anyone otherwise (M1.11 gate).
+    {
+        let mut conn = app.pool.acquire().await?;
+        require_admin(&mut conn, ctx).await?;
+    }
     let cfg = config::current();
     check_name(&input.name)?;
     let Some(kind) = Kind::parse(&input.kind) else {
@@ -533,6 +540,9 @@ pub async fn update_provider(
     input: &ProviderPatch,
 ) -> anyhow::Result<ProviderView> {
     let cfg = config::current();
+    // Administrators only, before the input is looked at (M1.11 gate).
+    let mut tx = app.pool.begin().await?;
+    let user = require_admin(&mut tx, ctx).await?;
     if !input.d17_attested {
         return Err(invalid(
             "d17_attested",
@@ -540,8 +550,6 @@ pub async fn update_provider(
             "confirm that the model and service comply with D17",
         ));
     }
-    let mut tx = app.pool.begin().await?;
-    let user = require_admin(&mut tx, ctx).await?;
     let cur: Option<(String, String, String, i32, bool)> = sqlx::query_as(
         "SELECT kind, endpoint_name, model, lock_version, retired_at IS NOT NULL FROM ai_providers WHERE id = $1 FOR UPDATE",
     )
@@ -1075,6 +1083,9 @@ pub async fn put_settings(
     ctx: AuthContext,
     input: &SettingsInput,
 ) -> anyhow::Result<SettingsView> {
+    // Administrators only, before the input is looked at (M1.11 gate).
+    let mut tx = app.pool.begin().await?;
+    let user = require_admin(&mut tx, ctx).await?;
     if let Some(b) = &input.monthly_budget_usd {
         check_money("monthly_budget_usd", b, 8, 2, true)?;
     }
@@ -1095,8 +1106,6 @@ pub async fn put_settings(
             "between 1 and 365",
         ));
     }
-    let mut tx = app.pool.begin().await?;
-    let user = require_admin(&mut tx, ctx).await?;
     let cur = settings_row(&mut tx, true).await?;
     if cur.6 != input.lock_version {
         return Err(ApiError::new(

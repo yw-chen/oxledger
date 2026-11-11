@@ -346,6 +346,31 @@ pub async fn load_scope(conn: &mut PgConnection, ctx: AuthContext) -> Result<Sco
     .await
 }
 
+/// The visibility a write document is checked against before anything else
+/// (看不到＝不存在, M1.11 gate). A person: [`load_scope`]. An agent: its
+/// delegator's scope cut down to every project its context was ever
+/// delegated, revoked or expired ones included: a target there is answered
+/// by the delegation checks (`delegation_unavailable`, 02 T-X19), a target
+/// anywhere else is `not_found` like a missing issue.
+pub(crate) async fn write_scope(conn: &mut PgConnection, ctx: AuthContext) -> Result<Scope> {
+    let me = effective(conn, ctx).await?;
+    let Some(agent) = &me.agent else {
+        return user_scope(conn, me.user_id, me.is_admin).await;
+    };
+    let projects: Vec<Uuid> =
+        sqlx::query_scalar("SELECT DISTINCT project_id FROM delegations WHERE context_id = $1")
+            .bind(agent.context_id)
+            .fetch_all(&mut *conn)
+            .await?;
+    agent_scope(
+        conn,
+        agent.delegator_id,
+        agent.delegator_is_admin,
+        Some(&projects),
+    )
+    .await
+}
+
 /// What an agent of `delegator` reads (§3.5): the delegator's scope cut down
 /// to `projects` (`None`: every project the delegator reads that is
 /// audience-consistent, for re-checking the built-in AI's stored replies
