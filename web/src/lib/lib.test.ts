@@ -234,6 +234,11 @@ describe('errors (02 §15.5)', () => {
 		expect(describeFailure({ code: 'conflict', message: 'AUTH-6 changed since you read it' })).toBe('這張單在提案後被改過，尚未套用任何變更');
 		expect(describeFailure({ code: 'agent_suspended', message: 'x' })).toBe('這個 agent 的寫入已暫停');
 		expect(describeFailure(null)).toMatch(/尚未套用/);
+		expect(describeError(err('view_in_use', { tabs: ['看板', '本週'] })).title).toContain('看板、本週');
+		expect(describeError(err('form_invalid', { kind: 'hides_required' })).title).toContain('不能被顯示條件藏起來');
+		expect(describeError(err('ai_unavailable', { kind: 'circuit_open' }))).toMatchObject({ action: 'retry' });
+		expect(describeError(err('ai_provider_changed', { provider: { name: 'Anthropic', model: 'claude-sonnet-5-5' } })).title).toContain('〈Anthropic（claude-sonnet-5-5）〉');
+		expect(describeError(err('triage_state_invalid'))).toMatchObject({ action: 'refresh' });
 	});
 	it('search errors say why (version needs a project, unknown names)', () => {
 		expect(describeError(err('invalid_filter', { path: 'version', reason: 'project_scope_required' })).title).toMatch(/加上一個專案/);

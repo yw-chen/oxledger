@@ -54,6 +54,26 @@ const FILTER_REASON: Record<string, string> = {
 };
 const LOOKUP: Record<string, string> = { project: '專案', tracker: '類型', status: '狀態', assignee: '指派對象', priority: '優先度', author: '作者' };
 
+const VIEW_REASON: Record<string, string> = {
+	unknown_field: '有不認得的欄位',
+	invalid_shape: '格式不正確',
+	invalid_value: '有不合法的值',
+	kind_mismatch: '設定和視圖種類不符',
+	lanes_required: '看板依狀態分欄時要列出狀態',
+	restricted_field: '專案視圖不能用受限欄位',
+	project_scope: '專案視圖只能限定本專案',
+	too_large: '設定太大',
+	duplicate_value: '有重複的值'
+};
+const FORM_KIND: Record<string, string> = {
+	unknown_field: '有不認得的欄位',
+	restricted_condition_field: '顯示條件不能用受限欄位',
+	condition_too_complex: '顯示條件太複雜',
+	cycle: '顯示條件互相依賴',
+	hides_required: '這個欄位在某些情況必填，不能被顯示條件藏起來',
+	field_not_applicable: '有欄位不適用於這個類型'
+};
+
 export function describeError(e: unknown): Shown {
 	if (!(e instanceof ApiError)) return { title: '發生未預期的錯誤', changed: UNKNOWN, next: '重新整理', action: 'refresh' };
 	const d = e.details;
@@ -193,6 +213,67 @@ export function describeError(e: unknown): Shown {
 			return { title: '搜尋的同步標記已失效，請重新搜尋', changed: NOTHING, next: '重新搜尋', action: 'refresh' };
 		case 'search_not_caught_up':
 			return { title: '搜尋還沒同步到你剛寫入的內容；單本身已經可以開啟', changed: '寫入已完成。', next: '再找一次', action: 'retry' };
+		// ---- M1 (contract 05 §7) ----
+		case 'triage_state_invalid':
+			return { title: '這張單已經不在待分流（可能別人剛處理過），尚未套用任何變更', changed: NOTHING, next: '重新載入', action: 'refresh' };
+		case 'field_definition_changed':
+			return { title: '條件用到的自訂欄位設定剛被改過，請重新選擇條件', changed: NOTHING, next: '重新載入', action: 'refresh' };
+		case 'query_timeout':
+			return { title: '查詢太久沒有完成；請縮小範圍（例如加上專案、狀態或日期）再試', changed: NOTHING };
+		case 'invalid_view': {
+			const why = typeof d.reason === 'string' ? VIEW_REASON[d.reason] : undefined;
+			const where = typeof d.path === 'string' ? `（${d.path}）` : '';
+			return { title: `視圖設定有誤${where}${why ? `：${why}` : ''}`, changed: NOTHING };
+		}
+		case 'view_name_taken':
+			return { title: '已經有同名的視圖，請換一個名稱', changed: NOTHING };
+		case 'view_in_use': {
+			const tabs = names(d.tabs);
+			return { title: `這個視圖還被專案分頁使用${tabs ? `（${tabs}）` : ''}，請先移除分頁再刪除`, changed: NOTHING };
+		}
+		case 'form_rules_changed':
+			return { title: '表單規則剛更新過，請重新載入表單後再送出', changed: NOTHING, next: '重新載入', action: 'refresh' };
+		case 'form_invalid': {
+			const why = typeof d.kind === 'string' ? FORM_KIND[d.kind] : undefined;
+			return { title: why ? `表單規則有誤：${why}` : '表單規則有誤', changed: NOTHING };
+		}
+		case 'form_publish_blocked':
+			return { title: '有既有的單不符合新規則，選了「有違規就不發布」所以沒有發布', changed: NOTHING };
+		case 'concept_label_taken':
+			return { title: '這個標籤已經屬於另一個概念，請換一個或到那個概念修改', changed: NOTHING };
+		case 'runtime_context_closed':
+			return { title: '這個執行環境的工作脈絡已關閉，請建立新的工作脈絡', changed: NOTHING, next: '管理委派', action: 'delegations' };
+		case 'runtime_client_taken': {
+			const label = typeof d.label === 'string' ? `「${d.label}」` : '另一個';
+			return { title: `同一個 agent 軟體已在${label}執行環境裡；請放進那個執行環境，或先退役它`, changed: NOTHING, next: '管理委派', action: 'delegations' };
+		}
+		case 'ai_unavailable':
+			return d.kind === 'circuit_open'
+				? { title: 'AI 暫時無法使用；資料與操作正常', changed: NOTHING, next: '稍後重試', action: 'retry' }
+				: { title: 'AI 助理目前沒有啟用或尚未設定完成；資料與操作正常', changed: NOTHING };
+		case 'ai_provider_error':
+			return { title: d.kind === 'timeout' ? 'AI 服務回應逾時' : 'AI 服務回應錯誤', changed: NOTHING, next: '重試', action: 'retry' };
+		case 'ai_model_disallowed':
+			return { title: '這個模型或端點在 D17 禁用名單內（不得使用中國公司的模型或服務）', changed: NOTHING };
+		case 'ai_endpoint_invalid':
+			return {
+				title:
+					d.kind === 'no_key'
+						? 'Anthropic 需要 key：請在伺服器設定 OXLEDGER_AI_KEY_〈名稱〉'
+						: d.kind === 'endpoint_blocked'
+							? '端點解析到不允許的位址（私有網段或本機需要伺服器另外允許）'
+							: '這個端點已不在伺服器設定中',
+				changed: NOTHING
+			};
+		case 'ai_conversation_read_only':
+			return { title: '這個對話已封存（AI 的工作脈絡已更換），只能查看；請開新對話', changed: NOTHING };
+		case 'ai_provider_changed': {
+			const p = (d.provider ?? {}) as { name?: string; model?: string };
+			const who = p.name ? `〈${p.name}${p.model ? `（${p.model}）` : ''}〉` : '新的服務';
+			return { title: `AI 服務已換成${who}；繼續這個對話時，先前的對話內容會送到新服務`, changed: NOTHING };
+		}
+		case 'ai_run_in_progress':
+			return { title: '你還有一個 AI 回覆在進行中；等它完成或取消後再送', changed: NOTHING, action: 'wait' };
 		default:
 			return { title: e.message || '操作沒有完成', changed: e.status >= 500 ? UNKNOWN : NOTHING };
 	}
