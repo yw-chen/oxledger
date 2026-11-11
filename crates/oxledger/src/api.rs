@@ -337,6 +337,41 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(runtime_new_context),
         )
         .route("/me/agent-runtimes/{id}/retire", post(retire_runtime))
+        .route("/ai/status", get(ai_status))
+        .route("/ai/assistant", post(ai_assistant_setup))
+        .route("/ai/assistant/extend", post(ai_assistant_extend))
+        .route(
+            "/ai/conversations",
+            get(ai_conversations).post(ai_conversation_create),
+        )
+        .route("/ai/conversations/{id}", delete(ai_conversation_delete))
+        .route(
+            "/ai/conversations/{id}/messages",
+            get(ai_messages).post(ai_message_send),
+        )
+        .route("/ai/runs/{id}", get(ai_run_get))
+        .route("/ai/runs/{id}/stream", get(ai_run_stream))
+        .route("/ai/runs/{id}/cancel", post(ai_run_cancel))
+        .route(
+            "/admin/ai/settings",
+            get(ai_admin_settings).put(ai_admin_put_settings),
+        )
+        .route("/admin/ai/endpoints", get(ai_admin_endpoints))
+        .route(
+            "/admin/ai/providers",
+            get(ai_admin_providers).post(ai_admin_create_provider),
+        )
+        .route("/admin/ai/providers/{id}", patch(ai_admin_update_provider))
+        .route(
+            "/admin/ai/providers/{id}/test",
+            post(ai_admin_test_provider),
+        )
+        .route(
+            "/admin/ai/providers/{id}/retire",
+            post(ai_admin_retire_provider),
+        )
+        .route("/admin/ai/usage", get(ai_admin_usage))
+        .route("/admin/ai/events", get(ai_admin_events))
         .fallback(|| async { ApiFailure(api(ErrorCode::NotFound, "no such endpoint")) })
         .method_not_allowed_fallback(|| async {
             ApiFailure(
@@ -2854,6 +2889,263 @@ async fn retire_runtime(
     let ctx = human(&ra)?;
     crate::ai_team::retire_runtime(&st.app, &st.cfg.session, ctx, id_param(&id)?).await?;
     Ok(ok(Done::default()))
+}
+
+// ---------------------------------------------------------------- built-in AI chat (design 05 §3.13)
+
+async fn ai_status(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::chat::status(&st.app, ctx).await?))
+}
+
+async fn ai_assistant_setup(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::chat::setup(&st.app, ctx).await?))
+}
+
+async fn ai_assistant_extend(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::chat::extend(&st.app, &st.cfg.session, ctx).await?
+    ))
+}
+
+async fn ai_conversations(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let limit = match q.get("limit") {
+        None => None,
+        Some(l) => Some(l.parse::<u32>().map_err(|_| {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "limit is a number")
+                    .with_details(json!({"path": "limit"}))
+                    .into(),
+            )
+        })?),
+    };
+    let query = crate::ai::chat::ConversationsQuery {
+        cursor: q.get("cursor").cloned(),
+        limit,
+    };
+    Ok(ok(crate::ai::chat::list(&st.app, ctx, &query).await?))
+}
+
+async fn ai_conversation_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<crate::ai::chat::NewConversation>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(crate::ai::chat::create(&st.app, ctx, &b).await?))
+}
+
+async fn ai_conversation_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai::chat::delete(&st.app, ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_messages(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::chat::messages(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_message_send(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai::chat::SendInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let id = id_param(&id)?;
+    let out = crate::ai::chat::send(&st.app, ctx, key, id, &b, &st.cfg.spa_origin).await?;
+    let mut r = ok(out);
+    *r.status_mut() = StatusCode::ACCEPTED;
+    Ok(r)
+}
+
+async fn ai_run_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::runner::get_run(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_run_stream(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let last = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    Ok(crate::ai::runner::stream(&st.app, ctx, id_param(&id)?, last).await?)
+}
+
+async fn ai_run_cancel(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::runner::cancel(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_admin_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::settings(&st.app, ctx).await?))
+}
+
+async fn ai_admin_put_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<crate::ai::admin::SettingsInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::put_settings(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        &b,
+    )
+    .await?))
+}
+
+async fn ai_admin_endpoints(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::endpoints(&st.app, ctx).await?))
+}
+
+async fn ai_admin_providers(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::providers(&st.app, ctx).await?))
+}
+
+async fn ai_admin_create_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<crate::ai::admin::NewProvider>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::ai::admin::create_provider(&st.app, &st.cfg.session, ctx, &b).await?,
+    ))
+}
+
+async fn ai_admin_update_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai::admin::ProviderPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::update_provider(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+        &b,
+    )
+    .await?))
+}
+
+async fn ai_admin_test_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::test_provider(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn ai_admin_retire_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::retire_provider(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn ai_admin_usage(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::usage(
+        &st.app,
+        ctx,
+        q.get("month").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn ai_admin_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::events(&st.app, ctx).await?))
 }
 
 async fn revoke_credential(

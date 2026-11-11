@@ -1358,18 +1358,27 @@ async fn t_m1_127_builtin() {
         .await
         .unwrap_err();
     assert_eq!(reason(&e), "builtin_no_token");
-    // Verification D8: the built-in AI is on neither the list nor the
-    // detail page in M1.9 (not even for its sponsor or a site admin).
+    // M1.10 (design 05 §3.12.5): the built-in AI is on the AI team page
+    // under the same visibility rules, with pause and resume only (M1.9's
+    // verification D8 kept it off until M1.10).
     auth::create_user(&pool, "root", "root", PW, true)
         .await
         .unwrap();
     let root = sign_in(&pool, &w.policy, "root").await;
     for who in [w.alice_ctx, root] {
         let l = ai_team::list(&w.app, who, None, None).await.unwrap();
-        assert!(l.items.iter().all(|m| m.id != bp));
-        let e = ai_team::detail(&w.app, who, bp).await.unwrap_err();
-        assert_eq!(code(&e), ErrorCode::NotFound);
+        assert!(l.items.iter().any(|m| m.id == bp));
+        let d = ai_team::detail(&w.app, who, bp).await.unwrap();
+        assert!(
+            !d.actions
+                .iter()
+                .any(|a| a == "retire" || a == "credentials")
+        );
     }
+    let e = ai_team::retire(&w.app, &w.policy, w.alice_ctx, bp)
+        .await
+        .unwrap_err();
+    assert_eq!(reason(&e), "builtin_runtime");
     // …or behind its back (the composite FK on the runtime kind).
     let r = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO agent_credentials (context_id, token_sha256, label, expires_at, agent_principal_id, runtime_id)

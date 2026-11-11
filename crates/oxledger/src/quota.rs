@@ -412,6 +412,26 @@ pub async fn log_chain_review(
     Ok(())
 }
 
+/// Records a built-in AI write turned into a review because its run read
+/// the user's time (design 05 §3.13.3, Q3).
+pub async fn log_time_taint_review(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+         VALUES ($1, $2, $3, 'time_taint_review')",
+    )
+    .bind(agent)
+    .bind(context)
+    .bind(delegation)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Suspends `context` in its own transaction (the refused request rolled
 /// back; the suspension must not).
 pub async fn trip(pool: &PgPool, context: Uuid, reason: &str) -> Result<()> {

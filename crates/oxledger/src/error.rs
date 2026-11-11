@@ -166,6 +166,23 @@ pub enum ErrorCode {
     /// Design 05 §5 (Q2): the agent software already runs in another active
     /// runtime of this sponsor; `details.runtime_id`, `details.label`.
     RuntimeClientTaken,
+    /// Design 05 §5: the built-in AI cannot run now; `details.kind` is
+    /// `disabled`, `circuit_open`, `not_configured` or `endpoint_blocked`.
+    AiUnavailable,
+    /// The AI provider failed; `details.kind` is `timeout`, `http_status`
+    /// (with `status`) or `malformed`. Never the provider's own text.
+    AiProviderError,
+    /// The model or the endpoint's host is on the D17 list; `details.field`.
+    AiModelDisallowed,
+    /// `details.kind`: `unregistered`, `no_key` or `endpoint_blocked`.
+    AiEndpointInvalid,
+    /// The conversation became read-only (a new work context); start a new one.
+    AiConversationReadOnly,
+    /// The provider in use changed since this conversation's last run;
+    /// resend with `ack_provider_id`. `details.provider`.
+    AiProviderChanged,
+    /// The caller already has a run queued or running.
+    AiRunInProgress,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -182,7 +199,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 65] = [
+    pub const ALL: [ErrorCode; 72] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -248,6 +265,13 @@ impl ErrorCode {
         Self::ConceptLabelTaken,
         Self::RuntimeContextClosed,
         Self::RuntimeClientTaken,
+        Self::AiUnavailable,
+        Self::AiProviderError,
+        Self::AiModelDisallowed,
+        Self::AiEndpointInvalid,
+        Self::AiConversationReadOnly,
+        Self::AiProviderChanged,
+        Self::AiRunInProgress,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -317,6 +341,13 @@ impl ErrorCode {
             Self::ConceptLabelTaken => "concept_label_taken",
             Self::RuntimeContextClosed => "runtime_context_closed",
             Self::RuntimeClientTaken => "runtime_client_taken",
+            Self::AiUnavailable => "ai_unavailable",
+            Self::AiProviderError => "ai_provider_error",
+            Self::AiModelDisallowed => "ai_model_disallowed",
+            Self::AiEndpointInvalid => "ai_endpoint_invalid",
+            Self::AiConversationReadOnly => "ai_conversation_read_only",
+            Self::AiProviderChanged => "ai_provider_changed",
+            Self::AiRunInProgress => "ai_run_in_progress",
         }
     }
 
@@ -382,6 +413,10 @@ impl ErrorCode {
             Self::FormInvalid => 422,
             Self::ConceptLabelTaken => 409,
             Self::RuntimeContextClosed | Self::RuntimeClientTaken => 409,
+            Self::AiUnavailable => 503,
+            Self::AiProviderError => 502,
+            Self::AiModelDisallowed | Self::AiEndpointInvalid => 422,
+            Self::AiConversationReadOnly | Self::AiProviderChanged | Self::AiRunInProgress => 409,
         }
     }
 
@@ -393,6 +428,8 @@ impl ErrorCode {
                 | Self::ExecutionInProgress
                 | Self::SearchUnavailable
                 | Self::SearchNotCaughtUp
+                | Self::AiProviderError
+                | Self::AiRunInProgress
         )
     }
 
@@ -463,6 +500,11 @@ impl ErrorCode {
             Self::FormPublishBlocked => &[AskHuman],
             Self::ConceptLabelTaken => &[FixInput, AskHuman],
             Self::RuntimeContextClosed | Self::RuntimeClientTaken => &[AskHuman],
+            Self::AiUnavailable | Self::AiModelDisallowed | Self::AiEndpointInvalid => &[AskHuman],
+            Self::AiProviderError => &[WaitAndRetry],
+            Self::AiConversationReadOnly => &[AskHuman, Stop],
+            Self::AiProviderChanged => &[AskHuman],
+            Self::AiRunInProgress => &[WaitAndRetry],
         }
     }
 }

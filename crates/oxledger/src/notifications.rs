@@ -1054,19 +1054,36 @@ pub struct NotificationList {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct NotificationItem {
     pub id: Uuid,
-    /// `issue` (`ai_budget` arrives with M1.10).
+    /// `issue` or `ai_budget` (design 05 §3.13.4, site administrators only).
     pub kind: String,
     pub read: bool,
-    /// watching, assigned, author, agent_on_behalf, triage_decided.
+    /// watching, assigned, author, agent_on_behalf, triage_decided; `ai_budget`.
     pub reasons: Vec<String>,
     /// When the first and the latest event of this row arrived.
     pub first_at: DateTime<Utc>,
     pub last_at: DateTime<Utc>,
-    pub issue: NotificationIssue,
+    /// Set for `kind = issue`, null for `ai_budget`.
+    pub issue: Option<NotificationIssue>,
+    /// Set for `kind = ai_budget`: the month's AI spending crossed 80% or 100%.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_budget: Option<AiBudgetNotice>,
     /// The newest readable events (at most 3), newest first.
     pub events: Vec<NotificationEvent>,
     /// Readable events of this row not in `events`.
     pub more_events: u32,
+}
+
+/// An `ai_budget` notification (§3.13.4): amounts are read now, not stored.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AiBudgetNotice {
+    /// `YYYY-MM`.
+    pub month: String,
+    /// 80 or 100 (percent).
+    pub threshold: i32,
+    /// Spent this month so far, USD as a decimal string.
+    pub spent_usd: String,
+    /// The current monthly budget, USD as a decimal string (null when unset).
+    pub budget_usd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1119,17 +1136,65 @@ pub struct PersonRef {
 #[derive(sqlx::FromRow)]
 struct NotifRow {
     id: Uuid,
-    issue_id: Uuid,
+    kind: String,
+    issue_id: Option<Uuid>,
     event_ids: Vec<Uuid>,
     event_reasons: Vec<String>,
+    payload: Option<Json>,
     first_at: DateTime<Utc>,
     last_at: DateTime<Utc>,
     read_at: Option<DateTime<Utc>>,
 }
 
 const NOTIF_SELECT: &str =
-    "SELECT n.id, n.issue_id, n.event_ids, n.event_reasons, n.first_at, n.last_at, n.read_at
+    "SELECT n.id, n.kind, n.issue_id, n.event_ids, n.event_reasons, n.payload,
+        n.first_at, n.last_at, n.read_at
  FROM notifications n";
+
+/// An `ai_budget` row: only an active site administrator reads it (it was
+/// sent to the administrators of the time, §3.13.4).
+async fn render_budget(
+    conn: &mut PgConnection,
+    rc: &Recipient,
+    row: &NotifRow,
+) -> Result<Option<NotificationItem>> {
+    let admin: Option<bool> = sqlx::query_scalar(
+        "SELECT is_admin FROM principals WHERE id = $1 AND kind = 'user' AND status = 'active'",
+    )
+    .bind(rc.ctx.principal_id())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if admin != Some(true) {
+        return Ok(None);
+    }
+    let p = row.payload.clone().unwrap_or(Json::Null);
+    let month = p["month"].as_str().unwrap_or_default().to_string();
+    let threshold = p["threshold"].as_i64().unwrap_or(0) as i32;
+    let (spent, budget): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT (SELECT spent_usd::text FROM ai_budget_months WHERE to_char(month, 'YYYY-MM') = $1),
+                (SELECT monthly_budget_usd::text FROM ai_settings)",
+    )
+    .bind(&month)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Some(NotificationItem {
+        id: row.id,
+        kind: "ai_budget".into(),
+        read: row.read_at.is_some(),
+        reasons: vec!["ai_budget".into()],
+        first_at: row.first_at,
+        last_at: row.last_at,
+        issue: None,
+        ai_budget: Some(AiBudgetNotice {
+            month,
+            threshold,
+            spent_usd: spent.unwrap_or_else(|| "0".into()),
+            budget_usd: budget,
+        }),
+        events: Vec::new(),
+        more_events: 0,
+    }))
+}
 
 #[derive(sqlx::FromRow)]
 struct ReadEvent {
@@ -1147,7 +1212,13 @@ async fn render(
     row: &NotifRow,
     full: bool,
 ) -> Result<Option<NotificationItem>> {
-    let Some(issue) = issue_row(&mut *conn, row.issue_id).await? else {
+    if row.kind == "ai_budget" {
+        return render_budget(&mut *conn, rc, row).await;
+    }
+    let Some(issue_id) = row.issue_id else {
+        return Ok(None);
+    };
+    let Some(issue) = issue_row(&mut *conn, issue_id).await? else {
         return Ok(None);
     };
     if !rc.sees_issue(&issue) {
@@ -1241,7 +1312,7 @@ async fn render(
         reasons: union_reasons(reasons),
         first_at: row.first_at,
         last_at: row.last_at,
-        issue: NotificationIssue {
+        issue: Some(NotificationIssue {
             key,
             subject,
             project: NotificationProject {
@@ -1249,7 +1320,8 @@ async fn render(
                 key: pkey,
                 name: pname,
             },
-        },
+        }),
+        ai_budget: None,
         more_events: visible - shown.len() as u32,
         events: shown,
     }))
@@ -1264,15 +1336,8 @@ fn placeholder(row: &NotifRow) -> NotificationItem {
         reasons: Vec::new(),
         first_at: row.first_at,
         last_at: row.last_at,
-        issue: NotificationIssue {
-            key: String::new(),
-            subject: String::new(),
-            project: NotificationProject {
-                id: Uuid::nil(),
-                key: String::new(),
-                name: String::new(),
-            },
-        },
+        issue: None,
+        ai_budget: None,
         events: Vec::new(),
         more_events: 0,
     }
@@ -1343,8 +1408,8 @@ pub async fn list(app: &App, caller: AuthContext, q: &ListQuery) -> Result<Notif
     let mut next: Option<(DateTime<Utc>, Uuid)> = None;
     'scan: loop {
         let rows: Vec<NotifRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{NOTIF_SELECT} JOIN issues i ON i.id = n.issue_id
-             WHERE n.recipient_id = $1 AND n.kind = 'issue'
+            "{NOTIF_SELECT} LEFT JOIN issues i ON i.id = n.issue_id
+             WHERE n.recipient_id = $1
                AND ($2 = false OR n.read_at IS NULL)
                AND ($3::uuid IS NULL OR i.project_id = $3)
                AND ($4::timestamptz IS NULL OR (n.last_at, n.id) < ($4, $5))
@@ -1443,7 +1508,7 @@ async fn count_now(app: &App, caller: AuthContext) -> Result<(u32, bool)> {
     'scan: loop {
         let rows: Vec<NotifRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{NOTIF_SELECT}
-             WHERE n.recipient_id = $1 AND n.kind = 'issue' AND n.read_at IS NULL
+             WHERE n.recipient_id = $1 AND n.read_at IS NULL
                AND ($2::timestamptz IS NULL OR (n.last_at, n.id) < ($2, $3))
              ORDER BY n.last_at DESC, n.id DESC LIMIT 200"
         )))
@@ -1556,7 +1621,7 @@ async fn own_row(
 ) -> Result<NotifRow> {
     let id: Uuid = id.trim().parse().map_err(|_| not_found())?;
     let row: Option<NotifRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{NOTIF_SELECT} WHERE n.id = $1 AND n.recipient_id = $2 AND n.kind = 'issue' FOR UPDATE"
+        "{NOTIF_SELECT} WHERE n.id = $1 AND n.recipient_id = $2 FOR UPDATE"
     )))
     .bind(id)
     .bind(user)

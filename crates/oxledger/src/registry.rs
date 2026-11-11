@@ -375,7 +375,60 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<AgentOperation>,
         ),
     ]);
+    for t in &mut v {
+        if BUILTIN_TOOLS.contains(&t.name) {
+            t.allowed_methods = with_builtin(t.allowed_methods);
+        }
+    }
     v
+}
+
+/// The tools the built-in AI may call (design 05 §4.5). A tool added later
+/// is not open to it until it is listed here.
+pub const BUILTIN_TOOLS: [&str; 18] = [
+    "search",
+    "get",
+    "get_many",
+    "get_source",
+    "verify_citations",
+    "resolve",
+    "describe",
+    "describe_form",
+    "validate",
+    "view_list",
+    "view_run",
+    "triage_list",
+    "time_list",
+    "version_list",
+    "command_submit",
+    "changeset_get",
+    "changeset_list",
+    "operation_get",
+];
+
+const READERS_AND_BUILTIN: &[AuthMethod] = &[
+    AuthMethod::BrowserSession,
+    AuthMethod::AgentToken,
+    AuthMethod::LegacyApiKey,
+    AuthMethod::BuiltinRun,
+];
+const SESSION_AGENT_AND_BUILTIN: &[AuthMethod] = &[
+    AuthMethod::BrowserSession,
+    AuthMethod::AgentToken,
+    AuthMethod::BuiltinRun,
+];
+const AGENTS_AND_BUILTIN: &[AuthMethod] = &[AuthMethod::AgentToken, AuthMethod::BuiltinRun];
+
+fn with_builtin(m: &'static [AuthMethod]) -> &'static [AuthMethod] {
+    if m == READERS {
+        READERS_AND_BUILTIN
+    } else if m == SESSION_OR_AGENT {
+        SESSION_AGENT_AND_BUILTIN
+    } else if m == AGENTS {
+        AGENTS_AND_BUILTIN
+    } else {
+        panic!("no built-in variant of {m:?}")
+    }
 }
 
 /// MCP may only expose reads and proposals (§4.6).

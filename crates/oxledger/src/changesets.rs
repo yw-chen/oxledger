@@ -406,11 +406,13 @@ struct CsRow {
     group_id: Option<Uuid>,
     /// Design 05 §3.12.4: `depth` or `writes` when the chain limit sent it.
     chain_review: Option<String>,
+    /// `external_agent` or `builtin_ai` (design 05 §2.12, B-42).
+    origin: String,
 }
 
 const CS_COLS: &str =
     "id, context_project_id, proposer_id, on_behalf_of_id, delegation_id, context_id,
-                       current_version, state, created_at, expires_at, group_id, chain_review";
+                       current_version, state, created_at, expires_at, group_id, chain_review, origin";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct VerRow {
@@ -872,6 +874,19 @@ struct AgentWho {
     context: Uuid,
     delegator: Uuid,
     credential: Option<Uuid>,
+    /// The built-in AI's run (design 05 §3.13.1); `None` for a token.
+    run: Option<Uuid>,
+}
+
+impl AgentWho {
+    /// The changeset origin of this agent's proposals (B-42).
+    fn origin(&self) -> &'static str {
+        if self.run.is_some() {
+            "builtin_ai"
+        } else {
+            "external_agent"
+        }
+    }
 }
 
 /// The agent behind `caller`, re-checked now (token, context, client,
@@ -893,6 +908,7 @@ async fn agent_who(conn: &mut PgConnection, caller: AuthContext) -> Result<Agent
         context: a.context_id,
         delegator: a.delegator_id,
         credential: caller.credential_id(),
+        run: caller.run_id(),
     })
 }
 
@@ -1522,19 +1538,31 @@ async fn agent_write_tx(
         }
         _ => None,
     };
-    let reason = match (submit, &decision, chain) {
-        (Some(false), policy::Decision::Direct, None) => {
+    // Design 05 §3.13.3 (Q3): after the chain limit, a built-in AI run that
+    // read the user's time turns `direct` into `review` (never `off`).
+    let time_taint = match (submit, &decision, chain, who.run) {
+        (Some(false), policy::Decision::Direct, None, Some(run)) => {
+            crate::ai::runner::run_time_tainted(&mut *conn, run).await?
+        }
+        _ => false,
+    };
+    let reason = match (submit, &decision, chain, time_taint) {
+        (Some(false), policy::Decision::Direct, None, false) => {
             return agent_direct(
                 &mut *conn, caller, &who, &deleg, &parsed, &sources, request_id,
             )
             .await;
         }
-        (Some(false), _, Some(_)) => "agent_chain",
-        (Some(false), _, None) => "policy",
+        (Some(false), _, Some(_), _) => "agent_chain",
+        (Some(false), policy::Decision::Direct, None, true) => "time_taint",
+        (Some(false), _, None, _) => "policy",
         _ => "requested",
     };
     if chain.is_some() {
         quota::log_chain_review(&mut *conn, who.agent, who.context, deleg.id).await?;
+    }
+    if time_taint {
+        quota::log_time_taint_review(&mut *conn, who.agent, who.context, deleg.id).await?;
     }
 
     // Steps 5, 6 and 9: the simulation as the agent. Rejections are not stored.
@@ -1589,6 +1617,7 @@ async fn agent_write_tx(
         (None, None) => None,
     };
     let stored = StoreVersion {
+        origin: who.origin(),
         group_id,
         cs_id,
         version,
@@ -1931,6 +1960,8 @@ async fn chain_record(
 }
 
 struct StoreVersion<'a> {
+    /// `external_agent`, or `builtin_ai` for the built-in AI (B-42).
+    origin: &'a str,
     group_id: Option<Uuid>,
     cs_id: Uuid,
     version: i32,
@@ -1974,7 +2005,7 @@ async fn store_version(
         document: &body,
         expires_at: s.expires_at,
         ceiling: s.ceiling,
-        origin: "external_agent",
+        origin: s.origin,
         proposer: s.proposer,
         delegation: s.delegation,
         context: s.context,
@@ -1991,7 +2022,7 @@ async fn store_version(
         sqlx::query(
             "INSERT INTO changesets (id, origin, context_project_id, proposer_id, on_behalf_of_id,
                                      delegation_id, context_id, current_version, state, expires_at, group_id)
-             VALUES ($1, 'external_agent', $2, $3, $4, $5, $6, 1, 'proposed', $7, $8)",
+             VALUES ($1, $9, $2, $3, $4, $5, $6, 1, 'proposed', $7, $8)",
         )
         .bind(s.cs_id)
         .bind(s.context_project_id)
@@ -2001,6 +2032,7 @@ async fn store_version(
         .bind(s.context)
         .bind(s.expires_at)
         .bind(s.group_id)
+        .bind(s.origin)
         .execute(&mut *conn)
         .await?;
     }
@@ -2641,8 +2673,15 @@ pub async fn validate_command(
         && chain_exceeded(&mut tx, who.agent, &parsed.chain_issues())
             .await?
             .is_some();
+    // Design 05 §3.13.3: so does a built-in AI run's time taint.
+    let taint = match who.run {
+        Some(run) if decision == policy::Decision::Direct && !chain => {
+            crate::ai::runner::run_time_tainted(&mut tx, run).await?
+        }
+        _ => false,
+    };
     let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
-    let review = decision == policy::Decision::Review || chain;
+    let review = decision == policy::Decision::Review || chain || taint;
     let r = crate::forms::outcome(&mut tx, &parsed, sim, review).await;
     tx.rollback().await?;
     r
@@ -3653,6 +3692,7 @@ async fn owner_version_in(
         &mut *conn,
         parsed,
         &StoreVersion {
+            origin: &cs.origin,
             group_id: cs.group_id,
             cs_id: id,
             version,

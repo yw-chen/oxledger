@@ -1397,6 +1397,16 @@ type ContextRow = (
 );
 
 pub async fn list_contexts(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<ContextView>> {
+    list_contexts_of(pool, ctx, "external").await
+}
+
+/// [`list_contexts`] for runtimes of `kind` (`external`, or `builtin` for
+/// the built-in AI's new context, design 05 §3.13.7).
+pub(crate) async fn list_contexts_of(
+    pool: &PgPool,
+    ctx: &AuthContext,
+    kind: &str,
+) -> Result<Vec<ContextView>> {
     let (user, _) = ctx.require_human_session()?;
     let mut conn = pool.acquire().await?;
     // A context is the runtime's (design 05 §3.12.2); `agent_principal_id`
@@ -1409,9 +1419,10 @@ pub async fn list_contexts(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<Conte
                        WHERE p.runtime_id = w.runtime_id
                        ORDER BY p.agent_principal_id = w.created_for_principal_id DESC, p.created_at, p.agent_principal_id
                        LIMIT 1) ap ON true
-         WHERE rt.sponsor_user_id = $1 AND rt.kind = 'external' ORDER BY w.created_at DESC",
+         WHERE rt.sponsor_user_id = $1 AND rt.kind = $2 ORDER BY w.created_at DESC",
     )
     .bind(user)
+    .bind(kind)
     .fetch_all(&mut *conn)
     .await?;
     let mut out = Vec::with_capacity(rows.len());

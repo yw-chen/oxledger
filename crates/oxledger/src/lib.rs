@@ -2,6 +2,7 @@
 //! oxledger server: PostgreSQL storage, tantivy search, MCP and HTTP.
 
 pub mod agents;
+pub mod ai;
 pub mod ai_team;
 pub mod api;
 pub mod audience;

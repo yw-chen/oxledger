@@ -145,3 +145,32 @@
 - `agent_write_log.kind` 的 CHECK 重建為既有值的聯集再加 `chain_review`、`time_taint_review`（後者給 M1.10）。
 - 新 API（前端要接）：`GET|POST /ai-team`、`GET /ai-team/templates`、`GET /ai-team/{id}`、`GET /ai-team/{id}/activity`、`POST /ai-team/{id}/pause|resume|retire|credentials`、`GET /me/agent-runtimes`、`PATCH /me/agent-runtimes/{id}`、`POST /me/agent-runtimes/{id}/new-context|retire`。`POST /delegations` 新增 `agent_principal_id`（和 `agent_client_id` 擇一）；`/agent-contexts*` 保留為相容別名。
 
+## 0030_ai_chat（M1.10，右欄 AI 對話）
+
+- **不 bump `security_epoch`**：不動角色、權限、成員，不新增 principal（升級測試驗證）。既有 agent 脈絡與 token 不受影響。
+- **預設關閉**：`ai_settings` 一列，`enabled = false`、沒有 provider、沒有月預算；內建 client `oxledger-ai` 建好但停用。管理員在「AI 設定」頁加 provider、按「測試連線」、填月預算後才能啟用。
+- **升級前要處理**：如果 02 時代有人建了**一般** agent client 叫 `oxledger-ai`，0030 會中止（`agent_clients already has a client named oxledger-ai; rename it before upgrading`）。先改名再升級：
+  ```sql
+  UPDATE agent_clients SET name = 'oxledger-ai (02)' WHERE name = 'oxledger-ai' AND NOT builtin;
+  ```
+  中止時 0030 整個沒有套用（交易回滾），改名後重跑即可。
+- `changesets` 0009 的 `CHECK (origin = 'external_agent')` 換成具名的 `changesets_origin_agent_ck`（`external_agent`、`builtin_ai`）與 `changesets_builtin_ctx_ck`。
+- **建置**：要連 provider 的建置加 feature `ai`（`cargo build --features ai`；用既有的 hyper、hyper-rustls、rustls ring、webpki-roots，沒有新 crate）。沒有 `ai` 的建置照常啟動，AI 頁面與 API 都在，但 run 會立刻以 `ai_unavailable`（`not_configured`）結束，`/admin/ai/endpoints` 的 `transport` 是 `false`。
+- **部署設定（環境變數，重啟後生效）**：
+  - `OXLEDGER_AI_ENDPOINT_<NAME>=https://host[:port][/path]`：登記一個端點。`<NAME>` 要符合 `^[A-Z][A-Z0-9_]{0,39}$`。URL 不能有帳密（`user:pass@`）、query、fragment；只收 http／https。Anthropic 端點填到主機（程式加 `/v1/messages`）；OpenAI 相容端點填到 `/v1`（程式加 `/chat/completions`）。
+  - `OXLEDGER_AI_KEY_<NAME>`：該端點的 key（Anthropic 必填；OpenAI 相容可省略，省略就不送 `Authorization`）。key 只在記憶體，不進 DB、日誌、錯誤、回應。
+  - `OXLEDGER_AI_CA_FILE_<NAME>`：PEM 檔，內部 CA 憑證（可多張），和內建的 webpki-roots 一起信任。讀不到或格式錯，該端點不登記。
+  - `OXLEDGER_AI_ALLOW_HTTP=1`：允許 `http://` 連到 loopback 與私有位址（例如本機 Ollama）。**http 到公網一律拒絕**（開關打開也一樣）；https 到私有與 loopback 位址不需要這個開關。link-local、雲端 metadata（169.254.169.254 等）、0.0.0.0、multicast、site-local `fec0::/10`、Teredo 一律拒絕，開關打開也一樣。IPv4-mapped IPv6 照 IPv4 判斷；NAT64（`64:ff9b::/96`）、IPv4-compatible（`::/96`）、IPv4-translated（`::ffff:0:0:0/96`）、6to4（`2002::/16`）照裡面的 IPv4 判斷，而且只有公網位址能過（本機或私有的 provider 請直接登記它的 IPv4／IPv6 位址或主機名）。
+  - `OXLEDGER_AI_D17_EXTRA_HOSTS`、`OXLEDGER_AI_D17_EXTRA_MODELS`：逗號分隔，追加到內建的 D17 主機與模型名清單（大小寫不分）。命中主機清單的端點啟動時不登記；命中模型名的 provider 存不進去（`ai_model_disallowed`）。
+  - 啟動時 log 會列出登記的端點名稱與沒登記的原因（不含 URL 與 key）。
+- **每次連線**都重新解析主機、檢查所有位址、釘在驗過的 IP 連線（防 DNS rebinding）；不跟隨重導向；回應上限 8 MiB。
+- 背景工作：每 15 秒清租約過期的 run（租約 30 秒、每 10 秒續期；程序死掉的 run 最慢 45 秒內結束成 `failed`／`interrupted` 並釋放預算保留），每小時清保存期限到期的對話內容（預設 30 天；清除後 90 天刪列，`ai_runs` 保留成本與計數）。
+- **改使用中 provider 的端點或模型**會把 AI 關掉（`ai_settings.enabled = false`，事件 `settings_updated`，`reason: provider_config_changed`），要重新「測試連線」再啟用；既有對話下一則要確認 `ai_provider_changed`（`ai_conversations.last_provider_config_at` 記住對話上次用的設定版本）。
+- 每次模型請求的輸入估算（ASCII 字元 ¼ token、其他字元 1 token）上限 16 000：超過時從最舊的頁面脈絡與工具結果開始截短；仍放不下就不送，run 以 `budget_exhausted`（`run.finished` 的 `error.kind = request_input_limit`）結束。
+- 結算：provider 回報的用量照實記錄，即使超過保留額（超過時月預算照實累計，可能觸發 100% 通知）；只有估算的用量（沒回 usage）以保留額為上限。
+- 新 API（前端要接）：
+  - 使用者：`GET /ai/status`、`POST /ai/assistant`、`POST /ai/assistant/extend`、`GET|POST /ai/conversations`、`DELETE /ai/conversations/{id}`、`GET|POST /ai/conversations/{id}/messages`（POST 回 202 與 `stream_url`，要 `Idempotency-Key`）、`GET /ai/runs/{id}`、`GET /ai/runs/{id}/stream`（SSE，支援 `Last-Event-ID`）、`POST /ai/runs/{id}/cancel`。
+  - 管理員：`GET|PUT /admin/ai/settings`、`GET /admin/ai/endpoints`、`GET|POST /admin/ai/providers`、`PATCH /admin/ai/providers/{id}`、`POST /admin/ai/providers/{id}/test`、`POST /admin/ai/providers/{id}/retire`、`GET /admin/ai/usage`、`GET /admin/ai/events`。
+  - `POST /me/agent-runtimes/{id}/new-context` 的 `carry_over_delegations: true` 現在可用（M1.9 是拒絕）。
+  - 新通知種類 `ai_budget`（月預算 80%、100%，給啟用中的站台管理員）。
+

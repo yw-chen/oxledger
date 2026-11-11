@@ -13,6 +13,10 @@ test-support = []
 # ring provider) and RS256 for the App JWT. Off by default; without it the
 # webhook still works and the worker uses `client::NoGithub`.
 github = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:webpki-roots", "dep:ring", "dep:http-body-util"]
+# The built-in AI chat's provider client (design 05 §3.13.2 P-7): the same
+# HTTPS stack as `github`, no new crate. Off by default; without it a run
+# ends with `ai_unavailable` (`not_configured`).
+ai = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:webpki-roots", "dep:http-body-util"]
 
 [dependencies]
 anyhow = "1.0.104"

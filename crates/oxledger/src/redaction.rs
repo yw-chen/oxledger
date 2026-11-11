@@ -646,7 +646,10 @@ async fn may_redact(conn: &mut PgConnection, caller: AuthContext, project: Uuid)
 ///   its version's snapshot; an undo inherits the reverted one's);
 /// * `execution_version_changes` likewise for versions of the project.
 pub async fn derived(conn: &mut PgConnection, project: Uuid, actor: Uuid) -> Result<Derived> {
-    let changesets = "SELECT id FROM changesets WHERE context_project_id = $1
+    // Design 05 §3.13.7: built-in AI messages drawn from the project lose
+    // their content in the same transaction (by project, erring wide).
+    crate::ai::chat::redact_project(&mut *conn, project).await?;
+    let changesets ="SELECT id FROM changesets WHERE context_project_id = $1
                       UNION SELECT changeset_id FROM changeset_version_source_projects WHERE project_id = $1";
     let contents = sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE proposal_contents pc

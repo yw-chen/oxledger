@@ -476,3 +476,44 @@
   - T-M1-66a 只測代表子集（筆記、欄位、建單三種公開寫入，以及帶 evidence 的筆記），不是 02 E4w 全集。
   - 升級測試沒有帶未套用的提案。
   - 前端未接。
+
+## M1.10 疑點與照建議的做法
+
+- M1.10-D1 **權限與 epoch**：0030 不動角色、權限、成員，不新增或改狀態任何 principal，不 bump `security_epoch`（`m1_10_upgrade` 用 `run_to(29)`→`run_to(30)` 驗證）。內建 AI 沒有新權限：它的範圍＝使用者的委派 ∩ 使用者自己的權限，和外部 agent 走同一套檢查。
+- M1.10-D2 **`AuthMethod::BuiltinRun`**：只能由 `runner` 用 `AuthContext::builtin_run` 建；HTTP（cookie、Bearer）與 MCP 都建不出來。`db::effective` 對它另外要求：run 是 `running`、租約有效、沒有 `cancel_requested_at`、對話開著沒刪、脈絡 active、principal 沒暫停或退役、client 啟用且是 builtin、`ai_settings.enabled`。委派交集、受眾、鏈上限、暫停、配額照常。
+- M1.10-D3 **固定清單 CHECK**：`changesets` 的 0009 `CHECK (origin = 'external_agent')` 依定義找到後刪掉，改成具名的 `changesets_origin_agent_ck`（`external_agent`、`builtin_ai`，是既有值的聯集）；新表的清單與 `ai::RUN_STATES` 等常數由 `fixed_lists_match_the_program` 比對。
+- M1.10-D4 **0030 與既有的 `oxledger-ai` client**：02 的一般 client 叫 `oxledger-ai` 時 0030 中止並指向 upgrade-notes.md（改名後再跑即可，測試驗證）；已經是 builtin 的（只有 M1.9 測試資料庫）直接接手。測試發現：sqlx 的 migration 失敗後，advisory lock 可能留在連線池的某條連線上，直到它閒置逾時（約 10 分鐘）才釋放；同一個連線池立刻重跑會等那麼久。伺服器遇到 migration 失敗本來就結束程序，不受影響；測試改成重開連線池再跑。
+- M1.10-D5 **`user_column_guard`** 也裝在 `ai_runs.user_id`、`ai_usage_daily.user_id`（契約只寫 `ai_conversations.user_id`）。
+- M1.10-D6 **使用者畫面的重驗**：讀對話時用「使用者讀得到的每個專案、agent 會有的範圍」重驗（私有 issue、私有備註、受限欄位依 agent 規則遮掉，使用者自己畫面也一樣），不是用目前的委派。撤銷委派只讓送給模型的歷史變成佔位；使用者仍讀得到的內容在畫面上照常顯示。
+- M1.10-D7 **把 issue 改私有、移出專案會隔離脈絡**：這兩種變動都會 bump 該專案的 epoch（既有 trigger），內建 AI 的脈絡因此 quarantined，下一次送出回 `context_unavailable`；使用者要「換新脈絡（帶委派）」後開新對話，舊對話唯讀。T-M1-105 的「再送下一則」因此在 run 層用「撤銷委派」驗證歷史佔位，在畫面層用「改私有」驗證。
+- M1.10-D8 **輸入上限**：每次請求前檢查累計輸入（provider 回報或估算）是否已達 50 000；不把下一個請求以每字元 1 token 預先加進去（工具 schema 就上萬字元，會讓 run 在第二次呼叫停下）。測試時發現並修正。單次請求上限與結算見 M1.10-D14。
+- M1.10-D9 **錯誤對外的樣子**：provider 錯誤只回 `{code: ai_provider_error, kind: timeout|http_status|malformed, status?}`；位址被擋回 `ai_unavailable`（`endpoint_blocked`）；沒有 provider 原文、key、URL 或位址。「測試連線」只能測已登記的端點，回 `connect`／`timeout`／`http_status`／`malformed`／`endpoint_blocked`／`not_configured`，不會變成掃描內網的工具。
+- M1.10-D10 **斷路器**：同一 provider＋model 連續 5 次失敗，或 60 秒內 ≥20 次呼叫且失敗 ≥50%，開 60 秒（01 §16.3）；開著時送出回 `ai_unavailable`（`circuit_open`）。位址被擋與沒有傳輸層不計入。只存在記憶體，多程序各自計算。
+- M1.10-D11 **沒有 feature `ai` 的建置**：API、管理頁、對話都在；run 立即以 `ai_unavailable`（`not_configured`）結束，串流只回 `resync`。`/admin/ai/endpoints` 的 `transport` 告訴前端。
+- M1.10-D12 **其他預設**（詳見 decisions.tsv）：退役使用中的 provider 會關掉 AI；Anthropic 沒 key 顯示為 `endpoint_unregistered`；解析不到的端點要勾 org_account_attested；設定 PUT 只有啟用與換 provider 要 step-up；歷史只在 run 開始時重驗；月預算 100% 在每輪工具後檢查；沒有本程序 hub 的取消直接結束（用 run 已記錄的用量結算，見 D14）；委派快到期只放在 status；保存期限每小時清；第三條串流 `rate_limited`；延長＝撤銷（reason `extended`）再建。
+- M1.10-D13 **待使用者決定**：
+  - 斷路器狀態只在記憶體（多程序部署各自計算）；要不要存 DB。
+  - 內建 AI 讀頁面脈絡時，issue 帶 `recent_notes`（依 agent 規則過濾）；要不要只帶欄位。
+  - provider 文件與實作的差異見 `m1-10-provider-notes.md`（OpenAI 的 `max_tokens` 已棄用，實作仍送 `max_tokens`；Anthropic `refusal`、`pause_turn` 一律當作這一輪結束）。
+- M1.10-D14 **獨立驗證後的修正**：
+  - D1：頁面脈絡的來源專案也併進該 run 回覆的 `source_projects`；D12 另外把「任何訊息引用該專案的 run」的所有 assistant 訊息清空；`chat::unreadable` 把已清空（parts 為 NULL）的 tool 訊息視為讀不到，整個 run 的回覆變佔位。
+  - D2（Q4）：`ai_conversations.last_provider_config_at` 記住對話上次用的 provider 設定版本（`config_changed_at`）；同一個 provider 但端點或模型改過，也要確認 `ai_provider_changed`。改使用中 provider 的端點或模型會把 AI 關掉（事件 `settings_updated`、`reason: provider_config_changed`），要重新測試連線再啟用。
+  - D3：單次請求輸入估算：ASCII 字元算 ¼ token、其他字元（中文等）算 1 token，上限 16 000（每字元 1 token 會讓系統提示加工具 schema 本身就超過 16k，所有帶工具的 run 都送不出去；測試時發現並改）；超過時頁面脈絡與工具結果從最舊的開始截短（尾端加 `[… cut: over the request input limit]`，使用者的文字與工具呼叫不截）；仍放不下就不送，run 以 `budget_exhausted` 結束，`run.finished` 帶 `error.kind = request_input_limit`（沿用契約固定的 stop_reason 清單，不新增）。結算：provider 回報的用量照實記錄（可超過保留額，月預算照實累計並觸發 100% 通知）；只有估算用量以保留額為上限（契約 V15）。
+  - D4：沒有本程序 hub 的取消，用 DB 上 run 已記錄的 `input_tokens`／`output_tokens`／`usage_estimated` 結算（同清掃）；執行中的 run 每輪更新用量時限 `state IN ('queued','running')`，已被別處結束的 run 不再被改寫。
+  - D5：NAT64 `64:ff9b::/96`、IPv4-compatible `::/96`、IPv4-translated `::ffff:0:0:0/96`、6to4 `2002::/16` 依內含的 IPv4 判斷，且只有公網能過（內含 loopback／私有也擋：本機 provider 應直接登記自己的位址）；`fec0::/10`、NAT64 local-use `64:ff9b:1::/48`、Teredo `2001::/32` 一律擋。
+  - D6：`db::effective` 的 BuiltinRun 在可寫交易中 `FOR SHARE OF r`（取消、清掃、run 結束要等寫入交易提交）；READ ONLY 交易不能鎖列，讀取路徑不加。租約 30 秒、每 10 秒續期、每 15 秒清掃：程序死掉後最慢 30＋15＝45 秒結束（≤ 60 秒），單元測試 `a_dead_run_ends_within_a_minute` 檢查。
+  - 工具呼叫前的測試注入點 `ai.before_tool`（只在 feature `test-support`），讓測試在 runner 自己的檢查之後改 DB，驗證工具呼叫本身的憑證重驗。
+  - 已知（不改）：`time_list` 的來源是脈絡的所有委派專案，撤銷任一個委派都會讓歷史裡的工時結果變佔位。
+
+### 測試
+
+- `m1_10_ai.rs`（13 個，不需要 feature）：`t_m1_115_defaults_and_no_delegation`、`t_m1_112_113_admin_providers_and_keys`、`t_m1_114_119_endpoint_addresses`、`t_m1_108_conversations_are_private`、`t_m1_101_page_context_takes_references_only`、`t_m1_107_delete_and_retention`、`t_m1_105_106_recheck_and_d12`、`t_m1_116_new_context_carries_delegations`、`t_m1_134_extend_delegations`、`t_m1_109_rate_and_budget_refusals`、`t_m1_131_provider_change_needs_ack`、`fixed_lists_match_the_program`、`t_m1_125_conversation_user_guard`。
+- `m1_10_ai_run.rs`（22 個，feature `ai`；測試內的假 provider 兩種協定、假 DNS、攻擊者伺服器）：`t_m1_117_both_protocols_same_events`（含 T-M1-131 歷史送到 B）、`t_m1_115_118_no_tools`、`t_m1_100_105_canaries_never_reach_the_model`、`t_m1_102_103_writes_follow_the_policies`、`t_m1_102_audience_and_injection`（含 T-M1-104）、`t_m1_122_time_taint`、`t_m1_109_budget_reservations_and_notifications`（10 人搶最後 0.30 USD）、`t_m1_110_stream_reconnect_resync_cancel`、`t_m1_111_119_120_provider_errors_and_breaker`、`t_m1_119_dns_rebinding`、`t_m1_129_lease_sweep`；獨立驗證後加的 12 個：`iv1_d12_clears_a_reply_from_page_context`、`iv2_q4_endpoint_change_in_place`、`iv3_request_input_is_capped`、`iv3b_a_request_that_cannot_fit_is_not_sent`、`iv4_cancel_without_local_hub_keeps_usage`、`iv5_ip_spellings_are_normalised`、`iv6_time_taint_cleared_by_placeholder_whole_run`、`iv7_other_time_and_restricted_field_canaries`、`iv8_not_found_is_identical`、`iv_m6_m8_m10_each_tool_call_rechecks_the_run`（取消、租約過期、run 不在 running、AI 關閉、client 停用、client 不是 builtin，各自在工具呼叫前改 DB，驗證回 `unauthenticated` 且沒寫入）、`iv_m9_tools_not_offered_never_run`。
+- `m1_10_upgrade.rs`（2 個）：`upgrade_0030_moves_no_epoch`、`upgrade_0030_refuses_an_ordinary_client_named_oxledger_ai`。
+- 程式內單元測試：SSE 解析、兩種協定的編解碼、端點 URL 解析、位址分類（含 `ipv6_embedded_ipv4_forms`）、歷史重組、斷路器、工具摘要、租約時間（`a_dead_run_ends_within_a_minute`）。
+- 變異測試（手動暫改程式後確認新測試失敗，再還原）：M6（不查 `cancel_requested_at`）、M8（不查 `cl.enabled`／`cl.builtin`／`s.enabled`）、M10（不查 `state = 'running'`／租約）、M9（沒提供的工具照樣執行）。
+- 沒測到：
+  - T-M1-129 用「把租約改成過期再清掃」模擬程序死掉，沒有真的殺程序。
+  - T-M1-130 是前端元件測試，後端不做。
+  - key 不進日誌：只檢查了錯誤、回應、DB 與 `Debug` 輸出，沒有攔截 tracing 輸出。
+  - 真的 provider 沒有跑（見 `m1-10-manual-check.md`）。前端未接。

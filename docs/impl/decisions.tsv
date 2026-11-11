@@ -479,3 +479,28 @@ date	stage	decision	why	alternatives	source
 2026-11-11	M1	AI 團隊可見性：站台管理員看全部外部角色（含未委派）；非贊助人要在委派專案是成員（本人或群組），公開專案非成員不算；內建 AI 在列表與詳細頁都排除到 M1.10（獨立驗證 D8）	§3.12.1 事故處理要管理員看全部；§3.12.5「看得到該專案的成員」；契約沒寫內建，先取較窄的	管理員照一般規則；讀得到就算	crates/oxledger/src/ai_team.rs
 2026-11-11	M1	恢復時重查斷路器，脈絡停用中回 agent_suspended（獨立驗證 D9）	恢復不能繞過斷路器	只查隔離	crates/oxledger/src/ai_team.rs
 2026-11-11	M1	T-M1-66a 的 evidence 情況用兩個角色都讀得到的 issue 當 evidence（獨立驗證 D10）	讀不到的 evidence 在第 7 步就回 source_unverifiable，到不了受眾檢查，這是設計	改檢查順序	crates/oxledger/tests/m1_9_ai_team.rs
+2026-11-11	M1	M1.10 端點只從環境變數登記（OXLEDGER_AI_ENDPOINT_/KEY_/CA_FILE_<NAME>），API 只收登記名稱；每次連線重新解析並釘在驗過的 IP；不跟隨重導向	Q1、P-3、V1；DNS rebinding 與 SSRF	API 收 URL；連線池	crates/oxledger/src/ai/config.rs、net.rs、http.rs
+2026-11-11	M1	退役使用中的 provider 會把 AI 關掉（enabled=false、active_provider_id=NULL）	沒有可用 provider 時不能維持啟用	拒絕退役使用中的 provider	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	Anthropic 端點沒有 key 時，啟用阻擋原因用 endpoint_unregistered（建立時回 ai_endpoint_invalid kind no_key）	契約的阻擋清單沒有 no_key；對管理員來說都是部署設定沒做完	新增阻擋原因 no_key	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	解析不到位址的端點視同外部服務，要勾 org_account_attested	保守：無法證明是內部的就當外部（P-6）	視同內部	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	PUT /admin/ai/settings 只有在啟用或換 provider 時要 step-up；沒有獨立的 activate 路由	關閉與調預算要能立刻做；啟用與換 provider 會把資料送到外部	一律 step-up；另開 activate	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	對話歷史只在 run 開始時重驗；run 進行中撤權由每次工具呼叫的權限檢查擋	一個 run 最多 3 分鐘；工具本身每次重驗	每輪模型請求前都重驗	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	使用者讀對話時用「他能讀的所有專案下 agent 會有的範圍」重驗，不是用目前的委派；撤銷委派只影響送給模型的歷史	P2：對話是使用者自己的；撤銷委派不改使用者能讀的東西	用目前委派重驗使用者畫面	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	run 的輸入上限檢查用目前累計的輸入 token（provider 回報或估算）是否達 50 000，不把下一個請求以每字元 1 token 先加進去	工具 schema 本身就上萬字元，先加會讓幾乎每個 run 在第二次呼叫就停；結算不會超過保留額（V15）	每次請求前加上估算	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	月預算 100% 在每輪工具呼叫後檢查，到了就以 budget_exhausted 結束（成功狀態）	run 進行中不能無限花費；已做的寫入保留	只在送出時檢查	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	取消時如果本程序沒有該 run 的執行（hub），直接把 run 結束成 canceled	queued 或別的程序的 run 也要能立刻停；別的程序下一步會看到 cancel_requested_at	只設旗標等執行者	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	委派快到期（剩 7 天內）只放在 /ai/status 的 expiring_soon，不另發 SSE notice	前端打開右欄就會讀 status	每個 run 發 notice	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	保存期限清除每小時跑一次（和租約清掃同一個背景工作）	契約沒寫頻率；30 天的保存期限不需要更密	每天一次	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	同一個 run 第三條串流回 rate_limited（kind streams）	契約寫最多兩條，沒寫錯誤碼	409	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	延長委派：撤銷舊委派（reason extended）再建政策相同、30 天的新委派	契約要「舊委派撤銷、到期日重算」；沿用建立委派的檢查	直接改 expires_at	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	carry_over_delegations 只重建使用者現在仍讀得到且受眾一致的專案，30 天、政策相同	T-M1-116	全部照搬	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	OpenAI 相容請求送 max_tokens（不是 max_completion_tokens），並帶 stream_options.include_usage；沒回 usage 時估算	自架伺服器（vLLM、Ollama）收 max_tokens；OpenAI 文件說 max_tokens 已棄用但仍接受	改送 max_completion_tokens	crates/oxledger/src/ai/protocol.rs
+2026-11-11	M1	頁面脈絡的來源專案併進 run 回覆的 source_projects；D12 清空引用該專案的 run 的所有 assistant 訊息；parts 為 NULL 的 tool 訊息讓整個 run 視為讀不到	獨立驗證 D1：摘要頁面的回覆在 D12 後仍保留內容	只清 tool 訊息	crates/oxledger/src/ai/chat.rs, crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	對話記 last_provider_config_at；同 provider 但端點或模型改過也要 ai_provider_changed；改使用中 provider 的端點或模型會關掉 AI，重新測試後再啟用	獨立驗證 D2（Q4）：原地改端點可把舊對話送到別的服務；契約要求端點變更要重測	只比 provider id	crates/oxledger/src/ai/chat.rs, crates/oxledger/src/ai/admin.rs, migrations/0030_ai_chat.sql
+2026-11-11	M1	單次請求輸入估算 ASCII 每字元 ¼ token、其他字元 1 token，上限 16 000；從最舊的頁面脈絡與工具結果截短；仍放不下就不送，stop_reason budget_exhausted、run.finished error.kind request_input_limit	獨立驗證 D3；每字元 1 token 時系統提示加工具 schema 就超過 16k；中文照 1 token 保守；stop_reason 清單是契約固定的，不新增	一律每字元 1 token；一律每 4 字元 1 token；新增 stop_reason	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	結算：provider 回報的用量照實記錄（可超過保留額）；只有估算用量以保留額為上限	獨立驗證 D3：不少報實際花費；契約 V15 的上限只寫在估算情境	一律以保留額為上限	crates/oxledger/src/ai/budget.rs
+2026-11-11	M1	沒有本程序 hub 的取消用 DB 已記錄的用量結算；執行中每輪寫用量時限 state 還在 queued／running	獨立驗證 D4：原本以 0 結算	只設 cancel_requested_at 等清掃	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	NAT64、IPv4-compatible、IPv4-translated、6to4 依內含 IPv4 判斷且只放行公網；fec0::/10、64:ff9b:1::/48、Teredo 一律擋	獨立驗證 D5；本機 provider 應直接登記自己的位址	內含 loopback／私有照 IPv4 類別放行	crates/oxledger/src/ai/net.rs
+2026-11-11	M1	BuiltinRun 憑證查詢在可寫交易 FOR SHARE OF ai_runs；READ ONLY 交易不加	獨立驗證 D6a：寫入與取消／清掃／結束互斥；READ ONLY 交易不允許列鎖	一律 FOR SHARE	crates/oxledger/src/db.rs
+2026-11-11	M1	租約 30 秒、每 10 秒續期、每 15 秒清掃（最慢 45 秒結束死掉的 run）	獨立驗證 D6b：原本 60＋30＝90 秒超過契約 60 秒	租約 60／續期 15／清掃 30	crates/oxledger/src/ai/config.rs
+2026-11-11	M1	runner 在工具呼叫前有 test-support 注入點 ai.before_tool	測試要在 runner 自己的檢查之後改 DB，才能驗證工具呼叫本身的憑證重驗（M6、M8、M10）	直接呼叫 crate 內部函式	crates/oxledger/src/ai/runner.rs

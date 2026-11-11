@@ -47,6 +47,13 @@ pub enum AuthMethod {
     /// [`AuthContext::notification_recipient`], never from a request; no
     /// service that writes or needs a session accepts it.
     Recipient,
+    /// A tool call of the built-in AI during one run (design 05 §3.13.1,
+    /// appendix D V13). Built only by [`AuthContext::builtin_run`], which
+    /// the run executor calls with a run it loaded from the database; never
+    /// from an HTTP request or an MCP message. `db::effective` re-checks the
+    /// run, the AI settings, the client, the user, the principal and the
+    /// work context on every call; it has no token and no session.
+    BuiltinRun,
     /// Tests and seeding only: a user with no credential row. Does not exist
     /// in builds without the `test-support` feature.
     #[cfg(feature = "test-support")]
@@ -68,6 +75,8 @@ pub struct AuthContext {
     context_id: Option<Uuid>,
     /// AgentToken: the delegator.
     on_behalf_of: Option<Uuid>,
+    /// BuiltinRun: the run (`ai_runs.id`).
+    run_id: Option<Uuid>,
 }
 
 impl AuthContext {
@@ -80,6 +89,7 @@ impl AuthContext {
             credential_id: None,
             context_id: None,
             on_behalf_of: None,
+            run_id: None,
         }
     }
 
@@ -132,6 +142,26 @@ impl AuthContext {
         }
     }
 
+    /// The built-in AI acting in run `run_id` (see [`AuthMethod::BuiltinRun`]).
+    /// Crate-private: only `ai::runner` calls it, with ids read from the
+    /// run row; `db::effective` checks that they still belong together.
+    pub(crate) fn builtin_run(
+        agent_id: Uuid,
+        context_id: Uuid,
+        delegator_id: Uuid,
+        run_id: Uuid,
+    ) -> Self {
+        Self {
+            principal_id: Some(agent_id),
+            kind: PrincipalKind::Agent,
+            method: AuthMethod::BuiltinRun,
+            context_id: Some(context_id),
+            on_behalf_of: Some(delegator_id),
+            run_id: Some(run_id),
+            ..Self::anonymous()
+        }
+    }
+
     /// A user without credentials, for tests and `seed-demo`.
     #[cfg(feature = "test-support")]
     pub fn test_user(user_id: Uuid) -> Self {
@@ -169,6 +199,10 @@ impl AuthContext {
     }
     pub fn on_behalf_of(&self) -> Option<Uuid> {
         self.on_behalf_of
+    }
+    /// BuiltinRun: the run.
+    pub fn run_id(&self) -> Option<Uuid> {
+        self.run_id
     }
 
     /// The signed-in person, for "me" in filters. Agents have no "me": they

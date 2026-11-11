@@ -1,6 +1,23 @@
 {
   "components": {
     "schemas": {
+      "Accepted": {
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "stream_url": {
+            "description": "`GET` this with `Accept: text/event-stream`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "stream_url"
+        ],
+        "type": "object"
+      },
       "ActivitiesPut": {
         "additionalProperties": false,
         "properties": {
@@ -174,6 +191,24 @@
           "active"
         ],
         "type": "object"
+      },
+      "AddrClass": {
+        "description": "What an address is, for P-3.",
+        "oneOf": [
+          {
+            "enum": [
+              "public",
+              "private",
+              "loopback"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "blocked",
+            "description": "Unspecified, multicast, broadcast, link-local or metadata: never.",
+            "type": "string"
+          }
+        ]
       },
       "AdminGithub": {
         "properties": {
@@ -361,6 +396,103 @@
         ],
         "type": "object"
       },
+      "AiBudgetNotice": {
+        "description": "An `ai_budget` notification (§3.13.4): amounts are read now, not stored.",
+        "properties": {
+          "budget_usd": {
+            "description": "The current monthly budget, USD as a decimal string (null when unset).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "month": {
+            "description": "`YYYY-MM`.",
+            "type": "string"
+          },
+          "spent_usd": {
+            "description": "Spent this month so far, USD as a decimal string.",
+            "type": "string"
+          },
+          "threshold": {
+            "description": "80 or 100 (percent).",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "month",
+          "threshold",
+          "spent_usd",
+          "budget_usd"
+        ],
+        "type": "object"
+      },
+      "AiLimits": {
+        "properties": {
+          "budget_left_today_usd": {
+            "description": "USD, a decimal string.",
+            "type": "string"
+          },
+          "hour_resets_at": {
+            "description": "When the oldest run of the last hour stops counting (null when none).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runs_left_this_hour": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runs_left_this_hour",
+          "budget_left_today_usd",
+          "hour_resets_at"
+        ],
+        "type": "object"
+      },
+      "AiStatus": {
+        "description": "`GET /ai/status` (§3.13.2).",
+        "properties": {
+          "assistant": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistantStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "description": "false: the column shows no AI tab.",
+            "type": "boolean"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AiLimits"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "provider",
+          "assistant",
+          "limits"
+        ],
+        "type": "object"
+      },
       "Applied": {
         "description": "The result of `apply-template`: the home and the preferences (the\ntemplate also sets shortcuts and the `*` default view).",
         "properties": {
@@ -462,6 +594,52 @@
         "required": [
           "project_id",
           "assignees"
+        ],
+        "type": "object"
+      },
+      "AssistantStatus": {
+        "properties": {
+          "context_state": {
+            "description": "`active`, `quarantined` (a project's permissions changed) or `closed`.",
+            "type": "string"
+          },
+          "delegated_projects": {
+            "description": "Unrevoked, unexpired delegations of the built-in AI.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "delegations_expire_at": {
+            "description": "The earliest expiry among those delegations.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiring_soon": {
+            "description": "Within 7 days: the column offers 「延長」.",
+            "type": "boolean"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "principal": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "runtime_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "handle",
+          "runtime_id",
+          "delegated_projects",
+          "context_state",
+          "delegations_expire_at",
+          "expiring_soon"
         ],
         "type": "object"
       },
@@ -1195,6 +1373,59 @@
           "closed_at",
           "source_projects",
           "changed_projects"
+        ],
+        "type": "object"
+      },
+      "ConversationList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "ConversationView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "description": "`open` or `read_only` (the AI's work context was replaced).",
+            "type": "string"
+          },
+          "title": {
+            "description": "What the user typed; empty: show the creation time.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "state",
+          "created_at",
+          "last_at"
         ],
         "type": "object"
       },
@@ -2134,6 +2365,68 @@
         "additionalProperties": false,
         "type": "object"
       },
+      "EndpointList": {
+        "properties": {
+          "allow_http": {
+            "description": "`OXLEDGER_AI_ALLOW_HTTP` (http to private and loopback addresses).",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EndpointView"
+            },
+            "type": "array"
+          },
+          "transport": {
+            "description": "Whether this build can reach providers at all (feature `ai`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "allow_http",
+          "transport"
+        ],
+        "type": "object"
+      },
+      "EndpointView": {
+        "properties": {
+          "address_class": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AddrClass"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where it resolves now: `public`, `private`, `loopback`, `blocked`;\nnull when it does not resolve."
+          },
+          "custom_ca": {
+            "description": "An internal CA was loaded (`OXLEDGER_AI_CA_FILE_<NAME>`).",
+            "type": "boolean"
+          },
+          "key_configured": {
+            "description": "Whether `OXLEDGER_AI_KEY_<NAME>` was set at start-up. Never the key.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "description": "`scheme://host[:port]`, never the path's secrets (there are none).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "origin",
+          "address_class",
+          "key_configured",
+          "custom_ca"
+        ],
+        "type": "object"
+      },
       "ErrorBody": {
         "description": "The error object of §4.3 (`{\"error\": …}` in REST, bare in MCP).",
         "properties": {
@@ -2502,6 +2795,41 @@
           {
             "const": "runtime_client_taken",
             "description": "Design 05 §5 (Q2): the agent software already runs in another active\nruntime of this sponsor; `details.runtime_id`, `details.label`.",
+            "type": "string"
+          },
+          {
+            "const": "ai_unavailable",
+            "description": "Design 05 §5: the built-in AI cannot run now; `details.kind` is\n`disabled`, `circuit_open`, `not_configured` or `endpoint_blocked`.",
+            "type": "string"
+          },
+          {
+            "const": "ai_provider_error",
+            "description": "The AI provider failed; `details.kind` is `timeout`, `http_status`\n(with `status`) or `malformed`. Never the provider's own text.",
+            "type": "string"
+          },
+          {
+            "const": "ai_model_disallowed",
+            "description": "The model or the endpoint's host is on the D17 list; `details.field`.",
+            "type": "string"
+          },
+          {
+            "const": "ai_endpoint_invalid",
+            "description": "`details.kind`: `unregistered`, `no_key` or `endpoint_blocked`.",
+            "type": "string"
+          },
+          {
+            "const": "ai_conversation_read_only",
+            "description": "The conversation became read-only (a new work context); start a new one.",
+            "type": "string"
+          },
+          {
+            "const": "ai_provider_changed",
+            "description": "The provider in use changed since this conversation's last run;\nresend with `ack_provider_id`. `details.provider`.",
+            "type": "string"
+          },
+          {
+            "const": "ai_run_in_progress",
+            "description": "The caller already has a run queued or running.",
             "type": "string"
           }
         ]
@@ -4775,6 +5103,65 @@
         ],
         "type": "object"
       },
+      "MessageList": {
+        "properties": {
+          "conversation": {
+            "$ref": "#/components/schemas/ConversationView"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MessageView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversation",
+          "items"
+        ],
+        "type": "object"
+      },
+      "MessageView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "parts": {
+            "description": "Typed parts (§3.13.5): `text {text}`, `tool_progress {tool, summary,\nok}`, `write {…as the SSE write event}`, `unavailable {reason:\nsource_revoked|redacted|purged}`, `notice {kind, text}`.",
+            "items": true,
+            "type": "array"
+          },
+          "role": {
+            "description": "`user` or `assistant` (tool results are never returned).",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "role",
+          "run_id",
+          "created_at",
+          "parts"
+        ],
+        "type": "object"
+      },
       "Meta": {
         "properties": {
           "observed_at": {
@@ -4789,6 +5176,33 @@
         "required": [
           "request_id",
           "observed_at"
+        ],
+        "type": "object"
+      },
+      "MonthUsage": {
+        "properties": {
+          "budget_usd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "month": {
+            "description": "`YYYY-MM`.",
+            "type": "string"
+          },
+          "reserved_usd": {
+            "type": "string"
+          },
+          "spent_usd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "month",
+          "spent_usd",
+          "reserved_usd",
+          "budget_usd"
         ],
         "type": "object"
       },
@@ -4858,6 +5272,20 @@
           "agent_client_id",
           "fresh_context_ack"
         ],
+        "type": "object"
+      },
+      "NewConversation": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "default": null,
+            "description": "Up to 120 characters, typed by the user (never made up by the model).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "NewFieldInput": {
@@ -5014,6 +5442,66 @@
         },
         "required": [
           "label"
+        ],
+        "type": "object"
+      },
+      "NewProvider": {
+        "additionalProperties": false,
+        "description": "`POST /admin/ai/providers`. Unknown fields (a URL, a key, an environment\nvariable name) are refused by the schema (T-M1-112).",
+        "properties": {
+          "d17_attested": {
+            "description": "P-1: 「我確認這個模型與服務符合 D17」. Must be true.",
+            "type": "boolean"
+          },
+          "endpoint_name": {
+            "description": "A name from `GET /admin/ai/endpoints`.",
+            "type": "string"
+          },
+          "input_usd_per_mtok": {
+            "description": "USD per million input tokens, e.g. \"3.00\".",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`anthropic` or `openai_compat`.",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "default": null,
+            "description": "The run's total output limit (256–32000, default 4096).",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "default": null,
+            "description": "Anthropic: default `claude-sonnet-5-5`; OpenAI-compatible: required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "1–60 characters, shown to users (\"AI 服務已換成〈name〉\").",
+            "type": "string"
+          },
+          "org_account_attested": {
+            "default": false,
+            "description": "P-6: required when the endpoint resolves to a public address.",
+            "type": "boolean"
+          },
+          "output_usd_per_mtok": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "endpoint_name",
+          "input_usd_per_mtok",
+          "output_usd_per_mtok",
+          "d17_attested"
         ],
         "type": "object"
       },
@@ -5261,6 +5749,17 @@
       },
       "NotificationItem": {
         "properties": {
+          "ai_budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AiBudgetNotice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set for `kind = ai_budget`: the month's AI spending crossed 80% or 100%."
+          },
           "events": {
             "description": "The newest readable events (at most 3), newest first.",
             "items": {
@@ -5278,10 +5777,18 @@
             "type": "string"
           },
           "issue": {
-            "$ref": "#/components/schemas/NotificationIssue"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotificationIssue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set for `kind = issue`, null for `ai_budget`."
           },
           "kind": {
-            "description": "`issue` (`ai_budget` arrives with M1.10).",
+            "description": "`issue` or `ai_budget` (design 05 §3.13.4, site administrators only).",
             "type": "string"
           },
           "last_at": {
@@ -5298,7 +5805,7 @@
             "type": "boolean"
           },
           "reasons": {
-            "description": "watching, assigned, author, agent_on_behalf, triage_decided.",
+            "description": "watching, assigned, author, agent_on_behalf, triage_decided; `ai_budget`.",
             "items": {
               "type": "string"
             },
@@ -6023,6 +6530,62 @@
           "lock_version"
         ],
         "type": "object"
+      },
+      "PageRef": {
+        "description": "A page the user is on: a reference, never its text (§3.13.3 point 2).",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "key"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "view",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "project",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "key"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "PartView": {
         "properties": {
@@ -6896,6 +7459,266 @@
         ],
         "type": "object"
       },
+      "ProviderEvent": {
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "actor_name": {
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`created`, `updated`, `retired`, `activated`, `settings_updated`, `test_run`.",
+            "type": "string"
+          },
+          "payload": true,
+          "provider_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "actor_id",
+          "actor_name",
+          "kind",
+          "provider_id",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "ProviderEvents": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderEvent"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ProviderList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ProviderPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /admin/ai/providers/{id}`: the fields to change; the D17\nconfirmation is given again with every change.",
+        "properties": {
+          "d17_attested": {
+            "type": "boolean"
+          },
+          "endpoint_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_usd_per_mtok": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "org_account_attested": {
+            "default": false,
+            "type": "boolean"
+          },
+          "output_usd_per_mtok": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version",
+          "d17_attested"
+        ],
+        "type": "object"
+      },
+      "ProviderRef": {
+        "properties": {
+          "kind": {
+            "description": "`anthropic` or `openai_compat`.",
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "model"
+        ],
+        "type": "object"
+      },
+      "ProviderView": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "config_changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "d17_attested_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "endpoint_name": {
+            "type": "string"
+          },
+          "endpoint_registered": {
+            "description": "Whether the endpoint is still registered in this process.",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "input_usd_per_mtok": {
+            "type": "string"
+          },
+          "kind": {
+            "description": "`anthropic` or `openai_compat`.",
+            "type": "string"
+          },
+          "last_test_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_test_ok_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_test_result": {
+            "description": "`{ok, kind?, status?, supports_tools?}`; never provider text."
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "org_account_attested_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_usd_per_mtok": {
+            "type": "string"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supports_tools": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "endpoint_name",
+          "endpoint_registered",
+          "model",
+          "max_output_tokens",
+          "input_usd_per_mtok",
+          "output_usd_per_mtok",
+          "supports_tools",
+          "last_test_at",
+          "last_test_ok_at",
+          "last_test_result",
+          "d17_attested_at",
+          "org_account_attested_at",
+          "config_changed_at",
+          "active",
+          "retired_at",
+          "lock_version"
+        ],
+        "type": "object"
+      },
       "PublishInput": {
         "additionalProperties": false,
         "properties": {
@@ -7632,6 +8455,127 @@
         },
         "type": "object"
       },
+      "RunProvider": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "RunUsage": {
+        "properties": {
+          "cost_usd": {
+            "description": "USD, a decimal string.",
+            "type": "string"
+          },
+          "estimated": {
+            "type": "boolean"
+          },
+          "input_tokens": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "estimated"
+        ],
+        "type": "object"
+      },
+      "RunView": {
+        "description": "`GET /ai/runs/{id}` (§3.13.4).",
+        "properties": {
+          "conversation_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "last_event_id": {
+            "description": "The last event id kept by this process (null: none here).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/RunProvider"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "description": "`queued`, `running`, `succeeded`, `failed`, `canceled`.",
+            "type": "string"
+          },
+          "stop_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_calls": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/RunUsage"
+          },
+          "writes": {
+            "description": "As the SSE `write` events (from the stored messages; from the ids\nalone once the conversation was emptied).",
+            "items": true,
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "state",
+          "stop_reason",
+          "model",
+          "provider",
+          "started_at",
+          "finished_at",
+          "tool_calls",
+          "usage",
+          "writes",
+          "last_event_id"
+        ],
+        "type": "object"
+      },
       "RuntimeChoice": {
         "additionalProperties": false,
         "description": "`{\"id\": …}` for an existing runtime or `{\"new\": {…}}`.",
@@ -8313,6 +9257,36 @@
         ],
         "type": "object"
       },
+      "SendInput": {
+        "additionalProperties": false,
+        "properties": {
+          "ack_provider_id": {
+            "default": null,
+            "description": "The active provider's id, after the user confirmed sending this\nconversation to it (`ai_provider_changed`, Q4).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_context": {
+            "default": [],
+            "description": "At most 5 references to the pages the user is on.",
+            "items": {
+              "$ref": "#/components/schemas/PageRef"
+            },
+            "type": "array"
+          },
+          "text": {
+            "description": "1–8000 characters typed by the user.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "SessionData": {
         "properties": {
           "capabilities": {
@@ -8463,6 +9437,116 @@
         "required": [
           "items",
           "next_cursor"
+        ],
+        "type": "object"
+      },
+      "SettingsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "active_provider_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conversation_retention_days": {
+            "description": "1–365.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "monthly_budget_usd": {
+            "description": "USD, e.g. \"100.00\"; required to enable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_daily_budget_usd": {
+            "type": "string"
+          },
+          "user_runs_per_hour": {
+            "description": "1–600.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lock_version",
+          "enabled",
+          "user_daily_budget_usd",
+          "user_runs_per_hour",
+          "conversation_retention_days"
+        ],
+        "type": "object"
+      },
+      "SettingsView": {
+        "properties": {
+          "active_provider_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conversation_retention_days": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "enable_blockers": {
+            "description": "Why `enabled` cannot be turned on now: `no_provider`,\n`d17_not_attested`, `not_tested`, `test_failed`, `no_budget`,\n`org_account_not_attested`, `endpoint_unregistered`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "month": {
+            "$ref": "#/components/schemas/MonthUsage",
+            "description": "This month (organisation time zone): spent, reserved, budget."
+          },
+          "monthly_budget_usd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user_daily_budget_usd": {
+            "type": "string"
+          },
+          "user_runs_per_hour": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "active_provider_id",
+          "monthly_budget_usd",
+          "user_daily_budget_usd",
+          "user_runs_per_hour",
+          "conversation_retention_days",
+          "lock_version",
+          "updated_at",
+          "enable_blockers",
+          "month"
         ],
         "type": "object"
       },
@@ -9399,6 +10483,42 @@
           "current_version",
           "latest_version",
           "outdated"
+        ],
+        "type": "object"
+      },
+      "TestResult": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "description": "On failure: `timeout`, `http_status`, `malformed`, `endpoint_blocked`,\n`not_configured`, `connect`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "supports_tools": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "supports_tools",
+          "at"
         ],
         "type": "object"
       },
@@ -11226,6 +12346,105 @@
         ],
         "type": "object"
       },
+      "Usage": {
+        "description": "`GET /admin/ai/usage?month=YYYY-MM`: counts and costs only, never\nconversation content (P2).",
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/UsageDay"
+            },
+            "type": "array"
+          },
+          "month": {
+            "$ref": "#/components/schemas/MonthUsage"
+          },
+          "users": {
+            "items": {
+              "$ref": "#/components/schemas/UsageUser"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "month",
+          "days",
+          "users"
+        ],
+        "type": "object"
+      },
+      "UsageDay": {
+        "properties": {
+          "day": {
+            "format": "date",
+            "type": "string"
+          },
+          "input_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "runs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "spent_usd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "runs",
+          "input_tokens",
+          "output_tokens",
+          "spent_usd"
+        ],
+        "type": "object"
+      },
+      "UsageUser": {
+        "properties": {
+          "input_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "runs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "spent_usd": {
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "login",
+          "name",
+          "runs",
+          "input_tokens",
+          "output_tokens",
+          "spent_usd"
+        ],
+        "type": "object"
+      },
       "ValidateCommandInput": {
         "additionalProperties": false,
         "description": "`POST /commands/validate` and MCP `validate`.",
@@ -12528,6 +13747,577 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/ai/endpoints": {
+      "get": {
+        "operationId": "get_admin_ai_endpoints",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EndpointList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Endpoints the deployment registered (OXLEDGER_AI_ENDPOINT_<NAME>): origin, address class, whether a key is set. Never the key.",
+        "x-access": "session"
+      }
+    },
+    "/admin/ai/events": {
+      "get": {
+        "operationId": "get_admin_ai_events",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProviderEvents"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The last 50 changes of AI settings and providers.",
+        "x-access": "session"
+      }
+    },
+    "/admin/ai/providers": {
+      "get": {
+        "operationId": "get_admin_ai_providers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProviderList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "AI providers.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_admin_ai_providers",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewProvider"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProviderView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Add a provider naming a registered endpoint (no URL, key or variable name; unknown fields are refused). D17 confirmation required; the organisation-account confirmation for external services.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/admin/ai/providers/{id}": {
+      "patch": {
+        "operationId": "patch_admin_ai_providers_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProviderView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change a provider (lock_version, D17 confirmation again).",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/admin/ai/providers/{id}/retire": {
+      "post": {
+        "operationId": "post_admin_ai_providers_id_retire",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProviderView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Retire a provider; retiring the one in use turns the AI off.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/admin/ai/providers/{id}/test": {
+      "post": {
+        "operationId": "post_admin_ai_providers_id_test",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TestResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Test the connection with a fixed text (no organisation data): key, model, streaming and tool calls.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/admin/ai/settings": {
+      "get": {
+        "operationId": "get_admin_ai_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SettingsView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "AI settings, budgets, this month's usage and enable_blockers (site administrators).",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_admin_ai_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SettingsView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change AI settings (lock_version). Turning the AI on or off and changing the provider in use need a step-up.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/admin/ai/usage": {
+      "get": {
+        "operationId": "get_admin_ai_usage",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Usage"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Daily and per-person counts, tokens and costs of a month (?month=YYYY-MM); never conversation content.",
+        "x-access": "session"
+      }
+    },
     "/admin/concepts": {
       "get": {
         "operationId": "get_admin_concepts",
@@ -15084,6 +16874,657 @@
         "summary": "Retire the role for good: its delegations and tokens are revoked (sponsor).",
         "x-access": "stepup",
         "x-csrf": true
+      }
+    },
+    "/ai/assistant": {
+      "post": {
+        "operationId": "post_ai_assistant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AiStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Set up your built-in AI (runtime, oxledger-ai@<login> and its first work context); delegations are then created with POST /delegations {agent_principal_id}.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai/assistant/extend": {
+      "post": {
+        "operationId": "post_ai_assistant_extend",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AiStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace every live delegation of the built-in AI with a new one with the same policies and a new 30-day term.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/ai/conversations": {
+      "get": {
+        "operationId": "get_ai_conversations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversationList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Your conversations, newest activity first (?cursor=, ?limit= 1–100). Nobody else's, administrators included.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_ai_conversations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewConversation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversationView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Start a conversation in the assistant's active work context (title optional, typed by you).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai/conversations/{id}": {
+      "delete": {
+        "operationId": "delete_ai_conversations_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Delete a conversation and its content (not undoable); writes the AI made stay.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai/conversations/{id}/messages": {
+      "get": {
+        "operationId": "get_ai_conversations_id_messages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MessageList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The conversation's messages as typed parts, re-checked for you now (unavailable placeholders); tool results are never returned.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_ai_conversations_id_messages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Accepted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Send a message (1–8000 characters, up to 5 page references, ack_provider_id after ai_provider_changed). Idempotency-Key. 202 with run_id and stream_url.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai/runs/{id}": {
+      "get": {
+        "operationId": "get_ai_runs_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RunView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One of your runs: state, stop_reason, usage and cost, writes, last_event_id.",
+        "x-access": "session"
+      }
+    },
+    "/ai/runs/{id}/cancel": {
+      "post": {
+        "operationId": "post_ai_runs_id_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RunView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Stop the run: no further model or tool calls; writes already made stay.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai/runs/{id}/stream": {
+      "get": {
+        "operationId": "get_ai_runs_id_stream",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Empty"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "text/event-stream of the run (run.started, text.delta, tool.started, tool.finished, write, notice, run.finished; `: ping` every 15 s). Last-Event-ID resumes; resync when the events are not kept here. At most two connections.",
+        "x-access": "session"
+      }
+    },
+    "/ai/status": {
+      "get": {
+        "operationId": "get_ai_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AiStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Whether the AI tab is shown (enabled), the provider in use, your assistant (delegated projects, context state, the earliest delegation expiry and expiring_soon within 7 days) and your limits.",
+        "x-access": "session"
       }
     },
     "/auth/login": {

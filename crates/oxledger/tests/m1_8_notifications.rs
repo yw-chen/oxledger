@@ -159,7 +159,7 @@ async fn item(w: &World, who: AuthContext, key: &str) -> Option<NotificationItem
         .await
         .items
         .into_iter()
-        .find(|i| i.issue.key == key)
+        .find(|i| i.issue.as_ref().is_some_and(|x| x.key == key))
 }
 
 async fn unread(w: &World, who: AuthContext) -> Option<u32> {
@@ -346,7 +346,7 @@ async fn delivery_basics() {
     assert_eq!(a.events.len(), 1);
     assert_eq!(a.events[0].kind, "fields_changed");
     assert_eq!(a.events[0].actor.name, "bob");
-    assert_eq!(a.issue.project.key, "WEB");
+    assert_eq!(a.issue.as_ref().unwrap().project.key, "WEB");
     let c = item(w, f.carol_ctx, &key).await.unwrap();
     assert_eq!(c.reasons, vec!["assigned"]);
     assert_eq!(
@@ -1146,7 +1146,7 @@ async fn t_m1_81_read_all_before() {
         .unwrap();
     let left = inbox(w, w.alice_ctx).await;
     assert_eq!(left.items.len(), 1);
-    assert_eq!(left.items[0].issue.key, kj);
+    assert_eq!(left.items[0].issue.as_ref().unwrap().key, kj);
     assert_eq!(unread(w, w.alice_ctx).await, Some(1));
 }
 
@@ -1472,7 +1472,11 @@ async fn paging_and_event_cap() {
         )
         .await
         .unwrap();
-        seen.extend(l.items.iter().map(|i| i.issue.key.clone()));
+        seen.extend(
+            l.items
+                .iter()
+                .map(|i| i.issue.as_ref().unwrap().key.clone()),
+        );
         match l.next_cursor {
             Some(c) => cursor = Some(c),
             None => break,
@@ -1622,7 +1626,11 @@ async fn v_read_all_before_marks_row_committed_after_list() {
     hold_x.rollback().await.unwrap();
     job.await.unwrap().unwrap();
     let shown = inbox(w, w.alice_ctx).await;
-    let keys: Vec<&str> = shown.items.iter().map(|i| i.issue.key.as_str()).collect();
+    let keys: Vec<&str> = shown
+        .items
+        .iter()
+        .map(|i| i.issue.as_ref().unwrap().key.as_str())
+        .collect();
     assert_eq!(
         keys,
         vec![ky.as_str(), kx.as_str()],
@@ -1638,7 +1646,7 @@ async fn v_read_all_before_marks_row_committed_after_list() {
         .unwrap();
     let left = inbox(w, w.alice_ctx).await;
     assert_eq!(left.items.len(), 1);
-    assert_eq!(left.items[0].issue.key, kx);
+    assert_eq!(left.items[0].issue.as_ref().unwrap().key, kx);
 }
 
 /// Verification D2: watcher_count is one statement; 1000 watchers who

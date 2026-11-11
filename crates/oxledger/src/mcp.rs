@@ -133,6 +133,22 @@ impl OxServer {
         v
     }
 
+    /// Name, description and input schema of every tool, as MCP lists them
+    /// (the built-in AI offers the same tools, design 05 §4.5).
+    pub fn tool_specs() -> Vec<(String, String, serde_json::Value)> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| {
+                (
+                    t.name.to_string(),
+                    t.description.map(|d| d.to_string()).unwrap_or_default(),
+                    serde_json::Value::Object((*t.input_schema).clone()),
+                )
+            })
+            .collect()
+    }
+
     pub fn new(app: Arc<App>, fixed_caller: Option<AuthContext>, spa_origin: String) -> Self {
         Self {
             app,

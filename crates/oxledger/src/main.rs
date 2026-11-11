@@ -216,6 +216,23 @@ async fn serve() -> Result<()> {
     spawn_field_indexer(app.clone());
     spawn_sweeper(app.clone());
     spawn_notifier(app.clone());
+    // The built-in AI (design 05 §3.13.2 Q1): endpoints and keys from the
+    // environment only; a name that does not qualify is not registered and
+    // logged by name and reason (never the URL or the key).
+    {
+        let (ai, warnings) = oxledger::ai::config::from_vars(std::env::vars());
+        for w in warnings {
+            tracing::warn!("{w}");
+        }
+        tracing::info!(
+            endpoints = ?ai.endpoints.keys().collect::<Vec<_>>(),
+            allow_http = ai.allow_http,
+            transport = oxledger::ai::client::TRANSPORT,
+            "AI endpoints registered"
+        );
+        oxledger::ai::config::install(ai);
+        oxledger::ai::runner::spawn_jobs(app.pool.clone());
+    }
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let cfg = ApiConfig {
         spa_origin: env("OXLEDGER_SPA_ORIGIN", Some(&format!("http://{bind}")))?,

@@ -409,9 +409,9 @@ fn no_role() -> anyhow::Error {
 /// The role `id` as the viewer sees it, or `not_found` (also when it is
 /// invisible to them).
 async fn load_seen(conn: &mut PgConnection, v: &Viewer, id: Uuid) -> Result<(RoleRow, Seen)> {
-    // The built-in AI is not on the AI team page in M1.9 (list and detail
-    // alike; M1.10 decides how it shows).
-    let sql = format!("{ROLE_SELECT} WHERE p.agent_principal_id = $1 AND r.kind = 'external'");
+    // M1.10: the built-in AI shows under the same visibility rules as any
+    // role (design 05 §3.12.5); its actions are only pause and resume.
+    let sql = format!("{ROLE_SELECT} WHERE p.agent_principal_id = $1");
     let row: Option<RoleTuple> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(&mut *conn)
@@ -595,7 +595,6 @@ pub async fn list(
     let sql = format!(
         "{ROLE_SELECT}
          WHERE ($1::text IS NULL OR p.handle = $1)
-           AND r.kind = 'external'
            AND (p.delegator_user_id = $2 OR $5
                 OR EXISTS (SELECT 1 FROM delegations d WHERE d.agent_principal_id = p.agent_principal_id
                              AND d.revoked_at IS NULL AND d.project_id = ANY($3)))
@@ -879,7 +878,8 @@ pub async fn detail(app: &App, ctx: AuthContext, id: Uuid) -> Result<TeamDetail>
         actions.push("pause".to_string());
         actions.push("resume".to_string());
     }
-    if live && s == Seen::Sponsor {
+    // The built-in AI is set up from the chat column: no retire, no tokens.
+    if live && s == Seen::Sponsor && r.template != "builtin_chat" {
         actions.push("retire".to_string());
         actions.push("credentials".to_string());
     }
@@ -1736,6 +1736,16 @@ pub async fn retire(app: &App, policy: &SessionPolicy, ctx: AuthContext, id: Uui
     if s != Seen::Sponsor {
         return Err(not_sponsor());
     }
+    if r.template == "builtin_chat" {
+        // M1.10: the built-in AI shows on the AI team page with pause and
+        // resume only; it is retired with its user (§3.13.7).
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            "the built-in AI is not retired from here",
+        )
+        .with_details(json!({"reason": "builtin_runtime"}))
+        .into());
+    }
     agents::serialize_sponsor(&mut tx, v.user).await?;
     sqlx::query("SELECT 1 FROM agent_runtimes WHERE id = $1 FOR UPDATE")
         .bind(r.runtime)
@@ -2041,9 +2051,8 @@ pub async fn runtime_new_context(
     if retired {
         return Err(api(ErrorCode::NotFound, "no such runtime"));
     }
-    if input.carry_over_delegations {
-        // §3.13.7: only the built-in runtime may carry delegations over,
-        // and that runtime arrives with M1.10.
+    if input.carry_over_delegations && kind != "builtin" {
+        // §3.13.7: only the built-in runtime may carry delegations over.
         return Err(ApiError::new(
             ErrorCode::InvalidArgument,
             "carry_over_delegations is only for the built-in AI",
@@ -2058,9 +2067,20 @@ pub async fn runtime_new_context(
             "confirm that the agent starts a new work context without what it read before",
         ));
     }
+    // The built-in runtime's new context needs no declaration (the server
+    // knows what the AI read: its conversations become read-only).
+    let carried = if kind == "builtin" && input.carry_over_delegations {
+        crate::ai::chat::carried_delegations(&mut tx, id).await?
+    } else {
+        Vec::new()
+    };
     let new = agents::runtime_new_context(&mut tx, policy, &ctx, id, None).await?;
+    if kind == "builtin" {
+        crate::ai::chat::seal_conversations(&mut tx, id).await?;
+        crate::ai::chat::recreate_delegations(&mut tx, policy, &ctx, id, &carried).await?;
+    }
     tx.commit().await?;
-    agents::list_contexts(&app.pool, &ctx)
+    agents::list_contexts_of(&app.pool, &ctx, &kind)
         .await?
         .into_iter()
         .find(|c| c.id == new)
