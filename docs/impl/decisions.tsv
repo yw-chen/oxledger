@@ -304,3 +304,262 @@ date	stage	decision	why	alternatives	source
 2026-11-10	P1-F05v	csrf_failed 時重新讀 /auth/session；仍是同一人就換新 token、用同一個 key 重送一次；換了人就跳重新登入	§3.3	只顯示「請重新整理」	src/lib/api.ts、session.svelte.ts
 2026-11-10	P1-F05v	活動頁時間篩選用前端過濾（全部／1 小時／24 小時／7 天）	§16.10	後端參數（目前沒有）	src/routes/agents/[id]/activity/+page.svelte
 2026-11-10	P1-F05v	外部 PR 連結只允許 http(s)	防 javascript: URL	直接放 href	src/lib/format.ts safeHref
+2026-11-09	P2	索引目錄 CURRENT + gen-<uuid>/；commit payload {v, data_epoch, generation, schema/analyzer/query 版本, cursor, complete_before_xid} 是恢復依據；PG outbox_cursors（consumer search@<gen>）只做協調、監控與 GC	03 §4.2、§4.8；P2-D1、P2-D5	PG cursor 當恢復依據	src/search.rs; migrations/0018
+2026-11-09	P2	沒有可服務的 generation（第一次啟動、payload 壞、data_epoch 不符）時，有 q 的搜尋回 search_unavailable，F 從 0 起，token 一律落後；落後路徑跑一次查詢檢查輸入錯誤時，search_unavailable 不算輸入錯誤	P2-D2；舊 token 不能在空索引上被滿足	回空結果	src/service.rs
+2026-11-09	P2	只有 F 前進時的 durable payload 至少間隔 10 秒（測試可調）；有文件變動一律帶 payload commit	03 §4.2	每輪都 commit	src/search.rs
+2026-11-09	P2	藍綠切換在同步輪的鎖裡做：新 generation 要 F_new ≥ F_old 且 cursor ≥ 舊 cursor（Q-S8 建議預設）；健康檢查抽 200 筆比 search_rev 與可見性／§17.15 欄位，不一致又沒有待套用事件就中止切換、租約 retired	03 §4.8 第 6 步；P2-D6	只比 F	src/search.rs
+2026-11-09	P2	analyzer／query semantics 只有一版；版本不符就重建，不保留舊版 tokenizer 讓舊 generation 繼續服務（真的改版時再做）	P2-D7	現在就做雙版本	src/search.rs
+2026-11-09	P2	oxledger reindex 改成在 search_settings.rebuild_requested_at 登記，由執行中的伺服器背景重建；--offline 在本行程重建	CLI 與伺服器是不同行程，CLI 換不了伺服器的 view	CLI 直接重建（伺服器看不到）	src/main.rs
+2026-11-09	P2	outbox GC 每小時：xid < 所有 active/bootstrapping/retained consumer 的最小 last_xid 且 created_at 早於 1 小時；沒有 consumer 時不刪；保留期滿的 generation 由 GC 改 retired 並刪目錄	03 §4.9；P2-D8、P2-D9	—	src/search.rs
+2026-11-09	P2	/metrics 自己產生 Prometheus 文字，不加依賴；只有設 OXLEDGER_METRICS_TOKEN 才開；長交易每 10 秒查一次，15 秒 warning、60 秒 error 寫進日誌，不 kill	03 §4.6–4.7；P2-D10	加 prometheus crate	src/metrics.rs
+2026-11-09	P2	背景同步迴圈在跑、而上次成功超過 60 秒時，有 q 的搜尋回 search_unavailable	03 §4.11；P2-D11	—	src/service.rs
+2026-11-09	P2	§17.15 fast field：fixed_version（term，none 表示空）、start_date／due_date（i64 天數，INDEXED|FAST）、nulls；下推只做超集（or 有一支不能下推就不下推；ne 只在 gate 為 True 時）	P2-D12；decisions 第 258 列的延後項	完整對應 Filter AST	src/filter.rs; src/search.rs
+2026-11-09	P2	search_rev 相同時候選不必重新比對原文就保留，evidence_status=current；不同時重新比對、rechecked	03 §3.4 第 4 步	—	src/service.rs
+2026-11-09	P2	D14 策略只用在沒有 q 的篩選搜尋、至少兩個正向單值自訂欄位條件的 AND；補 issues (updated_at DESC, id DESC) 索引讓 S2 沿現行排序走；預算 2 秒，第一次 S2 只拿剩餘的 60%，逾時後剩 ≥300 ms 才切 S0；用 savepoint 與 SET LOCAL statement_timeout	03 §5.4；P2-D14	維持 S0（等 id 排序）	src/service.rs; src/filter.rs
+2026-11-09	P2	新錯誤碼 field_definition_changed（409，fix_input）、query_timeout（422，不可重試，fix_input＋ask_human）	03 §3.7、§5.6	query_timeout 用 503	src/error.rs
+2026-11-09	P2	definition_version 由觸發器維護：ftype／unit 變更、選項新增、改名、停用、刪除都 +1，只改 position 不動；篩選帶的版本不符回 field_definition_changed；看不到的欄位照舊回 invalid_filter（不洩漏存在）	P2-D15	每次 UPDATE 都 +1	migrations/0018; src/filter.rs
+2026-11-09	P2	D14 實測（100 萬 issue、updated_at DESC 排序）：寬條件 S2 比 S0 快 10–160 倍，一個稀有條件時 S0 快；保留 §5.4 策略選擇，不退回固定 S0	P2-D14；experiments/sd/results/q3_updated.tsv	固定 S0 只做 deadline	src/service.rs
+2026-11-09	M1	A1：agent 只替委派者本人記工時、新委派的 log_time／update_time_entry 預設 review；agent 可讀委派者自己的工時（time_list），接受工時說明被抄進一般 note 擴大受眾的風險，委派精靈顯示警告	使用者決定（2026-11-09）	(i) M1 不讀；(ii) 只在工時受眾一致的專案讀	docs/design/05
+2026-11-09	M1	A2：M1 做 watcher＋站內通知中心，逐收件人重驗可見性；email／SMTP 排 M2	使用者決定（2026-11-09）	M1 不做通知；M1 含 email	docs/design/05
+2026-11-09	M1	A3：AI 團隊（U33 每角色一個 agent principal、U34 防迴圈、U35 AI 團隊頁）放 M1	使用者決定（2026-11-09）	延到 M2 與 automation 一起	docs/design/05
+2026-11-09	M1	A4：右欄內建 AI 對話（U38）放 M1，伺服器端呼叫，provider 同時支援 Anthropic Messages API 與 OpenAI 相容端點，管理員設定，未設定時不出現	使用者決定（2026-11-09）	延到 M2；只支援其中一種	docs/design/05
+2026-11-09	M1	A5：agent 可以對自己建立的單做 triage_decide；稽核標出自建自分流	使用者決定（2026-11-09）	禁止（forbidden_op self_triage）	docs/design/05
+2026-11-09	M1	內建 AI：預設關閉，管理員設定並確認 D17 後開啟，外部服務用公司帳號的 key；預設只收 https，OXLEDGER_AI_ALLOW_HTTP=1 才允許 loopback／私有網段 http；provider 端點由部署設定登記（名稱＝端點＋key 環境變數），網頁只能選，連線時驗證解析的 IP	使用者決定（05 §9.5 P1、P3，附錄 D Q1）	網頁自由填 base_url；只收 https	docs/design/05
+2026-11-09	M1	系統管理員不能讀使用者的 AI 對話；人核准 agent 送審提案算人介入、重設防迴圈鏈；使用者貼進對話的內容不追蹤來源只提示；角色 bot 的 sponsor 離職時 bot 一起停由管理員退役	使用者決定（05 §9.5 P2、P4、P5、P7）	—	docs/design/05
+2026-11-09	M1	內建 AI 委派預設照 D20 直接寫入（工時除外）；一次 run 讀過 time_list 後該 run 的寫入一律送審	使用者決定（05 §9.5 P6，附錄 D Q3）	全部送審；讀工時後不收窄	docs/design/05
+2026-11-09	M1	同一委派者＋同一 agent 軟體同時只能有一個 active runtime；provider 退役或更換後舊對話可續用，第一次送出前提示新服務名稱	使用者決定（05 附錄 D Q2、Q4）	允許多個 runtime；舊對話唯讀	docs/design/05
+2026-11-09	M1	OXLEDGER_AI_ALLOW_HTTP 只管 http：私有網段與 loopback 的 https 一律允許，http 要開關，公網只收 https；內建 AI 的工時送審延伸到同一對話之後的 run	使用者決定（05 §9.2 B-40、B-41）	開關也管私有網段的 https；只限該 run	docs/design/05
+2026-11-09	M1	estimated_hours 的正規形式沿用 canonical_number（去前導零與小數尾零，"1.50"→"1.5"）；只收十進位字串或 null，0–99999.99、最多兩位小數，超出回 invalid_value（kind out_of_range／too_many_decimals），格式錯回 invalid_request，不四捨五入；DB 讀出用 trim_scale(...)::text	05 §2.2 只說十進位字串、最多兩位；02 §6.1 數字規則；與自訂欄位 float 的正規化一致，no_effect 與 undo 比對才穩定	固定兩位小數（"1.50"）；收 JSON 數字；超過兩位四捨五入	src/commands.rs
+2026-11-09	M1	0019 的 role_permissions_tracker_scope 用 NOT VALID 加上，沒有違反列就在 migration 內 VALIDATE；有違反列就保留 NOT VALID 並發 NOTICE，既有列行為不變	05 附錄 C R17 建議未處理；直接 ADD 會讓有舊資料的升級失敗，把舊列改成 all_trackers 會擴大權限	直接 ADD（可能升級失敗）；把違反列改成 all_trackers=true（擴大權限）；刪掉違反列（縮小權限）	migrations/0019_m1_permissions.sql
+2026-11-09	M1	既有測試 s6_epoch 的「限定 tracker 會 bump epoch」改用 edit_own_issues（原本用 manage_versions，新 CHECK 不允許非 issue 類權限限定 tracker）	測的仍是 role_permissions.all_trackers 與 role_permission_trackers 的 epoch trigger；manage_versions 限定 tracker 已不是合法資料	保留 manage_versions 並把 CHECK 放寬	crates/oxledger/tests/s6_epoch.rs
+2026-11-09	M1	0019 不給任何角色預設工時權限	05 §2.2 DDL 沒有；加 role_permissions 會 bump 全部專案 epoch、隔離所有 agent 脈絡（R17），屬 M1.4 要確認的升級影響	0019 給 Manager／Developer 預設 log_time、view_time_entries	migrations/0019_m1_permissions.sql
+2026-11-09	M1	issue_field_changes 的對應規則只寫一份：0020 的 SQL 函式 issue_field_change_rows(kind, payload)，回填與命令引擎（寫 issue_events 的同一個 data-modifying CTE）都用它；另加 (issue_id) 索引	05 §2.2「同一個 statement 批次一起寫」；回填與即時寫入不會分歧；遮蔽後重建也不會把遮蔽列帶回	Rust 端各寫一份對應；用 issue_events 的 AFTER INSERT trigger	migrations/0020_estimated_hours_field_changes.sql; src/commands.rs
+2026-11-09	M1	T-M1-03 在 M1.0 用 05 §3.2 定義的 ever_in 語意直接查 SQL 驗證；created 的初始值也算「曾經是」，所以 created 與 A→B 兩筆都遮蔽後才不命中；M1.1 接上 Filter 後重跑	ever_in 是 M1.1 的 Filter 運算子，M1.0 還沒有	等 M1.1 才寫 T-M1-03	crates/oxledger/tests/m1_0_field_changes.rs
+2026-11-09	M1	GET /issues/{key}（IssueDetail）與 MCP get／get_many 的 fields 加 estimated_hours；/auth/session capabilities 加 command_features，M1.0 只有 ["estimated_hours"]，其他各階段加入	05 §3.1（審查 R11）、§4.1、§3.10	等 M1.4 一起加 spent_hours；capabilities 一次列出全部四項	src/service.rs; src/issue_view.rs; src/api.rs
+2026-11-09	M1	describe 的 estimated_hours：type decimal，constraints {min "0", max "99999.99", max_decimals 2}；委派 BUILTIN_FIELDS 加 estimated_hours，既有委派不自動加入、available_fields 會列出	05 §3.10.3、§4.3；02 §16.3 規則 1	type number	src/describe.rs; src/agents.rs
+2026-11-09	M1	estimated_hours 的語法檢查自己做、不設長度上限：去掉前導零與小數尾零後才判範圍（>5 位整數 out_of_range）與小數位（>2 too_many_decimals）	獨立驗證 D-1：借用 canonical_number 的 20／10 位上限會讓「1.00000000000」被拒、超長值回錯誤種類	沿用 canonical_number 的長度上限	src/commands.rs
+2026-11-10	M1	內建欄位改成直接比欄位（不再用 EXISTS 自我連接），否定寫成 IS NOT TRUE；ever_in = 目前值或 issue_field_changes 的 old_ref/new_ref 在集合內，只收 status/assignee/fixed_version	05 §3.2；同一個編譯器、語意不變；沒有值的議題也算「不等於」	保留 EXISTS 形狀	crates/ox-core/src/filter.rs; crates/oxledger/src/filter.rs
+2026-11-10	M1	pred_prefilter 只把 project/tracker/assignee/非私有轉成 Pred 縮小 tantivy 候選，其他條件放行後以 SQL 重查	index_prefilter 必須是超集；E4 有 q／無 q 一致	把所有條件都推到索引	crates/oxledger/src/filter.rs
+2026-11-10	M1	舊參數轉成內建條件和 where AND；舊參數錯誤碼不變，只有 where 回 invalid_filter 新原因；探測只看 v1 filter 與 where	契約「舊參數轉 v2」；不改既有用戶端看到的錯誤	舊參數也改回 invalid_filter	crates/oxledger/src/service.rs
+2026-11-10	M1	舊參數 assignee=me 也包含呼叫者的群組	舊參數轉 v2，v2 的 assignee me 依 05 §3.2 含群組	舊參數維持只比對本人	crates/oxledger/src/service.rs
+2026-11-10	M1	author me 也比對 created_on_behalf_of_id	agent 代我建立的議題算我建立的	只比 author_id	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	meta.today 每個 search 回應都有；舊參數 overdue=false 照舊不篩選；where overdue eq false 是補集	05 §3.2「meta.today 一定有」	只有 overdue 時才有 meta	crates/oxledger/src/service.rs; crates/oxledger/tests/s8_versions_search.rs
+2026-11-10	M1	last_n_days = [今天−n, 今天]、next_n_days = [今天, 今天+n]；created_at/updated_at 依組織時區日期比較；fixed_version next 用 versions 的真時鐘	Redmine >t- / <t+；02 §17.3 R10	n 天不含今天	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	invalid_filter 的 reason 補 unsupported_op、invalid_value、invalid_shape；details.path 是 JSON 路徑	05 錯誤表沒列格式錯誤的原因；前端需要定位	全部歸 invalid_request	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	cf:<名稱> 也收；值收有型別的 {"list": id} 等或 v1 單純值；estimated_hours 收字串或 JSON 數字	相容 v1 寫法	只收 cf:<id> 與有型別值	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	排序：最多 3 key，dir 預設 asc，空值兩方向都最後，id 補在最後且方向跟最後一個 key；錯誤回 invalid_argument（path sort[n].field）	05 §3.2 只規定 key 與上限	空值依方向前後；錯誤回 invalid_filter	crates/oxledger/src/filter/v2.rs; crates/oxledger/src/service.rs
+2026-11-10	M1	q + sort：候選長到 8000 收齊所有命中再排序，rank 仍是相關度名次	任何命中都可能排第一；沿用既有 8000 上限與 evidence_truncated	只排前 N 個候選	crates/oxledger/src/service.rs
+2026-11-10	M1	cursor 加 Position::Sort，上限 1024→4096 bytes（之後改成 MAX_SEALED，見下一筆 cursor 決定）；擁有者與期限先查，查詢雜湊（含正規化 where/sort）在解析後比對	三個排序值放不進 1KB；別人的 cursor 不能先洩漏參數錯誤	排序時不給 cursor	crates/oxledger/src/cursor.rs; crates/oxledger/src/service.rs
+2026-11-10	M1	/filter-fields：label zh-TW；未指定專案時人員欄位 options_source 是 POST /api/v1/resolve；看不到的專案 not_found；triage/spent_hours 不列	05 §3.2 範例；§8 依賴倒置	未指定專案時不給 options_source	crates/oxledger/src/filter/v2.rs; crates/oxledger/src/api.rs; crates/oxledger/src/describe.rs
+2026-11-10	M1	where 的值每個請求只解析一次（記憶）；內建參照欄位的 id 每種一個批次查詢；不同名稱的查詢每個 where 最多 100 個（id 不算），超過回 invalid_filter too_complex	獨立驗證 1：逐一 resolve_one 不去重，30×100 個同名值一個請求 15 秒；名稱解析走 resolve，無法便宜地批次	把 resolve 改寫成批次；限制全部值的總數	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	where 的日期限年份 1–9999，超出回 invalid_value	獨立驗證 2：chrono 收、PG 超範圍會 500	限 PG date 的完整範圍	crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	cursor 上限改成 MAX_SEALED（三個 2000 bytes 字串排序值 × 6 倍跳脫的最壞情況），encode 超過就報錯	獨立驗證 4：4096 收不回伺服器自己發的 cursor	cursor 只存排序值的雜湊（無法做 keyset）；字串排序值截斷（順序會錯）	crates/oxledger/src/cursor.rs
+2026-11-10	M1	view run／preview 走 POST，cursor 在 body；分組前導排序只用 id／position	排序 cursor 最長約 37 KB（base64 約 50 KB），GET 放不下；名稱會撐大 cursor	GET 加短 cursor 表（伺服器存狀態）	crates/oxledger/src/views.rs; crates/oxledger/src/api.rs
+2026-11-10	M1	manage_public_views 不在 migration 給任何角色；seed 給 Manager	新增 role_permissions 會 bump 全部專案 epoch，agent 脈絡失效（同 0019）	0021 給 Manager 並寫進升級說明（同 0015）——待使用者決定	migrations/0021_views.sql; crates/oxledger/src/seed.rs
+2026-11-10	M1	專案視圖與綁專案的個人視圖：存檔補 project eq（放不下就不補），執行一律 AND 專案；project 條件只能是該專案	R-VD3、R-T3：專案視圖只搜該專案	只在執行時 AND（定義看不出範圍）	crates/oxledger/src/views.rs
+2026-11-10	M1	欄位鍵白名單與預設欄位；spent_hours、triage 回 unknown_field	05 §3.3 欄位表；§8 依賴倒置	先接受、執行時忽略	crates/oxledger/src/views.rs
+2026-11-10	M1	計數上限 999、整次執行共用 2 秒預算（savepoint＋statement_timeout），逾時回 null；有 q 時不算計數與合計	R-VD6、B-7；全文只看 8000 筆，數字不準	有 q 時照算候選集合	crates/oxledger/src/views.rs
+2026-11-10	M1	override.q 取代視圖的 query.q；where_and 與視圖條件 AND	編輯器預覽與搜尋框是換掉查詢文字	兩者 AND	crates/oxledger/src/views.rs
+2026-11-10	M1	看板自動欄：status 必須列出；fixed_version 無專案必須列出；assignee 依可見結果；priority 無未設定欄；done 欄只顯示 done_window_days 內更新的	05 §3.3 看板定義	status 也自動列出全部狀態	crates/oxledger/src/views.rs
+2026-11-10	M1	builtin:involving_me 執行時 OR 上「30 天內寫過事件」（內部欄位 WROTE_RECENTLY_FIELD），因此不可複製（forbidden_op not_copyable）	Filter AST 沒有這個欄位；複製出去會悄悄少一個條件	把它加成 Filter AST 欄位（等於公開新篩選語意）	crates/oxledger/src/views.rs; crates/oxledger/src/filter.rs
+2026-11-10	M1	執行時讀不到的 cf：條件／排序／分組／分欄 → invalid_filter field_unavailable；欄位與卡片欄位直接拿掉	R-VD4：不默默放寬條件；顯示欄少一欄無安全問題	欄位也報錯	crates/oxledger/src/views.rs
+2026-11-10	M1	專案分頁：新種類 view（v_）算進 10 個自訂上限；內建 board 可帶 board 視圖的 view_id；triage 預設隱藏；0021 補兩個內建分頁並 lock_version+1	R-T1、R-V1–R-V3；舊清單 PUT 應得到 conflict 而非 builtin_missing	不動 lock_version	migrations/0021_views.sql; crates/oxledger/src/project_tabs.rs
+2026-11-10	M1	POST /views 與 /views/{id}/copy 回 201；OpenAPI 以 CREATED_ROUTES 標示	契約 §3.3 寫 201；複製也是建立	全部維持 200	crates/oxledger/src/api.rs; crates/oxledger/src/openapi.rs
+2026-11-10	M1	meta.today 放 data.meta.today，同 search 的 SearchMeta	M1.1 搜尋已用這個位置，前端一致	改封套 meta（要動所有端點）	crates/oxledger/src/views.rs
+2026-11-10	M1	視圖遮蔽表建好但遮蔽端點不做；讀事件時有 redaction_id 回 [已遮蔽]	M1.2 範圍沒列 D12 視圖遮蔽端點	本階段一起做	migrations/0021_views.sql; crates/oxledger/src/views.rs
+2026-11-10	M1	agent view_list 只列委派專案的專案視圖與專案內建視圖；個人視圖與含 me 的內建不列；editable 一律 false	B-4、R-VD9	列出但執行時拒絕	crates/oxledger/src/views.rs; crates/oxledger/src/mcp.rs
+2026-11-10	M1	自訂欄位不適用的單另成「不適用」組（值 not_applicable），計數用 gate 不成立；看板上進 unmapped.issues	驗證發現未設定組顯示與計數定義不一致；R-VD6 計數要等於可見結果	併入未設定（計數要改成 NOT (gate AND EXISTS)，但看板空值欄就會收到不適用的單，拖進去等於清空一個不存在的欄位）	crates/oxledger/src/views.rs
+2026-11-10	M1	看板 unmapped 改為每個看板都有：status_count（by status）、issues、lanes_truncated	停用選項、已關閉版本、超過 30 欄上限的人與不適用的單都要有歸屬，不能無聲消失	自動加「其他」欄（拖進去沒有可寫入的值）	crates/oxledger/src/views.rs; api/openapi.json; api/types.ts
+2026-11-10	M1	自動人員欄用一個不受計數預算限制的查詢（含完成時間窗），計數預算從第一個計數開始	欄的定義不能因計數逾時而改變；項目查詢不該吃計數預算	沿用計數預算（逾時欄消失）	crates/oxledger/src/views.rs
+2026-11-10	M1	改名撞唯一索引（23505）在 savepoint 內接住並回 view_name_taken	並行建立同名時原本回 500	改名也拿 per-owner advisory lock（多一把鎖，且專案視圖要另一把）	crates/oxledger/src/views.rs
+2026-11-10	M1	copy 先查 Idempotency-Key、fingerprint 只由請求算	來源改名或刪除後同 key 重送原本回 idempotency_key_reused／not_found	保留 source_lock_version（重放依賴來源現況）	crates/oxledger/src/views.rs
+2026-11-10	M1	看不到綁定專案的個人視圖：不回 project、回 project_unavailable；執行回 invalid_view/project_unavailable	原本洩漏私有專案名稱	直接 not_found（擁有者就刪不掉自己的視圖）	crates/oxledger/src/views.rs
+2026-11-10	M1	0022 不給任何角色 triage_issues；M1.4 給 Manager	使用者決定（2026-11-10）：M1 新權限在 M1.4 一次給完，只 bump 一次 epoch	0022 直接給 Manager（多 bump 一次 epoch）	migrations/0022_triage.sql
+2026-11-10	M1	duplicate 決定要委派同時有 triage_decide 與 duplicate_of，政策取較嚴	duplicate 決定會建立重複關係，不該繞過 duplicate_of 的政策	只看 triage_decide	crates/oxledger/src/commands.rs
+2026-11-10	M1	decline／duplicate 轉到非 done 狀態回 invalid_value(triage_requires_close)；沒帶 transition 回 invalid_request	R27：判斷 category 要查 DB，屬語意錯	全部 invalid_request	crates/oxledger/src/commands.rs
+2026-11-10	M1	snooze_until 限 1 小時到 90 天，超出回 invalid_value(snooze_range)	契約沒寫上下限；避免立刻到期或永久藏起來	不限	crates/oxledger/src/commands.rs
+2026-11-10	M1	unsnooze 沒有生效中 snooze 的單回 triage_state_invalid	和已決定的單同一種「狀態不對」	當成 no-op 成功	crates/oxledger/src/commands.rs
+2026-11-10	M1	審查佇列只有 accept（無 note）與 snooze 可勾選；unsnooze 不可勾選	§4.3 只列 accept、snooze 可快速批准	unsnooze 也可勾選	crates/oxledger/src/review_queue.rs
+2026-11-10	M1	人批准 agent 的 triage 提案時，決定者記為提案的 agent，A5 標記照 agent 算	提案內容是 agent 的判斷；稽核要能篩出自建自分流	記成批准的人，標記為 false	crates/oxledger/src/commands.rs
+2026-11-10	M1	Triage 設定變更寫進 project_setting_events（triage_settings_updated）	和分頁設定同一張歷史表	新開一張事件表	migrations/0022_triage.sql;crates/oxledger/src/triage.rs
+2026-11-10	M1	Triage 關閉時收件匣不列該專案，pending 列保留；triage_decide 仍可送；最近決定不看啟用	關閉是暫停入口，不是丟掉資料	關閉時清掉 pending 或擋決定	crates/oxledger/src/triage.rs
+2026-11-10	M1	Filter triage 的 pending 不含生效中的 snooze，另有 snoozed 與 none	收件匣預設不含 snoozed，篩選要能對得上	pending 含 snoozed	crates/oxledger/src/filter.rs;crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	/triage/counts 每專案最多算到 99，超過 more=true	R28：計數不能太貴，也不洩漏看不到的單	精確計數	crates/oxledger/src/triage.rs
+2026-11-10	M1	GET /triage 不收 view=decided（invalid_argument）；最近決定只在專案層	契約只在專案收件匣列最近決定	跨專案也給最近決定	crates/oxledger/src/api.rs
+2026-11-10	M1	agent 對 Triage 設定一律 can_manage=false、PUT 回 forbidden_op	設定是專案管理，不在委派操作內	照委派人的 manage_project	crates/oxledger/src/triage.rs
+2026-11-10	M1	same_sponsor 用 agent_principals.delegator_user_id 判斷	同一個人的不同 agent client 即同 sponsor	看委派列	crates/oxledger/src/commands.rs
+2026-11-10	M1	PUT triage-settings 同 Idempotency-Key 重送回原本那次的回應（存在 result_ref.settings）	獨立驗證：重放要回原結果，含當時 lock_version 與 warnings	回現在的設定（修正前）	crates/oxledger/src/triage.rs
+2026-11-10	M1	pending 單已被一般 transition 關成 done 類時，decline 可不帶 transition；沒關時回 invalid_value(triage_requires_close)	獨立驗證 2a：不要逼人先重開再關；判斷要查 DB 屬語意錯	一律要 transition（修正前，invalid_request）	crates/oxledger/src/commands.rs
+2026-11-10	M1	snooze 下限給 1 分鐘寬限（≥ 59 分鐘）	獨立驗證 2b：client 算的「現在＋1 小時」送到時已不足 1 小時	嚴格 1 小時	crates/oxledger/src/commands.rs
+2026-11-10	M1	Triage 設定只驗證這次有改的欄位；失效的既有值改回 warnings（responsible_invalid、decline_status_invalid）；DB trigger 也只在欄位變更時檢查	獨立驗證 2c：失效值不該擋關閉 Triage 等其他修改	每次全驗（修正前）	crates/oxledger/src/triage.rs;migrations/0022_triage.sql
+2026-11-10	M1	undo decline／duplicate 後單回收件匣但狀態仍是 done（transition 另外還原）	獨立驗證 2d：照契約，transition 是 undo 的另一項	triage undo 連帶還原狀態	docs/impl/m1-checklist.md
+2026-11-10	M1	0023 一次給內建角色 M1 權限：Manager 全 7 個，Developer／Reporter 給 view_time_entries、log_time；單一 INSERT 只 bump 一次 epoch	使用者 2026-11-10 決定（照 Redmine 預設）	分散在 M1.3／M1.4 各給（多次 bump）	migrations/0023_time_tracking.sql;docs/impl/upgrade-notes.md
+2026-11-10	M1	Non member／Anonymous 不給 view_time_entries（待使用者決定）	公開專案非成員會看到全部人的工時（visibility 預設 all），影響隱私，無合理預設	照 Redmine 給	migrations/0023_time_tracking.sql
+2026-11-10	M1	既有專案一律啟用 time_tracking 模組，期間停用模組 epoch trigger	Redmine 預設模組含工時；epoch 只因授權 +1	不啟用，等專案自己開	migrations/0023_time_tracking.sql
+2026-11-10	M1	工時回執放獨立的 time_entries 陣列（每項 kind: time_entry），不混進 effects	effects 既有元素是 issue 形狀，混入會壞既有 client	照契約放進 effects	crates/oxledger/src/commands.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	agent 的 log_time 回執只給 id 與 lock_version，不論 read_own_time	§3.5.4 只要求關時不給；開時也用 time_list 讀，行為單純	開時回完整欄位	crates/oxledger/src/time_entries.rs
+2026-11-10	M1	spent_on 省略用組織今天；activity 省略用預設，沒有預設回 required_field_missing(activity_id)	Redmine 行為；不猜活動	一律必填	crates/oxledger/src/time_entries.rs
+2026-11-10	M1	新表 project_time_settings 放專案工時設定的 lock_version；PUT 可帶 module_enabled	§3.5.3 的 PUT 要 lock_version，沒有現成列可放	放在 projects	migrations/0023_time_tracking.sql;crates/oxledger/src/time_reports.rs
+2026-11-10	M1	日上限預設 0（不限）；log_time 配額 20 次／小時只算 direct 寫入	同 Redmine 預設；送審的提案已有人把關	預設 24；送審也計	migrations/0023_time_tracking.sql;crates/oxledger/src/quota.rs
+2026-11-10	M1	read_own_time 另開 PUT /delegations/{id}/read-own-time；開關都 policy_version+1 並要 step-up；API 預設 false 且開時要 ack	契約 §2.5（委派設定變更）；獨立驗證撤回原本「不 bump」	不 bump（原做法）；併進 policies PUT	crates/oxledger/src/agents.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	工時受眾檢查錯誤 kind 用 private_destination；時數 0 寫成 "0"，其他兩位小數	沿用 §3.8 的目的地錯誤分類	新 kind time_audience	crates/oxledger/src/audience.rs;crates/oxledger/src/time_entries.rs
+2026-11-10	M1	封存 issue 上的工時看不到；REST 工時讀取只給人，agent 只能 MCP time_list	和 issue 可見性一致；§3.5.4 agent 範圍	封存單的工時照列	crates/oxledger/src/time_reports.rs
+2026-11-10	M1	spent_hours 開放為 Filter 欄位（number，不可排序）；觀看者放在 Filter::Cond 的明確欄位 viewer（applies 維持 True）；agent 回 invalid_argument(unavailable_to_agent)（待使用者確認）	M1.4 任務說明要開 Filter；契約 §3.2 沒列；觀看者塞在 applies 會被當 gate	不開 Filter（契約字面）；觀看者放 applies（原做法）	crates/ox-core/src/filter.rs;crates/oxledger/src/filter.rs;crates/oxledger/src/filter/v2.rs
+2026-11-10	M1	issue 詳情的 spent_hours 讀不到工時時省略欄位；get fields 時為 null	和 skip_serializing 的既有選填欄位一致	一律回 null	crates/oxledger/src/service.rs;crates/oxledger/src/issue_view.rs
+2026-11-10	M1	工時 undo：建立的軟刪除、欄位直接放回前值不重驗；issue_id／user_id 回 not_supported；改欄位的還原要能改那筆；agent 建立且沒人改過的（user_id＝undo 的人）只要 log_time（待使用者確認）；只標實際寫回的欄位 reverted_by	前值當時合法；Developer 預設沒有 edit_own_time_entries（Redmine loader.rb 未查證：無原始碼）	一律要編輯權限；走完整命令驗證	crates/oxledger/src/undo.rs;crates/oxledger/src/time_entries.rs
+2026-11-10	M1	工時說明遮蔽：只換掉事件中 comments 的值；衍生副本整個前後值換標記	保留時數歷史；副本照 02 §16.7 規則	整個事件 payload 換標記	crates/oxledger/src/redaction.rs
+2026-11-10	M1	待審佇列：log_time 說明 ≤80 字可勾選；update_time_entry 不可；沒有 issue 的 log_time 沒有 diff 列	§4.3；DiffTarget 需要 issue	改 DiffTarget 形狀	crates/oxledger/src/review_queue.rs
+2026-11-10	M1	MCP 描述只加工時相關句子；agent_chain、describe_form／validate 句子等 M1.9／M1.5	避免 agent 找不存在的工具	照 §4.2 全加	crates/oxledger/src/mcp.rs
+2026-11-10	M1	Non member／Anonymous 維持不給 view_time_entries（待使用者確認）	獨立驗證後維持原預設；公開專案非成員會看到全部工時	照 Redmine 給	migrations/0023_time_tracking.sql
+2026-11-10	M1	遮蔽後改 comments 清掉 redacted_at（可再遮蔽）；已軟刪除的工時也可遮蔽	獨立驗證 D2、D6：新文字不是遮蔽過的內容；刪除的事件仍留文字	遮蔽一次後鎖住 comments	crates/oxledger/src/time_entries.rs;crates/oxledger/src/redaction.rs
+2026-11-10	M1	日合計逐列鎖（(user, day) 排序）；混合文件在 field option 與 search token 前先鎖日合計	§3.5.5；獨立驗證 D5	一個 SELECT ORDER BY … FOR UPDATE（原做法）	crates/oxledger/src/time_entries.rs;crates/oxledger/src/commands.rs
+2026-11-10	M1	update／delete 看不到的工時一律 not_found，先於 module_disabled；0023 拆出 time_role_visibility（不看模組）	獨立驗證 D7(3)：錯誤不洩漏存在；看得到的人仍知道模組關了	模組關了一律 not_found	crates/oxledger/src/time_entries.rs;migrations/0023_time_tracking.sql
+2026-11-10	M1	日上限錯誤對 agent 一律不帶 remaining；/me/timesheet 只列啟用工時模組的專案	獨立驗證 D1、D7(1)：委派者的當日合計跨專案	agent 有 read_own_time 時給	crates/oxledger/src/time_entries.rs;crates/oxledger/src/time_reports.rs
+2026-11-10	M1	rules_version = r{site}.{project}.s{L0}.w{workflow}；L0 是 org_settings.form_l0_version（0025 trigger），版面另有 layout_version	附錄 C R13；只改版面不能讓 agent 失敗（T-M1-49）	規則與版面共用一個版本	crates/oxledger/src/forms.rs;migrations/0025_field_admin.sql
+2026-11-10	M1	expected_rules_version 不進冪等 hash；不符回 form_rules_changed（rejection）	它是送出條件不是內容；重送同一 operation_id 不該因版本變化變成 idempotency_key_reused	放進 hash	crates/oxledger/src/commands.rs
+2026-11-10	M1	readonly_if 依交易開始時的狀態判斷，值沒變也擋	§3.6.2；同 workflow readonly 的行為	值沒變就放行	crates/oxledger/src/commands.rs
+2026-11-10	M1	讀不到目標或條件欄位時不給 rule_id；讀不到目標的 required_if 人不受約束、agent blocked	不洩漏讀不到的欄位與規則（§5.2 同做法）	一律給 rule_id	crates/oxledger/src/commands.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	describe_form 的 required_if／allowed_values_if／readonly_if 是陣列	一個欄位可有多條規則	契約範例的單一物件	crates/oxledger/src/forms.rs
+2026-11-10	M1	form_invalid 加 malformed、invalid_rule 兩種 kind	契約六種不涵蓋 JSON 形狀錯與規則各部分不合	都歸 malformed	crates/oxledger/src/forms.rs
+2026-11-10	M1	每次 PUT 草稿產生新版本號，舊草稿 discarded；base_version 防並行	保留歷史、impact 綁定版本號	草稿原地更新	crates/oxledger/src/forms.rs
+2026-11-10	M1	加 POST /admin/forms（建立或取得表單列）；表單與欄位管理寫入不收 Idempotency-Key	契約表沒有建表單的端點；版本號與 lock_version 已防重送與並行	第一次 PUT 草稿時隱式建立	crates/oxledger/src/api.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	0024 前的提案 rules_version 為 NULL：有 L1 規則生效時才算規則已變；新版本在 INSERT 時寫入	changeset_versions 只能新增；沒有規則時舊提案不該被擋	NULL 一律算已變	crates/oxledger/src/forms.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	marks 只記 rule id；議題頁只列呼叫者讀得到所有欄位的規則	不洩漏受限欄位的規則	全部列出	crates/oxledger/src/forms.rs;crates/oxledger/src/service.rs
+2026-11-10	M1	不需要新權限：欄位管理限管理員，專案表單用 manage_project；0024／0025 不 bump epoch	任務說明要求新權限時先停；現有權限足夠	新增 manage_forms 權限	migrations/0024_forms.sql;migrations/0025_field_admin.sql
+2026-11-10	M1	加 DELETE /admin/custom-fields/{id}/options/{oid}（沒人用的選項才能刪）	建錯的選項要能移除；用到時引導停用	只能停用	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	欄位轉換每批 500、批次與游標同交易；failed 後用 start 續跑；舊欄位不自動停用	Q-S9：每批冪等、續跑不重寫；停用與否由管理員確認結果後決定	轉完自動停用舊欄位	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	停用的欄位不出現在 describe／表單，寫新值 invalid_value，篩選仍可用	T-M1-59	停用即隱藏舊值	crates/oxledger/src/describe.rs;crates/oxledger/src/commands.rs
+2026-11-10	M1	validate：人不計配額，agent 每委派每小時 120 次；無 op_id 的錯誤掛到每個 op	§8.9 配額只針對 agent；最終狀態檢查不屬於單一 op	人也計配額	crates/oxledger/src/forms.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	undo 的 rules_changed 原因帶 code 與 rule_id	T-M1-45 要求 undo 也看得到同一個錯誤碼與規則	只給 reason	crates/oxledger/src/undo.rs
+2026-11-10	M1	目標或任一條件欄位讀不到的規則：人不受約束，agent blocked 不帶 rule id；提到停用／不適用欄位的規則不約束任何人	獨立驗證缺陷 1：條件欄位發布後改受限，讀不到的人仍受約束且錯誤透露隱藏值	只看目標可讀；或禁止把被引用的條件欄位改受限	crates/oxledger/src/commands.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	欄位 PATCH 改成受限且已發布規則的條件提到它時回 warnings（不擋）	獨立驗證缺陷 1：管理員要知道規則對誰不再生效	擋下 PATCH	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	impact 只算呼叫者看得到的單；有看不到的違反時不給數字、complete false，block 擋下；pending 只列自己的提案；undo 只算看得到的單	獨立驗證缺陷 2：非管理員經理經 scanned／block 得知看不到的單存在	全部照管理員視角算	crates/oxledger/src/forms.rs;crates/oxledger/src/changesets.rs
+2026-11-10	M1	發布時存的 impact 只存計數（sample_keys、ids 清空）	獨立驗證缺陷 3：GET /forms、/versions 把發布者視角的 key 給經理	讀取時依讀者重新過濾	crates/oxledger/src/forms.rs
+2026-11-10	M1	非管理員寫規則的欄位目錄只含讀得到的欄位，讀不到的一律 unknown_field	獨立驗證缺陷 4：經理可替讀不到的欄位寫規則並用 impact 探測	保留 restricted_condition_field 給所有人	crates/oxledger/src/forms.rs
+2026-11-10	M1	回溯把開著的草稿標 discarded；發布要求草稿版本大於已發布版本，否則 conflict	獨立驗證缺陷 5：回溯後發布舊草稿讓版本倒退（§3.6.3 版本不倒退）	發布時自動改號	crates/oxledger/src/forms.rs
+2026-11-10	M1	寫入只清寫入者受約束且最終狀態符合的規則的 mark	獨立驗證缺陷 6：不受約束的人寫入清掉仍違反規則的 mark	清掉全部（原做法）	crates/oxledger/src/commands.rs;crates/oxledger/src/forms.rs
+2026-11-10	M1	轉換批次先依 id 順序 FOR UPDATE 鎖 issue 再讀舊值；新欄位不適用的單跳過並計入 not_applicable；開始時兩個欄位都不能停用或刪除中；續跑每個轉換獨立 task	獨立驗證缺陷 7、8	讀值不鎖；不適用也寫	crates/oxledger/src/field_admin.rs
+2026-11-10	M1	提案與 owner 修訂的 rules_version 在驗證前讀	獨立驗證缺陷 8：驗證期間發布的規則要讓提案標規則已變	存入時再讀（原做法）	crates/oxledger/src/changesets.rs
+2026-11-10	M1	hides_required 也看 workflow 必填；欄位全被濾掉的版面區塊整塊不回	獨立驗證缺陷 8	只看 L0 與 L1；回空區塊	crates/oxledger/src/forms.rs
+2026-11-10	M1	待使用者確認：轉換 running 時舊欄位唯讀（invalid_value kind field_converting），結束後解除；完成後是否停用仍由管理員決定	轉換期間寫進舊欄位的值可能被游標略過	不凍結；凍結到取消	crates/oxledger/src/commands.rs
+2026-11-10	M1	待使用者確認：T-M1-57 同時改可見性與角色 epoch +3、改 roles／projects／is_for_all +5（0010 trigger 的 DELETE／INSERT 各觸發）；不改 trigger，測試維持至少 +1	和契約 T-M1-57 的 +1 不同；改 trigger 會動到既有權限行為	改 0010 trigger 讓每個 PATCH 只 +1	docs/impl/m1-checklist.md
+2026-11-10	M1	待使用者確認：m1_4_upgrade 改回 MIGRATOR.run	驗證者實測可過；run_to(23) 只是避開 0024／0025 的保險	維持 run_to(23)	crates/oxledger/tests/m1_4_upgrade.rs
+2026-11-10	M1	user_preferences 多一欄 home_lock_version；/me/preferences 與 /me/home 各自樂觀鎖	契約範例兩者 lock_version 不同（3 與 5）；共用一個鎖會讓改主題與改首頁互相 conflict	照 DDL 只用一個 lock_version	migrations/0026_user_preferences.sql;crates/oxledger/src/home.rs
+2026-11-10	M1	PUT /me/preferences、PUT /me/home、POST /me/home/apply-template 收 Idempotency-Key（operation_requests）；GET 首次建列不收	§3.1 共通規則：寫入要 Idempotency-Key；GET 建列不算使用者寫入	不收 key、只靠 lock_version	crates/oxledger/src/home.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	GET /me/home 每個小工具帶 available（每次讀取重驗）；view 小工具可用時才給 view_name／view_kind，milestones 才給 project_key／project_name；看不到與被刪同一個答案	看不到＝不存在；前端要顯示「這個視圖已不存在」，又不能從差異推出存在	只回存的設定、由前端各自呼叫 run 判斷	crates/oxledger/src/home.rs;crates/oxledger/src/views.rs
+2026-11-10	M1	PUT 時新的或改過的參照（視圖、專案）必須現在讀得到（unknown_view／unknown_project 不分不存在與看不到）；和既存同 id 小工具相同的參照不重驗	看不到的參照不能新加；但視圖消失後使用者仍要能重排首頁	每次 PUT 全部重驗（失效的小工具會讓整個首頁存不了）	crates/oxledger/src/home.rs
+2026-11-10	M1	default_views 的 key 可以是 *（其他所有專案），值是視圖 id 或 builtin:list／builtin:board／builtin:timeline；GET 照樣回失效項目（{view_id, available:false}，獨立驗證後改，原本省略會讓整份 PUT 默默刪掉）	範本的「專案預設視圖」不綁特定專案；契約只寫 project_id → view id	範本不給 default_views	crates/oxledger/src/home.rs
+2026-11-10	M1	apply-template 除了小工具也套左欄捷徑與 * 預設視圖；replace 保留使用者自己的 need_decision（id 與寬度），merge 只加缺的（小工具上限 12）；回傳 {home, preferences}	§3.8 範本表三欄都是「預設」；UI「套用新預設」應一次套齊	只套小工具	crates/oxledger/src/home.rs
+2026-11-10	M1	通用範本（沒選角色）＝需要你決定、指派給我、與我相關；PM 範本的 milestones 沒有 project_id（前端請使用者選）	契約只說「略過＝通用範本」沒列內容；範本不知道使用者的專案	PM 範本拿掉里程碑	crates/oxledger/src/home.rs
+2026-11-10	M1	複選角色依請求的順序輪流取（重複只取一次），最多 8 個；* 預設視圖取第一個角色的	§3.8「依角色順序輪流取」沒說是哪個順序	固定 pm→designer→engineer	crates/oxledger/src/home.rs
+2026-11-10	M1	左欄捷徑種類 view（帶 id）、triage、timeline、board、timesheet，最多 20；view 捷徑讀取時帶 available	契約沒定捷徑格式；範本需要 Triage、時程、看板、指派給我	自由字串	crates/oxledger/src/home.rs
+2026-11-10	M1	/me/* 與 /home/templates 只給人（human session）；agent 一律 human_session_required，REST 帶 bearer 是 unauthenticated	§3.1 表標「人」；T-M1-61	agent 可讀委派者的偏好	crates/oxledger/src/home.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	非管理員作者的表單版面也用依可讀性過濾的欄位目錄：讀不到的欄位放進版面或寫進 show_if 一律 unknown_field	M1.5 遺留：版面錯誤（field_not_applicable、hides_required）會透露讀不到的欄位；和規則作者目錄一致	版面檢查用完整目錄	crates/oxledger/src/forms.rs
+2026-11-10	M1	改規則時重檢已發布版面只看這次變動新造成的 hides_required；版面寬鬆讀（停用、不適用欄位略過）；讀不到的欄位不帶 key（待使用者確認）	獨立驗證 F2：停用欄位讓規則草稿與發布全部卡死，錯誤帶出讀不到的 key	完整目錄嚴格重跑 parse_layout（原做法）	crates/oxledger/src/forms.rs
+2026-11-10	M1	版面 impact 的 layout_warnings 用作者目錄	獨立驗證 F1：經理看到讀不到欄位的 unplaced 警告	完整目錄	crates/oxledger/src/forms.rs
+2026-11-10	M1	小工具、捷徑、default_views 存正規 view id；view id 超過 80 字元 invalid_value（invalid_view_id）；default_views key 正規化後重複 duplicate_default_view；default view 必須綁同一專案，* 只收 builtin 或未綁專案的視圖	獨立驗證 V1、V2、V6	存原字串、不限長度、後者覆蓋	crates/oxledger/src/home.rs;crates/oxledger/src/views.rs
+2026-11-10	M1	概念與標籤管理只給管理員（is_admin），不新增權限、不 bump epoch；GET 給所有登入者，非管理員只看到啟用概念的啟用標籤	任務規定不得 bump epoch；staging 常是未審內部用語	新增 manage_concepts 權限；所有人看到全部標籤	crates/oxledger/src/concepts.rs;migrations/0027_concepts.sql
+2026-11-10	M1	標籤比較用 PG18 casefold(normalize(x, NFC))，unique index 與應用程式同一式子，不加 Rust 依賴；casefold 跟資料庫 collation（與其他名稱規則一致）	R18；IMMUTABLE 可建 index；避免新增 crate	Rust unicode-normalization；lower()；COLLATE pg_unicode_fast（待決定）	migrations/0027_concepts.sql;crates/oxledger/src/concepts.rs
+2026-11-10	M1	0027 遇到既有撞名的概念標籤不失敗：每組留一個 active（pref、最舊概念、bytewise 最小），其他改 staging 並 NOTICE	R18；升級不能卡在既有資料	migration 失敗要求人工清理	migrations/0027_concepts.sql;crates/oxledger/tests/m1_7_upgrade.rs
+2026-11-10	M1	別名展開只比對整個 q 與空白分隔的詞（正規化後相等），不做子字串；hidden 標籤參與展開；最多 16 段、加 32 個標籤；展開詞權重 0.5	避免中文長句誤展開；E1 alias0.5 與 alias1 差距小	子字串包含（E1 雛形的做法）；hidden 不展開；權重 1.0	crates/oxledger/src/concepts.rs;crates/oxledger/src/search.rs
+2026-11-10	M1	match.expanded 只列標籤裡原查詢沒有的完整詞、且出現在該 issue 命中文字的展開，{from, via, label}	§3.9 要說明「透過哪個概念找到」，不能列沒用上的展開	列出查詢的全部展開	crates/oxledger/src/service.rs
+2026-11-10	M1	退役概念的啟用標籤仍佔名稱；pref 標籤不能改 kind 或 staging（pref_label_fixed）；同概念重複是 invalid_value，跨概念才是 concept_label_taken（409）	恢復概念不會撞名；pref 是概念名稱	退役即釋出名稱	crates/oxledger/src/concepts.rs
+2026-11-10	M1	概念 API 不收 Idempotency-Key，PATCH concept 用 lock_version；概念變更不寫 issue_events	比照 M1.5 欄位管理；站台設定不是 issue 歷史	收 Idempotency-Key；寫稽核事件	crates/oxledger/src/concepts.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	BM25F 以每欄位 TermQuery×權重加總實作：key 5、subject 3、description 1、cf_text 0.7、notes 0.5；key 用整串小寫 raw 比對	沿用 M0 查詢形狀；契約沒給 key、cf_text 權重（推論）	tantivy 單一 BM25F；key 斷詞	crates/oxledger/src/search.rs
+2026-11-10	M1	私有筆記、受限欄位（visible=false）不進索引，有權限的人也搜不到；key 與 cf 命中沒有 snippet，筆記證據 field=note 帶 note_id	Q-S2 保守做法；cf/key 沒有引用來源單位	索引內逐欄位 ACL；cf 證據	crates/oxledger/src/search.rs;crates/oxledger/src/service.rs
+2026-11-10	M1	search_rev v2 涵蓋所有索引來源，SQL 重驗依索引規則讀 key、筆記、cf；0027 為 notes、keys、issue_cf、field_defs、field_trackers、field_projects 加 outbox trigger	撤回、遮蔽、改受限在 sync 前就要擋（T-M1-62、63）	只靠 outbox 更新索引	crates/oxledger/src/search.rs;migrations/0027_concepts.sql
+2026-11-10	M1	索引 schema 2→3、query semantics 1→2；舊 generation 用舊語意繼續服務並自動背景藍綠重建，失敗 60 秒後重試	03 §4.8：舊 generation 必須用舊版查詢語意	啟動時直接丟棄舊索引（重建期間 search_unavailable）	crates/oxledger/src/search.rs;crates/oxledger/src/main.rs
+2026-11-10	M1	status、priority fast field 以 STRING term 實作；legacy generation 上視為全部，Not 底下有它們時整個視為全部	預先過濾必須是超集	legacy 時拒絕過濾	crates/oxledger/src/filter.rs;crates/oxledger/src/search.rs
+2026-11-10	M1	E1 門檻以 M0 實際值 0.80955 斷言（契約 0.810 是四捨五入），另以 E1 別名表當概念斷言 ≥ 0.810（待使用者確認）	M1.7 不展開時與 M0 逐題相同	嚴格 0.810 並為此調權重（等於對評估集過擬合）	crates/oxledger/src/search.rs
+2026-11-10	M1	E2 受阻：沒有獨立查詢集，不自行編造；只記錄 E1 別名表的參考數字	任務規定評估集不存在時停下回報	用 E1 查詢當 E2	docs/impl/m1-checklist.md
+2026-11-10	M1	outbox 事件在同一交易同一 issue 只發一筆：新增 outbox_issue_once，0027 的子表 trigger 與 0001 的 issues_enqueue 都改用它	S4 斷言一個命令一筆 outbox；加筆記、建 key 不該多發	每個子表寫入各發一筆（s4_commands 失敗）	migrations/0027_concepts.sql
+2026-11-10	M1	0027 修復概念名稱：每概念只留一個 active pref（降級的改 alt）；缺的從 active 標籤補（alt 優先、bytewise 最小）；沒有 active 標籤的概念 retired；改名時缺 pref 列就 INSERT；標籤清單的 pref 一律由 concepts.pref_label 產生	獨立驗證 D1：升級後有概念的名稱是 staging 標籤，改名影響 0 列、新名稱不展開也不受唯一索引保護	不修（原做法）；migration 失敗	migrations/0027_concepts.sql;crates/oxledger/src/concepts.rs
+2026-11-10	M1	E1 單元測試的 writer 單執行緒、同分依 E1 id 排序，數字固定為 0.809525；門檻為 M0（0.80955）四捨五入到 4 位的 0.8095	獨立驗證 D2：多執行緒寫入讓同分順序不定，約 1/3 失敗	門檻 0.80955（不穩定）；嚴格 0.810（待使用者確認）	crates/oxledger/src/search.rs
+2026-11-10	M1	hidden 標籤非管理員不列出、不能用 ?q= 找到；match.expanded 遇到 hidden 標籤時 label 顯示概念名稱（待使用者確認）	獨立驗證 D6：錯字與內部用語外露給所有人	非管理員可見、expanded 列出 hidden 標籤（原做法）	crates/oxledger/src/concepts.rs;crates/oxledger/src/service.rs
+2026-11-10	M1	概念清單 limit 在 HTTP 與服務層都 clamp 到 1–100	獨立驗證 D7b：兩層不一致；契約沒寫，比照其他清單端點	超出範圍回 invalid_argument	crates/oxledger/src/concepts.rs;crates/oxledger/src/api.rs
+2026-11-10	M1	升級 rebuild 的 claim 用 drop guard 釋放（失敗或 panic），成功才保留	獨立驗證 D7a：panic 會讓 upgrading 永遠為 true	catch_unwind	crates/oxledger/src/main.rs
+2026-11-10	M1	不新增刪除標籤／概念的 API，列為後續項；upgrade-notes 改寫成保留 staging、改 hidden、改名、重新啟用	契約只列 GET／POST／PATCH；獨立驗證 D7c	新增 DELETE 端點	docs/impl/upgrade-notes.md
+2026-11-10	M1	progress 每張 issue 一個交易，整批完成後才前進 cursor（契約寫同一交易）	縮短交易、不拖住搜尋 GC 的 xmin；progress 列已防重送（T-M1-77）	progress 與 cursor 同一交易	crates/oxledger/src/notifications.rs
+2026-11-10	M1	一輪內 4 個 worker 平行處理不同 issue，同一 issue 的收件人批次寫入	逐人寫入時 p95 12.5 秒超過 10 秒門檻；改後 5.53／6.71 秒（兩次量測）	單執行緒逐人寫入	crates/oxledger/src/notifications.rs
+2026-11-10	M1	first_at／last_at 用派送時間（clock_timestamp）	read-all 的 before 以列表載入時的 last_at 為準，晚到的列不會被標已讀	用事件時間	migrations/0028_notifications.sql;crates/oxledger/src/notifications.rs
+2026-11-10	M1	read、unread、read-all、watch 不收 Idempotency-Key；偏好 PUT 收	前四者天然冪等；偏好有 lock_version 與多欄位，比照其他設定	全部收 Idempotency-Key	crates/oxledger/src/api.rs
+2026-11-10	M1	被遮蔽的事件不派送；已派送的在讀取時顯示 redacted 標記並保留該列	通知不是 D12 的副本，只存參照	讀取時把整列藏起來	crates/oxledger/src/notifications.rs
+2026-11-10	M1	列表每列最多 3 筆事件加 more_events；一列最多存 50 個事件 id	控制回應大小；CHECK 上限 50	回傳全部事件	crates/oxledger/src/notifications.rs
+2026-11-10	M1	看不到的 project 篩選回空清單；看不到的自己的列 read／unread 回 not_found；read-all 不回筆數	避免成為存在性 oracle	回 not_found／回筆數	crates/oxledger/src/notifications.rs
+2026-11-10	M1	agent 寫筆記時自動關注寫給委派者；被移除指派的前一位也收到該事件	agent 不能是關注者；前一位需要知道被拿掉	不自動關注／只給新指派對象	crates/oxledger/src/notifications.rs
+2026-11-10	M1	新增 AuthMethod::Recipient 供派送時用收件人身分重驗	沿用 db::load_scope 與 Reader 的同一套可見性規則	另寫一套可見性查詢	crates/oxledger/src/auth.rs;crates/oxledger/src/db.rs
+2026-11-10	M1	看不到的既有靜音專案保留但不顯示；靜音只收看得到的專案	撤權後恢復時靜音仍在，也不洩漏專案存在	撤權時刪除靜音	crates/oxledger/src/notifications.rs
+2026-11-10	M1	手動關注會把既有的自動來源改成 manual 並清 optout	使用者明確表態優先於自動規則	保留自動來源	crates/oxledger/src/notifications.rs
+2026-11-10	M1	未讀數快取放在行程記憶體	只在 2 秒逾時時用；多行程各自一份，最壞是回 null	存 DB	crates/oxledger/src/notifications.rs
+2026-11-11	M1	派送讀時間前依序取每個收件人的 advisory xact lock，read-all 取同一把鎖	獨立驗證 D1：平行派送時先讀時間、後 commit 的列會被 before 一起標掉；鎖讓同一人的列依 last_at 順序 commit，before 是時間戳不必改前端	snapshot／xmin token 當 before（要改 API 與前端）	crates/oxledger/src/notifications.rs
+2026-11-11	M1	watcher_count 改成一句 SQL 依 load_scope 規則判斷可見性，並以 test-support 函式和 Rust 結果比對	獨立驗證 D2：每人 load_scope，1000 個看不到的關注者時 GET 3.7 秒	降低掃描上限、移出寫交易	crates/oxledger/src/notifications.rs
+2026-11-11	M1	on_my_agents=false 時自己委派的 agent 做的事一律不通知委派者（含 watching、author）（待使用者確認）	獨立驗證 D3：照開關字面意思；契約 §3.11.2 沒寫清楚	只關掉 agent_on_behalf 這個原因	crates/oxledger/src/notifications.rs
+2026-11-11	M1	自動關注與 watch 共用 (issue, 人) 的 advisory xact lock	獨立驗證 D4：併發時 optout 會失效	派送用 FOR SHARE 讀 optout	crates/oxledger/src/notifications.rs
+2026-11-11	M1	同一 issue 連續失敗 5 次就跳過其待送事件（log＋notify_skipped_issues_total），連線類錯誤不計次；停用開關待使用者決定	獨立驗證 D5：一張壞掉的 issue 會卡住所有通知與 outbox GC；不計連線錯誤以免資料庫短暫斷線就全部跳過	一律重試	crates/oxledger/src/notifications.rs;crates/oxledger/src/metrics.rs
+2026-11-11	M1	新增 event_reasons，顯示的 reasons 只取讀得到的事件；first_at／last_at 不重算	獨立驗證 D6：重算時間會和 read-all 的 before（DB 的 last_at）衝突	時間也重算	migrations/0028_notifications.sql;crates/oxledger/src/notifications.rs
+2026-11-11	M1	未讀數快取最多 10,000 人，滿了遇到新的人就整批清空	獨立驗證 D7：沒有上限；不加新 crate	LRU	crates/oxledger/src/notifications.rs
+2026-11-11	M1	worker 數改由 OXLEDGER_NOTIFY_WORKERS 設定（1–16，預設 4）	每個 worker 佔一條連線，要能配合連線池大小	固定 4	crates/oxledger/src/notifications.rs
+2026-11-11	M1	0029 加 agent_runtimes.lock_version、agent_principals.retired_at、changesets.chain_review	改名要樂觀鎖；agent_principals 沒有 status 欄可記退役；鏈上限送審的提案不能勾選核准	用 audit 事件推算	migrations/0029_ai_team.sql
+2026-11-11	M1	POST /delegations 的 agent_client_id 舊寫法保留，落在該 client 的 personal 角色	02 的 agent 與前端不用改	只收 agent_principal_id	crates/oxledger/src/agents.rs;crates/oxledger/src/api.rs
+2026-11-11	M1	暫停不要 step-up、恢復要 step-up；站台管理員的暫停只有站台管理員能恢復，專案層只有同一層能恢復	止血要快，放行要確認	兩者都要 step-up	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	暫停擋直接寫、提案與核准後套用；validate 不擋	validate 不寫入	validate 也擋	crates/oxledger/src/changesets.rs
+2026-11-11	M1	qa 範本的 transition 一律 review（待使用者決定白名單存哪裡）	契約要白名單但沒有存放處；先取較窄的	全部 direct	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	範本寫成完整 allow-list（沒列的寫 off）；POST /ai-team 的 policies 可覆寫範本	範本之後改版不影響既有角色；覆寫是贊助人的選擇，執行時仍和贊助人權限取交集	只存範本名稱、執行時查	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	POST /ai-team 至少一個委派；角色上限 20 用 invalid_value kind role_limit；重送回 token null	沒有委派的角色沒有用途；token 只出現一次	回 409	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	AI 團隊列表不分頁（next_cursor 一律 null）；可見＝贊助人或在看得到的專案有未撤銷（含過期）委派	每個贊助人最多 20 個角色	keyset 分頁	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	鏈檢查在配額之前用 FOR UPDATE 鎖 issue 列；validate 也做（rollback）。獨立驗證 M14 後更正：正確性來自 lock_version 前置條件（每個鏈計數的 issue 都是既有 target，每次寫入都 +1），這把鎖是第二道防線，讓後到者得到 agent_chain 送審而不是 conflict	兩個 agent 併發時計數正確（T-M1-97、v_chain_concurrent_at_limit）	advisory lock；拿掉鎖	crates/oxledger/src/changesets.rs
+2026-11-11	M1	核准後套用由 issue_events（origin external_agent）trigger 清鏈	P4：核准就是人介入；不用改套用程式	套用程式自己刪	migrations/0029_ai_team.sql
+2026-11-11	M1	describe agent_context 委派狀態加 other_role；quarantined 的 details 加 shared_with	共用脈絡時 agent 要知道是誰的委派、誰一起停	不說明	crates/oxledger/src/agents.rs;crates/oxledger/src/db.rs
+2026-11-11	M1	runtime 換新脈絡的 carry_over_delegations 先拒絕（invalid_argument）	M1.10 再做	靜默忽略	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	pm_assistant 改 subject／description 一律 review（待使用者確認）	欄位政策對 update_fields 一律適用；先取較窄的	subject 走 direct	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	AI 團隊活動與統計逐筆過濾：每個事件走 issue_view::event_view，diff 的 cf 欄位依 readable_cf_ids，過濾後空的 execution 不顯示也不計數（獨立驗證 D1）	看不到＝不存在；只寫了私人備註或受限欄位的寫入不能從活動頁或統計看出來	只看 issue 可讀	crates/oxledger/src/undo.rs;crates/oxledger/src/issue_view.rs
+2026-11-11	M1	寫入檢查暫停時用 FOR SHARE 讀角色列與委派列，持有到 commit（獨立驗證 D2）	暫停會等進行中的寫入，之後開始的寫入一定被擋；寫入之間不互擋	FOR UPDATE（寫入互相序列化）；不鎖	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	站台管理員暫停記在 runtime（admin_paused_*），同贊助人在該 runtime 或同 client 新建的角色由 trigger 繼承，只有站台管理員能解除（獨立驗證 D3）	退役角色或 runtime 再重開不能繞過管理員暫停	記在 client 層；禁止退役被暫停的角色	migrations/0029_ai_team.sql;crates/oxledger/src/ai_team.rs
+2026-11-11	M1	暫停資訊回 paused_by（sponsor／site_admin／project），只給看得到完整資訊的人；pause.scope 固定 principal（獨立驗證 D3）	讓贊助人知道為什麼自己不能恢復	回暫停者 id	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	舊路徑 POST /delegations 新建角色時共用 20 個角色上限檢查（獨立驗證 D4）	兩條路徑規則一致	舊路徑不設限	crates/oxledger/src/ai_team.rs;crates/oxledger/src/agents.rs
+2026-11-11	M1	02 留下的 oxledger-ai@… 外觀 handle 不改資料，只在 0029 RAISE NOTICE 數量並在 upgrade-notes 給查詢 SQL；要不要自動改名待使用者決定（獨立驗證 D5）	改使用者資料要使用者同意	升級時自動改名	migrations/0029_ai_team.sql;docs/impl/upgrade-notes.md
+2026-11-11	M1	principal_required 放在 details.reason（獨立驗證 D6）	契約 §5 的錯誤細節用 reason	details.kind	crates/oxledger/src/agents.rs;crates/oxledger/src/openapi.rs
+2026-11-11	M1	describe agent_context 只列本角色的委派專案，其他角色帶進 R 的專案只給數量 other_role_projects（獨立驗證 D7；取代上面 other_role 狀態那筆的列出部分）	看不到＝不存在；契約 §4.1 只說 02 §5.3 的內容，沒要求列出其他角色的專案	列出 other_role 專案	crates/oxledger/src/agents.rs
+2026-11-11	M1	AI 團隊可見性：站台管理員看全部外部角色（含未委派）；非贊助人要在委派專案是成員（本人或群組），公開專案非成員不算；內建 AI 在列表與詳細頁都排除到 M1.10（獨立驗證 D8）	§3.12.1 事故處理要管理員看全部；§3.12.5「看得到該專案的成員」；契約沒寫內建，先取較窄的	管理員照一般規則；讀得到就算	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	恢復時重查斷路器，脈絡停用中回 agent_suspended（獨立驗證 D9）	恢復不能繞過斷路器	只查隔離	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	T-M1-66a 的 evidence 情況用兩個角色都讀得到的 issue 當 evidence（獨立驗證 D10）	讀不到的 evidence 在第 7 步就回 source_unverifiable，到不了受眾檢查，這是設計	改檢查順序	crates/oxledger/tests/m1_9_ai_team.rs
+2026-11-11	M1	M1.10 端點只從環境變數登記（OXLEDGER_AI_ENDPOINT_/KEY_/CA_FILE_<NAME>），API 只收登記名稱；每次連線重新解析並釘在驗過的 IP；不跟隨重導向	Q1、P-3、V1；DNS rebinding 與 SSRF	API 收 URL；連線池	crates/oxledger/src/ai/config.rs、net.rs、http.rs
+2026-11-11	M1	退役使用中的 provider 會把 AI 關掉（enabled=false、active_provider_id=NULL）	沒有可用 provider 時不能維持啟用	拒絕退役使用中的 provider	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	Anthropic 端點沒有 key 時，啟用阻擋原因用 endpoint_unregistered（建立時回 ai_endpoint_invalid kind no_key）	契約的阻擋清單沒有 no_key；對管理員來說都是部署設定沒做完	新增阻擋原因 no_key	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	解析不到位址的端點視同外部服務，要勾 org_account_attested	保守：無法證明是內部的就當外部（P-6）	視同內部	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	PUT /admin/ai/settings 只有在啟用或換 provider 時要 step-up；沒有獨立的 activate 路由	關閉與調預算要能立刻做；啟用與換 provider 會把資料送到外部	一律 step-up；另開 activate	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	對話歷史只在 run 開始時重驗；run 進行中撤權由每次工具呼叫的權限檢查擋	一個 run 最多 3 分鐘；工具本身每次重驗	每輪模型請求前都重驗	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	使用者讀對話時用「他能讀的所有專案下 agent 會有的範圍」重驗，不是用目前的委派；撤銷委派只影響送給模型的歷史	P2：對話是使用者自己的；撤銷委派不改使用者能讀的東西	用目前委派重驗使用者畫面	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	run 的輸入上限檢查用目前累計的輸入 token（provider 回報或估算）是否達 50 000，不把下一個請求以每字元 1 token 先加進去	工具 schema 本身就上萬字元，先加會讓幾乎每個 run 在第二次呼叫就停；結算不會超過保留額（V15）	每次請求前加上估算	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	月預算 100% 在每輪工具呼叫後檢查，到了就以 budget_exhausted 結束（成功狀態）	run 進行中不能無限花費；已做的寫入保留	只在送出時檢查	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	取消時如果本程序沒有該 run 的執行（hub），直接把 run 結束成 canceled	queued 或別的程序的 run 也要能立刻停；別的程序下一步會看到 cancel_requested_at	只設旗標等執行者	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	委派快到期（剩 7 天內）只放在 /ai/status 的 expiring_soon，不另發 SSE notice	前端打開右欄就會讀 status	每個 run 發 notice	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	保存期限清除每小時跑一次（和租約清掃同一個背景工作）	契約沒寫頻率；30 天的保存期限不需要更密	每天一次	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	同一個 run 第三條串流回 rate_limited（kind streams）	契約寫最多兩條，沒寫錯誤碼	409	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	延長委派：撤銷舊委派（reason extended）再建政策相同、30 天的新委派	契約要「舊委派撤銷、到期日重算」；沿用建立委派的檢查	直接改 expires_at	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	carry_over_delegations 只重建使用者現在仍讀得到且受眾一致的專案，30 天、政策相同	T-M1-116	全部照搬	crates/oxledger/src/ai/chat.rs
+2026-11-11	M1	OpenAI 相容請求送 max_tokens（不是 max_completion_tokens），並帶 stream_options.include_usage；沒回 usage 時估算	自架伺服器（vLLM、Ollama）收 max_tokens；OpenAI 文件說 max_tokens 已棄用但仍接受	改送 max_completion_tokens	crates/oxledger/src/ai/protocol.rs
+2026-11-11	M1	頁面脈絡的來源專案併進 run 回覆的 source_projects；D12 清空引用該專案的 run 的所有 assistant 訊息；parts 為 NULL 的 tool 訊息讓整個 run 視為讀不到	獨立驗證 D1：摘要頁面的回覆在 D12 後仍保留內容	只清 tool 訊息	crates/oxledger/src/ai/chat.rs, crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	對話記 last_provider_config_at；同 provider 但端點或模型改過也要 ai_provider_changed；改使用中 provider 的端點或模型會關掉 AI，重新測試後再啟用	獨立驗證 D2（Q4）：原地改端點可把舊對話送到別的服務；契約要求端點變更要重測	只比 provider id	crates/oxledger/src/ai/chat.rs, crates/oxledger/src/ai/admin.rs, migrations/0030_ai_chat.sql
+2026-11-11	M1	單次請求輸入估算 ASCII 每字元 ¼ token、其他字元 1 token，上限 16 000；從最舊的頁面脈絡與工具結果截短；仍放不下就不送，stop_reason budget_exhausted、run.finished error.kind request_input_limit	獨立驗證 D3；每字元 1 token 時系統提示加工具 schema 就超過 16k；中文照 1 token 保守；stop_reason 清單是契約固定的，不新增	一律每字元 1 token；一律每 4 字元 1 token；新增 stop_reason	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	結算：provider 回報的用量照實記錄（可超過保留額）；只有估算用量以保留額為上限	獨立驗證 D3：不少報實際花費；契約 V15 的上限只寫在估算情境	一律以保留額為上限	crates/oxledger/src/ai/budget.rs
+2026-11-11	M1	沒有本程序 hub 的取消用 DB 已記錄的用量結算；執行中每輪寫用量時限 state 還在 queued／running	獨立驗證 D4：原本以 0 結算	只設 cancel_requested_at 等清掃	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	NAT64、IPv4-compatible、IPv4-translated、6to4 依內含 IPv4 判斷且只放行公網；fec0::/10、64:ff9b:1::/48、Teredo 一律擋	獨立驗證 D5；本機 provider 應直接登記自己的位址	內含 loopback／私有照 IPv4 類別放行	crates/oxledger/src/ai/net.rs
+2026-11-11	M1	BuiltinRun 憑證查詢在可寫交易 FOR SHARE OF ai_runs；READ ONLY 交易不加	獨立驗證 D6a：寫入與取消／清掃／結束互斥；READ ONLY 交易不允許列鎖	一律 FOR SHARE	crates/oxledger/src/db.rs
+2026-11-11	M1	租約 30 秒、每 10 秒續期、每 15 秒清掃（最慢 45 秒結束死掉的 run）	獨立驗證 D6b：原本 60＋30＝90 秒超過契約 60 秒	租約 60／續期 15／清掃 30	crates/oxledger/src/ai/config.rs
+2026-11-11	M1	runner 在工具呼叫前有 test-support 注入點 ai.before_tool	測試要在 runner 自己的檢查之後改 DB，才能驗證工具呼叫本身的憑證重驗（M6、M8、M10）	直接呼叫 crate 內部函式	crates/oxledger/src/ai/runner.rs
+2026-11-11	M1	log_time／update_time_entry 指向看不到的單回 not_found（no issue），先於專案檢查	M1.11 門檻發現：原本回「沒有專案」，和不存在的單不同，是存在性 oracle	維持原錯誤	crates/oxledger/src/time_entries.rs
+2026-11-11	M1	POST /admin/ai/providers 先查站台管理員（403），再驗端點	M1.11 門檻發現：非管理員拿到 422 ai_endpoint_invalid（unregistered／no_key／endpoint_blocked）可探測端點登記，也會觸發 DNS	先驗輸入再查權限	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	站台層表單對非管理員：真實的 403、不存在的 404，照預設接受	站台表單不屬於任何專案，存在不算祕密；存在性比對改用專案層表單	站台表單也一律 404	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	匿名請求的 body 不合法時回 400 invalid_body，不是 401	axum 的 Json extractor 先於驗證執行；只洩漏公開的 schema	每個 handler 改成先驗證再解析	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	E5 判定：每次 run 用全新世界；跑完模擬使用者核准所有待審提案，再看資料狀態；唯讀案例看回答文字	政策送審的寫入（如 T-M1-122）只要內容對就算對；內建 AI 與外部 agent 用同一套判定	只看工具呼叫的參數	crates/oxledger/tests/m1_11_e5.rs
+2026-11-11	M1	E5 的外部 agent 由測試內的迴圈呼叫模型（ai::client），工具清單是 MCP 的完整清單，呼叫走 MCP 與 agent token	不需要外部程式或新 crate；和真的 MCP 客戶端走同一條伺服器路徑	用 Claude Code 等真的 agent 手動跑	crates/oxledger/tests/m1_11_e5.rs
+2026-11-11	M1	e5_live 預設 ignored，而且要 OXLEDGER_E5=1；核心組低於 90% 就失敗	不在一般測試連真 provider；門檻寫在測試裡	只印數字、不設門檻	crates/oxledger/tests/m1_11_e5.rs
+2026-11-11	M1	命令解析帶呼叫者的可見範圍（parse_for）：已存在但看不到的目標先回 not_found，再檢查 precondition、專案不一致、跨專案	M1.11 獨立驗證 D1–D3：原本「缺 precondition」「project_id 不一致」「cross_project」都會先於可見性回應，是存在性 oracle（D3 自 02 就有）	只修 log_time	crates/oxledger/src/commands.rs
+2026-11-11	M1	同一個 key 的同一份請求（指紋相同）重送時不套可見範圍，照舊 replay（結果再依可見性過濾）；用過的 key＋新文件仍套範圍	02 M05：單變成看不到後重送要回 0 個效果，不是 not_found；只比對指紋才放行，否則用過的 key 會變成存在性 oracle	重送也一律套範圍（違反 M05）	crates/oxledger/src/commands.rs
+2026-11-11	M1	寫入的可見範圍（db::write_scope）對 agent 是委派者的範圍切到「這個 context 曾經委派過的所有專案」（含已撤銷、已過期），沒有私人單；那些專案裡的單交給委派檢查（delegation_unavailable），其他專案的單是 not_found	02 T-X19（s5_changesets、s6_audience）規定委派撤銷後寫入回 delegation_unavailable；只用有效委派會把它變成 not_found	只用有效委派（load_scope）	crates/oxledger/src/db.rs
+2026-11-11	M1	agent 提案的 destination 用 agent 的寫入範圍（db::write_scope）；從沒委派過的專案或看不到的單和不存在的單同一個 not_found；擁有者修訂（revise／revise-and-apply）維持不帶範圍	D2：原本回 cross_project／no destination；擁有者路徑已在前面查過權限，受眾規則（M9）不變	destination 一律不帶範圍	crates/oxledger/src/changesets.rs
+2026-11-11	M1	PATCH /admin/ai/providers/{id} 與 PUT /admin/ai/settings 先查站台管理員再驗 body 與 id	D5：非管理員原本可由 422 與 404 的差別探測 provider id	先驗輸入	crates/oxledger/src/ai/admin.rs
+2026-11-11	M1	HTTP 涵蓋檢查以 OpenAPI 全部寫入路由為母體；沒在表裡的要在「只動自己的東西」或「前面階段已測」清單，各附理由	D6：原本只列 M1 路由，還有一條永遠比對不到的項目	只檢查 M1 路由	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	changesets revise-and-apply 對真實與不存在的 id 都回 400（先驗 revision_review_token 簽章）	token 是伺服器簽的，驗不過就不查 changeset，兩者回應相同，不構成 oracle	改成先查存在	crates/oxledger/tests/m1_11_gate.rs
+2026-11-11	M1	矩陣的工時讀者（timerall／timerown）同時是 AUTH 成員（只有 view_issues）	受眾規則：WEB 的工時讀者若不在 AUTH，寬委派 oracle 的 log_time 會變 audience_expansion_forbidden，矩陣就測不到原本的列	不加 AUTH，改 oracle 預期	crates/oxledger/tests/m1_11_gate.rs

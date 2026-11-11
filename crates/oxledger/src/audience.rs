@@ -14,7 +14,7 @@
 //! public content → A(project); a private note or a new private issue →
 //! its actual readers D. Comparison is set containment, never counts.
 
-use crate::commands::{DestIssue, DestKind, Parsed, VersionDest};
+use crate::commands::{DestIssue, DestKind, Parsed, TimeDest, VersionDest};
 use crate::error::{ApiError, ErrorCode};
 use anyhow::Result;
 use serde_json::json;
@@ -292,6 +292,31 @@ pub(crate) async fn check(
                 }
                 continue;
             }
+            DestKind::Time(t) => {
+                let op_index = d.op_index;
+                // Contract 05 §3.5.4: who reads the entry (time readers with
+                // `all`, admins, the delegator), cut to the issue's readers.
+                let (project, issue) = time_dest(conn, *t).await?;
+                let Some(project) = project else {
+                    continue; // not_found later
+                };
+                let mut d = time_readers(conn, project, delegator).await?;
+                if let Some(i) = issue {
+                    let private: Option<bool> =
+                        sqlx::query_scalar("SELECT is_private FROM issues WHERE id = $1")
+                            .bind(i)
+                            .fetch_optional(&mut *conn)
+                            .await?;
+                    if private != Some(false) {
+                        continue; // the agent cannot read it: not_found later
+                    }
+                    d = d.intersect(&project_audience(conn, project).await?);
+                }
+                if !d.is_subset(&allowed) {
+                    return Err(forbidden("private_destination", op_index));
+                }
+                continue;
+            }
             DestKind::Content(t) => (t, false),
             DestKind::PrivateNote(t) => (t, true),
         };
@@ -335,4 +360,51 @@ pub(crate) async fn check(
         }
     }
     Ok(())
+}
+
+/// The project and issue a time destination ends up in (`None` project: the
+/// entry or issue does not exist; the plan reports it).
+async fn time_dest(conn: &mut PgConnection, t: TimeDest) -> Result<(Option<Uuid>, Option<Uuid>)> {
+    Ok(match t {
+        TimeDest::New { project_id, issue } => match (project_id, issue) {
+            (_, Some(i)) => (
+                sqlx::query_scalar("SELECT project_id FROM issues WHERE id = $1")
+                    .bind(i)
+                    .fetch_optional(&mut *conn)
+                    .await?,
+                Some(i),
+            ),
+            (p, None) => (p, None),
+        },
+        TimeDest::Existing { entry_id, issue } => {
+            let row: Option<(Uuid, Option<Uuid>)> =
+                sqlx::query_as("SELECT project_id, issue_id FROM time_entries WHERE id = $1")
+                    .bind(entry_id)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            match row {
+                None => (None, None),
+                Some((p, old)) => (Some(p), issue.unwrap_or(old)),
+            }
+        }
+    })
+}
+
+/// Who reads a time entry of `project` logged for `delegator`: users whose
+/// `time_visibility` is `all` (admins included), and the delegator.
+async fn time_readers(conn: &mut PgConnection, project: Uuid, delegator: Uuid) -> Result<Audience> {
+    let mut users: BTreeSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM principals WHERE kind = 'user' AND status = 'active'
+           AND time_visibility($1, id) = 'all'",
+    )
+    .bind(project)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    users.insert(delegator);
+    Ok(Audience {
+        users,
+        anonymous: false,
+    })
 }

@@ -962,9 +962,10 @@ async fn search_never_shows_redacted_text() {
             .len()
         }
     };
-    // T-S4: notes (private or not) are not in the shared document.
+    // T-S4: private notes are not in the shared document. Public notes
+    // are since M1.7 (design 05 §3.9, T-M1-63).
     assert_eq!(hits("zebraword").await, 0);
-    assert_eq!(hits("quokkaword").await, 0);
+    assert_eq!(hits("quokkaword").await, 1);
     assert_eq!(hits("platypusword").await, 1);
     // The description changes; the event with the old value is redacted
     // before the index catches up: no hit, no count (T-S3).
@@ -1060,6 +1061,8 @@ async fn admin_only_archived_and_version_copies() {
             max_ops: None,
             expires_in_days: Some(30),
             policies: None,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await

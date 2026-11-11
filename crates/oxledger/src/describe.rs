@@ -61,8 +61,9 @@ pub struct FieldSchema {
     /// Display name (custom fields).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// string | text | date | principal_ref | priority_ref | status_ref | version_ref, or a
-    /// custom field type (int, float, date, string, text, list, user, bool, link).
+    /// string | text | date | decimal | principal_ref | priority_ref | status_ref |
+    /// version_ref, or a custom field type (int, float, date, string, text, list, user,
+    /// bool, link). `decimal` values are decimal strings.
     #[serde(rename = "type")]
     pub field_type: String,
     /// The field definition itself is required (workflow rules are per status:
@@ -97,6 +98,9 @@ pub struct Creation {
     pub allowed: bool,
     pub initial_status_id: Option<Uuid>,
     pub is_private: PrivateChoice,
+    /// Contract 05 §3.4: an issue this caller creates here enters the
+    /// project's Triage inbox.
+    pub enters_triage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -198,14 +202,22 @@ pub enum DescribeScope {
     /// Agents only: which projects the work context reads and where it may
     /// write (contract 02 §5.3).
     Context,
+    /// What `search` can filter (`where`) and sort by, optionally within one
+    /// `project` (design 05 §3.2).
+    FilterFields,
+    /// Agents only: `context` plus your role, the runtime you share, whether
+    /// you may read the delegator's time, and the agent chain limits
+    /// (design 05 §4.1).
+    AgentContext,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DescribeParams {
-    /// project_tracker: fields of an issue type; issue_actions: what you can do to one issue now.
+    /// project_tracker: fields of an issue type; issue_actions: what you can do to one issue now;
+    /// filter_fields: what search's `where` and `sort` take.
     pub scope: DescribeScope,
-    /// project_tracker: project id or key (e.g. "AUTH").
+    /// project_tracker: project id or key (e.g. "AUTH"); filter_fields: optional.
     pub project: Option<String>,
     /// project_tracker: tracker id or name (e.g. "Bug").
     pub tracker: Option<String>,
@@ -240,6 +252,10 @@ pub struct DescribeResult {
     pub issue_actions: Option<IssueActions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::agents::ContextDescription>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_fields: Option<crate::filter::v2::FilterFields>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_context: Option<crate::agents::AgentContextDescription>,
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -299,6 +315,16 @@ fn builtin_fields(project: Uuid) -> Vec<Builtin> {
             None,
             Some(format!("/api/v1/projects/{project}/versions?status=open")),
         ),
+        // Design 05 §3.10.3: hours as a decimal string, e.g. "1.5".
+        (
+            "estimated_hours",
+            "decimal",
+            false,
+            Some(
+                json!({"min": "0", "max": crate::commands::MAX_ESTIMATED_HOURS, "max_decimals": 2}),
+            ),
+            None,
+        ),
     ]
 }
 
@@ -329,7 +355,7 @@ pub(crate) async fn applicable_fields(
                 ARRAY(SELECT fr.role_id FROM field_roles fr WHERE fr.field_id = d.id ORDER BY fr.role_id) AS roles
          FROM field_defs d
          JOIN field_trackers ft ON ft.field_id = d.id AND ft.tracker_id = $1
-         WHERE d.index_state <> 'dropping'
+         WHERE d.index_state <> 'dropping' AND d.deactivated_at IS NULL
            AND (d.is_for_all OR EXISTS (SELECT 1 FROM field_projects fp
                                         WHERE fp.field_id = d.id AND fp.project_id = $2))
          ORDER BY d.position, d.name",
@@ -409,7 +435,7 @@ pub async fn tracker_schema(
     Ok(r)
 }
 
-async fn tracker_schema_in(
+pub(crate) async fn tracker_schema_in(
     conn: &mut PgConnection,
     caller: AuthContext,
     project: &str,
@@ -556,6 +582,15 @@ async fn tracker_schema_in(
         perm::Reach::Delegated(d) => d.max_ops.min(MAX_OPS),
         _ => MAX_OPS,
     };
+    let triage: Option<(bool, String)> = sqlx::query_as(
+        "SELECT enabled, entry_rule FROM project_triage_settings WHERE project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let enters_triage = triage.is_some_and(|(enabled, rule)| {
+        enabled && (actor.is_agent() || rule == "all_new" || !pp.allowed_any(perm::TRIAGE_ISSUES))
+    });
     Ok(TrackerSchema {
         project_id,
         tracker_id,
@@ -571,6 +606,7 @@ async fn tracker_schema_in(
                 default: private_by_default,
                 allowed_values,
             },
+            enters_triage,
         },
         limits: Limits {
             max_ops,
@@ -845,6 +881,15 @@ pub(crate) async fn issue_actions_in(
                 _ => {}
             }
         }
+        // Contract 05 appendix C R19: form required_if rules that hold
+        // once the issue is in `to`, with its current values.
+        for key in crate::forms::then_required(&mut *conn, issue.id, p, t, to).await? {
+            match keys.iter().find(|k| k.0 == key) {
+                Some((_, _, true)) if !then_required.contains(&key) => then_required.push(key),
+                Some((_, _, false)) if actor.is_agent() => blocked = true,
+                _ => {}
+            }
+        }
         transitions.push(TransitionAction {
             to_status_id: to,
             name,
@@ -947,6 +992,8 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 project_tracker: Some(tracker_schema(app, caller, &project, &tracker).await?),
                 issue_actions: None,
                 context: None,
+                filter_fields: None,
+                agent_context: None,
             })
         }
         DescribeScope::IssueActions => {
@@ -959,6 +1006,8 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 project_tracker: None,
                 issue_actions: Some(issue_actions(app, caller, &key).await?),
                 context: None,
+                filter_fields: None,
+                agent_context: None,
             })
         }
         DescribeScope::Context => {
@@ -971,6 +1020,38 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 project_tracker: None,
                 issue_actions: None,
                 context: Some(crate::agents::describe_context(app, caller).await?),
+                filter_fields: None,
+                agent_context: None,
+            })
+        }
+        DescribeScope::AgentContext => {
+            let (None, None, None) = (&p.project, &p.tracker, &p.issue_key) else {
+                return Err(user_err(
+                    "scope agent_context takes no `project`, `tracker` or `issue_key`",
+                ));
+            };
+            Ok(DescribeResult {
+                project_tracker: None,
+                issue_actions: None,
+                context: None,
+                filter_fields: None,
+                agent_context: Some(crate::agents::describe_agent_context(app, caller).await?),
+            })
+        }
+        DescribeScope::FilterFields => {
+            let (None, None) = (&p.tracker, &p.issue_key) else {
+                return Err(user_err(
+                    "scope filter_fields takes an optional `project` (and no `tracker` or `issue_key`)",
+                ));
+            };
+            Ok(DescribeResult {
+                project_tracker: None,
+                issue_actions: None,
+                context: None,
+                filter_fields: Some(
+                    crate::filter::v2::filter_fields(app, caller, p.project.as_deref()).await?,
+                ),
+                agent_context: None,
             })
         }
     }

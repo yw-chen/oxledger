@@ -22,6 +22,7 @@ use crate::commands;
 use crate::db;
 use crate::error::{ApiError, ErrorCode, api};
 use crate::service::App;
+use crate::time_entries::UndoTimeEntry;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use ox_core::IssueFacts;
@@ -30,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uuid::Uuid;
 
 #[cfg(feature = "test-support")]
@@ -61,6 +62,13 @@ pub struct UndoField {
     /// `version_not_open` (§17.13 L2889).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subreason: Option<String>,
+    /// reason `rules_changed` (contract 05 §3.6.3): the error code the new
+    /// form rules give (`required_field_missing`, `invalid_value`,
+    /// `readonly_field`) and the rule, when its fields are readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
@@ -114,6 +122,25 @@ pub struct UndoVersionField {
     pub reason: Option<String>,
 }
 
+/// A triage decision this execution made (contract 05 §3.10.1): undo puts
+/// the issue back to its state before (pending; the A5 flags cleared).
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct UndoTriage {
+    pub issue_id: Uuid,
+    pub key: String,
+    /// The triage state before the decision (`pending`).
+    pub before: String,
+    /// The state the decision wrote.
+    pub after: String,
+    /// The state now.
+    pub current: String,
+    pub restorable: bool,
+    /// `expired`, `redacted`, `changed_since` (a later triage write) or
+    /// `permission` (no `triage_issues` now).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// The undo of `create_version`: a soft delete (§17.13).
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub struct UndoVersionCreate {
@@ -139,11 +166,19 @@ pub struct UndoPreview {
     pub version_fields: Vec<UndoVersionField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_created: Option<UndoVersionCreate>,
+    /// Triage decisions (contract 05 §3.10.1).
+    #[serde(default)]
+    pub triage: Vec<UndoTriage>,
+    /// Time entries (contract 05 §3.10.2, T-M1-41).
+    #[serde(default)]
+    pub time_entries: Vec<UndoTimeEntry>,
 }
 
 impl UndoPreview {
     fn automatic(&self) -> bool {
         self.fields.iter().any(|f| f.restorable)
+            || self.triage.iter().any(|t| t.restorable)
+            || self.time_entries.iter().any(|t| t.restorable)
             || self.notes.iter().any(|n| n.restorable)
             || self.relations.iter().any(|r| r.restorable)
             || self.version_fields.iter().any(|f| f.restorable)
@@ -154,9 +189,23 @@ impl UndoPreview {
         let mut v: Vec<Json> = Vec::new();
         for f in &self.fields {
             if let Some(r) = &f.reason {
-                v.push(
-                    json!({"key": f.key, "field": f.field, "reason": r, "subreason": f.subreason}),
-                );
+                let mut item =
+                    json!({"key": f.key, "field": f.field, "reason": r, "subreason": f.subreason});
+                if let Some(c) = &f.code {
+                    item["code"] = json!(c);
+                    item["rule_id"] = json!(f.rule_id);
+                }
+                v.push(item);
+            }
+        }
+        for t in &self.triage {
+            if let Some(r) = &t.reason {
+                v.push(json!({"key": t.key, "field": "triage", "reason": r}));
+            }
+        }
+        for t in &self.time_entries {
+            if let Some(r) = &t.reason {
+                v.push(json!({"time_entry_id": t.time_entry_id, "field": t.field, "reason": r}));
             }
         }
         for n in &self.notes {
@@ -199,6 +248,13 @@ pub struct UndoInput {
     /// Chosen transitions per issue (from `choices`).
     #[serde(default)]
     pub transitions: BTreeMap<Uuid, Uuid>,
+    /// Issue ids whose triage decision stays (contract 05 §3.10.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_triage: Vec<Uuid>,
+    /// `"<time_entry_id>/<field>"` (field `created` for a new entry) to
+    /// leave as they are (contract 05 §3.10.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_time_entries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -209,6 +265,13 @@ pub struct UndoResult {
     pub notes_retracted: usize,
     pub relations_removed: usize,
     pub transitions: usize,
+    /// Triage decisions put back (contract 05 §3.10.1).
+    #[serde(default)]
+    pub triage_restored: usize,
+    /// Time entries deleted (created by the execution) or put back
+    /// (contract 05 §3.10.2).
+    #[serde(default)]
+    pub time_entries_restored: usize,
     #[serde(default)]
     pub version_fields_restored: usize,
     #[serde(default)]
@@ -318,7 +381,8 @@ async fn touched_issues(conn: &mut PgConnection, id: Uuid) -> Result<Vec<Uuid>> 
         "SELECT issue_id FROM execution_field_changes WHERE execution_id = $1
          UNION SELECT issue_id FROM issue_events
                WHERE (command_execution_id = $1 OR execution_id = $1)
-                 AND kind IN ('note_added', 'created', 'duplicate_added', 'status_changed')
+                 AND kind IN ('note_added', 'created', 'duplicate_added', 'status_changed',
+                              'triage_changed')
          ORDER BY 1",
     )
     .bind(id)
@@ -365,7 +429,18 @@ fn subreason_of(e: &anyhow::Error) -> Option<&'static str> {
     }
 }
 
+/// Contract 05 §3.6.3: the error came from a form rule (L1).
+fn form_rule_error(e: &anyhow::Error) -> Option<Json> {
+    let a = crate::error::classify(e)?;
+    let d = a.details.as_ref()?;
+    let by_rule = d["reason"] == "form_rule" || d["kind"] == "rule_disallowed";
+    by_rule.then(|| d.get("rule_id").cloned().unwrap_or(Json::Null))
+}
+
 fn reason_of(e: &anyhow::Error) -> &'static str {
+    if form_rule_error(e).is_some() {
+        return "rules_changed";
+    }
     match crate::error::classify(e).map(|a| a.code) {
         Some(ErrorCode::ForbiddenOp | ErrorCode::ReadonlyField | ErrorCode::NotFound) => {
             "permission"
@@ -448,12 +523,20 @@ async fn build_preview(
     .await?;
     let mut fields = Vec::new();
     let mut choices = Vec::new();
+    let mut triage = Vec::new();
     for (issue, field, before, after) in changes {
         let Some(key) = keys.get(&issue).cloned() else {
             continue; // not readable now: not even listed
         };
         let before = before.unwrap_or(Json::Null);
         let after = after.unwrap_or(Json::Null);
+        if field == crate::triage::FIELD_KEY {
+            triage.push(
+                triage_preview(&mut *conn, caller, id, issue, key, &before, &after, expired)
+                    .await?,
+            );
+            continue;
+        }
         let (lv, status, vals) = &current[&issue];
         let cur = vals.get(&field).cloned().unwrap_or(Json::Null);
         let from_here = field_origin(&mut *conn, issue, &field).await? == Some(id);
@@ -487,6 +570,7 @@ async fn build_preview(
             continue;
         }
         let mut subreason = None;
+        let mut rule = None;
         if reason.is_none()
             && let Err(e) = commands::check_as(
                 &mut *conn,
@@ -497,9 +581,16 @@ async fn build_preview(
         {
             reason = Some(reason_of(&e));
             subreason = subreason_of(&e).map(String::from);
+            if let Some(id) = form_rule_error(&e) {
+                let code = crate::error::classify(&e).map(|a| a.code.as_str().to_string());
+                rule = Some((code, id.as_str().map(String::from)));
+            }
         }
+        let (code, rule_id) = rule.unwrap_or((None, None));
         fields.push(UndoField {
             subreason,
+            code,
+            rule_id,
             issue_id: issue,
             key,
             field,
@@ -661,6 +752,22 @@ async fn build_preview(
     let (version_fields, version_created) =
         version_preview(&mut *conn, caller, id, expired).await?;
 
+    // Time entries (§3.10.2): their issues as the caller sees them.
+    let entry_issues: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT te.issue_id FROM execution_time_entry_changes c
+         JOIN time_entries te ON te.id = c.time_entry_id
+         WHERE c.execution_id = $1 AND te.issue_id IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let seen: BTreeSet<Uuid> = visible(&mut *conn, caller, &entry_issues)
+        .await?
+        .into_keys()
+        .collect();
+    let time_entries =
+        crate::time_entries::undo_preview(&mut *conn, caller, id, expired, &seen).await?;
+
     Ok(UndoPreview {
         execution_id: id,
         execution_kind: info.kind.clone(),
@@ -672,6 +779,54 @@ async fn build_preview(
         choices,
         version_fields,
         version_created,
+        triage,
+        time_entries,
+    })
+}
+
+/// One triage decision of the execution, as `caller` sees it now.
+#[allow(clippy::too_many_arguments)]
+async fn triage_preview(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    id: Uuid,
+    issue: Uuid,
+    key: String,
+    before: &Json,
+    after: &Json,
+    expired: bool,
+) -> Result<UndoTriage> {
+    let state = |v: &Json| v["state"].as_str().unwrap_or("[已遮蔽]").to_string();
+    let cur: Option<(Json, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {}, t.project_id FROM issue_triage t WHERE t.issue_id = $1",
+        crate::triage::SNAPSHOT_SQL
+    )))
+    .bind(issue)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let from_here = field_origin(&mut *conn, issue, crate::triage::FIELD_KEY).await? == Some(id);
+    let reason = if expired {
+        Some("expired")
+    } else if *before == json!("[已遮蔽]") || *after == json!("[已遮蔽]") {
+        Some("redacted")
+    } else if cur.as_ref().map(|c| &c.0) != Some(after) || !from_here {
+        Some("changed_since")
+    } else {
+        let project = cur.as_ref().map(|c| c.1).unwrap_or_default();
+        let actor = crate::perm::actor(&mut *conn, caller).await?;
+        let ok = crate::perm::project_perms(&mut *conn, &actor, project)
+            .await?
+            .is_some_and(|pp| pp.writable() && pp.allowed_any(crate::perm::TRIAGE_ISSUES));
+        (!ok).then_some("permission")
+    };
+    Ok(UndoTriage {
+        issue_id: issue,
+        key,
+        before: state(before),
+        after: state(after),
+        current: cur.map(|c| state(&c.0)).unwrap_or_else(|| "none".into()),
+        restorable: reason.is_none(),
+        reason: reason.map(String::from),
     })
 }
 
@@ -868,6 +1023,17 @@ pub async fn apply(
     .fetch_all(&mut *tx)
     .await?;
     projects.extend(ip);
+    // Time entries (§3.10.2): their projects and issues join the locks.
+    let entries = crate::time_entries::undo_entries(&mut tx, id).await?;
+    let ep: Vec<(Uuid, Option<Uuid>)> =
+        sqlx::query_as("SELECT project_id, issue_id FROM time_entries WHERE id = ANY($1)")
+            .bind(&entries)
+            .fetch_all(&mut *tx)
+            .await?;
+    projects.extend(ep.iter().map(|e| e.0));
+    let mut lock_issues: BTreeSet<Uuid> = issues.iter().copied().collect();
+    lock_issues.extend(ep.iter().filter_map(|e| e.1));
+    let lock_issues: Vec<Uuid> = lock_issues.into_iter().collect();
     for p in &projects {
         sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
             .bind(p)
@@ -880,7 +1046,11 @@ pub async fn apply(
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT 1 FROM issues WHERE id = ANY($1) ORDER BY id FOR UPDATE")
-        .bind(&issues)
+        .bind(&lock_issues)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT 1 FROM time_entries WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&entries)
         .execute(&mut *tx)
         .await?;
     let pv = build_preview(&mut tx, caller, id, &info).await?;
@@ -918,6 +1088,7 @@ pub async fn apply(
         })
         .collect();
     let mut n_transitions = 0usize;
+    let mut restored_triage: Vec<(Uuid, String)> = Vec::new();
     for (issue, to) in &input.transitions {
         let ok = pv.choices.iter().any(|c| {
             c.issue_id == *issue
@@ -946,9 +1117,29 @@ pub async fn apply(
         .iter()
         .filter(|r| r.restorable && !input.skip_relations.contains(&r.relation_id))
         .collect();
-    if ops.is_empty() && notes.is_empty() && rels.is_empty() {
+    let triage: Vec<&UndoTriage> = pv
+        .triage
+        .iter()
+        .filter(|t| t.restorable && !input.skip_triage.contains(&t.issue_id))
+        .collect();
+    let time: Vec<&UndoTimeEntry> = pv
+        .time_entries
+        .iter()
+        .filter(|t| {
+            t.restorable
+                && !input
+                    .skip_time_entries
+                    .contains(&format!("{}/{}", t.time_entry_id, t.field))
+        })
+        .collect();
+    if ops.is_empty() && notes.is_empty() && rels.is_empty() && triage.is_empty() && time.is_empty()
+    {
         return Err(not_applicable(pv.reasons()));
     }
+    // The daily totals come next in the lock order (after the entries,
+    // before the search token the execution takes).
+    let time_plan = crate::time_entries::undo_plan(&mut tx, &time).await?;
+    crate::time_entries::undo_lock(&mut tx, &time_plan).await?;
 
     let targets: BTreeSet<Uuid> = sets
         .keys()
@@ -980,6 +1171,11 @@ pub async fn apply(
             // whole undo is refused (§16.7 L2371).
             Err(e) if crate::error::classify(&e).is_some() => {
                 let code = crate::error::classify(&e).map(|a| a.code.as_str().to_string());
+                if let Some(rule_id) = form_rule_error(&e) {
+                    return Err(not_applicable(
+                        json!([{"reason": "rules_changed", "code": code, "rule_id": rule_id}]),
+                    ));
+                }
                 return Err(not_applicable(
                     json!([{"reason": "dependency", "code": code}]),
                 ));
@@ -1039,6 +1235,50 @@ pub async fn apply(
             None,
         ));
     }
+    // Triage decisions back to the state before (§3.10.1; the A5 flags of
+    // the decision stay in its own event). Kept as a change of this undo,
+    // so it can be undone in turn.
+    let mut triage_changes: Vec<(Uuid, Json, Json)> = Vec::new();
+    for t in &triage {
+        let before: Option<Json> = sqlx::query_scalar(
+            "SELECT before_value FROM execution_field_changes
+             WHERE execution_id = $1 AND issue_id = $2 AND field_key = $3",
+        )
+        .bind(id)
+        .bind(t.issue_id)
+        .bind(crate::triage::FIELD_KEY)
+        .fetch_one(&mut *tx)
+        .await?;
+        let before = before.unwrap_or(Json::Null);
+        let (cur, now): (Json, Json) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "WITH old AS (SELECT {} AS v FROM issue_triage t WHERE t.issue_id = $1)
+             UPDATE issue_triage t SET
+                 state = $2->>'state',
+                 snoozed_until = ($2->>'snoozed_until')::timestamptz,
+                 snoozed_at = ($2->>'snoozed_at')::timestamptz,
+                 snoozed_by = ($2->>'snoozed_by')::uuid,
+                 decided_at = ($2->>'decided_at')::timestamptz,
+                 decided_by = ($2->>'decided_by')::uuid,
+                 self_triage = COALESCE(($2->>'self_triage')::boolean, false),
+                 same_sponsor = COALESCE(($2->>'same_sponsor')::boolean, false)
+             FROM old WHERE t.issue_id = $1
+             RETURNING old.v, {}",
+            crate::triage::SNAPSHOT_SQL,
+            crate::triage::SNAPSHOT_SQL
+        )))
+        .bind(t.issue_id)
+        .bind(&before)
+        .fetch_one(&mut *tx)
+        .await?;
+        bumps.entry(t.issue_id).or_default().push((
+            "triage_changed",
+            json!({"old": cur["state"], "new": now["state"],
+                   "self_triage": now["self_triage"], "same_sponsor": now["same_sponsor"],
+                   "snoozed_until": now["snoozed_until"]}),
+            None,
+        ));
+        triage_changes.push((t.issue_id, cur, now));
+    }
     for (issue, evs) in bumps {
         let seq: i64 = sqlx::query_scalar("SELECT last_event_seq FROM issues WHERE id = $1")
             .bind(issue)
@@ -1071,8 +1311,53 @@ pub async fn apply(
         .await?;
     }
 
+    for (issue, cur, now) in &triage_changes {
+        let event: Uuid = sqlx::query_scalar(
+            "SELECT id FROM issue_events WHERE issue_id = $1 AND command_execution_id = $2
+               AND kind = 'triage_changed' ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(issue)
+        .bind(exec_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO issue_field_origins (issue_id, field_key, origin_execution_id, origin_event_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (issue_id, field_key) DO UPDATE
+               SET origin_execution_id = EXCLUDED.origin_execution_id,
+                   origin_event_id = EXCLUDED.origin_event_id",
+        )
+        .bind(issue)
+        .bind(crate::triage::FIELD_KEY)
+        .bind(exec_id)
+        .bind(event)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO execution_field_changes (execution_id, issue_id, field_key, before_value, after_value)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(exec_id)
+        .bind(issue)
+        .bind(crate::triage::FIELD_KEY)
+        .bind(cur)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        restored_triage.push((*issue, crate::triage::FIELD_KEY.to_string()));
+    }
+
+    // Time entries (§3.10.2): soft delete the created ones, put fields back.
+    let time_restored = crate::time_entries::undo_write(
+        &mut tx,
+        &time_plan,
+        id,
+        &commands::Attribution::human(user, request_id, exec_id),
+    )
+    .await?;
+
     // What was reverted, and the transitive source snapshot.
-    for (issue, field) in &restored {
+    for (issue, field) in restored.iter().chain(&restored_triage) {
         sqlx::query(
             "UPDATE execution_field_changes SET reverted_by = $4
              WHERE execution_id = $1 AND issue_id = $2 AND field_key = $3",
@@ -1102,6 +1387,8 @@ pub async fn apply(
         notes_retracted: notes.len(),
         relations_removed: rels.len(),
         transitions: n_transitions,
+        triage_restored: restored_triage.len(),
+        time_entries_restored: time_restored,
         version_fields_restored: 0,
         version_deleted: false,
         consistent_after,
@@ -1147,6 +1434,11 @@ async fn apply_version(
             Ok(r) => (r.execution_id, r.search.consistent_after),
             Err(e) if crate::error::classify(&e).is_some() => {
                 let code = crate::error::classify(&e).map(|a| a.code.as_str().to_string());
+                if let Some(rule_id) = form_rule_error(&e) {
+                    return Err(not_applicable(
+                        json!([{"reason": "rules_changed", "code": code, "rule_id": rule_id}]),
+                    ));
+                }
                 return Err(not_applicable(
                     json!([{"reason": "dependency", "code": code}]),
                 ));
@@ -1204,6 +1496,8 @@ async fn apply_version(
         notes_retracted: 0,
         relations_removed: 0,
         transitions: 0,
+        triage_restored: 0,
+        time_entries_restored: 0,
         version_fields_restored: restorable.len(),
         version_deleted: create.is_some(),
         consistent_after: token,
@@ -1345,6 +1639,210 @@ pub async fn activity(
     issue: Option<&str>,
 ) -> Result<Activity> {
     let user = person(&caller)?;
+    activity_of(
+        app,
+        caller,
+        agent,
+        user,
+        from,
+        to,
+        issue,
+        ActivityView::Sponsor,
+    )
+    .await
+}
+
+/// Design 05 §3.12.5 stats: `agent`'s executions on behalf of `sponsor` in
+/// [from, to] that touched an issue the caller can read now, with how many
+/// of them a person undid. Invisible writes count nowhere (T-M1-92).
+pub(crate) async fn visible_stats(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    sponsor: Uuid,
+    agent: Uuid,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<(Uuid, DateTime<Utc>, bool)>> {
+    let mut out = Vec::new();
+    let mut reader = crate::citations::Reader::new(&mut *conn, caller).await?;
+    let mut cf = HashMap::new();
+    for (id, at, _) in agent_executions(&mut *conn, sponsor, agent, from, to).await? {
+        if readable_execution(&mut *conn, &mut reader, caller, &mut cf, id)
+            .await?
+            .is_none()
+        {
+            continue;
+        }
+        let undone: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM command_executions WHERE reverts_execution_id = $1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        out.push((id, at, undone));
+    }
+    Ok(out)
+}
+
+/// What of execution `id` the caller may read now (design 05 §3.12.5,
+/// U35), event by event with the issue history's own rule
+/// ([`crate::issue_view::event_view`]): a private note the caller cannot
+/// read, a restricted custom field (M1.5 `visible`/roles), the hidden end of
+/// a duplicate are left out. The keys of the issues with something readable
+/// and the readable field changes, or `None` when nothing is left (the
+/// write then shows and counts nowhere).
+async fn readable_execution(
+    conn: &mut PgConnection,
+    reader: &mut crate::citations::Reader,
+    caller: AuthContext,
+    cf: &mut HashMap<Uuid, Vec<i32>>,
+    id: Uuid,
+) -> Result<Option<(Vec<String>, Vec<ActivityDiff>)>> {
+    use crate::issue_view::{EventCache, EventRow, IssueRef};
+    let issues = touched_issues(&mut *conn, id).await?;
+    let keys_map = visible(&mut *conn, caller, &issues).await?;
+    if keys_map.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<Uuid> = keys_map.keys().copied().collect();
+    let refs: Vec<(Uuid, Uuid, Uuid)> =
+        sqlx::query_as("SELECT id, project_id, tracker_id FROM issues WHERE id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    let refs: HashMap<Uuid, IssueRef> = refs
+        .into_iter()
+        .map(|(id, project, tracker)| {
+            (
+                id,
+                IssueRef {
+                    id,
+                    project,
+                    tracker,
+                },
+            )
+        })
+        .collect();
+    for r in refs.values() {
+        if let std::collections::hash_map::Entry::Vacant(e) = cf.entry(r.project) {
+            let ids =
+                crate::issue_view::readable_cf_ids(&mut *conn, reader, caller, r.project).await?;
+            e.insert(ids);
+        }
+    }
+    let mut shown: BTreeSet<Uuid> = BTreeSet::new();
+    type Row = (
+        Uuid,
+        Uuid,
+        i64,
+        String,
+        DateTime<Utc>,
+        String,
+        Json,
+        Option<Uuid>,
+        bool,
+    );
+    let events: Vec<Row> = sqlx::query_as(
+        "SELECT e.issue_id, e.id, e.seq, e.kind, e.at, p.name, e.payload, e.note_id,
+                e.redaction_id IS NOT NULL
+         FROM issue_events e JOIN principals p ON p.id = e.actor_id
+         WHERE (e.command_execution_id = $1 OR e.execution_id = $1) AND e.issue_id = ANY($2)
+         ORDER BY e.issue_id, e.seq",
+    )
+    .bind(id)
+    .bind(&ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (issue, eid, seq, kind, at, actor, payload, note_id, redacted) in events {
+        if shown.contains(&issue) {
+            continue;
+        }
+        let Some(r) = refs.get(&issue).copied() else {
+            continue;
+        };
+        let mut cache = EventCache::default();
+        cache.readable_cf = cf.get(&r.project).cloned();
+        let row = EventRow {
+            id: eid,
+            seq,
+            kind,
+            at,
+            actor,
+            payload,
+            note_id,
+            redacted,
+        };
+        if crate::issue_view::event_view(&mut *conn, reader, caller, r, &mut cache, row)
+            .await?
+            .is_some()
+        {
+            shown.insert(issue);
+        }
+    }
+    let ch: Vec<(Uuid, String, Option<Json>, Option<Json>)> = sqlx::query_as(
+        "SELECT issue_id, field_key, before_value, after_value FROM execution_field_changes
+         WHERE execution_id = $1 ORDER BY issue_id, field_key",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut diff = Vec::new();
+    for (i, f, b, a) in ch {
+        let (Some(key), Some(r)) = (keys_map.get(&i), refs.get(&i)) else {
+            continue;
+        };
+        if let Some(n) = f.strip_prefix("cf:")
+            && !n
+                .parse::<i32>()
+                .is_ok_and(|n| cf.get(&r.project).is_some_and(|ids| ids.contains(&n)))
+        {
+            continue; // a restricted field
+        }
+        shown.insert(i);
+        diff.push(ActivityDiff {
+            key: key.clone(),
+            field: f,
+            before: b.unwrap_or(Json::Null),
+            after: a.unwrap_or(Json::Null),
+        });
+    }
+    let mut keys: Vec<String> = shown
+        .iter()
+        .filter_map(|i| keys_map.get(i).cloned())
+        .collect();
+    keys.sort();
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((keys, diff)))
+}
+
+/// Who reads [`activity_of`] (design 05 §3.12.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityView {
+    /// The sponsor (02 §16.10): their undos and the audience blocks too.
+    Sponsor,
+    /// A site admin on the AI team page: the audience blocks, no undos.
+    Admin,
+    /// Anyone else who sees the role: its writes, filtered to what they read.
+    Member,
+}
+
+/// The executions of `agent` on behalf of `sponsor`, newest first, each
+/// kept only when the caller can read one of its issues now, and only the
+/// readable issues' keys and diffs (the same filter for every viewer).
+#[allow(clippy::too_many_arguments)]
+pub async fn activity_of(
+    app: &App,
+    caller: AuthContext,
+    agent: Uuid,
+    sponsor: Uuid,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    issue: Option<&str>,
+    view: ActivityView,
+) -> Result<Activity> {
+    let user = person(&caller)?;
     let mut tx = app.pool.begin().await?;
     sqlx::query("SET TRANSACTION READ ONLY")
         .execute(&mut *tx)
@@ -1355,62 +1853,50 @@ pub async fn activity(
         .await?;
     let from = from.unwrap_or(now - chrono::Duration::days(UNDO_DAYS));
     let to = to.unwrap_or(now);
-    let mut rows = agent_executions(&mut tx, user, agent, from, to).await?;
-    let undos: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
-        "SELECT u.id, u.created_at, 'undo' FROM command_executions u
-         WHERE u.actor_id = $1 AND u.reverts_execution_id IS NOT NULL
-           AND u.created_at >= $2 AND u.created_at <= $3",
-    )
-    .bind(user)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&mut *tx)
-    .await?;
-    rows.extend(undos);
-    let blocked: Vec<DateTime<Utc>> = sqlx::query_scalar(
+    let mut rows = agent_executions(&mut tx, sponsor, agent, from, to).await?;
+    if view == ActivityView::Sponsor {
+        let undos: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
+            "SELECT u.id, u.created_at, 'undo' FROM command_executions u
+             WHERE u.actor_id = $1 AND u.reverts_execution_id IS NOT NULL
+               AND u.created_at >= $2 AND u.created_at <= $3",
+        )
+        .bind(user)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *tx)
+        .await?;
+        rows.extend(undos);
+    }
+    let blocked: Vec<DateTime<Utc>> = if view == ActivityView::Member {
+        Vec::new()
+    } else {
+        sqlx::query_scalar(
         "SELECT l.at FROM agent_write_log l
          JOIN agent_principals ap ON ap.agent_principal_id = l.agent_principal_id
          WHERE l.agent_principal_id = $1 AND ap.delegator_user_id = $2 AND l.kind = 'audience_blocked'
            AND l.at >= $3 AND l.at <= $4",
-    )
-    .bind(agent)
-    .bind(user)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&mut *tx)
-    .await?;
+        )
+        .bind(agent)
+        .bind(sponsor)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *tx)
+        .await?
+    };
     let mut items = Vec::new();
+    let mut reader = crate::citations::Reader::new(&mut tx, caller).await?;
+    let mut cf = HashMap::new();
     for (id, at, kind) in rows {
-        let issues = touched_issues(&mut tx, id).await?;
-        let keys_map = visible(&mut tx, caller, &issues).await?;
-        if keys_map.is_empty() {
+        let Some((keys, diff)) =
+            readable_execution(&mut tx, &mut reader, caller, &mut cf, id).await?
+        else {
             continue; // nothing of it is readable now
-        }
-        let mut keys: Vec<String> = keys_map.values().cloned().collect();
-        keys.sort();
+        };
         if let Some(k) = issue
             && !keys.iter().any(|x| x == k)
         {
             continue;
         }
-        let ch: Vec<(Uuid, String, Option<Json>, Option<Json>)> = sqlx::query_as(
-            "SELECT issue_id, field_key, before_value, after_value FROM execution_field_changes
-             WHERE execution_id = $1 ORDER BY issue_id, field_key",
-        )
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await?;
-        let diff = ch
-            .into_iter()
-            .filter_map(|(i, f, b, a)| {
-                Some(ActivityDiff {
-                    key: keys_map.get(&i)?.clone(),
-                    field: f,
-                    before: b.unwrap_or(Json::Null),
-                    after: a.unwrap_or(Json::Null),
-                })
-            })
-            .collect();
         let undoable = match exec_info(&mut tx, id).await? {
             Some(info) if info.owner == user => {
                 build_preview(&mut tx, caller, id, &info).await?.automatic()
@@ -1505,10 +1991,14 @@ pub async fn summary(app: &App, caller: AuthContext) -> Result<AgentSummary> {
         }
     }
     let suspended: Vec<(Uuid, Uuid, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT c.id, c.agent_principal_id, w.suspension_reason, w.suspended_at
+        "SELECT c.id, ap.agent_principal_id, w.suspension_reason, w.suspended_at
          FROM agent_context_write_controls w JOIN agent_work_contexts c ON c.id = w.context_id
-         JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
-         WHERE ap.delegator_user_id = $1 AND w.suspended_at IS NOT NULL
+         JOIN agent_runtimes rt ON rt.id = c.runtime_id
+         JOIN LATERAL (SELECT p.agent_principal_id FROM agent_principals p WHERE p.runtime_id = c.runtime_id
+                       ORDER BY p.agent_principal_id = c.created_for_principal_id DESC, p.created_at,
+                                p.agent_principal_id
+                       LIMIT 1) ap ON true
+         WHERE rt.sponsor_user_id = $1 AND w.suspended_at IS NOT NULL
            AND w.suspension_reason <> 'manual'
          ORDER BY w.suspended_at DESC",
     )

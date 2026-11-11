@@ -17,6 +17,9 @@ use uuid::Uuid;
 
 /// Fields too long to judge from a one-line diff (§15.3: "短欄位").
 const LONG_FIELDS: &[&str] = &["subject", "description", "is_private"];
+/// Contract 05 §4.3: a `log_time` may be ticked when its comments are at
+/// most this many characters (or absent).
+pub const TIME_COMMENTS_TICKABLE: usize = 80;
 
 /// One changed field as the queue shows it.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -59,6 +62,22 @@ pub fn shape_reasons(body: &Json) -> Vec<String> {
                 }
             }
             "transition" => transitions += 1,
+            // Contract 05 §4.3: accepting (without a note) and snoozing
+            // may be ticked; declining, duplicates and unsnooze may not.
+            "triage_decide" => match op["decision"].as_str().unwrap_or_default() {
+                "accept" | "snooze" => {}
+                d => reasons.push(format!("triage:{d}")),
+            },
+            // Contract 05 §4.3: short or no comments; update_time_entry
+            // is opened one by one.
+            "log_time" => {
+                let n = op["fields"]["comments"]
+                    .as_str()
+                    .map_or(0, |c| c.chars().count());
+                if n > TIME_COMMENTS_TICKABLE {
+                    reasons.push("long_field:comments".to_string());
+                }
+            }
             k => reasons.push(format!("op:{k}")),
         }
     }
@@ -149,11 +168,43 @@ pub async fn eligibility(
     viewer: AuthContext,
     body: &Json,
     validation_status: &str,
+    stored_rules_version: Option<&str>,
+) -> Result<Eligibility> {
+    eligibility_for(
+        conn,
+        viewer,
+        body,
+        validation_status,
+        stored_rules_version,
+        None,
+    )
+    .await
+}
+
+/// [`eligibility`] of a stored ChangeSet: one the agent chain limit sent
+/// for review (`chain_review`) never qualifies (design 05 §3.12.4).
+pub async fn eligibility_for(
+    conn: &mut PgConnection,
+    viewer: AuthContext,
+    body: &Json,
+    validation_status: &str,
+    stored_rules_version: Option<&str>,
+    chain_review: Option<&str>,
 ) -> Result<Eligibility> {
     let mut reasons = shape_reasons(body);
+    // Design 05 §3.12.4: sent by the agent chain limit → read it in full.
+    // The reason carries no counts (appendix D V21).
+    if let Some(c) = chain_review {
+        reasons.push(format!("agent_chain:{c}"));
+    }
     reasons.extend(long_custom_fields(&mut *conn, body).await?);
     if validation_status != "passed" {
         reasons.push(format!("validation:{validation_status}"));
+    }
+    // Contract 05 §3.6.3 (appendix C R14): the form rules changed since the
+    // version was stored.
+    if crate::forms::rules_changed(&mut *conn, body, stored_rules_version).await? {
+        reasons.push("rules_changed".into());
     }
     let warnings = evidence_warnings(&mut *conn, viewer, body).await?;
     Ok(Eligibility { reasons, warnings })
@@ -180,6 +231,7 @@ fn label(field: &str) -> &'static str {
         "fixed_version_id" => "Target version",
         "start_date" => "Start date",
         "due_date" => "Due date",
+        "estimated_hours" => "Estimated time",
         "is_private" => "Private",
         "status" => "Status",
         _ => "",
@@ -208,6 +260,7 @@ async fn named(conn: &mut PgConnection, table: &str, id: &Json) -> Result<Json> 
     let sql = match table {
         "priority" => "SELECT name FROM issue_priorities WHERE id = $1",
         "version" => "SELECT name FROM versions WHERE id = $1",
+        "activity" => "SELECT name FROM time_entry_activities WHERE id = $1",
         _ => "SELECT name FROM issue_statuses WHERE id = $1",
     };
     let name: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
@@ -275,6 +328,12 @@ pub async fn diff(
 ) -> Result<Vec<DiffRow>> {
     let mut rows = Vec::new();
     for op in body["ops"].as_array().into_iter().flatten() {
+        if op["kind"] == "log_time" {
+            if let Some(r) = time_row(&mut *conn, viewer, op, keys).await? {
+                rows.push(r);
+            }
+            continue;
+        }
         let Some(id) = op["target"]["id"]
             .as_str()
             .and_then(|s| s.parse::<Uuid>().ok())
@@ -295,10 +354,12 @@ pub async fn diff(
             Uuid,
             Uuid,
             Uuid,
+            Option<String>,
         );
         let cur: Option<Cur> = sqlx::query_as(
             "SELECT subject, description, assigned_to_id, priority_id, fixed_version_id,
-                    start_date, due_date, is_private, status_id, tracker_id, project_id, id
+                    start_date, due_date, is_private, status_id, tracker_id, project_id, id,
+                    trim_scale(estimated_hours)::text
              FROM issues WHERE id = $1",
         )
         .bind(id)
@@ -331,6 +392,7 @@ pub async fn diff(
                         "start_date" => json!(c.5),
                         "due_date" => json!(c.6),
                         "is_private" => json!(c.7),
+                        "estimated_hours" => json!(c.12),
                         _ => Json::Null,
                     };
                     let (lbl, before) = if let Some(n) = k.strip_prefix("cf:") {
@@ -380,10 +442,86 @@ pub async fn diff(
                 Json::Null,
                 json!({"is_private": op["is_private"]}),
             ),
+            "triage_decide" => {
+                let state: Option<String> =
+                    sqlx::query_scalar("SELECT state FROM issue_triage WHERE issue_id = $1")
+                        .bind(id)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                let mut after = json!({"decision": op["decision"]});
+                if let Some(u) = op.get("snooze_until") {
+                    after["snooze_until"] = u.clone();
+                }
+                if let Some(d) = op["duplicate_of"]["id"].as_str() {
+                    after["duplicate_of"] = json!(d);
+                }
+                push(
+                    "triage".into(),
+                    "Triage".into(),
+                    json!(state.unwrap_or_else(|| "none".into())),
+                    after,
+                );
+            }
             _ => {}
         }
     }
     Ok(rows)
+}
+
+/// A `log_time` on an issue the viewer can see (contract 05 §6: the queue
+/// shows time proposals as rows): hours, date, activity and comments. A
+/// `log_time` without an issue has no row (the proposal title says it).
+async fn time_row(
+    conn: &mut PgConnection,
+    viewer: AuthContext,
+    op: &Json,
+    keys: &std::collections::BTreeMap<Uuid, String>,
+) -> Result<Option<DiffRow>> {
+    let Some(id) = op["issue"]["id"]
+        .as_str()
+        .and_then(|s| s.parse::<Uuid>().ok())
+    else {
+        return Ok(None);
+    };
+    type Row = (String, String, Uuid, Uuid, bool, Uuid, Option<Uuid>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT k.key, i.subject, i.project_id, i.tracker_id, i.is_private, i.author_id, i.assigned_to_id
+         FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         WHERE i.id = $1 AND i.archived_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(r) = row else { return Ok(None) };
+    if !keys.contains_key(&id) {
+        let scope = crate::db::load_scope(&mut *conn, viewer).await?;
+        if !scope.can_see(&ox_core::IssueFacts {
+            project_id: r.2,
+            tracker_id: r.3,
+            is_private: r.4,
+            author_id: r.5,
+            assigned_to_id: r.6,
+        }) {
+            return Ok(None);
+        }
+    }
+    let f = &op["fields"];
+    let activity = match f["activity_id"].as_str() {
+        Some(_) => named(&mut *conn, "activity", &f["activity_id"]).await?,
+        None => Json::Null,
+    };
+    Ok(Some(DiffRow {
+        target: DiffTarget {
+            id,
+            key: r.0,
+            subject: r.1,
+        },
+        field: "time".into(),
+        label: "Time".into(),
+        before: Json::Null,
+        after: json!({"hours": f["hours"], "spent_on": f["spent_on"], "activity": activity,
+                      "comments": f["comments"], "user_id": f["user_id"]}),
+    }))
 }
 
 #[cfg(test)]
@@ -402,6 +540,18 @@ mod tests {
             {"kind": "transition", "target": t, "to_status_id": Uuid::nil()}
         ]));
         assert!(shape_reasons(&ok).is_empty());
+        for d in ["accept", "snooze"] {
+            let ok = doc(json!([{"kind": "triage_decide", "target": t, "decision": d}]));
+            assert!(shape_reasons(&ok).is_empty(), "{d}");
+        }
+        let eighty = "工".repeat(TIME_COMMENTS_TICKABLE);
+        for f in [
+            json!({"hours": "1"}),
+            json!({"hours": "1", "comments": eighty}),
+        ] {
+            let ok = doc(json!([{"kind": "log_time", "fields": f}]));
+            assert!(shape_reasons(&ok).is_empty(), "{f}");
+        }
         for (bad, why) in [
             (
                 json!([{"kind": "add_note", "target": t, "body": "x"}]),
@@ -422,6 +572,22 @@ mod tests {
             (json!([{"kind": "create_issue"}]), "op:create_issue"),
             (json!([{"kind": "duplicate_of"}]), "op:duplicate_of"),
             (json!([{"kind": "create_version"}]), "op:create_version"),
+            (
+                json!([{"kind": "log_time", "fields": {"comments": "工".repeat(TIME_COMMENTS_TICKABLE + 1)}}]),
+                "long_field:comments",
+            ),
+            (
+                json!([{"kind": "update_time_entry"}]),
+                "op:update_time_entry",
+            ),
+            (
+                json!([{"kind": "triage_decide", "decision": "decline"}]),
+                "triage:decline",
+            ),
+            (
+                json!([{"kind": "triage_decide", "decision": "duplicate"}]),
+                "triage:duplicate",
+            ),
             (
                 json!([{"kind": "transition"}, {"kind": "transition"}]),
                 "several_transitions",

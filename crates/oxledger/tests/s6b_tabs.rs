@@ -242,7 +242,8 @@ async fn s6b_tabs() {
         BUILTIN.to_vec(),
         "the SQL default and project_tabs::BUILTIN agree"
     );
-    assert!(tabs.iter().all(|t| t.kind == "builtin" && !t.hidden));
+    assert!(tabs.iter().all(|t| t.kind == "builtin"
+        && t.hidden == project_tabs::BUILTIN_HIDDEN.contains(&t.id.as_str())));
     assert_eq!((d.as_str(), is_default, lv), ("timeline", true, 0));
     let s = get(&w, a).await;
     assert!(s.is_default && s.can_manage);
@@ -268,7 +269,7 @@ async fn s6b_tabs() {
     ));
     expect(&w, a, &input(&s, unknown, "timeline"), "unknown_id").await;
     let mut fake = five.clone();
-    fake.push(json!({"id": "board", "kind": "builtin", "title": "Board"}));
+    fake.push(json!({"id": "gantt", "kind": "builtin", "title": "Gantt"}));
     expect(&w, a, &input(&s, fake, "timeline"), "unknown_id").await;
 
     // ------------------------------------------------ T-PT3: eleven custom tabs
@@ -345,7 +346,7 @@ async fn s6b_tabs() {
     }
 
     // A good PUT: a saved query (project: added), renames, reorder, hide.
-    let mut five = as_input(&s1.tabs[..5]);
+    let mut five = as_input(&s1.tabs[..7]);
     five.swap(0, 2);
     five[1]["title"] = json!("  里程碑 2  ");
     five[4]["hidden"] = json!(true);
@@ -472,7 +473,7 @@ async fn s6b_tabs() {
     let rs = reset(&w, bob, s5.lock_version).await.unwrap();
     assert!(rs.is_default);
     assert_eq!(rs.default_tab, "timeline");
-    assert_eq!(rs.tabs.len(), 5);
+    assert_eq!(rs.tabs.len(), 7);
     // (b) never changed (NEWP).
     exec(
         &pool,

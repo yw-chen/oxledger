@@ -71,6 +71,12 @@ pub enum Target {
         project: String,
         event: Uuid,
     },
+    /// A time entry's comments (contract 05 §2.5 D12; a deleted entry too,
+    /// its text is still stored): the entry, every
+    /// event of it that holds the comments, and its undo copies.
+    TimeEntry {
+        entry: Uuid,
+    },
 }
 
 impl Target {
@@ -80,6 +86,7 @@ impl Target {
             Target::IssueEvent { .. } => "redact_issue_event",
             Target::VersionEvent { .. } => "redact_version_event",
             Target::SettingEvent { .. } => "redact_setting_event",
+            Target::TimeEntry { .. } => "redact_time_entry",
         }
     }
 }
@@ -91,6 +98,8 @@ pub struct Derived {
     pub labels: u64,
     pub field_changes: u64,
     pub version_changes: u64,
+    /// `execution_time_entry_changes` rows (contract 05 §2.5 D12).
+    pub time_changes: u64,
 }
 
 #[cfg(feature = "test-support")]
@@ -299,6 +308,64 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 admin_only: false,
             })
         }
+        Target::TimeEntry { entry } => {
+            let row: Option<(Uuid, Option<Uuid>, Uuid)> = sqlx::query_as(
+                "SELECT project_id, issue_id, user_id FROM time_entries WHERE id = $1",
+            )
+            .bind(entry)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some((project, issue, user)) = row else {
+                return Err(not_found("time entry"));
+            };
+            find_project(&mut *conn, caller, &project.to_string(), admin)
+                .await
+                .map_err(|_| not_found("time entry"))?;
+            // Someone who cannot read the entry cannot tell it exists.
+            if !admin {
+                let me = caller.user_id().unwrap_or_default();
+                let seen = match crate::time_entries::visibility(&mut *conn, project, me)
+                    .await?
+                    .as_deref()
+                {
+                    Some("all") => true,
+                    Some("own") => user == me,
+                    _ => false,
+                };
+                let issue_seen = match issue {
+                    None => true,
+                    Some(i) => {
+                        let scope = db::load_scope(&mut *conn, caller).await?;
+                        let f: Option<(Uuid, Uuid, bool, Uuid, Option<Uuid>)> = sqlx::query_as(
+                            "SELECT project_id, tracker_id, is_private, author_id, assigned_to_id
+                             FROM issues WHERE id = $1 AND archived_at IS NULL",
+                        )
+                        .bind(i)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                        f.is_some_and(|f| {
+                            scope.can_see(&ox_core::IssueFacts {
+                                project_id: f.0,
+                                tracker_id: f.1,
+                                is_private: f.2,
+                                author_id: f.3,
+                                assigned_to_id: f.4,
+                            })
+                        })
+                    }
+                };
+                if !seen || !issue_seen {
+                    return Err(not_found("time entry"));
+                }
+            }
+            Ok(Located {
+                project,
+                issue,
+                version: None,
+                row: *entry,
+                admin_only: false,
+            })
+        }
         Target::SettingEvent { project, event } => {
             let project = find_project(&mut *conn, caller, project, admin).await?;
             // The same rule the list applies (T-PT17), on the stored payload.
@@ -335,6 +402,7 @@ fn request_hash(t: &Target, input: &RedactInput) -> [u8; 32] {
         Target::SettingEvent { project, event } => {
             json!({"project": project.trim().to_uppercase(), "event": event})
         }
+        Target::TimeEntry { entry } => json!({"time_entry": entry}),
     };
     let body =
         json!({"target": target, "reason_code": input.reason_code, "reason": input.reason.trim()});
@@ -420,6 +488,9 @@ async fn redact_locked(
         Target::SettingEvent { .. } => {
             "SELECT redaction_id IS NOT NULL FROM project_setting_events WHERE id = $1 FOR UPDATE"
         }
+        Target::TimeEntry { .. } => {
+            "SELECT redacted_at IS NOT NULL FROM time_entries WHERE id = $1 FOR UPDATE"
+        }
     }))
     .bind(at.row)
     .fetch_one(&mut *tx)
@@ -474,6 +545,11 @@ async fn redact_locked(
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
+            // Design 05 §2.2: a redacted change cannot be filtered on (ever_in).
+            sqlx::query("DELETE FROM issue_field_changes WHERE event_id = $1")
+                .bind(at.row)
+                .execute(&mut *tx)
+                .await?;
             id
         }
         Target::VersionEvent { .. } => {
@@ -514,6 +590,9 @@ async fn redact_locked(
                 .execute(&mut *tx)
                 .await?;
             id
+        }
+        Target::TimeEntry { .. } => {
+            redact_time_entry(&mut *tx, at.row, who.user_id, &input.reason_code, reason).await?
         }
     };
     fault("redact.before_derived").await?;
@@ -567,7 +646,10 @@ async fn may_redact(conn: &mut PgConnection, caller: AuthContext, project: Uuid)
 ///   its version's snapshot; an undo inherits the reverted one's);
 /// * `execution_version_changes` likewise for versions of the project.
 pub async fn derived(conn: &mut PgConnection, project: Uuid, actor: Uuid) -> Result<Derived> {
-    let changesets = "SELECT id FROM changesets WHERE context_project_id = $1
+    // Design 05 §3.13.7: built-in AI messages drawn from the project lose
+    // their content in the same transaction (by project, erring wide).
+    crate::ai::chat::redact_project(&mut *conn, project).await?;
+    let changesets ="SELECT id FROM changesets WHERE context_project_id = $1
                       UNION SELECT changeset_id FROM changeset_version_source_projects WHERE project_id = $1";
     let contents = sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE proposal_contents pc
@@ -617,10 +699,118 @@ pub async fn derived(conn: &mut PgConnection, project: Uuid, actor: Uuid) -> Res
     .execute(&mut *conn)
     .await?
     .rows_affected();
+    // Contract 05 §2.5 D12: the time entry undo copies likewise (whole
+    // values; a `_created` / `_deleted` snapshot becomes the marker too).
+    let time_changes = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE execution_time_entry_changes f
+         SET before_value = CASE WHEN f.before_value IS NULL THEN NULL ELSE {marker} END,
+             after_value = CASE WHEN f.after_value IS NULL THEN NULL ELSE {marker} END
+         WHERE (f.before_value IS DISTINCT FROM {marker} AND f.before_value IS NOT NULL
+                OR f.after_value IS DISTINCT FROM {marker} AND f.after_value IS NOT NULL)
+           AND (f.time_entry_id IN (SELECT id FROM time_entries WHERE project_id = $1)
+                OR f.execution_id IN ({sources}))"
+    )))
+    .bind(project)
+    .bind(REDACTED)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
     Ok(Derived {
         contents,
         labels,
         field_changes,
         version_changes,
+        time_changes,
     })
+}
+
+/// Replaces a time entry's comments with the marker, in the entry and in
+/// every event that holds them (one redaction record per such event; the
+/// first is returned). The undo copies follow in [`derived`].
+async fn redact_time_entry(
+    conn: &mut PgConnection,
+    entry: Uuid,
+    by: Uuid,
+    reason_code: &str,
+    reason: &str,
+) -> Result<Uuid> {
+    sqlx::query("UPDATE time_entries SET comments = $2, redacted_at = now() WHERE id = $1")
+        .bind(entry)
+        .bind(REDACTED)
+        .execute(&mut *conn)
+        .await?;
+    let events: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+        "SELECT id, payload FROM time_entry_events WHERE time_entry_id = $1 ORDER BY seq FOR UPDATE",
+    )
+    .bind(entry)
+    .fetch_all(&mut *conn)
+    .await?;
+    let marker = json!(REDACTED);
+    let mut first = None;
+    for (event, mut payload) in events {
+        let mut touched = false;
+        if let Some(ch) = payload.get_mut("changes").and_then(|c| c.as_object_mut()) {
+            if let Some(c) = ch.get_mut("comments").and_then(|c| c.as_object_mut()) {
+                for side in ["old", "new"] {
+                    if c.get(side).is_some_and(|v| !v.is_null() && *v != marker) {
+                        c.insert(side.into(), marker.clone());
+                        touched = true;
+                    }
+                }
+            }
+            for snap in ["_deleted", "_restored"] {
+                for side in ["old", "new"] {
+                    if let Some(s) = ch
+                        .get_mut(snap)
+                        .and_then(|c| c.get_mut(side))
+                        .and_then(|v| v.as_object_mut())
+                        && s.get("comments").is_some_and(|v| *v != marker)
+                    {
+                        s.insert("comments".into(), marker.clone());
+                        touched = true;
+                    }
+                }
+            }
+        }
+        if !touched {
+            continue;
+        }
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO time_entry_event_redactions (event_id, redacted_by, reason_code, reason)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (event_id) DO UPDATE SET redacted_at = now()
+             RETURNING id",
+        )
+        .bind(event)
+        .bind(by)
+        .bind(reason_code)
+        .bind(reason)
+        .fetch_one(&mut *conn)
+        .await?;
+        sqlx::query("UPDATE time_entry_events SET payload = $2, redaction_id = $3 WHERE id = $1")
+            .bind(event)
+            .bind(&payload)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        first.get_or_insert(id);
+    }
+    // Every entry has its `created` event; a blank comment leaves nothing
+    // to replace there, so record the redaction on that event anyway.
+    match first {
+        Some(id) => Ok(id),
+        None => Ok(sqlx::query_scalar(
+            "INSERT INTO time_entry_event_redactions (event_id, redacted_by, reason_code, reason)
+             SELECT id, $2, $3, $4 FROM time_entry_events WHERE time_entry_id = $1
+             ORDER BY seq LIMIT 1
+             ON CONFLICT (event_id) DO UPDATE SET redacted_at = now()
+             RETURNING id",
+        )
+        .bind(entry)
+        .bind(by)
+        .bind(reason_code)
+        .bind(reason)
+        .fetch_one(&mut *conn)
+        .await?),
+    }
 }

@@ -20,6 +20,23 @@ use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+/// Every `agent_write_log.kind` (the union rule of design 05 §2.1; T-M1-124
+/// compares it with the CHECK constraint). `time_taint_review` is written
+/// by the built-in AI (M1.10).
+pub const WRITE_LOG_KINDS: [&str; 11] = [
+    "direct_write",
+    "issue_create",
+    "issue_write",
+    "propose",
+    "audience_blocked",
+    "version_create",
+    "version_write",
+    "validate",
+    "time_write",
+    "chain_review",
+    "time_taint_review",
+];
+
 /// Initial values (deployment may lower them; a delegation only narrows).
 pub mod limits {
     /// §16.6: successful direct writes (documents) per agent.
@@ -39,6 +56,8 @@ pub mod limits {
     pub const VERSION_CREATES_PER_HOUR: i64 = 10;
     /// §17.9a: agent writes to one version per 10 minutes (more trips the breaker).
     pub const VERSION_WRITES_PER_10_MIN: i64 = 5;
+    /// Contract 05 §4.3: time entries an agent logs per hour.
+    pub const LOG_TIME_PER_HOUR: i64 = 20;
     /// §8.9: validate per delegation per hour.
     pub const VALIDATES_PER_HOUR: i64 = 120;
     /// §8.9: proposal writes of one delegation running at the same time.
@@ -47,6 +66,43 @@ pub mod limits {
     pub const RAW_PAYLOAD_BYTES: usize = 768 * 1024;
     /// §8.9: the normalized command document (canonical JSON bytes).
     pub const NORMALIZED_BYTES: usize = 512 * 1024;
+}
+
+/// Contract 05 §4.3: at most [`limits::LOG_TIME_PER_HOUR`] entries an hour
+/// (checked after [`reserve_direct`], which holds the agent row).
+pub async fn reserve_time(conn: &mut PgConnection, agent: Uuid, logs: i64) -> Result<()> {
+    if logs > 0
+        && count(conn, BY_AGENT, agent, "time_write", 3600).await? + logs
+            > limits::LOG_TIME_PER_HOUR
+    {
+        return Err(quota_exceeded(
+            "log_time_per_hour",
+            limits::LOG_TIME_PER_HOUR,
+        ));
+    }
+    Ok(())
+}
+
+/// Counts `logs` new time entries for [`reserve_time`].
+pub async fn record_time(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+    logs: i64,
+) -> Result<()> {
+    for _ in 0..logs {
+        sqlx::query(
+            "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+             VALUES ($1, $2, $3, 'time_write')",
+        )
+        .bind(agent)
+        .bind(context)
+        .bind(delegation)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 /// A version document's part in the counters (§17.9a).
@@ -327,6 +383,46 @@ pub async fn record_proposal(
     sqlx::query(
         "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
          VALUES ($1, $2, $3, 'propose')",
+    )
+    .bind(agent)
+    .bind(context)
+    .bind(delegation)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Design 05 §3.12.4: a `direct` document the chain limit sent for review.
+/// An audit row only; no counter reads this kind.
+pub async fn log_chain_review(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+         VALUES ($1, $2, $3, 'chain_review')",
+    )
+    .bind(agent)
+    .bind(context)
+    .bind(delegation)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Records a built-in AI write turned into a review because its run read
+/// the user's time (design 05 §3.13.3, Q3).
+pub async fn log_time_taint_review(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+         VALUES ($1, $2, $3, 'time_taint_review')",
     )
     .bind(agent)
     .bind(context)

@@ -239,7 +239,7 @@ async fn search_evidence_highlights() {
         vec![("登入".into(), "primary".into())]
     );
     assert_eq!(it["evidence"][0]["field"], "description");
-    assert_eq!(it["evidence"][0]["evidence_status"], "rechecked");
+    assert_eq!(it["evidence"][0]["evidence_status"], "current");
     // Code point offsets equal JavaScript's Array.from indices (fixed cases).
     for (k, field, start) in [
         (&u1, "subject", 1),

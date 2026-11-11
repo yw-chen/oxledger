@@ -460,6 +460,7 @@ impl Spec {
                     }
                     Test::IsNull => json!({"field": field, "op": "is_null"}),
                     Test::NotNull => json!({"field": field, "op": "not_null"}),
+                    Test::NotIn(_) | Test::EverIn(_) => unreachable!("v1 has no not_in / ever_in"),
                 }
             }
         }
@@ -634,6 +635,18 @@ async fn custom_field_filters_match_reference_on_pg() {
     let pool = test_pool().await;
     let mut rng = Rng(0x00D1_4C0F_FEE5_EED5);
     let w = load_world(&pool, &mut rng).await;
+    // The candidate-growth check below needs some "Acme" issues beyond the
+    // first 500 BM25 hits for "issue". With equal subjects the ties are broken
+    // by DocAddress, which depends on how the multi-threaded writer split the
+    // segments; longer subjects score strictly lower, so they rank last.
+    sqlx::query(
+        "UPDATE issues i SET subject = subject || ' zz zz zz zz' FROM issue_cf cf
+         WHERE cf.issue_id = i.id AND cf.field_id = $1 AND cf.v_text = 'Acme'",
+    )
+    .bind(w.def("Customer").f.id)
+    .execute(&pool)
+    .await
+    .unwrap();
     let index = SearchIndex::open(None).unwrap();
     index.sync_all(&pool).await.unwrap();
     let app = App {

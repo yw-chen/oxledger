@@ -490,6 +490,8 @@ async fn agents_delegate(w: &World) -> Uuid {
             max_ops: None,
             expires_in_days: Some(30),
             policies: None,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await

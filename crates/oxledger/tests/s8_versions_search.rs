@@ -339,7 +339,7 @@ async fn overdue_moves_with_the_day() {
     for q in [None, Some("due")] {
         let r = search(&w, overdue(q)).await.unwrap();
         assert!(r.items.is_empty(), "due today is not overdue ({q:?})");
-        assert_eq!(r.meta.as_ref().unwrap().today, t.to_string());
+        assert_eq!(r.meta.today, t.to_string());
     }
     let outbox = count(&pool, "SELECT count(*) FROM outbox").await;
     let events = count(&pool, "SELECT count(*) FROM issue_events").await;
@@ -349,7 +349,7 @@ async fn overdue_moves_with_the_day() {
     for q in [None, Some("due")] {
         let r = search(&w, overdue(q)).await.unwrap();
         assert_eq!(keys(&r), vec![kd.clone()], "{q:?}");
-        assert_eq!(r.meta.as_ref().unwrap().today, t2.to_string());
+        assert_eq!(r.meta.today, t2.to_string());
     }
     assert_eq!(
         count(&pool, "SELECT count(*) FROM outbox").await,
@@ -360,7 +360,7 @@ async fn overdue_moves_with_the_day() {
         count(&pool, "SELECT count(*) FROM issue_events").await,
         events
     );
-    // Without overdue there is no meta.
+    // Without overdue meta.today is still there (design 05 §3.2: always).
     let r = search(
         &w,
         SearchParams {
@@ -370,7 +370,7 @@ async fn overdue_moves_with_the_day() {
     )
     .await
     .unwrap();
-    assert!(r.meta.is_none() && r.items.len() == 3);
+    assert!(r.meta.today == t2.to_string() && r.items.len() == 3);
     exec(&pool, "UPDATE org_settings SET timezone = 'Asia/Taipei'").await;
 }
 

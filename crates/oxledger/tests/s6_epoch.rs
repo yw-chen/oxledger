@@ -137,11 +137,11 @@ async fn s6_epoch() {
     )
     .await;
     assert_eq!(
-        delta(&pool, &w, &format!("INSERT INTO role_permissions (role_id, permission) VALUES ('{dev}', 'manage_versions')")).await,
+        delta(&pool, &w, &format!("INSERT INTO role_permissions (role_id, permission) VALUES ('{dev}', 'edit_own_issues')")).await,
         both
     );
     assert_eq!(
-        delta(&pool, &w, &format!("UPDATE role_permissions SET all_trackers = false WHERE role_id = '{dev}' AND permission = 'manage_versions'")).await,
+        delta(&pool, &w, &format!("UPDATE role_permissions SET all_trackers = false WHERE role_id = '{dev}' AND permission = 'edit_own_issues'")).await,
         both
     );
     let bug = w.bug;
@@ -150,13 +150,13 @@ async fn s6_epoch() {
             &pool,
             &w,
             &format!(
-                "INSERT INTO role_permission_trackers VALUES ('{dev}', 'manage_versions', '{bug}')"
+                "INSERT INTO role_permission_trackers VALUES ('{dev}', 'edit_own_issues', '{bug}')"
             )
         )
         .await,
         both
     );
-    exec(&pool, &format!("DELETE FROM role_permissions WHERE role_id = '{dev}' AND permission = 'manage_versions'")).await;
+    exec(&pool, &format!("DELETE FROM role_permissions WHERE role_id = '{dev}' AND permission = 'edit_own_issues'")).await;
     // Projects: is_public, status, modules → that project; names do not.
     assert_eq!(
         delta(
@@ -629,6 +629,8 @@ async fn s6_epoch() {
                     max_ops: None,
                     expires_in_days: Some(7),
                     policies: None,
+                    read_own_time: false,
+                    read_own_time_ack: false,
                 },
             )
             .await

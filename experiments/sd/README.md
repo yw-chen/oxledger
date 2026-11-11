@@ -36,3 +36,17 @@ docker exec -i oxledger-pg psql -U oxledger -d postgres -c "DROP DATABASE oxledg
 - `rareint` 用欄位 3、9，所以不受轉型影響。
 - `bench.sh` 每個查詢先跑 1 次暖機，再計時 N 次。
 - `results/q3.tsv` 裡 `hotcold_S1`、`hotcold_S2` 因為太慢，只跑了 5 次和 3 次；`rareint_*` 跑 7 次。
+
+## P2.5 補量：現行排序 `updated_at DESC, id DESC`（2026-11-09）
+
+migration 0018 補了 `issues (updated_at DESC, id DESC)` 索引（這裡用 `sql/20_updated_idx.sql`），`q/gen_u.sh` 把 S0／S2 改成產品的排序，每個跑 5 次，結果在 `results/q3_updated.tsv`（中位數、最大、最小，ms）：
+
+| 查詢 | S0 | S2 |
+|---|---|---|
+| three | 117.8 | 10.0 |
+| hot2 | 17.4 | 2.1 |
+| numdate | 301.6 | 6.5 |
+| num2 | 493.5 | 3.0 |
+| rareint | 18.8 | 254.0 |
+
+寬條件（每個條件都超過 10,000 筆）S2 快很多；有一個稀有條件時 S0 快，這正是探測上限 10,001 會選 S0 的情形。所以 D14 策略選擇照 03 §5.4 實作（P2-D14）。量完已刪除 `oxledger_sd_bench`。重跑：在上面的步驟 `load.sh` 之後加 `docker exec -i oxledger-pg psql -X -U oxledger -d oxledger_sd_bench < sql/20_updated_idx.sql`、`bash q/gen.sh && bash q/gen_u.sh`，再對 `q/*_u_S0.sql`、`q/*_u_S2.sql` 跑 `bench.sh`。

@@ -9,16 +9,17 @@ use crate::db::{self, push_pred};
 use crate::error::{ApiError, ErrorCode, api};
 use crate::evidence::{self, CpText, FieldMatch, Highlight, Strength, Terms, Window};
 use crate::filter::{self, FilterInput};
-use crate::search::SearchIndex;
 use crate::search::Wait;
+use crate::search::{IxFilter, Layout, SearchIndex};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
+use ox_core::filter::{Cmp, Filter, Test, Value as FValue};
 use ox_core::{IssueFacts, Pred};
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, PgPool, Postgres, QueryBuilder, Row};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub struct App {
@@ -55,7 +56,11 @@ const MAX_SEARCH_CANDIDATES: usize = 8000;
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
-    /// Free text (BM25 over subject and description; Chinese works without word segmentation).
+    /// Free text: BM25F over the issue keys (×5), subject (×3), description
+    /// (×1), visible text custom fields (×0.7) and public notes (×0.5);
+    /// Chinese works without word segmentation. A word (or the whole query)
+    /// equal to a concept label also searches the concept's other labels
+    /// (`match.expanded`).
     pub q: Option<String>,
     /// Project key (e.g. "AUTH"), name, or alias.
     pub project: Option<String>,
@@ -78,6 +83,25 @@ pub struct SearchParams {
     /// {"field": "Estimate (h)", "op": "between", "value": [2, 8]}]}. Combined with the other filters by AND.
     #[schemars(with = "Option<FilterInput>")]
     pub filter: Option<serde_json::Value>,
+    /// Filter AST v2 (design 05 §3.2) over built-in fields (project, tracker,
+    /// priority, status, status_category, assignee, author, fixed_version,
+    /// is_private, start_date, due_date, created_at, updated_at,
+    /// estimated_hours, overdue) and custom fields (`cf:<id>`), e.g.
+    /// {"and": [{"field": "status_category", "op": "in", "value": ["todo", "doing"]},
+    /// {"field": "assignee", "op": "eq", "value": {"me": true}},
+    /// {"field": "due_date", "op": "within", "value": {"range": "next_n_days", "n": 7}}]}.
+    /// ANDed with the other parameters. Errors: `invalid_filter` with
+    /// `details.path` and `details.reason` (unknown_field, unknown_value,
+    /// too_complex, unsupported_op, invalid_value, invalid_shape,
+    /// project_scope_required, me_unavailable).
+    #[serde(rename = "where")]
+    #[schemars(with = "Option<filter::v2::WhereInput>")]
+    pub where_: Option<serde_json::Value>,
+    /// Order by up to 3 fields (then id): updated_at, created_at, due_date,
+    /// start_date, priority, status, key, estimated_hours, cf:<id>. Default:
+    /// updated_at desc without `q`, relevance with `q` (`rank` is still the
+    /// relevance position when `sort` is given).
+    pub sort: Option<Vec<filter::v2::SortInput>>,
     /// Max items, default 50, max 100.
     pub limit: Option<u32>,
     /// Opaque cursor from a previous `next_cursor`.
@@ -123,17 +147,28 @@ pub struct IssueBrief {
 /// Which fields matched, recomputed from the current text (design 03 §3.4 step 6).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct MatchInfo {
-    /// subject and/or description.
+    /// Of key, subject, description, cf_text (visible text custom fields),
+    /// notes (public notes), in that order.
     pub fields: Vec<String>,
-    /// primary: a full term matched; fallback: only single CJK characters or identifier parts.
+    /// primary: a full term matched (an expanded label's word counts);
+    /// fallback: only single CJK characters or identifier parts.
     pub strength: Strength,
+    /// Design 05 §3.9: concept labels added to the query that occur in
+    /// this issue's text (a hidden label shows as the concept's name).
+    /// Absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expanded: Vec<crate::concepts::Expansion>,
 }
 
 /// A snippet of the current text and its citation (design 03 §3.6).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchEvidence {
-    /// subject | description
+    /// subject | description | note (a public note; `note_id`). Keys and
+    /// custom field values match without a snippet.
     pub field: String,
+    /// The note the snippet is from (`field = note`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<Uuid>,
     /// current | rechecked (the index may still rank by older text; the snippet is from the current text).
     pub evidence_status: String,
     /// The cited text, verbatim: pass it unchanged as `quote`.
@@ -218,14 +253,13 @@ pub struct SearchResult {
     pub next_cursor: Option<String>,
     /// Some snippets were left out to keep the response small (the item list is still complete).
     pub evidence_truncated: bool,
-    /// Only with `overdue`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub meta: Option<SearchMeta>,
+    pub meta: SearchMeta,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMeta {
-    /// The date `overdue` compared with (R10, org time zone), YYYY-MM-DD.
+    /// The date `overdue` and relative dates were computed with (R10, org
+    /// time zone), YYYY-MM-DD.
     pub today: String,
 }
 
@@ -248,6 +282,14 @@ pub struct IssueDetail {
     pub children: Vec<IssueBrief>,
     pub start_date: Option<NaiveDate>,
     pub due_date: Option<NaiveDate>,
+    /// Decimal string such as "1.5" (design 05 §3.10.3); null when not set.
+    pub estimated_hours: Option<String>,
+    /// Contract 05 §3.5.4: hours of the time entries on this issue that the
+    /// caller can see (others' hidden entries are not counted), such as "6.00";
+    /// "0" when none. Absent when the caller cannot read time in the project
+    /// (no `view_time_entries`, module off) and always for agents (§4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spent_hours: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Pass back as `expected_lock_version` when updating (M1).
@@ -257,6 +299,17 @@ pub struct IssueDetail {
     /// Custom fields that apply to this issue (tracker and project) and that the
     /// caller may read, in display order; `value` is null when empty.
     pub custom_fields: Vec<CustomFieldValue>,
+    /// Contract 05 §3.4: the Triage state; null when the issue never
+    /// entered the inbox.
+    pub triage: Option<crate::triage::IssueTriage>,
+    /// Contract 05 §3.6.3: rule ids of open `accept_and_mark` marks (the
+    /// issue broke rules published after it was written); the next write
+    /// that passes the rules clears them. Empty when none.
+    pub form_rule_marks: Vec<String>,
+    /// Contract 05 §3.11.1: whether the caller watches this issue. People
+    /// only (agents never watch, §4.6); absent for agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<crate::notifications::WatchInfo>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -278,9 +331,40 @@ pub struct Candidate {
     pub matched: String,
 }
 
+/// A custom field as `resolve(kind: "custom_field")` describes it (design
+/// 03 §2.4): what a filter on it needs.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CustomFieldInfo {
+    pub id: i32,
+    pub name: String,
+    /// int | float | date | string | text | list | user | bool | link
+    #[serde(rename = "type")]
+    pub ftype: String,
+    /// Unit of the stored number (e.g. "hour"), when the field has one: send values in it.
+    pub unit: Option<String>,
+    /// Filter operators the type takes.
+    pub operators: Vec<&'static str>,
+    /// List fields: the options (filter by label; inactive ones still match old values).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<FieldOptionInfo>,
+    /// Pass it in filter conditions to fail with `field_definition_changed` instead of
+    /// silently filtering by a changed definition.
+    pub definition_version: i32,
+}
+
+#[derive(Debug, Serialize, JsonSchema, FromRow)]
+pub struct FieldOptionInfo {
+    pub id: Uuid,
+    pub label: String,
+    pub active: bool,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ResolveResult {
     pub candidates: Vec<Candidate>,
+    /// Only with `kind: "custom_field"`: the matching fields the caller may read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub custom_fields: Vec<CustomFieldInfo>,
     /// When nothing matched: valid values for the requested kind.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub valid_values: Vec<String>,
@@ -288,9 +372,10 @@ pub struct ResolveResult {
 
 // ---------------------------------------------------------------- resolve
 
-const KINDS: [&str; 4] = ["project", "tracker", "status", "principal"];
+const KINDS: [&str; 5] = ["project", "tracker", "status", "principal", "custom_field"];
 
-/// Name/alias lookup. `kind` = project | tracker | status | principal (user or group).
+/// Name/alias lookup. `kind` = project | tracker | status | principal (user
+/// or group) | custom_field (only with this kind).
 pub async fn resolve(
     app: &App,
     caller: AuthContext,
@@ -320,6 +405,9 @@ pub(crate) async fn resolve_in(
         .into());
     }
     let scope = db::load_scope(&mut *conn, caller).await?;
+    if kind == Some("custom_field") {
+        return resolve_custom_field(conn, caller, &scope, text.trim()).await;
+    }
     let visible_projects: Vec<Uuid> = scope.project_ids().collect();
     let t = text.trim();
     // Exact (case-insensitive) matches first; substring matches only if nothing exact.
@@ -359,6 +447,7 @@ pub(crate) async fn resolve_in(
         if !found.is_empty() {
             return Ok(ResolveResult {
                 candidates: found,
+                custom_fields: Vec::new(),
                 valid_values: Vec::new(),
             });
         }
@@ -386,6 +475,66 @@ pub(crate) async fn resolve_in(
     };
     Ok(ResolveResult {
         candidates: Vec::new(),
+        custom_fields: Vec::new(),
+        valid_values,
+    })
+}
+
+/// `resolve(kind: "custom_field")` (design 03 §7 step 11): exact name
+/// (case-insensitive) first, else substring; only fields the caller may
+/// read somewhere. Nothing → the readable field names as `valid_values`.
+async fn resolve_custom_field(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    scope: &ox_core::Scope,
+    text: &str,
+) -> Result<ResolveResult> {
+    let fields = filter::readable_fields(&mut *conn, caller, scope).await?;
+    let t = text.to_lowercase();
+    let mut hits: Vec<&crate::custom_fields::FieldRow> = fields
+        .iter()
+        .map(|(f, _)| f)
+        .filter(|f| f.name.to_lowercase() == t)
+        .collect();
+    if hits.is_empty() && !t.is_empty() {
+        hits = fields
+            .iter()
+            .map(|(f, _)| f)
+            .filter(|f| f.name.to_lowercase().contains(&t))
+            .take(20)
+            .collect();
+    }
+    let mut out = Vec::with_capacity(hits.len());
+    for f in hits {
+        let ty = f.field_type()?;
+        let options: Vec<FieldOptionInfo> = if f.ftype == "list" {
+            sqlx::query_as(
+                "SELECT id, label, active FROM field_options WHERE field_id = $1 ORDER BY position, label",
+            )
+            .bind(f.id)
+            .fetch_all(&mut *conn)
+            .await?
+        } else {
+            Vec::new()
+        };
+        out.push(CustomFieldInfo {
+            id: f.id,
+            name: f.name.clone(),
+            ftype: f.ftype.clone(),
+            unit: f.unit.clone(),
+            operators: filter::operators(ty),
+            options,
+            definition_version: f.definition_version,
+        });
+    }
+    let valid_values = if out.is_empty() {
+        fields.iter().map(|(f, _)| f.name.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    Ok(ResolveResult {
+        candidates: Vec::new(),
+        custom_fields: out,
         valid_values,
     })
 }
@@ -447,6 +596,7 @@ pub async fn resolve_assignee(
     };
     Ok(ResolveResult {
         candidates,
+        custom_fields: Vec::new(),
         valid_values,
     })
 }
@@ -696,18 +846,82 @@ fn item_from_row(r: &PgRow, sel: &[&str]) -> Result<SearchItem> {
     Ok(it)
 }
 
-/// One text field of a candidate: which, the raw text, its code points and
+/// Where a candidate's text comes from (design 05 §3.9 index fields).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Src {
+    Key,
+    Subject,
+    Description,
+    Cf,
+    Note(Uuid),
+}
+
+impl Src {
+    /// The `match.fields` name.
+    fn match_name(self) -> &'static str {
+        match self {
+            Src::Key => "key",
+            Src::Subject => "subject",
+            Src::Description => "description",
+            Src::Cf => "cf_text",
+            Src::Note(_) => "notes",
+        }
+    }
+
+    /// The citation source unit (03 §3.2); keys and custom field values
+    /// have none yet, so they never give a snippet.
+    fn source(self, issue_id: Uuid) -> Option<(Source, &'static str, Option<Uuid>)> {
+        match self {
+            Src::Subject => Some((
+                Source::IssueField {
+                    issue_id,
+                    field: TextField::Subject,
+                },
+                "subject",
+                None,
+            )),
+            Src::Description => Some((
+                Source::IssueField {
+                    issue_id,
+                    field: TextField::Description,
+                },
+                "description",
+                None,
+            )),
+            Src::Note(note_id) => Some((
+                Source::IssueNote { issue_id, note_id },
+                "note",
+                Some(note_id),
+            )),
+            Src::Key | Src::Cf => None,
+        }
+    }
+}
+
+/// `match.fields` in the order of the §3.9 table.
+const MATCH_ORDER: [&str; 5] = ["key", "subject", "description", "cf_text", "notes"];
+
+/// One text of a candidate: where from, the raw text, its code points and
 /// what the query matches in it.
-type FieldText = (TextField, String, CpText, Option<FieldMatch>);
+type FieldText = (Src, String, CpText, Option<FieldMatch>);
 
 /// The current text of one candidate.
 struct Texts {
     fields: Vec<FieldText>,
+    /// The index document's `search_rev` equals the current text's (03 §3.4
+    /// step 4): the index matched exactly this text.
+    current: bool,
 }
 
 impl Texts {
     fn matched(&self) -> bool {
         self.fields.iter().any(|f| f.3.is_some())
+    }
+
+    /// Still a hit: the index saw this very text (`search_rev` equal, the
+    /// re-match can be skipped), or the current text matches again.
+    fn survives(&self) -> bool {
+        self.current || self.matched()
     }
 }
 
@@ -721,12 +935,41 @@ const FULL_WINDOWS_PER_FIELD: usize = 2;
 pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<SearchResult> {
     // Consistency first, outside the read transaction (no connection held
     // while waiting; 03 §4.4).
-    let waited = consistency_wait(app, caller, &p).await?;
+    let waited = consistency_wait(app, caller, &p).await;
+    {
+        use crate::metrics::Outcome;
+        let ms = std::time::Duration::from_millis;
+        match &waited {
+            Ok(Some(Wait::Satisfied { waited_ms })) => app
+                .index
+                .metrics
+                .consistency(Outcome::Satisfied, Some(ms(*waited_ms))),
+            Ok(Some(Wait::Lagging { waited_ms })) => app
+                .index
+                .metrics
+                .consistency(Outcome::Lagging, Some(ms(*waited_ms))),
+            Err(e)
+                if e.downcast_ref::<ApiError>()
+                    .is_some_and(|a| a.code == ErrorCode::ConsistencyEpochChanged) =>
+            {
+                app.index.metrics.consistency(Outcome::EpochChanged, None)
+            }
+            _ => {}
+        }
+    }
+    let waited = waited?;
     if let Some(Wait::Lagging { waited_ms }) = waited {
         // An invalid request is an input error, not "wait and retry": run it
         // once (results dropped) so its errors come back first.
         let mut tx = read_tx(app).await?;
-        search_in(&mut tx, app, caller, p.clone()).await?;
+        let today = filter::v2::clock(&mut tx).await?.today;
+        // An index that cannot serve yet is not an input error: still lagging.
+        if let Err(e) = search_in(&mut tx, app, caller, p.clone()).await
+            && e.downcast_ref::<ApiError>()
+                .is_none_or(|a| a.code != ErrorCode::SearchUnavailable)
+        {
+            return Err(e);
+        }
         tx.commit().await?;
         if p.on_lag.as_deref() == Some("error") {
             return Err(ApiError::new(
@@ -749,7 +992,9 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
             items: Vec::new(),
             next_cursor: None,
             evidence_truncated: false,
-            meta: None,
+            meta: SearchMeta {
+                today: today.to_string(),
+            },
         });
     }
     let mut tx = read_tx(app).await?;
@@ -767,6 +1012,158 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
 }
 
 const LAG_RETRY_MS: u64 = 500;
+
+/// The SQL work budget of one request (03 §5.4 item 4, Q-S7 default 2 s).
+pub const QUERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+/// A timed-out S2 switches to S0 only with at least this much left.
+const SWITCH_MIN: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Tests: override the budget (ms; 0 = default), slow S2 down, and see the
+/// shape the last filter search used `(shape, switched)`.
+#[cfg(feature = "test-support")]
+pub static BUDGET_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+pub static S2_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+pub static LAST_SHAPE: std::sync::Mutex<Option<(filter::Shape, bool)>> =
+    std::sync::Mutex::new(None);
+
+struct Budget {
+    end: std::time::Instant,
+    total: std::time::Duration,
+}
+
+impl Budget {
+    fn start() -> Budget {
+        #[cfg(feature = "test-support")]
+        let total = match BUDGET_MS.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => QUERY_BUDGET,
+            ms => std::time::Duration::from_millis(ms),
+        };
+        #[cfg(not(feature = "test-support"))]
+        let total = QUERY_BUDGET;
+        Budget {
+            end: std::time::Instant::now() + total,
+            total,
+        }
+    }
+
+    fn remaining(&self) -> std::time::Duration {
+        self.end
+            .saturating_duration_since(std::time::Instant::now())
+    }
+
+    /// Runs one statement under the remaining budget inside a savepoint
+    /// (the read transaction stays usable after a cancel). `None`: the
+    /// budget ran out (57014), nothing left running.
+    async fn run(
+        &self,
+        conn: &mut PgConnection,
+        shape: filter::Shape,
+        mut qb: QueryBuilder<Postgres>,
+        cap: Option<std::time::Duration>,
+    ) -> Result<Option<Vec<PgRow>>> {
+        let mut left = self.remaining();
+        if let Some(c) = cap {
+            left = left.min(c);
+        }
+        let left = left.as_millis() as u64;
+        if left == 0 {
+            return Ok(None);
+        }
+        // The caller's own timeout comes back afterwards, not the session
+        // default (ROLLBACK TO restores it by itself; RELEASE keeps ours).
+        let before: String = sqlx::query_scalar("SELECT current_setting('statement_timeout')")
+            .fetch_one(&mut *conn)
+            .await?;
+        sqlx::query("SAVEPOINT ox_budget")
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SET LOCAL statement_timeout = {left}"
+        )))
+        .execute(&mut *conn)
+        .await?;
+        let r = async {
+            #[cfg(feature = "test-support")]
+            {
+                let d = S2_DELAY_MS.load(std::sync::atomic::Ordering::SeqCst);
+                if d > 0 && shape == filter::Shape::S2 {
+                    sqlx::query("SELECT pg_sleep($1)")
+                        .bind(d as f64 / 1000.0)
+                        .execute(&mut *conn)
+                        .await?;
+                }
+            }
+            let _ = shape;
+            qb.build().fetch_all(&mut *conn).await
+        }
+        .await;
+        match r {
+            Ok(rows) => {
+                sqlx::query("RELEASE SAVEPOINT ox_budget")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+                    .bind(&before)
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(Some(rows))
+            }
+            Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("57014") => {
+                sqlx::query("ROLLBACK TO SAVEPOINT ox_budget")
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+fn query_timeout(b: &Budget) -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::QueryTimeout,
+        "the field conditions are too broad to finish in time; narrow them",
+    )
+    .with_details(serde_json::json!({
+        "deadline_ms": b.total.as_millis() as u64,
+        "suggestions": ["add_project_filter", "narrow_date_range", "add_text_query"],
+    }))
+    .into()
+}
+
+/// 03 §5.4 item 2: probe each condition up to T + 1 index entries; any
+/// condition at or below T (an exact count) → S0, all above → S2. A probe
+/// that runs out of budget keeps S0 (the main query then decides).
+async fn choose_shape(
+    conn: &mut PgConnection,
+    conds: &[(ox_core::filter::Field, ox_core::filter::Test)],
+    budget: &Budget,
+) -> Result<filter::Shape> {
+    for (field, test) in conds {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("");
+        filter::push_probe(&mut qb, *field, test);
+        let Some(rows) = budget.run(&mut *conn, filter::Shape::S0, qb, None).await? else {
+            return Ok(filter::Shape::S0);
+        };
+        let n: i64 = rows.first().map(|r| r.try_get(0)).transpose()?.unwrap_or(0);
+        if n < filter::PROBE_CAP {
+            return Ok(filter::Shape::S0);
+        }
+    }
+    Ok(filter::Shape::S2)
+}
+
+/// No generation can serve yet, or the sync loop stopped (03 §4.11).
+fn search_unavailable() -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::SearchUnavailable,
+        "the search index is not available right now; try again later",
+    )
+    .with_retry_after(5000)
+    .into()
+}
 const MAX_WAIT_MS: u32 = 2000;
 const DEFAULT_WAIT_MS: u32 = 1000;
 
@@ -842,11 +1239,37 @@ async fn consistency_wait(
     ))
 }
 
+/// What a saved view adds to a search (design 05 §3.3): conditions already
+/// resolved, a sort replacing `p.sort`, and what the cursor is bound to.
+#[derive(Default)]
+pub(crate) struct Extra {
+    /// The view's own conditions (its `where`, `override.where_and`): ANDed
+    /// with the request's, and looked at by probing (03 §5.4) like `where`.
+    pub chosen: Vec<Filter>,
+    /// Scope conditions (project, lane, swimlane, done window): ANDed, not probed.
+    pub fixed: Vec<Filter>,
+    /// Replaces `p.sort`: the ORDER BY columns and their normalized form.
+    pub sort: Option<(Vec<filter::v2::SortCol>, serde_json::Value)>,
+    /// Bound into the cursor's query hash (`None`: nothing added).
+    pub hash: Option<serde_json::Value>,
+}
+
 async fn search_in(
     conn: &mut PgConnection,
     app: &App,
     caller: AuthContext,
     p: SearchParams,
+) -> Result<SearchResult> {
+    search_with(conn, app, caller, p, Extra::default()).await
+}
+
+/// [`search_in`] with a view's additions, in the caller's transaction.
+pub(crate) async fn search_with(
+    conn: &mut PgConnection,
+    app: &App,
+    caller: AuthContext,
+    p: SearchParams,
+    extra: Extra,
 ) -> Result<SearchResult> {
     let scope = db::load_scope(&mut *conn, caller).await?;
     let visible = scope.predicate();
@@ -880,39 +1303,24 @@ async fn search_in(
         }))
         .into());
     }
-    // The cursor is bound to who asked, what was asked and the order (§4.5).
-    let qhash = cursor::query_hash(&serde_json::json!({
-        "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
-        "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
-        "version": &p.version, "overdue": &p.overdue,
-        "order": if text.is_some() { "rank" } else { "updated_desc" },
-    }));
-    let pos = match p.cursor.as_deref() {
+    // The cursor's owner and integrity first (another person's cursor is
+    // `invalid_cursor` before any parameter is looked at); its query below.
+    let opened = match p.cursor.as_deref() {
         None => None,
-        Some(c) => Some(cursor::decode(&app.pool, c, caller.principal_id(), &qhash).await?),
+        Some(c) => Some(cursor::unseal_position(&app.pool, c, caller.principal_id()).await?),
     };
-    let after: Option<(DateTime<Utc>, Uuid)> = match (&pos, text) {
-        (Some(Position::Keyset { t, i }), None) => Some((*t, *i)),
-        (None, _) | (Some(Position::Rank { .. }), Some(_)) => None,
-        _ => {
-            return Err(api(
-                ErrorCode::InvalidCursor,
-                "invalid cursor; search again without it",
-            ));
-        }
-    };
-    let offset: i64 = match pos {
-        Some(Position::Rank { o }) => o as i64,
-        _ => 0,
-    };
-
-    let mut filters: Vec<Pred> = Vec::new();
-    let mut sql_extra: Vec<(&str, Uuid)> = Vec::new();
+    // design 05 §3.2: the legacy parameters become v2 conditions, ANDed with
+    // the v1 `filter` and `where`, compiled by the one filter compiler.
+    let clock = filter::v2::clock(&mut *conn).await?;
+    let mut legacy: Vec<Filter> = Vec::new();
     let mut project_id = None;
     if let Some(v) = p.project.as_deref() {
         let id = resolve_one(&mut *conn, caller, "project", v).await?;
         project_id = Some(id);
-        filters.push(Pred::ProjectIs(id));
+        legacy.push(filter::builtin_cond(
+            filter::PROJECT_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
     if let Some(v) = p.version.as_deref() {
         // §17.15: names and `next` exist only inside one project; ids do not.
@@ -932,44 +1340,75 @@ async fn search_in(
                 crate::versions::resolve_for_search(&mut *conn, project, v).await?
             }
         };
-        sql_extra.push(("i.fixed_version_id = ", id));
+        legacy.push(filter::builtin_cond(
+            filter::VERSION_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
-    let today = match p.overdue {
-        Some(true) => Some(crate::versions::today(&mut *conn).await?),
-        _ => None,
-    };
+    // §17.15 overdue: computed per query, never indexed. `false` filters nothing.
+    if p.overdue == Some(true) {
+        legacy.push(filter::v2::overdue(clock.today, true)?);
+    }
     if let Some(v) = p.tracker.as_deref() {
-        filters.push(Pred::TrackerIn(vec![
-            resolve_one(&mut *conn, caller, "tracker", v).await?,
-        ]));
+        let id = resolve_one(&mut *conn, caller, "tracker", v).await?;
+        legacy.push(filter::builtin_cond(
+            filter::TRACKER_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
     if let Some(v) = p.status.as_deref() {
-        sql_extra.push((
-            "i.status_id = ",
-            resolve_one(&mut *conn, caller, "status", v).await?,
-        ));
+        let id = resolve_one(&mut *conn, caller, "status", v).await?;
+        legacy.push(filter::builtin_cond(
+            filter::STATUS_FIELD,
+            Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+        )?);
     }
-    let categories: Option<Vec<String>> = match p.status_category.as_deref() {
+    let categories: Option<Vec<&str>> = match p.status_category.as_deref() {
         None => None,
-        Some("open") => Some(vec!["todo".into(), "doing".into()]),
-        Some(c @ ("todo" | "doing" | "done")) => Some(vec![c.into()]),
+        Some("open") => Some(vec!["todo", "doing"]),
+        Some(c @ ("todo" | "doing" | "done")) => Some(vec![c]),
         Some(other) => {
             return Err(user_err(format!(
                 "status_category {other:?}: use open, todo, doing or done"
             )));
         }
     };
-    let mut assignee_none = false;
+    if let Some(c) = categories {
+        let test = match c.as_slice() {
+            [one] => Test::Cmp(Cmp::Eq, FValue::Text(one.to_string())),
+            _ => Test::In(c.iter().map(|x| FValue::Text(x.to_string())).collect()),
+        };
+        legacy.push(filter::builtin_cond(filter::CATEGORY_FIELD, test)?);
+    }
     match p.assignee.as_deref() {
         None => {}
-        Some("none") => assignee_none = true,
+        Some("none") => legacy.push(filter::builtin_cond(filter::ASSIGNEE_FIELD, Test::IsNull)?),
+        // `me` as in v2 (Redmine): me and my groups.
         Some("me") => match caller.user_id() {
-            Some(me) => filters.push(Pred::AssigneeIn(vec![me])),
+            Some(_) => {
+                let mine: Vec<FValue> = scope
+                    .principal_ids
+                    .iter()
+                    .copied()
+                    .map(FValue::Ref)
+                    .collect();
+                legacy.push(filter::builtin_cond(
+                    filter::ASSIGNEE_FIELD,
+                    match mine.as_slice() {
+                        [one] => Test::Cmp(Cmp::Eq, one.clone()),
+                        _ => Test::In(mine),
+                    },
+                )?);
+            }
             None => return Err(user_err("assignee=me needs an authenticated caller")),
         },
-        Some(v) => filters.push(Pred::AssigneeIn(vec![
-            resolve_one(&mut *conn, caller, "principal", v).await?,
-        ])),
+        Some(v) => {
+            let id = resolve_one(&mut *conn, caller, "principal", v).await?;
+            legacy.push(filter::builtin_cond(
+                filter::ASSIGNEE_FIELD,
+                Test::Cmp(Cmp::Eq, FValue::Ref(id)),
+            )?);
+        }
     }
 
     let custom = match &p.filter {
@@ -978,36 +1417,112 @@ async fn search_in(
             Some(filter::resolve(&mut *conn, caller, &scope, &filter::parse_input(v)?).await?)
         }
     };
-
-    let mut all = vec![visible];
-    all.extend(filters);
-    let pred = Pred::And(all).simplify();
-
-    let push_where = |qb: &mut QueryBuilder<Postgres>| {
-        push_pred(qb, "i", &pred);
-        for (frag, id) in &sql_extra {
-            qb.push(" AND ").push(*frag).push_bind(*id);
-        }
-        if let Some(c) = &categories {
-            qb.push(" AND s.category = ANY(")
-                .push_bind(c.clone())
-                .push(")");
-        }
-        if assignee_none {
-            qb.push(" AND i.assigned_to_id IS NULL");
-        }
-        // §17.15 overdue: computed per query, never indexed.
-        if let Some(t) = today {
-            qb.push(" AND i.due_date < ")
-                .push_bind(t)
-                .push(" AND s.category <> 'done'");
-        }
-        // Custom fields live only in PostgreSQL.
-        if let Some(f) = &custom {
-            qb.push(" AND ");
-            filter::push_filter(qb, "i", f);
+    let wherev2 = match &p.where_ {
+        None => None,
+        Some(v) => {
+            Some(filter::v2::resolve(&mut *conn, caller, &scope, clock, v, project_id).await?)
         }
     };
+    let sort = match (extra.sort, &p.sort) {
+        (Some(s), _) => Some(s),
+        (None, None) => None,
+        (None, Some(keys)) => {
+            let fields = if keys.iter().any(|k| k.field.trim().starts_with("cf:")) {
+                filter::readable_fields(&mut *conn, caller, &scope).await?
+            } else {
+                Vec::new()
+            };
+            Some(filter::v2::resolve_sort(&fields, keys)?)
+        }
+    };
+    let sort_cols: &[filter::v2::SortCol] = sort.as_ref().map(|s| s.0.as_slice()).unwrap_or(&[]);
+
+    // The cursor is bound to who asked, what was asked and the order (§4.5).
+    let order = match (text.is_some(), sort.is_some()) {
+        (_, true) => "sort",
+        (true, false) => "rank",
+        (false, false) => "updated_desc",
+    };
+    let mut hashed = serde_json::json!({
+        "q": text, "project": &p.project, "tracker": &p.tracker, "status": &p.status,
+        "status_category": &p.status_category, "assignee": &p.assignee, "filter": &p.filter,
+        "version": &p.version, "overdue": &p.overdue,
+        "where": wherev2.as_ref().map(|w| &w.normalized),
+        "sort": sort.as_ref().map(|s| &s.1),
+        "order": order,
+    });
+    if let Some(h) = extra.hash {
+        hashed["extra"] = h;
+    }
+    let qhash = cursor::query_hash(&hashed);
+    let pos = match opened {
+        None => None,
+        Some((h, _)) if h != qhash => return Err(cursor::mismatch()),
+        Some((_, pos)) => Some(pos),
+    };
+    let mut after: Option<(DateTime<Utc>, Uuid)> = None;
+    let mut after_sort: Option<(Vec<Option<String>>, Uuid)> = None;
+    let mut offset: i64 = 0;
+    match (pos, text.is_some(), sort.is_some()) {
+        (None, _, _) => {}
+        (Some(Position::Keyset { t, i }), false, false) => after = Some((t, i)),
+        (Some(Position::Sort { k, i }), false, true) if k.len() == sort_cols.len() => {
+            after_sort = Some((k, i))
+        }
+        (Some(Position::Rank { o }), true, _) => offset = o as i64,
+        _ => {
+            return Err(api(
+                ErrorCode::InvalidCursor,
+                "invalid cursor; search again without it",
+            ));
+        }
+    }
+
+    // The user's filters (probing, 03 §5.4, looks at these only).
+    let mut chosen: Vec<Filter> = Vec::new();
+    chosen.extend(custom);
+    chosen.extend(wherev2.map(|w| w.filter));
+    chosen.extend(extra.chosen);
+    let probe = match chosen.as_slice() {
+        [] => None,
+        [one] => filter::probe_conditions(one),
+        many => filter::probe_conditions(&Filter::And(
+            many.iter()
+                .flat_map(|f| match f {
+                    Filter::And(ps) => ps.clone(),
+                    other => vec![other.clone()],
+                })
+                .collect(),
+        )),
+    };
+    let mut parts = legacy;
+    parts.extend(extra.fixed);
+    parts.extend(chosen);
+    let combined = match parts.len() {
+        0 => None,
+        1 => parts.pop(),
+        _ => Some(Filter::And(parts)),
+    };
+    // §17.15 fast fields and the visibility-style conditions narrow the
+    // index candidates; SQL still decides.
+    let ix = combined
+        .as_ref()
+        .map(filter::index_prefilter)
+        .unwrap_or(IxFilter::All);
+    let mut all = vec![visible];
+    if let Some(f) = &combined {
+        all.push(filter::pred_prefilter(f));
+    }
+    let pred = Pred::And(all).simplify();
+
+    let push_where_shaped = |qb: &mut QueryBuilder<Postgres>, shape: filter::Shape| {
+        push_pred(qb, "i", &pred);
+        if let Some(f) = &combined {
+            qb.push(" AND ");
+            filter::push_filter_shaped(qb, "i", f, shape);
+        }
+    };
+    let push_where = |qb: &mut QueryBuilder<Postgres>| push_where_shaped(qb, filter::Shape::S0);
     // Only the requested columns (§3.8 "fields 下推"), plus what identifies,
     // orders and authorizes a row.
     let mut select =
@@ -1018,34 +1533,77 @@ async fn search_in(
             select.push_str(c);
         }
     }
-    select.push_str(SEARCH_FROM);
+    let select_qb = || {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
+        for (n, c) in sort_cols.iter().enumerate() {
+            qb.push(", (");
+            c.push(&mut qb);
+            qb.push(format!(")::text AS sk{n}"));
+        }
+        qb.push(SEARCH_FROM);
+        qb
+    };
 
     let mut truncated = false;
     let mut checked: HashMap<Uuid, Texts> = HashMap::new();
+    // Design 05 §3.9: the concept labels added to `q` (current layout only).
+    let mut expansions: Vec<crate::concepts::Expansion> = Vec::new();
+    // With `q` and `sort`: each item's relevance rank among all matches.
+    let mut rank_of: HashMap<Uuid, u32> = HashMap::new();
     let (rows, more): (Vec<PgRow>, bool) = match (text, &terms) {
-        (Some(q), Some(terms)) => {
+        (Some(q), Some(_)) => {
             // Free text: rank in the index (already filtered by visibility +
             // the index-side filters), re-check every candidate in SQL — the
             // index may lag the database, and some filters exist only in SQL —
             // then compare the current text in batches (design 03 §3.4): a
             // candidate whose text no longer matches is dropped whatever
             // `explain` says. Grow the candidate list until this page and one
-            // lookahead item survive. Best effort: each round asks the index
-            // again, so a concurrent index update can shift the ranking.
-            let need = (offset + limit + 1) as usize;
+            // lookahead item survive (with `sort`: until every match is
+            // known, since any of them may sort first). Best effort: each
+            // round asks the index again, so a concurrent index update can
+            // shift the ranking.
+            let need = if sort.is_some() {
+                usize::MAX
+            } else {
+                (offset + limit + 1) as usize
+            };
             let batch = 2 * limit as usize;
             let mut k = SEARCH_CANDIDATES;
-            let survivors = loop {
-                let hits = app.index.search(q, &pred, k).map_err(|e| {
-                    tracing::error!("search index failed: {e:#}");
-                    api(
-                        ErrorCode::SearchUnavailable,
-                        "the search index is not available right now; try again later",
+            // One view for the whole search (03 §4.4): the one a satisfied
+            // token was checked against, or newer; never switched half-way.
+            let view = match app.index.view() {
+                Some(v) if !app.index.metrics.sync_stalled() => v,
+                _ => return Err(search_unavailable()),
+            };
+            // A legacy generation (before M1.7, still serving until its
+            // rebuild switches) is queried and re-checked the old way:
+            // subject and description only, no expansion (03 §4.8).
+            let layout = view.layout();
+            let (eterms, keys) = match layout {
+                Layout::Current => {
+                    expansions = crate::concepts::expansions(&mut *conn, q).await?;
+                    let labels: Vec<String> = expansions.iter().map(|e| e.added.clone()).collect();
+                    (
+                        Terms::with_expansions(q, &labels, crate::search::EXPANSION_WEIGHT),
+                        crate::search::key_terms(q),
                     )
-                })?;
+                }
+                Layout::Legacy => (Terms::new(q), Vec::new()),
+            };
+            let terms = &eterms;
+            let weighted = terms.weighted();
+            let survivors = loop {
+                let hits = view
+                    .search_weighted(&weighted, &keys, &pred, &ix, k)
+                    .map_err(|e| {
+                        tracing::error!("search index failed: {e:#}");
+                        search_unavailable()
+                    })?;
                 let exhausted = hits.len() < k;
                 let score_of: HashMap<Uuid, f32> =
                     hits.iter().map(|h| (h.issue_id, h.score)).collect();
+                let rev_of: HashMap<Uuid, Option<[u8; 32]>> =
+                    hits.iter().map(|h| (h.issue_id, h.search_rev)).collect();
                 let ids: Vec<Uuid> = score_of.keys().copied().collect();
                 let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT i.id, k.key");
                 qb.push(SEARCH_FROM);
@@ -1075,25 +1633,34 @@ async fn search_in(
                         .bind(&todo)
                         .fetch_all(&mut *conn)
                         .await?;
+                        // The other indexed sources as they are now, with
+                        // the index's own rules (public notes, visible
+                        // text fields that apply): a retracted or redacted
+                        // note, a hidden field drop out here even before
+                        // the index sees the change (T-M1-62, 63).
+                        let mut extras = match layout {
+                            Layout::Current => {
+                                crate::search::load_extras(&mut *conn, &todo).await?
+                            }
+                            Layout::Legacy => HashMap::new(),
+                        };
                         for (id, subject, description) in texts {
-                            let fields = [
-                                (TextField::Subject, subject),
-                                (TextField::Description, description),
-                            ]
-                            .into_iter()
-                            .map(|(f, t)| {
-                                let cp = CpText::new(&t);
-                                let m = evidence::match_field(terms, &t, &cp);
-                                (f, t, cp, m)
-                            })
-                            .collect();
-                            checked.insert(id, Texts { fields });
+                            let x = extras.remove(&id).unwrap_or_default();
+                            let current = rev_of.get(&id).copied().flatten()
+                                == Some(crate::search::doc_rev(layout, &subject, &description, &x));
+                            checked.insert(
+                                id,
+                                Texts {
+                                    fields: candidate_texts(terms, &keys, subject, description, x),
+                                    current,
+                                },
+                            );
                         }
                     }
                     survivors.extend(
                         ranked[i..end]
                             .iter()
-                            .filter(|r| checked.get(&r.0).is_some_and(Texts::matched))
+                            .filter(|r| checked.get(&r.0).is_some_and(Texts::survives))
                             .map(|r| r.0),
                     );
                     i = end;
@@ -1107,47 +1674,126 @@ async fn search_in(
                 }
                 k = (k * 4).min(MAX_SEARCH_CANDIDATES);
             };
-            let more = survivors.len() as i64 > offset + limit;
-            let page: Vec<Uuid> = survivors
-                .into_iter()
-                .skip(offset as usize)
-                .take(limit as usize)
-                .collect();
-            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
-            push_where(&mut qb);
-            qb.push(" AND i.id = ANY(")
-                .push_bind(page.clone())
-                .push(")");
-            let fetched = qb.build().fetch_all(&mut *conn).await?;
-            let mut by_id: HashMap<Uuid, PgRow> = HashMap::new();
-            for r in fetched {
-                by_id.insert(r.try_get("id")?, r);
+            if sort.is_some() {
+                // Every match is known: order them by the sort keys in SQL
+                // (rank stays the relevance position).
+                for (n, id) in survivors.iter().enumerate() {
+                    rank_of.insert(*id, (n + 1) as u32);
+                }
+                let mut qb = select_qb();
+                push_where(&mut qb);
+                qb.push(" AND i.id = ANY(").push_bind(survivors).push(")");
+                push_order(&mut qb, sort_cols);
+                qb.push(" OFFSET ")
+                    .push_bind(offset)
+                    .push(" LIMIT ")
+                    .push_bind(limit + 1);
+                let mut rows = qb.build().fetch_all(&mut *conn).await?;
+                let more = rows.len() as i64 > limit;
+                rows.truncate(limit as usize);
+                (rows, more)
+            } else {
+                let more = survivors.len() as i64 > offset + limit;
+                let page: Vec<Uuid> = survivors
+                    .into_iter()
+                    .skip(offset as usize)
+                    .take(limit as usize)
+                    .collect();
+                let mut qb = select_qb();
+                push_where(&mut qb);
+                qb.push(" AND i.id = ANY(")
+                    .push_bind(page.clone())
+                    .push(")");
+                let fetched = qb.build().fetch_all(&mut *conn).await?;
+                let mut by_id: HashMap<Uuid, PgRow> = HashMap::new();
+                for r in fetched {
+                    by_id.insert(r.try_get("id")?, r);
+                }
+                (
+                    page.iter().filter_map(|id| by_id.remove(id)).collect(),
+                    more,
+                )
             }
-            (
-                page.iter().filter_map(|id| by_id.remove(id)).collect(),
-                more,
-            )
         }
         _ => {
-            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(select.as_str());
-            push_where(&mut qb);
-            // Keyset: live paging, newest first (§4.5).
-            if let Some((t, id)) = after {
-                qb.push(" AND (i.updated_at, i.id) < (")
-                    .push_bind(t)
-                    .push(", ")
-                    .push_bind(id)
-                    .push(")");
+            // 03 §5.4: one work budget for probes, the first shape and at
+            // most one switch; out of budget → query_timeout, no partial page.
+            let deadline = Budget::start();
+            let mut shape = match probe {
+                Some(conds) => choose_shape(&mut *conn, &conds, &deadline).await?,
+                None => filter::Shape::S0,
+            };
+            let mut switched = false;
+            let mut rows = loop {
+                let mut qb = select_qb();
+                push_where_shaped(&mut qb, shape);
+                if sort.is_some() {
+                    if let Some((k, id)) = &after_sort {
+                        push_after(&mut qb, sort_cols, k, *id);
+                    }
+                    push_order(&mut qb, sort_cols);
+                    qb.push(" LIMIT ").push_bind(limit + 1);
+                } else {
+                    // Keyset: live paging, newest first (§4.5).
+                    if let Some((t, id)) = after {
+                        qb.push(" AND (i.updated_at, i.id) < (")
+                            .push_bind(t)
+                            .push(", ")
+                            .push_bind(id)
+                            .push(")");
+                    }
+                    qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
+                        .push_bind(limit + 1);
+                }
+                // A first S2 gets 60% of what is left, so a switch to S0
+                // still has budget (03 §5.4: no fresh budget after it).
+                let cap = (shape == filter::Shape::S2 && !switched)
+                    .then(|| deadline.remaining().mul_f32(0.6));
+                match deadline.run(&mut *conn, shape, qb, cap).await? {
+                    Some(rows) => break rows,
+                    // S2 ran out: switch once to S0 if enough budget is left.
+                    None if shape == filter::Shape::S2
+                        && !switched
+                        && deadline.remaining() >= SWITCH_MIN =>
+                    {
+                        shape = filter::Shape::S0;
+                        switched = true;
+                    }
+                    None => return Err(query_timeout(&deadline)),
+                }
+            };
+            #[cfg(feature = "test-support")]
+            if let Ok(mut l) = LAST_SHAPE.lock() {
+                *l = Some((shape, switched));
             }
-            qb.push(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ")
-                .push_bind(limit + 1);
-            let mut rows = qb.build().fetch_all(&mut *conn).await?;
             let more = rows.len() as i64 > limit;
             rows.truncate(limit as usize);
             (rows, more)
         }
     };
 
+    // Per expansion, its label's full terms that the query itself lacks:
+    // an item shows the expansion when one of them matched in its text.
+    let expanded_terms: Vec<(crate::concepts::Expansion, Vec<String>)> = match text {
+        Some(q) if !expansions.is_empty() => {
+            let own: HashSet<String> = crate::search::query_terms(q)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect();
+            expansions
+                .iter()
+                .map(|e| {
+                    let ts = crate::search::query_terms(&e.added)
+                        .into_iter()
+                        .filter(|(t, w)| *w >= 1.0 && !own.contains(t))
+                        .map(|(t, _)| t)
+                        .collect();
+                    (e.clone(), ts)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     let mut items = Vec::with_capacity(rows.len());
     let mut cf_roles: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
     for (n, r) in rows.iter().enumerate() {
@@ -1174,16 +1820,45 @@ async fn search_in(
             );
         }
         if text.is_some() {
-            it.rank = Some((offset as usize + n + 1) as u32);
+            it.rank = Some(
+                rank_of
+                    .get(&it.id)
+                    .copied()
+                    .unwrap_or((offset as usize + n + 1) as u32),
+            );
             if let Some(t) = checked.get(&it.id) {
                 let matched: Vec<&FieldText> = t.fields.iter().filter(|f| f.3.is_some()).collect();
+                let seen: HashSet<&str> = matched
+                    .iter()
+                    .filter_map(|f| f.3.as_ref())
+                    .flat_map(|m| m.terms())
+                    .collect();
                 it.matched = Some(MatchInfo {
-                    fields: matched.iter().map(|f| f.0.as_str().to_string()).collect(),
+                    fields: MATCH_ORDER
+                        .iter()
+                        .filter(|n| matched.iter().any(|f| f.0.match_name() == **n))
+                        .map(|n| n.to_string())
+                        .collect(),
                     strength: matched
                         .iter()
                         .filter_map(|f| f.3.as_ref().map(|m| m.strength))
                         .max()
                         .unwrap_or(Strength::Fallback),
+                    expanded: expanded_terms
+                        .iter()
+                        .filter(|(_, ts)| ts.iter().any(|t| seen.contains(t.as_str())))
+                        .map(|(e, _)| e.clone())
+                        // Hidden labels show as the concept's name: one
+                        // entry per distinct (from, via, label).
+                        .fold(Vec::new(), |mut acc: Vec<crate::concepts::Expansion>, e| {
+                            if !acc
+                                .iter()
+                                .any(|x| x.from == e.from && x.via == e.via && x.label == e.label)
+                            {
+                                acc.push(e);
+                            }
+                            acc
+                        }),
                 });
             }
         }
@@ -1197,6 +1872,20 @@ async fn search_in(
     };
 
     let next_cursor = match (more, text, rows.last()) {
+        (true, None, Some(last)) if sort.is_some() => Some(
+            cursor::encode(
+                &app.pool,
+                caller.principal_id(),
+                &qhash,
+                Position::Sort {
+                    k: (0..sort_cols.len())
+                        .map(|n| last.try_get::<Option<String>, _>(format!("sk{n}").as_str()))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    i: last.try_get("id")?,
+                },
+            )
+            .await?,
+        ),
         (true, None, Some(last)) => Some(
             cursor::encode(
                 &app.pool,
@@ -1243,10 +1932,149 @@ async fn search_in(
         items,
         next_cursor,
         evidence_truncated,
-        meta: today.map(|t| SearchMeta {
-            today: t.to_string(),
-        }),
+        meta: SearchMeta {
+            today: clock.today.to_string(),
+        },
     })
+}
+
+/// ORDER BY the sort columns (missing values last in both directions,
+/// design 05 §3.2), then `i.id` in the last key's direction (keyset-stable).
+fn push_order(qb: &mut QueryBuilder<Postgres>, cols: &[filter::v2::SortCol]) {
+    qb.push(" ORDER BY ");
+    for c in cols {
+        if c.nullable {
+            qb.push("(");
+            c.push(qb);
+            qb.push(") IS NULL, ");
+        }
+        c.push(qb);
+        qb.push(if c.desc { " DESC, " } else { " ASC, " });
+    }
+    let desc = cols.last().is_some_and(|c| c.desc);
+    qb.push(if desc { "i.id DESC" } else { "i.id ASC" });
+}
+
+/// ` AND (row strictly after the cursor row)` in [`push_order`]'s order:
+/// a lexicographic OR-chain over (missing flag, value) per column and `id`.
+fn push_after(
+    qb: &mut QueryBuilder<Postgres>,
+    cols: &[filter::v2::SortCol],
+    last: &[Option<String>],
+    id: Uuid,
+) {
+    enum Comp<'a> {
+        /// `(expr) IS NULL`, ascending (missing last).
+        Flag(&'a filter::v2::SortCol, bool),
+        Val(&'a filter::v2::SortCol, Option<&'a str>),
+        Id(bool),
+    }
+    let mut comps: Vec<Comp> = Vec::new();
+    for (c, v) in cols.iter().zip(last) {
+        if c.nullable {
+            comps.push(Comp::Flag(c, v.is_none()));
+        }
+        comps.push(Comp::Val(c, v.as_deref()));
+    }
+    comps.push(Comp::Id(cols.last().is_some_and(|c| c.desc)));
+    let push_val = |qb: &mut QueryBuilder<Postgres>, c: &filter::v2::SortCol, v: &str| {
+        qb.push_bind(v.to_string()).push(format!("::{}", c.cast));
+    };
+    let eq = |qb: &mut QueryBuilder<Postgres>, comp: &Comp| match comp {
+        Comp::Flag(c, null) => {
+            qb.push("((");
+            c.push(qb);
+            qb.push(") IS NULL) = ").push_bind(*null);
+        }
+        Comp::Val(c, None) => {
+            qb.push("(");
+            c.push(qb);
+            qb.push(") IS NULL");
+        }
+        Comp::Val(c, Some(v)) => {
+            qb.push("(");
+            c.push(qb);
+            qb.push(") = ");
+            push_val(qb, c, v);
+        }
+        Comp::Id(_) => unreachable!("id is last"),
+    };
+    let gt = |qb: &mut QueryBuilder<Postgres>, comp: &Comp| match comp {
+        Comp::Flag(c, null) => {
+            qb.push("((");
+            c.push(qb);
+            qb.push(") IS NULL) > ").push_bind(*null);
+        }
+        Comp::Val(_, None) => {
+            qb.push("FALSE");
+        }
+        Comp::Val(c, Some(v)) => {
+            qb.push("(");
+            c.push(qb);
+            qb.push(if c.desc { ") < " } else { ") > " });
+            push_val(qb, c, v);
+        }
+        Comp::Id(desc) => {
+            qb.push(if *desc { "i.id < " } else { "i.id > " })
+                .push_bind(id);
+        }
+    };
+    qb.push(" AND (");
+    for j in 0..comps.len() {
+        if j > 0 {
+            qb.push(" OR ");
+        }
+        qb.push("(");
+        for c in &comps[..j] {
+            eq(qb, c);
+            qb.push(" AND ");
+        }
+        gt(qb, &comps[j]);
+        qb.push(")");
+    }
+    qb.push(")");
+}
+
+/// A candidate's texts for the re-check (§3.4) in snippet order: subject,
+/// description, then the public notes, keys and custom field values that
+/// match (sources that do not match are not kept).
+fn candidate_texts(
+    terms: &Terms,
+    keys: &[String],
+    subject: String,
+    description: String,
+    x: crate::search::Extras,
+) -> Vec<FieldText> {
+    let text = |src: Src, t: String| {
+        let cp = CpText::new(&t);
+        let m = evidence::match_field(terms, &t, &cp);
+        (src, t, cp, m)
+    };
+    let mut out = vec![
+        text(Src::Subject, subject),
+        text(Src::Description, description),
+    ];
+    for (id, body) in x.notes {
+        let f = text(Src::Note(id), body);
+        if f.3.is_some() {
+            out.push(f);
+        }
+    }
+    for k in x.keys {
+        let lower = k.to_lowercase();
+        if keys.contains(&lower) {
+            let cp = CpText::new(&k);
+            let m = FieldMatch::whole(&lower, cp.len());
+            out.push((Src::Key, k, cp, Some(m)));
+        }
+    }
+    for (_, v) in x.cf {
+        let f = text(Src::Cf, v);
+        if f.3.is_some() {
+            out.push(f);
+        }
+    }
+    out
 }
 
 /// Snippets within the response budget: every item's best snippet first,
@@ -1267,8 +2095,11 @@ fn attach_evidence(
             continue;
         };
         let mut plan: Vec<(usize, Window)> = Vec::new();
-        for (fi, (_, _, cp, m)) in t.fields.iter().enumerate() {
+        for (fi, (src, _, cp, m)) in t.fields.iter().enumerate() {
             let Some(m) = m else { continue };
+            if src.source(it.id).is_none() {
+                continue;
+            }
             match explain {
                 Explain::Brief => {
                     if let Some(w) = evidence::windows(cp, m, BRIEF_WINDOW, 1).first() {
@@ -1328,12 +2159,15 @@ fn attach_evidence(
             .enumerate()
             .filter(|(pi, _)| keep[ii][*pi])
             .filter_map(|(_, (fi, w))| {
-                let (field, raw, cp, m) = &t.fields[*fi];
+                let (src, raw, cp, m) = &t.fields[*fi];
                 let m = m.as_ref()?;
+                let (source, field, note_id) = src.source(issue_id)?;
                 Some(SearchEvidence {
-                    field: field.as_str().into(),
-                    // No search_rev yet (design 03 §7 step 8): always re-checked.
-                    evidence_status: "rechecked".into(),
+                    field: field.into(),
+                    note_id,
+                    // 03 §3.4 step 4: the index ranked this very text, or
+                    // an older one (the snippet is from the current text).
+                    evidence_status: if t.current { "current" } else { "rechecked" }.into(),
                     text: cp.slice(w.start, w.end),
                     highlights: evidence::highlights_in(m, (w.start, w.end))
                         .into_iter()
@@ -1343,15 +2177,7 @@ fn attach_evidence(
                             strength: m.strength,
                         })
                         .collect(),
-                    citation_id: citations::cite(
-                        Source::IssueField {
-                            issue_id,
-                            field: *field,
-                        },
-                        raw,
-                        w.start,
-                        w.end,
-                    ),
+                    citation_id: citations::cite(source, raw, w.start, w.end),
                 })
             })
             .collect();
@@ -1383,6 +2209,7 @@ struct DetailRow {
     parent: Option<String>,
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
+    estimated_hours: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     lock_version: i32,
@@ -1418,7 +2245,8 @@ pub(crate) async fn get_in(
                 i.assigned_to_id, i.is_private, i.subject, i.description,
                 p.name AS project, t.name AS tracker, s.name AS status, s.category AS status_category,
                 au.name AS author, a.name AS assignee, pk.key AS parent,
-                i.start_date, i.due_date, i.created_at, i.updated_at, i.lock_version
+                i.start_date, i.due_date, trim_scale(i.estimated_hours)::text AS estimated_hours,
+                i.created_at, i.updated_at, i.lock_version
          FROM issue_keys rk
          JOIN issues i ON i.id = rk.issue_id
          JOIN issue_keys ck ON ck.issue_id = i.id AND ck.is_current
@@ -1471,10 +2299,13 @@ pub(crate) async fn get_in(
     // Same answer as describe's issue actions (§5.2): workflow roles, the
     // transition conditions, edit permission and (agents) the delegation.
     let actor = crate::perm::actor(&mut *conn, caller).await?;
-    let allowed_statuses =
+    let (allowed_statuses, can_triage) =
         match crate::perm::project_perms(&mut *conn, &actor, row.project_id).await? {
-            None => Vec::new(),
+            None => (Vec::new(), false),
             Some(pp) => {
+                let can_triage = pp.writable()
+                    && pp.allowed_any(crate::perm::TRIAGE_ISSUES)
+                    && actor.delegation_allows(row.project_id, crate::perm::OP_TRIAGE_DECIDE, None);
                 let core = crate::describe::IssueCore {
                     id: row.id,
                     key: row.current_key.clone(),
@@ -1487,13 +2318,23 @@ pub(crate) async fn get_in(
                     is_private: row.is_private,
                     lock_version: row.lock_version,
                 };
-                crate::describe::allowed_transitions(&mut *conn, &actor, &pp, &core)
+                let names = crate::describe::allowed_transitions(&mut *conn, &actor, &pp, &core)
                     .await?
                     .into_iter()
                     .map(|(_, name)| name)
-                    .collect()
+                    .collect();
+                (names, can_triage)
             }
         };
+    let triage = crate::triage::issue_state(&mut *conn, row.id, can_triage).await?;
+    let form_rule_marks =
+        crate::forms::open_marks(&mut *conn, caller, row.id, row.project_id).await?;
+    let spent_hours = match caller.user_id() {
+        Some(me) => {
+            crate::time_reports::issue_spent(&mut *conn, me, row.project_id, row.id).await?
+        }
+        None => None,
+    };
     let custom_fields = custom_field_values(
         &mut *conn,
         caller,
@@ -1506,6 +2347,10 @@ pub(crate) async fn get_in(
         None,
     )
     .await?;
+    let watch = match caller.user_id() {
+        Some(me) => Some(crate::notifications::watch_info(&mut *conn, me, row.id).await?),
+        None => None,
+    };
 
     Ok((
         row.id,
@@ -1525,11 +2370,16 @@ pub(crate) async fn get_in(
             children,
             start_date: row.start_date,
             due_date: row.due_date,
+            estimated_hours: row.estimated_hours,
+            spent_hours,
             created_at: row.created_at,
             updated_at: row.updated_at,
             lock_version: row.lock_version,
             allowed_statuses,
             custom_fields,
+            triage,
+            form_rule_marks,
+            watch,
         },
     ))
 }

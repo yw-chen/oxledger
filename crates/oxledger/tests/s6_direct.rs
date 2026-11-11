@@ -111,7 +111,16 @@ async fn s6_direct() {
         p.fields.keys().map(String::as_str).collect::<Vec<_>>(),
         ["assigned_to_id", "description", "subject"]
     );
-    assert_eq!(p.available_commands, ["create_version", "update_version"]);
+    assert_eq!(
+        p.available_commands,
+        [
+            "create_version",
+            "update_version",
+            "triage_decide",
+            "log_time",
+            "update_time_entry"
+        ]
+    );
     // status_id is not a field (a status change is the transition command).
     let e = agents::create_delegation(
         &pool,
@@ -125,6 +134,8 @@ async fn s6_direct() {
             max_ops: None,
             expires_in_days: None,
             policies: None,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await
@@ -143,6 +154,8 @@ async fn s6_direct() {
             max_ops: None,
             expires_in_days: None,
             policies: Some(modes(&[("add_note", Review)], &[])),
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await
@@ -608,6 +621,8 @@ async fn s6_direct() {
             max_ops: None,
             expires_in_days: None,
             policies: None,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await

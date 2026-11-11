@@ -2,22 +2,30 @@
 //! oxledger server: PostgreSQL storage, tantivy search, MCP and HTTP.
 
 pub mod agents;
+pub mod ai;
+pub mod ai_team;
 pub mod api;
 pub mod audience;
 pub mod auth;
 pub mod changesets;
 pub mod citations;
 pub mod commands;
+pub mod concepts;
 pub mod cursor;
 pub mod custom_fields;
 pub mod db;
 pub mod describe;
 pub mod error;
 pub mod evidence;
+pub mod field_admin;
 pub mod filter;
+pub mod forms;
 pub mod github;
+pub mod home;
 pub mod issue_view;
 pub mod mcp;
+pub mod metrics;
+pub mod notifications;
 pub mod openapi;
 pub mod perm;
 pub mod policy;
@@ -33,5 +41,9 @@ pub mod seed;
 pub mod service;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+pub mod time_entries;
+pub mod time_reports;
+pub mod triage;
 pub mod undo;
 pub mod versions;
+pub mod views;

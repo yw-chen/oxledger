@@ -39,11 +39,14 @@ pub const GET_FIELDS: &[&str] = &[
     "assignee",
     "priority",
     "fixed_version",
+    "estimated_hours",
+    "spent_hours",
     "is_private",
     "created_at",
     "updated_at",
     "last_activity_at",
     "lock_version",
+    "triage",
 ];
 pub const INCLUDES: &[&str] = &["actions", "recent_notes", "recent_events", "dev"];
 pub const MAX_NOTE_LIMIT: u32 = 10;
@@ -62,9 +65,10 @@ pub struct GetParams {
     /// Issue key such as "AUTH-12". Old keys of moved issues still work.
     pub key: String,
     /// Issue fields to read: key, subject, description, project, tracker, status,
-    /// status_category, status_since, assignee, priority, is_private, created_at,
-    /// updated_at, last_activity_at, lock_version, cf:<custom field name>. Without
-    /// `fields`: the full current detail (no notes or history).
+    /// status_category, status_since, assignee, priority, fixed_version,
+    /// estimated_hours, is_private, created_at, updated_at, last_activity_at,
+    /// lock_version, triage, spent_hours (people only), cf:<custom field name>.
+    /// Without `fields`: the full current detail (no notes or history).
     pub fields: Option<Vec<String>>,
     /// "subject" and/or "description" (must also be in `fields`): a citation_id for
     /// the whole field. Quote ≤2000 characters directly; else use get_source(selection: "subquote").
@@ -125,6 +129,7 @@ pub struct EventView {
     /// internal sequence number is never returned.
     pub event_id: Uuid,
     /// created | fields_changed | status_changed | note_added | duplicate_added
+    /// | triage_changed (contract 05 §3.4) | …
     pub kind: String,
     pub at: DateTime<Utc>,
     pub actor: String,
@@ -208,6 +213,14 @@ pub struct IssueView {
     pub start_date: Option<Option<NaiveDate>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due_date: Option<Option<NaiveDate>>,
+    /// Decimal string such as "1.5"; null when not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_hours: Option<Option<String>>,
+    /// People only (contract 05 §3.5.4): the visible time on this issue; null
+    /// when the caller cannot read time in the project. Agents asking for it
+    /// get `invalid_argument` (`details.reason = "unavailable_to_agent"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spent_hours: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,6 +231,15 @@ pub struct IssueView {
     pub last_activity_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_version: Option<i32>,
+    /// Contract 05 §3.4: `pending`, `snoozed`, `accepted`, `declined`,
+    /// `duplicate`; null when the issue never entered the Triage inbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triage: Option<Option<String>>,
+    /// Contract 05 §3.6.3: full detail only, when rules published with
+    /// `accept_and_mark` found this issue breaking them: the rule ids. The
+    /// next write that passes the rules clears them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form_rule_marks: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_statuses: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +305,18 @@ async fn plan(conn: &mut PgConnection, caller: AuthContext, a: Ask<'_>) -> Resul
                     cf.push(name.into());
                 }
             } else if let Some(k) = GET_FIELDS.iter().find(|k| **k == f.as_str()) {
+                if *k == "spent_hours" && caller.user_id().is_none() {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidArgument,
+                        "spent_hours is not available to agents (contract 05 §4); read your delegator's own time with time_list",
+                    )
+                    .with_details(serde_json::json!({
+                        "reason": "unavailable_to_agent",
+                        "path": "fields",
+                        "field": "spent_hours",
+                    }))
+                    .into());
+                }
                 if !v.contains(k) {
                     v.push(k);
                 }
@@ -380,6 +414,13 @@ fn column(f: &str) -> Option<&'static str> {
         "is_private" => "i.is_private",
         "updated_at" => "i.updated_at",
         "lock_version" => "i.lock_version",
+        "triage" => {
+            "(SELECT CASE WHEN tr.state = 'pending' AND tr.snoozed_until > now()
+                               AND i.updated_at <= tr.snoozed_at
+                          THEN 'snoozed' ELSE tr.state END
+              FROM issue_triage tr WHERE tr.issue_id = i.id) AS triage"
+        }
+        "estimated_hours" => "trim_scale(i.estimated_hours)::text AS estimated_hours",
         "fixed_version" => "fv.id AS fixed_version_id, fv.name AS fixed_version_name, fv.status AS fixed_version_status,
              fv.effective_date AS fixed_version_date, fv.deleted_at IS NOT NULL AS fixed_version_deleted",
         _ => return None,
@@ -595,11 +636,14 @@ async fn get_one(
             children: Some(d.children),
             start_date: Some(d.start_date),
             due_date: Some(d.due_date),
+            estimated_hours: Some(d.estimated_hours),
+            spent_hours: d.spent_hours.map(Some),
             created_at: Some(d.created_at),
             updated_at: Some(d.updated_at),
             lock_version: Some(d.lock_version),
             allowed_statuses: Some(d.allowed_statuses),
             custom_fields: Some(d.custom_fields),
+            form_rule_marks: (!d.form_rule_marks.is_empty()).then_some(d.form_rule_marks),
             ..Default::default()
         };
         attach_blocks(conn, reader, caller, &mut v, id, plan).await?;
@@ -686,9 +730,20 @@ async fn get_one(
                 }));
             }
             "is_private" => v.is_private = Some(row.try_get("is_private")?),
+            "estimated_hours" => v.estimated_hours = Some(row.try_get("estimated_hours")?),
+            "spent_hours" => {
+                let me = caller.user_id();
+                v.spent_hours = Some(match me {
+                    Some(me) => {
+                        crate::time_reports::issue_spent(&mut *conn, me, project_id, id).await?
+                    }
+                    None => None,
+                });
+            }
             "created_at" => v.created_at = Some(created),
             "updated_at" => v.updated_at = Some(row.try_get("updated_at")?),
             "lock_version" => v.lock_version = Some(row.try_get("lock_version")?),
+            "triage" => v.triage = Some(row.try_get("triage")?),
             "status_since" => {
                 let status: Uuid = row.try_get("status_id")?;
                 let since = status_since(&mut *conn, id, status, created).await?;
@@ -754,12 +809,30 @@ async fn get_one(
     Ok(v)
 }
 
-/// The issue an attached block is about.
+/// The latest activity on an issue `reader` can see (its latest readable
+/// event, else `created`): the Triage inbox's `last_activity_at`.
+pub(crate) async fn last_activity_at(
+    conn: &mut PgConnection,
+    reader: &mut Reader,
+    caller: AuthContext,
+    (id, project, tracker): (Uuid, Uuid, Uuid),
+    created: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    let issue = IssueRef {
+        id,
+        project,
+        tracker,
+    };
+    let (latest, _) = visible_events(&mut *conn, reader, caller, issue, 1).await?;
+    Ok(latest.first().map_or(created, |e| e.at))
+}
+
+/// The issue an attached block (or a notification, design 05 §3.11) is about.
 #[derive(Clone, Copy)]
-struct IssueRef {
-    id: Uuid,
-    project: Uuid,
-    tracker: Uuid,
+pub(crate) struct IssueRef {
+    pub(crate) id: Uuid,
+    pub(crate) project: Uuid,
+    pub(crate) tracker: Uuid,
 }
 
 /// `include`: actions, recent notes, recent events (same read scope).
@@ -945,15 +1018,23 @@ async fn recent_notes(
 // ---------------------------------------------------------------- events
 
 #[derive(sqlx::FromRow)]
-struct EventRow {
-    id: Uuid,
-    seq: i64,
-    kind: String,
-    at: DateTime<Utc>,
-    actor: String,
-    payload: Json,
-    note_id: Option<Uuid>,
-    redacted: bool,
+pub(crate) struct EventRow {
+    pub(crate) id: Uuid,
+    pub(crate) seq: i64,
+    pub(crate) kind: String,
+    pub(crate) at: DateTime<Utc>,
+    pub(crate) actor: String,
+    pub(crate) payload: Json,
+    pub(crate) note_id: Option<Uuid>,
+    pub(crate) redacted: bool,
+}
+
+/// What [`event_view`] looks up once per reader and issue.
+#[derive(Default)]
+pub(crate) struct EventCache {
+    /// Readable custom field ids in the issue's project (loaded on first use).
+    pub(crate) readable_cf: Option<Vec<i32>>,
+    notes: HashMap<Uuid, bool>,
 }
 
 /// Names for ids in event payloads (contract 02 §7.3: shown as names).
@@ -991,7 +1072,7 @@ async fn display(conn: &mut PgConnection, field: &str, v: &Json) -> Result<Json>
 
 /// Custom field ids the caller may read in this issue's project (agents:
 /// `visible = true` only).
-async fn readable_cf_ids(
+pub(crate) async fn readable_cf_ids(
     conn: &mut PgConnection,
     reader: &Reader,
     caller: AuthContext,
@@ -1111,10 +1192,9 @@ async fn visible_events(
     issue: IssueRef,
     limit: u32,
 ) -> Result<(Vec<EventView>, bool)> {
-    let mut readable_cf: Option<Vec<i32>> = None;
+    let mut cache = EventCache::default();
     let mut out = Vec::new();
     let mut before: Option<i64> = None;
-    let mut notes: HashMap<Uuid, bool> = HashMap::new();
     loop {
         let rows: Vec<EventRow> = sqlx::query_as(
             "SELECT e.id, e.seq, e.kind, e.at, p.name AS actor, e.payload, e.note_id,
@@ -1132,66 +1212,100 @@ async fn visible_events(
         before = Some(last.seq);
         let n = rows.len() as i64;
         for r in rows {
-            // Notes first: a hidden note's event is left out even when redacted.
-            if let Some(note) = r.note_id
-                && !note_ok(&mut *conn, reader, &mut notes, issue, note).await?
-            {
+            let Some(v) = event_view(&mut *conn, reader, caller, issue, &mut cache, r).await?
+            else {
                 continue;
-            }
-            let detail = if r.redacted {
-                None
-            } else {
-                match r.kind.as_str() {
-                    "created" | "fields_changed" => {
-                        if readable_cf.is_none() {
-                            readable_cf = Some(
-                                readable_cf_ids(&mut *conn, reader, caller, issue.project).await?,
-                            );
-                        }
-                        let rc = readable_cf.as_deref().unwrap_or_default();
-                        let changes = r.kind == "fields_changed";
-                        let key = if changes { "changes" } else { "fields" };
-                        let empty = Map::new();
-                        let map = r.payload[key].as_object().unwrap_or(&empty);
-                        let shown = filter_fields(&mut *conn, rc, map, changes).await?;
-                        if changes && shown.is_empty() {
-                            continue;
-                        }
-                        Some(json!({ key: shown }))
-                    }
-                    "status_changed" => Some(json!({
-                        "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
-                        "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
-                    })),
-                    "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
-                    "duplicate_added" | "duplicate_removed" => {
-                        let other = r.payload["other_issue_id"]
-                            .as_str()
-                            .and_then(|s| s.parse::<Uuid>().ok());
-                        let Some(other) = other else { continue };
-                        let Some(k) = visible_key(&mut *conn, reader, other).await? else {
-                            continue;
-                        };
-                        Some(json!({"role": r.payload["role"], "other_key": k}))
-                    }
-                    _ => None,
-                }
             };
             if out.len() as u32 >= limit {
                 return Ok((out, true));
             }
-            out.push(EventView {
-                event_id: r.id,
-                kind: r.kind,
-                at: r.at,
-                actor: r.actor,
-                detail,
-                redacted: r.redacted,
-            });
+            out.push(v);
         }
         if n < PAGE {
             break;
         }
     }
     Ok((out, false))
+}
+
+/// One event as `caller` may see it now, or `None` when nothing of it is
+/// readable (a hidden note, only unreadable fields, the other end of a
+/// duplicate out of sight). The issue itself must already be visible to
+/// `caller`. Issue history (`recent_events`) and notifications (design 05
+/// §3.11.2 step 3, §3.11.3) both use this one function, so they agree.
+pub(crate) async fn event_view(
+    conn: &mut PgConnection,
+    reader: &mut Reader,
+    caller: AuthContext,
+    issue: IssueRef,
+    cache: &mut EventCache,
+    r: EventRow,
+) -> Result<Option<EventView>> {
+    // Notes first: a hidden note's event is left out even when redacted.
+    if let Some(note) = r.note_id
+        && !note_ok(&mut *conn, reader, &mut cache.notes, issue, note).await?
+    {
+        return Ok(None);
+    }
+    let detail = if r.redacted {
+        None
+    } else {
+        match r.kind.as_str() {
+            "created" | "fields_changed" => {
+                if cache.readable_cf.is_none() {
+                    cache.readable_cf =
+                        Some(readable_cf_ids(&mut *conn, reader, caller, issue.project).await?);
+                }
+                let rc = cache.readable_cf.as_deref().unwrap_or_default();
+                let changes = r.kind == "fields_changed";
+                let key = if changes { "changes" } else { "fields" };
+                let empty = Map::new();
+                let map = r.payload[key].as_object().unwrap_or(&empty);
+                let shown = filter_fields(&mut *conn, rc, map, changes).await?;
+                if changes && shown.is_empty() {
+                    return Ok(None);
+                }
+                let mut d = json!({ key: shown });
+                if let Some(t) = r.payload.get("triage") {
+                    d["triage"] = t.clone();
+                }
+                Some(d)
+            }
+            // Contract 05 §3.4: the decision and its A5 flags
+            // ("自建自分流" in the history).
+            "triage_changed" => Some(json!({
+                "old": r.payload["old"],
+                "new": r.payload["new"],
+                "self_triage": r.payload["self_triage"],
+                "same_sponsor": r.payload["same_sponsor"],
+                "snoozed_until": r.payload["snoozed_until"],
+            })),
+            "status_changed" => Some(json!({
+                "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
+                "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
+            })),
+            "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
+            "duplicate_added" | "duplicate_removed" => {
+                let other = r.payload["other_issue_id"]
+                    .as_str()
+                    .and_then(|s| s.parse::<Uuid>().ok());
+                let Some(other) = other else {
+                    return Ok(None);
+                };
+                let Some(k) = visible_key(&mut *conn, reader, other).await? else {
+                    return Ok(None);
+                };
+                Some(json!({"role": r.payload["role"], "other_key": k}))
+            }
+            _ => None,
+        }
+    };
+    Ok(Some(EventView {
+        event_id: r.id,
+        kind: r.kind,
+        at: r.at,
+        actor: r.actor,
+        detail,
+        redacted: r.redacted,
+    }))
 }

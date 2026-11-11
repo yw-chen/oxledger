@@ -345,6 +345,8 @@ async fn delegate(
             max_ops: None,
             expires_in_days: Some(30),
             policies,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await
@@ -584,6 +586,8 @@ async fn t_d4_counter_lock_and_deadline() {
             max_ops: None,
             expires_in_days: None,
             policies: None,
+            read_own_time: false,
+            read_own_time_ack: false,
         },
     )
     .await
@@ -758,7 +762,7 @@ async fn t_s2_outbox_consumed_twice() {
     // two consumers at once on the same index.
     exec(
         &pool,
-        "DELETE FROM outbox_cursors WHERE consumer = 'search';
+        "DELETE FROM outbox_cursors WHERE consumer LIKE 'search%';
          INSERT INTO outbox (topic, entity_id) SELECT 'issue', id FROM issues;
          INSERT INTO outbox (topic, entity_id) SELECT 'issue', id FROM issues;",
     )

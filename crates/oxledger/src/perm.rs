@@ -32,9 +32,17 @@ pub const MANAGE_ISSUE_RELATIONS: &str = "manage_issue_relations";
 pub const MANAGE_VERSIONS: &str = "manage_versions";
 /// §18.4: project tabs and (§19) repository links.
 pub const MANAGE_PROJECT: &str = "manage_project";
+/// Design 05 (M1): time tracking (Redmine names), Triage and project views.
+pub const VIEW_TIME_ENTRIES: &str = "view_time_entries";
+pub const LOG_TIME: &str = "log_time";
+pub const EDIT_TIME_ENTRIES: &str = "edit_time_entries";
+pub const EDIT_OWN_TIME_ENTRIES: &str = "edit_own_time_entries";
+pub const LOG_TIME_FOR_OTHER_USERS: &str = "log_time_for_other_users";
+pub const TRIAGE_ISSUES: &str = "triage_issues";
+pub const MANAGE_PUBLIC_VIEWS: &str = "manage_public_views";
 
-/// Every permission a role may hold; the `role_permissions_known` CHECK in
-/// migration 0007 lists the same names (a test compares them).
+/// Every permission a role may hold; the `role_permissions_known` CHECK
+/// (migration 0019) lists the same names (a test compares them).
 pub const PERMISSIONS: &[&str] = &[
     VIEW_ISSUES,
     ADD_ISSUES,
@@ -48,6 +56,23 @@ pub const PERMISSIONS: &[&str] = &[
     MANAGE_ISSUE_RELATIONS,
     MANAGE_VERSIONS,
     MANAGE_PROJECT,
+    VIEW_TIME_ENTRIES,
+    LOG_TIME,
+    EDIT_TIME_ENTRIES,
+    EDIT_OWN_TIME_ENTRIES,
+    LOG_TIME_FOR_OTHER_USERS,
+    TRIAGE_ISSUES,
+    MANAGE_PUBLIC_VIEWS,
+];
+
+/// The only permissions a role may limit to some trackers (Redmine: the issue
+/// permissions); the `role_permissions_tracker_scope` CHECK (0019) agrees.
+pub const TRACKER_SCOPED: &[&str] = &[
+    VIEW_ISSUES,
+    ADD_ISSUES,
+    EDIT_ISSUES,
+    EDIT_OWN_ISSUES,
+    ADD_ISSUE_NOTES,
 ];
 
 /// Proposal operations a delegation may allow (delegations.proposal_ops).
@@ -58,6 +83,12 @@ pub const OP_ADD_NOTE: &str = "add_note";
 pub const OP_DUPLICATE_OF: &str = "duplicate_of";
 pub const OP_CREATE_VERSION: &str = "create_version";
 pub const OP_UPDATE_VERSION: &str = "update_version";
+/// Contract 05 §3.10.1 (M1.3).
+pub const OP_TRIAGE_DECIDE: &str = "triage_decide";
+/// Contract 05 §3.10.2: time ops agents may have (delete_time_entry is for people only).
+pub const OP_LOG_TIME: &str = "log_time";
+pub const OP_UPDATE_TIME_ENTRY: &str = "update_time_entry";
+pub const OP_DELETE_TIME_ENTRY: &str = "delete_time_entry";
 
 /// One active delegation's scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,11 +174,12 @@ pub async fn actor(conn: &mut PgConnection, ctx: AuthContext) -> Result<Actor> {
         Some(a) => {
             let rows: Vec<(Uuid, Vec<String>, Vec<String>, i32)> = sqlx::query_as(
                 "SELECT project_id, proposal_ops, writable_fields, max_ops FROM delegations
-                 WHERE context_id = $1 AND revoked_at IS NULL AND expires_at > now()
+                 WHERE context_id = $1 AND agent_principal_id = $3 AND revoked_at IS NULL AND expires_at > now()
                    AND project_id = ANY($2)",
             )
             .bind(a.context_id)
             .bind(&a.projects)
+            .bind(a.agent_principal_id)
             .fetch_all(&mut *conn)
             .await?;
             Some(

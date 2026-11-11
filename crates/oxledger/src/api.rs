@@ -21,7 +21,7 @@ use axum::extract::{ConnectInfo, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -74,6 +74,47 @@ pub fn router_with_github(
     }
 }
 
+/// `GET /metrics` (03 §4.6, P2-D10): Prometheus text, only with
+/// `Authorization: Bearer <token>`. Mounted by the server only when
+/// `OXLEDGER_METRICS_TOKEN` is set; otherwise the path does not exist.
+pub fn metrics_routes(app: Arc<App>, token: String) -> Router {
+    let token = Arc::new(token);
+    Router::new().route(
+        "/metrics",
+        get(move |headers: axum::http::HeaderMap| {
+            let (app, token) = (app.clone(), token.clone());
+            async move {
+                let given = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "));
+                let ok = given.is_some_and(|g| {
+                    use sha2::Digest;
+                    // Compare digests: equal length, no early exit on content.
+                    sha2::Sha256::digest(g.as_bytes()) == sha2::Sha256::digest(token.as_bytes())
+                });
+                if !ok {
+                    return axum::http::StatusCode::UNAUTHORIZED.into_response();
+                }
+                match crate::metrics::render(&app.pool, &app.index).await {
+                    Ok(body) => (
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "text/plain; version=0.0.4; charset=utf-8",
+                        )],
+                        body,
+                    )
+                        .into_response(),
+                    Err(e) => {
+                        tracing::error!("metrics: {e:#}");
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    }
+                }
+            }
+        }),
+    )
+}
+
 fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
     let state = Arc::new(ApiState {
         app: app.clone(),
@@ -89,6 +130,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/auth/sessions", get(list_sessions))
         .route("/auth/sessions/{id}", delete(revoke_session))
         .route("/issues/search", post(issues_search))
+        .route("/filter-fields", get(filter_fields))
         .route("/issues/{key}", get(issue_get))
         .route("/issues/{key}/actions", get(issue_actions))
         .route("/issues/{key}/view", get(issue_view_get))
@@ -112,6 +154,58 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/projects/{id}/tabs/reset", post(tabs_reset))
         .route("/projects/{id}/tabs/{tab}/issues", get(tab_issues))
         .route("/projects/{id}/setting-events", get(setting_events))
+        .route("/projects/{id}/triage", get(triage_project))
+        .route(
+            "/projects/{id}/triage-settings",
+            get(triage_settings_get).put(triage_settings_put),
+        )
+        .route("/time-entries", get(time_list))
+        .route("/time-entries/summary", get(time_summary))
+        .route("/time-entries/{id}", get(time_get))
+        .route("/time-entries/{id}/events", get(time_events))
+        .route("/me/timesheet", get(time_sheet))
+        .route(
+            "/me/preferences",
+            get(me_preferences).put(me_preferences_put),
+        )
+        .route("/me/home", get(me_home).put(me_home_put))
+        .route(
+            "/me/notification-preferences",
+            get(notification_prefs).put(notification_prefs_put),
+        )
+        .route("/notifications", get(notifications_list))
+        .route("/notifications/unread-count", get(notifications_unread))
+        .route("/notifications/read-all", post(notifications_read_all))
+        .route("/notifications/{id}/read", post(notification_read))
+        .route("/notifications/{id}/unread", post(notification_unread))
+        .route(
+            "/issues/{key}/watch",
+            axum::routing::put(issue_watch).delete(issue_unwatch),
+        )
+        .route("/me/home/apply-template", post(me_home_apply))
+        .route("/home/templates", get(home_templates))
+        .route("/time-activities", get(time_activities))
+        .route("/admin/time-activities", put(time_activities_put))
+        .route(
+            "/projects/{id}/time-activities",
+            get(time_project_settings).put(time_project_settings_put),
+        )
+        .route("/projects/{id}/time-users", get(time_users))
+        .route(
+            "/org/timelog-settings",
+            get(timelog_settings_get).put(timelog_settings_put),
+        )
+        .route("/triage", get(triage_mine))
+        .route("/triage/counts", get(triage_counts))
+        .route("/views", get(views_list).post(views_create))
+        .route("/views/preview", post(views_preview))
+        .route(
+            "/views/{id}",
+            get(views_get).patch(views_update).delete(views_delete),
+        )
+        .route("/views/{id}/copy", post(views_copy))
+        .route("/views/{id}/run", post(views_run))
+        .route("/views/{id}/events", get(views_events))
         .route("/projects/{id}/repos", get(repos_list).post(repos_link))
         .route("/projects/{id}/repos/linkable", get(repos_linkable))
         .route("/projects/{id}/repos/{link_id}", delete(repos_unlink))
@@ -134,6 +228,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             "/projects/{id}/setting-events/{event_id}/redact",
             post(redact_setting_event),
         )
+        .route("/time-entries/{id}/redact", post(redact_time_entry))
         .route("/issues/{key}/dev", get(issue_dev))
         .route("/admin/github", get(admin_github_get).put(admin_github_put))
         .route(
@@ -147,6 +242,42 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/versions/{id}/events", get(version_events))
         .route("/resolve", post(resolve))
         .route("/commands", post(submit_command))
+        .route("/commands/validate", post(validate_command))
+        .route("/projects/{id}/trackers/{t}/form", get(form_describe))
+        .route("/admin/forms", get(forms_list).post(forms_ensure))
+        .route("/forms/{id}", get(form_get))
+        .route("/forms/{id}/versions", get(form_versions))
+        .route("/forms/{id}/drafts/{part}", put(form_draft_put))
+        .route("/forms/{id}/drafts/{part}/impact", post(form_impact))
+        .route("/forms/{id}/drafts/{part}/publish", post(form_publish))
+        .route("/forms/{id}/drafts/{part}/discard", post(form_discard))
+        .route("/forms/{id}/rollback", post(form_rollback))
+        .route("/admin/custom-fields", get(fields_list).post(fields_create))
+        .route(
+            "/admin/custom-fields/{id}",
+            get(field_get).patch(field_patch).delete(field_delete),
+        )
+        .route("/admin/custom-fields/{id}/options", post(field_option_add))
+        .route(
+            "/admin/custom-fields/{id}/options/{oid}",
+            patch(field_option_patch).delete(field_option_delete),
+        )
+        .route(
+            "/admin/custom-fields/{id}/conversions",
+            post(field_conversion_preview),
+        )
+        .route("/admin/concepts", get(concepts_list).post(concepts_create))
+        .route(
+            "/admin/concepts/{id}",
+            get(concept_get).patch(concept_patch),
+        )
+        .route("/admin/concepts/{id}/labels", post(concept_label_add))
+        .route(
+            "/admin/concepts/{id}/labels/{label}",
+            patch(concept_label_patch),
+        )
+        .route("/admin/conversions/{id}", get(conversion_get))
+        .route("/admin/conversions/{id}/start", post(conversion_start))
         .route("/changesets", get(changeset_list))
         .route("/changesets/{id}", get(changeset_get))
         .route("/changesets/{id}/versions/{v}", get(changeset_version))
@@ -180,6 +311,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         )
         .route("/delegations/{id}/revoke", post(revoke_delegation))
         .route(
+            "/delegations/{id}/read-own-time",
+            put(delegation_read_own_time),
+        )
+        .route(
             "/delegations/{id}/policies",
             get(delegation_policies).put(set_delegation_policies),
         )
@@ -189,6 +324,56 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/agent-contexts/{id}/resume", post(resume_context))
         .route("/agent-contexts/{id}/credentials", post(issue_credential))
         .route("/agent-credentials/{id}/revoke", post(revoke_credential))
+        .route("/ai-team", get(ai_team_list).post(ai_team_create))
+        .route("/ai-team/templates", get(ai_team_templates))
+        .route("/ai-team/{id}", get(ai_team_get))
+        .route("/ai-team/{id}/activity", get(ai_team_activity))
+        .route("/ai-team/{id}/pause", post(ai_team_pause))
+        .route("/ai-team/{id}/resume", post(ai_team_resume))
+        .route("/ai-team/{id}/retire", post(ai_team_retire))
+        .route("/ai-team/{id}/credentials", post(ai_team_credentials))
+        .route("/me/agent-runtimes", get(my_runtimes))
+        .route("/me/agent-runtimes/{id}", patch(rename_runtime))
+        .route(
+            "/me/agent-runtimes/{id}/new-context",
+            post(runtime_new_context),
+        )
+        .route("/me/agent-runtimes/{id}/retire", post(retire_runtime))
+        .route("/ai/status", get(ai_status))
+        .route("/ai/assistant", post(ai_assistant_setup))
+        .route("/ai/assistant/extend", post(ai_assistant_extend))
+        .route(
+            "/ai/conversations",
+            get(ai_conversations).post(ai_conversation_create),
+        )
+        .route("/ai/conversations/{id}", delete(ai_conversation_delete))
+        .route(
+            "/ai/conversations/{id}/messages",
+            get(ai_messages).post(ai_message_send),
+        )
+        .route("/ai/runs/{id}", get(ai_run_get))
+        .route("/ai/runs/{id}/stream", get(ai_run_stream))
+        .route("/ai/runs/{id}/cancel", post(ai_run_cancel))
+        .route(
+            "/admin/ai/settings",
+            get(ai_admin_settings).put(ai_admin_put_settings),
+        )
+        .route("/admin/ai/endpoints", get(ai_admin_endpoints))
+        .route(
+            "/admin/ai/providers",
+            get(ai_admin_providers).post(ai_admin_create_provider),
+        )
+        .route("/admin/ai/providers/{id}", patch(ai_admin_update_provider))
+        .route(
+            "/admin/ai/providers/{id}/test",
+            post(ai_admin_test_provider),
+        )
+        .route(
+            "/admin/ai/providers/{id}/retire",
+            post(ai_admin_retire_provider),
+        )
+        .route("/admin/ai/usage", get(ai_admin_usage))
+        .route("/admin/ai/events", get(ai_admin_events))
         .fallback(|| async { ApiFailure(api(ErrorCode::NotFound, "no such endpoint")) })
         .method_not_allowed_fallback(|| async {
             ApiFailure(
@@ -226,6 +411,14 @@ fn ok(data: impl serde::Serialize) -> Response {
         "meta": {"request_id": Uuid::now_v7(), "observed_at": Utc::now()},
     }))
     .into_response()
+}
+
+/// [`ok`] with 201 Created (design 05 §3.3: a new view; a replay of the
+/// same Idempotency-Key answers the same way).
+fn created(data: impl serde::Serialize) -> Response {
+    let mut r = ok(data);
+    *r.status_mut() = StatusCode::CREATED;
+    r
 }
 
 /// Any handler error. Domain errors become `{"error": …}` with their HTTP
@@ -688,6 +881,7 @@ async fn session(
         expires_at: row.4,
         capabilities: Capabilities {
             command_schema_versions: vec![1],
+            command_features: COMMAND_FEATURES.iter().map(|f| f.to_string()).collect(),
         },
     }))
 }
@@ -762,6 +956,20 @@ async fn issues_search(
     Ok(ok(service::search(&st.app, ctx, p).await?))
 }
 
+async fn filter_fields(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::filter::v2::filter_fields(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+    )
+    .await?))
+}
+
 async fn issue_get(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
@@ -831,7 +1039,14 @@ pub struct LoginData {
 pub struct Capabilities {
     /// Command document versions this server accepts (§4.5).
     pub command_schema_versions: Vec<u16>,
+    /// Additions to command schema version 1 this server accepts (design 05
+    /// §3.10), e.g. "estimated_hours". Clients that do not use one are not
+    /// affected.
+    pub command_features: Vec<String>,
 }
+
+/// See [`Capabilities::command_features`]; later M1 stages add theirs.
+pub const COMMAND_FEATURES: &[&str] = &["estimated_hours", "triage_decide", "log_time"];
 
 #[derive(Serialize, JsonSchema)]
 pub struct SessionData {
@@ -952,14 +1167,27 @@ async fn agent_clients(
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationBody {
-    pub agent_client_id: Uuid,
+    /// Design 05 §3.1: one of the caller's roles (from `GET /ai-team`).
+    #[serde(default)]
+    pub agent_principal_id: Option<Uuid>,
+    /// The 02 form: the `personal` role of this client (created, with its
+    /// runtime, on first use). Give exactly one of the two.
+    #[serde(default)]
+    pub agent_client_id: Option<Uuid>,
     pub project_id: Uuid,
     pub proposal_ops: Vec<String>,
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
-    /// Modes inside the ceiling (§16.3); unlisted commands and fields are direct.
+    /// Modes inside the ceiling (§16.3); unlisted commands and fields are
+    /// direct, except `log_time` and `update_time_entry` (review, contract 05 §4.3).
     pub policies: Option<agents::PolicyInput>,
+    /// Contract 05 §3.5.4 A1: let the agent read your own time (default false).
+    #[serde(default)]
+    pub read_own_time: Option<bool>,
+    /// Required with `read_own_time: true` (the §6.14 warning was acknowledged).
+    #[serde(default)]
+    pub read_own_time_ack: Option<bool>,
 }
 
 pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
@@ -1408,6 +1636,479 @@ async fn setting_events(
     .await?))
 }
 
+// ---------------------------------------------------------------- time (design 05 §3.5, M1.4)
+
+fn time_query(q: &HashMap<String, String>) -> Result<crate::time_reports::ListQuery, ApiFailure> {
+    let activity = match q.get("activity") {
+        None => None,
+        Some(a) => Some(a.parse::<Uuid>().map_err(|_| {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "activity is an activity id")
+                    .with_details(json!({"path": "activity"}))
+                    .into(),
+            )
+        })?),
+    };
+    Ok(crate::time_reports::ListQuery {
+        project: q.get("project").cloned(),
+        issue: q.get("issue").cloned(),
+        user: q.get("user").cloned(),
+        activity,
+        from: q.get("from").cloned(),
+        to: q.get("to").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(q, "limit")?.map(|l| l.clamp(1, 200) as u32),
+    })
+}
+
+async fn time_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lq = time_query(&q)?;
+    Ok(ok(crate::time_reports::list(&st.app, ctx, &lq).await?))
+}
+
+async fn time_summary(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let sq = crate::time_reports::SummaryQuery {
+        project: q.get("project").cloned(),
+        from: q.get("from").cloned(),
+        to: q.get("to").cloned(),
+        group_by: q.get("group_by").cloned(),
+        user: q.get("user").cloned(),
+        issue: q.get("issue").cloned(),
+    };
+    Ok(ok(crate::time_reports::summary(&st.app, ctx, &sq).await?))
+}
+
+async fn time_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::get(&st.app, ctx, &id).await?))
+}
+
+async fn time_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::events(&st.app, ctx, &id).await?))
+}
+
+async fn time_sheet(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::timesheet(
+        &st.app,
+        ctx,
+        q.get("week").map(String::as_str),
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- me (design 05 §3.8, M1.6)
+
+async fn me_preferences(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::home::preferences(&st.app, ctx).await?))
+}
+
+async fn me_preferences_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::home::PreferencesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::home::put_preferences(&st.app, ctx, key, &body).await?
+    ))
+}
+
+async fn me_home(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::home::home(&st.app, ctx).await?))
+}
+
+async fn me_home_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::home::HomePut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::home::put_home(&st.app, ctx, key, &body).await?))
+}
+
+async fn me_home_apply(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::home::ApplyTemplate>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::home::apply_template(&st.app, ctx, key, &body).await?
+    ))
+}
+
+async fn home_templates(Extension(ra): Extension<RequestAuth>, Query(q): Params) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::home::templates(
+        ctx,
+        q.get("roles").map(String::as_str),
+    )?))
+}
+
+async fn time_activities(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::activities(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn time_activities_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::time_reports::ActivitiesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::put_site_activities(
+        &st.app, ctx, &body,
+    )
+    .await?))
+}
+
+async fn time_project_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::time_reports::project_settings(&st.app, ctx, &id).await?
+    ))
+}
+
+async fn time_project_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::time_reports::ProjectTimePut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::put_project_settings(
+        &st.app, ctx, &id, &body,
+    )
+    .await?))
+}
+
+async fn time_users(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::time_users(&st.app, ctx, &id).await?))
+}
+
+async fn timelog_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::time_reports::timelog_settings(&st.app, ctx).await?
+    ))
+}
+
+async fn timelog_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::time_reports::TimelogSettingsPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::time_reports::put_timelog_settings(
+        &st.app, ctx, &body,
+    )
+    .await?))
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadOwnTimeBody {
+    pub enabled: bool,
+    /// Required (true) when enabling: the §6.14 warning was acknowledged.
+    #[serde(default)]
+    pub ack: bool,
+}
+
+async fn delegation_read_own_time(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<ReadOwnTimeBody>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(agents::set_read_own_time(
+        &st.app.pool,
+        &st.cfg.session,
+        &ctx,
+        id_param(&id)?,
+        b.enabled,
+        b.ack,
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- triage (design 05 §3.4, M1.3)
+
+fn triage_query(q: &HashMap<String, String>) -> Result<crate::triage::ListQuery, ApiFailure> {
+    let include_snoozed = match q.get("include_snoozed").map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            return Err(ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    "include_snoozed is true or false",
+                )
+                .with_details(json!({"path": "include_snoozed"}))
+                .into(),
+            ));
+        }
+    };
+    let decided = match q.get("view").map(String::as_str) {
+        None | Some("inbox") => false,
+        Some("decided") => true,
+        Some(_) => {
+            return Err(ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "view is inbox or decided")
+                    .with_details(json!({"path": "view"}))
+                    .into(),
+            ));
+        }
+    };
+    Ok(crate::triage::ListQuery {
+        include_snoozed,
+        decided,
+        self_triage: q.get("self_triage").cloned(),
+        decided_by_kind: q.get("decided_by_kind").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(q, "limit")?.map(|l| l.clamp(1, 100) as u32),
+    })
+}
+
+async fn triage_project(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lq = triage_query(&q)?;
+    Ok(ok(
+        crate::triage::project_inbox(&st.app, ctx, &id, &lq).await?
+    ))
+}
+
+async fn triage_mine(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lq = triage_query(&q)?;
+    Ok(ok(crate::triage::my_inbox(&st.app, ctx, &lq).await?))
+}
+
+async fn triage_counts(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::triage::counts(&st.app, ctx).await?))
+}
+
+async fn triage_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::triage::settings(&st.app, ctx, &id).await?))
+}
+
+async fn triage_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::triage::TriageSettingsPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::triage::put_settings(
+        &st.app, ctx, key, &id, &body,
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- views (design 05 §3.3, M1.2)
+
+async fn views_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let limit = int_param(&q, "limit")?.map(|l| l.clamp(1, 1000) as u32);
+    Ok(ok(crate::views::list(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+        q.get("scope").map(String::as_str),
+        q.get("cursor").map(String::as_str),
+        limit,
+    )
+    .await?))
+}
+
+async fn views_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::views::NewView>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(created(
+        crate::views::create(&st.app, ctx, key, &body).await?,
+    ))
+}
+
+async fn views_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::get(&st.app, ctx, &id).await?))
+}
+
+async fn views_update(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::views::ViewPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::views::update(&st.app, ctx, key, &id, &body).await?
+    ))
+}
+
+async fn views_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let lv = int_param(&q, "lock_version")?
+        .ok_or_else(|| ApiFailure(api(ErrorCode::InvalidArgument, "lock_version is required")))?;
+    let lv = i32::try_from(lv).map_err(|_| {
+        ApiFailure(api(
+            ErrorCode::InvalidArgument,
+            "lock_version is out of range",
+        ))
+    })?;
+    Ok(ok(crate::views::delete(&st.app, ctx, key, &id, lv).await?))
+}
+
+async fn views_copy(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::views::ViewCopy>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(created(
+        crate::views::copy(&st.app, ctx, key, &id, &body).await?,
+    ))
+}
+
+async fn views_run(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::views::RunInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::run(&st.app, ctx, &id, &body).await?))
+}
+
+async fn views_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::views::PreviewInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::preview(&st.app, ctx, &body).await?))
+}
+
+async fn views_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::views::events(
+        &st.app,
+        ctx,
+        &id,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
 // ---------------------------------------------------------------- GitHub (S6b.9, §19.7)
 
 fn uuid_path(s: &str, what: &str) -> Result<Uuid, ApiFailure> {
@@ -1651,6 +2352,25 @@ async fn redact_setting_event(
     .await
 }
 
+async fn redact_time_entry(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let entry =
+        id_param(&id).map_err(|_| ApiFailure(api(ErrorCode::NotFound, "no such time entry")))?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::TimeEntry { entry },
+        &body,
+    )
+    .await
+}
+
 async fn issue_dev(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
@@ -1882,21 +2602,42 @@ async fn create_delegation(
     ApiJson(b): ApiJson<DelegationBody>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    let d = agents::create_delegation(
-        &st.app.pool,
-        &st.cfg.session,
-        &ctx,
-        DelegationInput {
-            agent_client_id: b.agent_client_id,
-            project_id: b.project_id,
-            proposal_ops: b.proposal_ops,
-            writable_fields: b.writable_fields,
-            max_ops: b.max_ops,
-            expires_in_days: b.expires_in_days,
-            policies: b.policies,
-        },
-    )
-    .await?;
+    let input = |client: Uuid| DelegationInput {
+        agent_client_id: client,
+        project_id: b.project_id,
+        proposal_ops: b.proposal_ops.clone(),
+        writable_fields: b.writable_fields.clone(),
+        max_ops: b.max_ops,
+        expires_in_days: b.expires_in_days,
+        policies: b.policies.clone(),
+        read_own_time: b.read_own_time.unwrap_or(false),
+        read_own_time_ack: b.read_own_time_ack.unwrap_or(false),
+    };
+    let d = match (b.agent_principal_id, b.agent_client_id) {
+        (Some(p), None) => {
+            agents::create_delegation_for(
+                &st.app.pool,
+                &st.cfg.session,
+                &ctx,
+                p,
+                input(Uuid::nil()),
+            )
+            .await?
+        }
+        (None, Some(c)) => {
+            agents::create_delegation(&st.app.pool, &st.cfg.session, &ctx, input(c)).await?
+        }
+        _ => {
+            return Err(ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "give either agent_principal_id or agent_client_id",
+                )
+                .with_details(json!({"path": "agent_principal_id"}))
+                .into(),
+            ));
+        }
+    };
     Ok(ok(d))
 }
 
@@ -2025,6 +2766,10 @@ pub struct CredentialBody {
     #[serde(default)]
     pub label: String,
     pub expires_in_days: Option<i64>,
+    /// Design 05 §3.1 (compatibility alias): the role the token is for;
+    /// may be left out only when the runtime has one active role.
+    #[serde(default)]
+    pub agent_principal_id: Option<Uuid>,
 }
 
 async fn issue_credential(
@@ -2034,16 +2779,441 @@ async fn issue_credential(
     ApiJson(b): ApiJson<CredentialBody>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    let c = agents::issue_credential(
+    let c = agents::issue_credential_for(
         &st.app.pool,
         &st.cfg.session,
         &ctx,
         id_param(&id)?,
+        b.agent_principal_id,
         &b.label,
         b.expires_in_days,
     )
     .await?;
     Ok(ok(c))
+}
+
+// ---------------------------------------------------------------- AI team (design 05 §3.12)
+
+async fn ai_team_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    // An unparsable project id lists nothing, like a missing one.
+    let project = q
+        .get("project")
+        .map(|p| p.parse::<Uuid>().unwrap_or(Uuid::nil()));
+    Ok(ok(crate::ai_team::list(
+        &st.app,
+        ctx,
+        project,
+        q.get("handle").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn ai_team_templates(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::templates(&st.app.pool, &ctx).await?))
+}
+
+async fn ai_team_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(b): ApiJson<crate::ai_team::CreateRoleInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(created(
+        crate::ai_team::create(&st.app, &st.cfg.session, ctx, key, &b).await?,
+    ))
+}
+
+async fn ai_team_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai_team::detail(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_team_activity(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::activity(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        time_param(&q, "from")?,
+        time_param(&q, "to")?,
+    )
+    .await?))
+}
+
+async fn ai_team_pause(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::PauseInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::pause(&st.app, ctx, id_param(&id)?, &b).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_team_resume(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::ResumeInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::resume(&st.app, &st.cfg.session, ctx, id_param(&id)?, &b).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_team_retire(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::retire(&st.app, &st.cfg.session, ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_team_credentials(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::CredentialInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::ai_team::issue_credential(&st.app, &st.cfg.session, ctx, id_param(&id)?, &b).await?,
+    ))
+}
+
+async fn my_runtimes(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::runtimes(&st.app, ctx).await?))
+}
+
+async fn rename_runtime(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::RenameRuntimeInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::rename_runtime(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        &b,
+    )
+    .await?))
+}
+
+async fn runtime_new_context(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::RuntimeNewContextInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::runtime_new_context(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+        &b,
+    )
+    .await?))
+}
+
+async fn retire_runtime(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::retire_runtime(&st.app, &st.cfg.session, ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+// ---------------------------------------------------------------- built-in AI chat (design 05 §3.13)
+
+async fn ai_status(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::chat::status(&st.app, ctx).await?))
+}
+
+async fn ai_assistant_setup(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::chat::setup(&st.app, ctx).await?))
+}
+
+async fn ai_assistant_extend(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::chat::extend(&st.app, &st.cfg.session, ctx).await?
+    ))
+}
+
+async fn ai_conversations(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let limit = match q.get("limit") {
+        None => None,
+        Some(l) => Some(l.parse::<u32>().map_err(|_| {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "limit is a number")
+                    .with_details(json!({"path": "limit"}))
+                    .into(),
+            )
+        })?),
+    };
+    let query = crate::ai::chat::ConversationsQuery {
+        cursor: q.get("cursor").cloned(),
+        limit,
+    };
+    Ok(ok(crate::ai::chat::list(&st.app, ctx, &query).await?))
+}
+
+async fn ai_conversation_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<crate::ai::chat::NewConversation>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(crate::ai::chat::create(&st.app, ctx, &b).await?))
+}
+
+async fn ai_conversation_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai::chat::delete(&st.app, ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_messages(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::chat::messages(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_message_send(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai::chat::SendInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let id = id_param(&id)?;
+    let out = crate::ai::chat::send(&st.app, ctx, key, id, &b, &st.cfg.spa_origin).await?;
+    let mut r = ok(out);
+    *r.status_mut() = StatusCode::ACCEPTED;
+    Ok(r)
+}
+
+async fn ai_run_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::runner::get_run(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_run_stream(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let last = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    Ok(crate::ai::runner::stream(&st.app, ctx, id_param(&id)?, last).await?)
+}
+
+async fn ai_run_cancel(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai::runner::cancel(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_admin_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::settings(&st.app, ctx).await?))
+}
+
+async fn ai_admin_put_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<crate::ai::admin::SettingsInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::put_settings(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        &b,
+    )
+    .await?))
+}
+
+async fn ai_admin_endpoints(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::endpoints(&st.app, ctx).await?))
+}
+
+async fn ai_admin_providers(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::providers(&st.app, ctx).await?))
+}
+
+async fn ai_admin_create_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(b): ApiJson<crate::ai::admin::NewProvider>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::ai::admin::create_provider(&st.app, &st.cfg.session, ctx, &b).await?,
+    ))
+}
+
+async fn ai_admin_update_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai::admin::ProviderPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::update_provider(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+        &b,
+    )
+    .await?))
+}
+
+async fn ai_admin_test_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::test_provider(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn ai_admin_retire_provider(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::retire_provider(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn ai_admin_usage(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::usage(
+        &st.app,
+        ctx,
+        q.get("month").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn ai_admin_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai::admin::events(&st.app, ctx).await?))
 }
 
 async fn revoke_credential(
@@ -2055,4 +3225,479 @@ async fn revoke_credential(
     let ctx = human(&ra)?;
     agents::revoke_credential(&st.app.pool, &ctx, id_param(&id)?).await?;
     Ok(ok(Done::default()))
+}
+
+// ---------------------------------------------------------------- forms and fields (design 05 §3.6, §3.7)
+
+/// `POST /commands/validate`: read-only, CSRF only, no Idempotency-Key.
+async fn validate_command(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::forms::ValidateCommandInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::validate_human(&st.app, ctx, &body).await?))
+}
+
+async fn form_describe(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, t)): Path<(String, String)>,
+    Query(q): Query<crate::forms::FormQuery>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let op = q.op.as_deref().unwrap_or("create");
+    Ok(ok(crate::forms::describe_form(
+        &st.app,
+        ctx,
+        &id,
+        &t,
+        op,
+        q.issue.as_deref(),
+    )
+    .await?))
+}
+
+async fn forms_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<crate::forms::FormsQuery>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::list(&st.app, ctx, &q).await?))
+}
+
+async fn forms_ensure(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::forms::NewForm>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::ensure(&st.app, ctx, &body).await?))
+}
+
+async fn form_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::get(&st.app, ctx, id_param(&id)?).await?))
+}
+
+fn form_part(s: &str) -> Result<crate::forms::Part, ApiFailure> {
+    crate::forms::Part::parse(s).map_err(ApiFailure)
+}
+
+async fn form_versions(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let part = form_part(q.get("part").map(String::as_str).unwrap_or("rules"))?;
+    Ok(ok(crate::forms::versions(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        part,
+    )
+    .await?))
+}
+
+async fn form_draft_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::forms::DraftInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(
+        crate::forms::put_draft(&st.app, ctx, id, part, &body).await?
+    ))
+}
+
+async fn form_impact(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(crate::forms::impact(&st.app, ctx, id, part).await?))
+}
+
+async fn form_publish(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::forms::PublishInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(crate::forms::publish(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id,
+        part,
+        &body,
+    )
+    .await?))
+}
+
+async fn form_discard(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, part)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let id = id_param(&id)?;
+    let part = form_part(&part)?;
+    Ok(ok(crate::forms::discard(&st.app, ctx, id, part).await?))
+}
+
+async fn form_rollback(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::forms::RollbackInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::forms::rollback(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+        &body,
+    )
+    .await?))
+}
+
+async fn fields_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::list(&st.app, ctx).await?))
+}
+
+async fn fields_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::field_admin::NewFieldInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::field_admin::create(&st.app, ctx, &body).await?,
+    ))
+}
+
+async fn field_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Query<crate::field_admin::FieldQuery>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::get(&st.app, ctx, &id, &q).await?))
+}
+
+async fn field_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::field_admin::FieldPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::field_admin::patch(&st.app, ctx, &id, &body).await?
+    ))
+}
+
+fn lock_version_param(q: &HashMap<String, String>) -> Result<i32, ApiFailure> {
+    q.get("lock_version")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| {
+            ApiFailure(
+                ApiError::new(ErrorCode::InvalidArgument, "lock_version is required")
+                    .with_details(json!({"path": "lock_version"}))
+                    .into(),
+            )
+        })
+}
+
+/// 202 with `Location`: the field stays `dropping` until the background
+/// delete finishes.
+async fn field_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let lv = lock_version_param(&q)?;
+    let v = crate::field_admin::delete(&st.app, &st.cfg.session, ctx, &id, lv).await?;
+    let mut r = ok(&v);
+    *r.status_mut() = StatusCode::ACCEPTED;
+    if let Ok(h) = HeaderValue::from_str(&format!("/api/v1/admin/custom-fields/{}", v.id)) {
+        r.headers_mut().insert(header::LOCATION, h);
+    }
+    Ok(r)
+}
+
+async fn field_option_add(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::field_admin::NewOption>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::field_admin::add_option(&st.app, ctx, &id, &body).await?,
+    ))
+}
+
+async fn field_option_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, oid)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::field_admin::OptionPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let oid = id_param(&oid)?;
+    Ok(ok(crate::field_admin::patch_option(
+        &st.app, ctx, &id, oid, &body,
+    )
+    .await?))
+}
+
+async fn field_option_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, oid)): Path<(String, String)>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let oid = id_param(&oid)?;
+    let lv = lock_version_param(&q)?;
+    Ok(ok(crate::field_admin::delete_option(
+        &st.app, ctx, &id, oid, lv,
+    )
+    .await?))
+}
+
+async fn field_conversion_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::field_admin::ConversionInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::field_admin::preview_conversion(&st.app, ctx, &id, &body).await?,
+    ))
+}
+
+async fn conversion_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::get_conversion(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+async fn conversion_start(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::field_admin::start_conversion(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- notifications (design 05 §3.11)
+
+async fn notifications_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let p = crate::notifications::ListQuery {
+        filter: q.get("filter").cloned(),
+        project: q.get("project").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(&q, "limit")?.map(|l| l.clamp(1, 100) as u32),
+    };
+    Ok(ok(crate::notifications::list(&st.app, ctx, &p).await?))
+}
+
+async fn notifications_unread(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::notifications::unread_count(&st.app, ctx).await?))
+}
+
+async fn notification_read(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::notifications::mark_read(&st.app, ctx, &id).await?))
+}
+
+async fn notification_unread(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::mark_unread(&st.app, ctx, &id).await?
+    ))
+}
+
+async fn notifications_read_all(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::notifications::ReadAllInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::read_all(&st.app, ctx, &body).await?
+    ))
+}
+
+async fn issue_watch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::watch(&st.app, ctx, &key, true).await?
+    ))
+}
+
+async fn issue_unwatch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::watch(&st.app, ctx, &key, false).await?
+    ))
+}
+
+async fn notification_prefs(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::notifications::preferences(&st.app, ctx).await?))
+}
+
+async fn notification_prefs_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::notifications::PreferencesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::notifications::put_preferences(
+        &st.app, ctx, key, &body,
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- concepts (design 05 §3.9)
+
+async fn concepts_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let p = crate::concepts::ConceptQuery {
+        q: q.get("q").cloned(),
+        limit: int_param(&q, "limit")?.map(|l| l.clamp(1, 100) as u32),
+        cursor: q.get("cursor").cloned(),
+    };
+    Ok(ok(crate::concepts::list(&st.app, ctx, &p).await?))
+}
+
+async fn concepts_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::concepts::NewConcept>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(crate::concepts::create(&st.app, ctx, &body).await?))
+}
+
+async fn concept_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::concepts::get(&st.app, ctx, &id).await?))
+}
+
+async fn concept_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::concepts::ConceptPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::concepts::patch(&st.app, ctx, &id, &body).await?))
+}
+
+async fn concept_label_add(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::concepts::NewLabel>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::concepts::add_label(&st.app, ctx, &id, &body).await?,
+    ))
+}
+
+async fn concept_label_patch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, label)): Path<(String, String)>,
+    ApiJson(body): ApiJson<crate::concepts::LabelPatch>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::concepts::patch_label(
+        &st.app, ctx, &id, &label, &body,
+    )
+    .await?))
 }

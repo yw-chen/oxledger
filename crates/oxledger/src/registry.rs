@@ -30,6 +30,7 @@ use crate::mcp::{
 };
 use crate::service::{IssueDetail, ResolveResult, SearchParams, SearchResult};
 use crate::versions::VersionList;
+use crate::views::{AgentViewRun, ViewList, ViewListParams, ViewRunParams};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +277,48 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<VersionList>,
         ),
         agent_tool(
+            "view_list",
+            "Built-in views and the project views of delegated projects; never personal views (design 05 §4, B-4).",
+            EffectClass::Read,
+            schema::<ViewListParams>,
+            schema::<ViewList>,
+        ),
+        agent_tool(
+            "view_run",
+            "Run a project or built-in view with the agent's read scope (design 05 §4, R-VD9).",
+            EffectClass::Read,
+            schema::<ViewRunParams>,
+            schema::<AgentViewRun>,
+        ),
+        agent_tool(
+            "triage_list",
+            "Issues waiting in the Triage inbox of a delegated project, or of every project where the agent may triage (design 05 §4.1).",
+            EffectClass::Read,
+            schema::<crate::triage::TriageListParams>,
+            schema::<crate::triage::TriageList>,
+        ),
+        agent_tool(
+            "time_list",
+            "The delegator's own time entries, when the delegation has read_own_time (design 05 §3.5.4 A1(c), §4.1).",
+            EffectClass::Read,
+            schema::<crate::time_reports::TimeListParams>,
+            schema::<crate::time_reports::TimeEntryPage>,
+        ),
+        agent_tool(
+            "describe_form",
+            "The issue form of a project and tracker: fields, options, required, the L1 rules and rules_version (design 05 §3.6.1).",
+            EffectClass::Read,
+            schema::<crate::forms::DescribeFormParams>,
+            schema::<crate::forms::FormDescription>,
+        ),
+        agent_tool(
+            "validate",
+            "Check a command document as command_submit would, without writing; counts against the validate quota (design 05 §3.6.4).",
+            EffectClass::Read,
+            schema::<crate::forms::ValidateCommandInput>,
+            schema::<crate::forms::ValidateResult>,
+        ),
+        agent_tool(
             "command_submit",
             "Write directly where the delegation's policy allows, else create a proposal (§16.4).",
             EffectClass::Propose,
@@ -332,7 +375,60 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<AgentOperation>,
         ),
     ]);
+    for t in &mut v {
+        if BUILTIN_TOOLS.contains(&t.name) {
+            t.allowed_methods = with_builtin(t.allowed_methods);
+        }
+    }
     v
+}
+
+/// The tools the built-in AI may call (design 05 §4.5). A tool added later
+/// is not open to it until it is listed here.
+pub const BUILTIN_TOOLS: [&str; 18] = [
+    "search",
+    "get",
+    "get_many",
+    "get_source",
+    "verify_citations",
+    "resolve",
+    "describe",
+    "describe_form",
+    "validate",
+    "view_list",
+    "view_run",
+    "triage_list",
+    "time_list",
+    "version_list",
+    "command_submit",
+    "changeset_get",
+    "changeset_list",
+    "operation_get",
+];
+
+const READERS_AND_BUILTIN: &[AuthMethod] = &[
+    AuthMethod::BrowserSession,
+    AuthMethod::AgentToken,
+    AuthMethod::LegacyApiKey,
+    AuthMethod::BuiltinRun,
+];
+const SESSION_AGENT_AND_BUILTIN: &[AuthMethod] = &[
+    AuthMethod::BrowserSession,
+    AuthMethod::AgentToken,
+    AuthMethod::BuiltinRun,
+];
+const AGENTS_AND_BUILTIN: &[AuthMethod] = &[AuthMethod::AgentToken, AuthMethod::BuiltinRun];
+
+fn with_builtin(m: &'static [AuthMethod]) -> &'static [AuthMethod] {
+    if m == READERS {
+        READERS_AND_BUILTIN
+    } else if m == SESSION_OR_AGENT {
+        SESSION_AGENT_AND_BUILTIN
+    } else if m == AGENTS {
+        AGENTS_AND_BUILTIN
+    } else {
+        panic!("no built-in variant of {m:?}")
+    }
 }
 
 /// MCP may only expose reads and proposals (§4.6).

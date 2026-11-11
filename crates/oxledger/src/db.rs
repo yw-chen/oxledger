@@ -75,6 +75,14 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             is_admin: false,
             agent: None,
         }),
+        AuthMethod::Recipient => user(
+            sqlx::query_scalar(
+                "SELECT is_admin FROM principals WHERE id = $1 AND kind = 'user' AND status = 'active'",
+            )
+            .bind(ctx.principal_id())
+            .fetch_optional(&mut *conn)
+            .await?,
+        ),
         #[cfg(feature = "test-support")]
         AuthMethod::TestUser => user(
             sqlx::query_scalar(
@@ -112,18 +120,20 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             .await?,
         ),
         AuthMethod::AgentToken => {
-            // Token, context, agent, delegator and client, all valid now.
+            // Token, context, agent (the role the token is bound to, design
+            // 05 §3.12.5), runtime, delegator and client, all valid now.
             let row: Option<(Uuid, Uuid, Uuid, bool)> = sqlx::query_as(
                 "SELECT w.id, ap.agent_principal_id, ap.delegator_user_id, d.is_admin
                  FROM agent_credentials c
-                 JOIN agent_work_contexts w ON w.id = c.context_id
-                 JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
+                 JOIN agent_work_contexts w ON w.id = c.context_id AND w.runtime_id = c.runtime_id
+                 JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
+                 JOIN agent_runtimes rt ON rt.id = c.runtime_id
                  JOIN principals a ON a.id = ap.agent_principal_id
                  JOIN principals d ON d.id = ap.delegator_user_id
                  JOIN agent_clients cl ON cl.id = ap.agent_client_id
-                 WHERE c.id = $1 AND c.context_id = $2 AND ap.agent_principal_id = $3
+                 WHERE c.id = $1 AND c.context_id = $2 AND c.agent_principal_id = $3
                    AND c.revoked_at IS NULL AND c.expires_at > now()
-                   AND w.state = 'active'
+                   AND w.state = 'active' AND rt.retired_at IS NULL AND ap.retired_at IS NULL
                    AND a.kind = 'agent' AND a.status = 'active'
                    AND d.kind = 'user' AND d.status = 'active'
                    AND cl.enabled",
@@ -150,6 +160,89 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
                     unauthenticated()
                 });
             };
+            agent_reach(
+                conn,
+                context_id,
+                agent_id,
+                delegator_id,
+                delegator_is_admin,
+            )
+            .await
+        }
+        AuthMethod::BuiltinRun => {
+            // Design 05 §3.13.1 (appendix D V13): every tool call re-checks
+            // that AI is enabled, the oxledger-ai client is enabled, the user
+            // and the principal are active and not paused or retired, the run
+            // is still running within its lease, and the conversation's
+            // context is the runtime's active context.
+            // In a write transaction the run row is held (FOR SHARE) until
+            // the write commits: a cancel, the sweeper or the run's end
+            // (which update the row) wait for it, so a write never lands
+            // after the run was seen ended. Reads run READ ONLY, where
+            // row locks are not allowed; they write nothing.
+            let read_only: String =
+                sqlx::query_scalar("SELECT current_setting('transaction_read_only')")
+                    .fetch_one(&mut *conn)
+                    .await?;
+            let lock = if read_only == "on" {
+                ""
+            } else {
+                " FOR SHARE OF r"
+            };
+            let row: Option<(Uuid, Uuid, Uuid, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT w.id, ap.agent_principal_id, ap.delegator_user_id, d.is_admin
+                 FROM ai_runs r
+                 JOIN ai_conversations cv ON cv.id = r.conversation_id AND cv.user_id = r.user_id
+                 JOIN agent_work_contexts w ON w.id = cv.context_id AND w.runtime_id = cv.runtime_id
+                 JOIN agent_principals ap ON ap.agent_principal_id = cv.agent_principal_id
+                                         AND ap.runtime_id = cv.runtime_id
+                 JOIN agent_runtimes rt ON rt.id = cv.runtime_id AND rt.kind = 'builtin'
+                 JOIN principals a ON a.id = ap.agent_principal_id
+                 JOIN principals d ON d.id = ap.delegator_user_id
+                 JOIN agent_clients cl ON cl.id = ap.agent_client_id
+                 JOIN ai_settings s ON s.id
+                 WHERE r.id = $1 AND w.id = $2 AND ap.agent_principal_id = $3 AND d.id = $4
+                   AND r.state = 'running' AND r.lease_until > clock_timestamp()
+                   AND r.cancel_requested_at IS NULL
+                   AND cv.state = 'open' AND cv.deleted_at IS NULL
+                   AND w.state = 'active' AND rt.retired_at IS NULL
+                   AND ap.retired_at IS NULL AND ap.paused_at IS NULL
+                   AND a.kind = 'agent' AND a.status = 'active'
+                   AND d.kind = 'user' AND d.status = 'active'
+                   AND cl.enabled AND cl.builtin AND s.enabled{lock}",
+            )))
+            .bind(ctx.run_id())
+            .bind(ctx.context_id())
+            .bind(ctx.principal_id())
+            .bind(ctx.on_behalf_of())
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some((context_id, agent_id, delegator_id, delegator_is_admin)) = row else {
+                return Err(unauthenticated());
+            };
+            agent_reach(
+                conn,
+                context_id,
+                agent_id,
+                delegator_id,
+                delegator_is_admin,
+            )
+            .await
+        }
+    }
+}
+
+/// The rest of an agent's identity once its credential (token or run)
+/// checked out: R's epochs, then the role's readable delegated projects.
+async fn agent_reach(
+    conn: &mut PgConnection,
+    context_id: Uuid,
+    agent_id: Uuid,
+    delegator_id: Uuid,
+    delegator_is_admin: bool,
+) -> Result<Effective> {
+    {
+        {
             // §3.5: every request compares the epochs of R; any change
             // quarantines the whole context (reads too).
             let changed: bool = sqlx::query_scalar(
@@ -161,14 +254,29 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             .fetch_one(&mut *conn)
             .await?;
             if changed {
-                return Err(crate::agents::quarantined());
+                // Design 05 §3.12.2 (T-M1-87): every role of the runtime
+                // stops; say which others share the context.
+                let shared_with: Vec<String> = sqlx::query_scalar(
+                    "SELECT p.handle FROM agent_principals p
+                     JOIN agent_work_contexts w ON w.runtime_id = p.runtime_id
+                     WHERE w.id = $1 AND p.agent_principal_id <> $2 AND p.retired_at IS NULL
+                     ORDER BY p.handle",
+                )
+                .bind(context_id)
+                .bind(agent_id)
+                .fetch_all(&mut *conn)
+                .await?;
+                return Err(crate::agents::quarantined_shared(shared_with));
             }
+            // Reads follow this role's own delegations; R (above) is the
+            // runtime's (design 05 §3.12.2, T-M1-88).
             let delegated: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT project_id FROM delegations
-                 WHERE context_id = $1 AND revoked_at IS NULL AND expires_at > now()
+                 WHERE context_id = $1 AND agent_principal_id = $2 AND revoked_at IS NULL AND expires_at > now()
                  ORDER BY project_id",
             )
             .bind(context_id)
+            .bind(agent_id)
             .fetch_all(&mut *conn)
             .await?;
             // A project that stopped being audience-consistent is not readable,
@@ -229,11 +337,67 @@ pub async fn load_scope(conn: &mut PgConnection, ctx: AuthContext) -> Result<Sco
     let Some(agent) = &me.agent else {
         return user_scope(conn, me.user_id, me.is_admin).await;
     };
-    let full = user_scope(conn, Some(agent.delegator_id), agent.delegator_is_admin).await?;
+    agent_scope(
+        conn,
+        agent.delegator_id,
+        agent.delegator_is_admin,
+        Some(&agent.projects),
+    )
+    .await
+}
+
+/// The visibility a write document is checked against before anything else
+/// (看不到＝不存在, M1.11 gate). A person: [`load_scope`]. An agent: its
+/// delegator's scope cut down to every project its context was ever
+/// delegated, revoked or expired ones included: a target there is answered
+/// by the delegation checks (`delegation_unavailable`, 02 T-X19), a target
+/// anywhere else is `not_found` like a missing issue.
+pub(crate) async fn write_scope(conn: &mut PgConnection, ctx: AuthContext) -> Result<Scope> {
+    let me = effective(conn, ctx).await?;
+    let Some(agent) = &me.agent else {
+        return user_scope(conn, me.user_id, me.is_admin).await;
+    };
+    let projects: Vec<Uuid> =
+        sqlx::query_scalar("SELECT DISTINCT project_id FROM delegations WHERE context_id = $1")
+            .bind(agent.context_id)
+            .fetch_all(&mut *conn)
+            .await?;
+    agent_scope(
+        conn,
+        agent.delegator_id,
+        agent.delegator_is_admin,
+        Some(&projects),
+    )
+    .await
+}
+
+/// What an agent of `delegator` reads (§3.5): the delegator's scope cut down
+/// to `projects` (`None`: every project the delegator reads that is
+/// audience-consistent, for re-checking the built-in AI's stored replies
+/// as the user reads them, design 05 §3.13.5), non-private issues, no
+/// `own` roles.
+pub(crate) async fn agent_scope(
+    conn: &mut PgConnection,
+    delegator: Uuid,
+    delegator_is_admin: bool,
+    projects: Option<&[Uuid]>,
+) -> Result<Scope> {
+    let full = user_scope(conn, Some(delegator), delegator_is_admin).await?;
+    let mut allowed: Vec<Uuid> = Vec::new();
+    match projects {
+        Some(p) => allowed.extend_from_slice(p),
+        None => {
+            for g in &full.grants {
+                if crate::agents::audience_consistent(&mut *conn, g.project_id).await? {
+                    allowed.push(g.project_id);
+                }
+            }
+        }
+    }
     let grants = full
         .grants
         .into_iter()
-        .filter(|g| agent.projects.contains(&g.project_id))
+        .filter(|g| allowed.contains(&g.project_id))
         .map(|g| ProjectGrant {
             project_id: g.project_id,
             roles: g

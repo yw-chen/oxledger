@@ -78,6 +78,9 @@ pub enum ErrorCode {
     InvalidTransition,
     /// Duplicate of itself, or across projects.
     RelationNotAllowed,
+    /// Contract 05 §3.10.1: the issue is not waiting in Triage (or, for
+    /// `unsnooze`, not snoozed); `details.state` is its triage state.
+    TriageStateInvalid,
     /// The newly chosen version is locked or closed (§17.3 R1).
     VersionNotOpen,
     /// Deleting a version still used by issues the caller can see (R5).
@@ -130,6 +133,56 @@ pub enum ErrorCode {
     ConsistencyEpochChanged,
     /// `on_lag: "error"` and the index has not caught up; `retry_after_ms`.
     SearchNotCaughtUp,
+    /// A filter names a custom field definition that changed since (03 §3.7).
+    FieldDefinitionChanged,
+    /// The query did not finish within the request's work budget (03 §5.4).
+    QueryTimeout,
+    /// A view definition is not valid (design 05 §5): `details.path`,
+    /// `details.reason` (`unknown_field`, `invalid_shape`, `invalid_value`,
+    /// `kind_mismatch`, `lanes_required`, `restricted_field`,
+    /// `project_scope`, `too_large`, `duplicate_value`).
+    InvalidView,
+    /// Another view of the same scope has this name; `details.view_id`.
+    ViewNameTaken,
+    /// A project tab still shows this view; `details.tabs` (tab titles).
+    ViewInUse,
+    /// Contract 05 §3.6: `expected_rules_version` is not the rules version
+    /// in force; `details.current`. Describe the form again.
+    FormRulesChanged,
+    /// A form draft is not valid: `details.kind` (`unknown_field`,
+    /// `restricted_condition_field`, `condition_too_complex`, `cycle`,
+    /// `hides_required`, `field_not_applicable`, `malformed`,
+    /// `invalid_rule`), `details.path`, `rule_id` or `section_id`.
+    FormInvalid,
+    /// `mode = block` and existing issues break the rules; `details` is the
+    /// impact report.
+    FormPublishBlocked,
+    /// Design 05 §3.9: the label already belongs (active) to another
+    /// concept; `details.concept_id`, `details.pref_label`, `details.label`.
+    ConceptLabelTaken,
+    /// Design 05 §5: a role or delegation for a runtime whose work context
+    /// is closed; start a new work context first.
+    RuntimeContextClosed,
+    /// Design 05 §5 (Q2): the agent software already runs in another active
+    /// runtime of this sponsor; `details.runtime_id`, `details.label`.
+    RuntimeClientTaken,
+    /// Design 05 §5: the built-in AI cannot run now; `details.kind` is
+    /// `disabled`, `circuit_open`, `not_configured` or `endpoint_blocked`.
+    AiUnavailable,
+    /// The AI provider failed; `details.kind` is `timeout`, `http_status`
+    /// (with `status`) or `malformed`. Never the provider's own text.
+    AiProviderError,
+    /// The model or the endpoint's host is on the D17 list; `details.field`.
+    AiModelDisallowed,
+    /// `details.kind`: `unregistered`, `no_key` or `endpoint_blocked`.
+    AiEndpointInvalid,
+    /// The conversation became read-only (a new work context); start a new one.
+    AiConversationReadOnly,
+    /// The provider in use changed since this conversation's last run;
+    /// resend with `ack_provider_id`. `details.provider`.
+    AiProviderChanged,
+    /// The caller already has a run queued or running.
+    AiRunInProgress,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -146,7 +199,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 53] = [
+    pub const ALL: [ErrorCode; 72] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -175,6 +228,7 @@ impl ErrorCode {
         Self::ReadonlyField,
         Self::InvalidTransition,
         Self::RelationNotAllowed,
+        Self::TriageStateInvalid,
         Self::VersionNotOpen,
         Self::VersionInUse,
         Self::VersionNameTaken,
@@ -200,6 +254,24 @@ impl ErrorCode {
         Self::InvalidConsistencyToken,
         Self::ConsistencyEpochChanged,
         Self::SearchNotCaughtUp,
+        Self::FieldDefinitionChanged,
+        Self::QueryTimeout,
+        Self::InvalidView,
+        Self::ViewNameTaken,
+        Self::ViewInUse,
+        Self::FormRulesChanged,
+        Self::FormInvalid,
+        Self::FormPublishBlocked,
+        Self::ConceptLabelTaken,
+        Self::RuntimeContextClosed,
+        Self::RuntimeClientTaken,
+        Self::AiUnavailable,
+        Self::AiProviderError,
+        Self::AiModelDisallowed,
+        Self::AiEndpointInvalid,
+        Self::AiConversationReadOnly,
+        Self::AiProviderChanged,
+        Self::AiRunInProgress,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -232,6 +304,7 @@ impl ErrorCode {
             Self::ReadonlyField => "readonly_field",
             Self::InvalidTransition => "invalid_transition",
             Self::RelationNotAllowed => "relation_not_allowed",
+            Self::TriageStateInvalid => "triage_state_invalid",
             Self::VersionNotOpen => "version_not_open",
             Self::VersionInUse => "version_in_use",
             Self::VersionNameTaken => "version_name_taken",
@@ -257,6 +330,24 @@ impl ErrorCode {
             Self::InvalidConsistencyToken => "invalid_consistency_token",
             Self::ConsistencyEpochChanged => "consistency_epoch_changed",
             Self::SearchNotCaughtUp => "search_not_caught_up",
+            Self::FieldDefinitionChanged => "field_definition_changed",
+            Self::QueryTimeout => "query_timeout",
+            Self::InvalidView => "invalid_view",
+            Self::ViewNameTaken => "view_name_taken",
+            Self::ViewInUse => "view_in_use",
+            Self::FormRulesChanged => "form_rules_changed",
+            Self::FormInvalid => "form_invalid",
+            Self::FormPublishBlocked => "form_publish_blocked",
+            Self::ConceptLabelTaken => "concept_label_taken",
+            Self::RuntimeContextClosed => "runtime_context_closed",
+            Self::RuntimeClientTaken => "runtime_client_taken",
+            Self::AiUnavailable => "ai_unavailable",
+            Self::AiProviderError => "ai_provider_error",
+            Self::AiModelDisallowed => "ai_model_disallowed",
+            Self::AiEndpointInvalid => "ai_endpoint_invalid",
+            Self::AiConversationReadOnly => "ai_conversation_read_only",
+            Self::AiProviderChanged => "ai_provider_changed",
+            Self::AiRunInProgress => "ai_run_in_progress",
         }
     }
 
@@ -287,6 +378,7 @@ impl ErrorCode {
             Self::ReadonlyField => 422,
             Self::InvalidTransition => 422,
             Self::RelationNotAllowed => 422,
+            Self::TriageStateInvalid => 409,
             Self::VersionNotOpen => 422,
             Self::VersionInUse => 409,
             Self::VersionNameTaken => 409,
@@ -312,6 +404,19 @@ impl ErrorCode {
             Self::InvalidConsistencyToken => 400,
             Self::ConsistencyEpochChanged => 409,
             Self::SearchNotCaughtUp => 503,
+            Self::FieldDefinitionChanged => 409,
+            Self::QueryTimeout => 422,
+            Self::InvalidView => 422,
+            Self::ViewNameTaken => 409,
+            Self::ViewInUse => 409,
+            Self::FormRulesChanged | Self::FormPublishBlocked => 409,
+            Self::FormInvalid => 422,
+            Self::ConceptLabelTaken => 409,
+            Self::RuntimeContextClosed | Self::RuntimeClientTaken => 409,
+            Self::AiUnavailable => 503,
+            Self::AiProviderError => 502,
+            Self::AiModelDisallowed | Self::AiEndpointInvalid => 422,
+            Self::AiConversationReadOnly | Self::AiProviderChanged | Self::AiRunInProgress => 409,
         }
     }
 
@@ -323,6 +428,8 @@ impl ErrorCode {
                 | Self::ExecutionInProgress
                 | Self::SearchUnavailable
                 | Self::SearchNotCaughtUp
+                | Self::AiProviderError
+                | Self::AiRunInProgress
         )
     }
 
@@ -360,6 +467,7 @@ impl ErrorCode {
             Self::ReadonlyField => &[FixInput],
             Self::InvalidTransition => &[FixInput, AskHuman],
             Self::RelationNotAllowed => &[AskHuman, Stop],
+            Self::TriageStateInvalid => &[RefreshAndRevise, Stop],
             Self::VersionNotOpen => &[FixInput, AskHuman],
             Self::VersionInUse => &[AskHuman],
             Self::VersionNameTaken => &[FixInput, AskHuman],
@@ -384,6 +492,19 @@ impl ErrorCode {
             Self::SearchUnavailable => &[WaitAndRetry],
             Self::InvalidConsistencyToken | Self::ConsistencyEpochChanged => &[FixInput],
             Self::SearchNotCaughtUp => &[WaitAndRetry],
+            Self::FieldDefinitionChanged => &[FixInput],
+            Self::QueryTimeout => &[FixInput, AskHuman],
+            Self::InvalidView | Self::ViewNameTaken => &[FixInput],
+            Self::ViewInUse => &[AskHuman],
+            Self::FormRulesChanged | Self::FormInvalid => &[FixInput],
+            Self::FormPublishBlocked => &[AskHuman],
+            Self::ConceptLabelTaken => &[FixInput, AskHuman],
+            Self::RuntimeContextClosed | Self::RuntimeClientTaken => &[AskHuman],
+            Self::AiUnavailable | Self::AiModelDisallowed | Self::AiEndpointInvalid => &[AskHuman],
+            Self::AiProviderError => &[WaitAndRetry],
+            Self::AiConversationReadOnly => &[AskHuman, Stop],
+            Self::AiProviderChanged => &[AskHuman],
+            Self::AiRunInProgress => &[WaitAndRetry],
         }
     }
 }

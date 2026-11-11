@@ -10,7 +10,11 @@
 //!   3. tantivy: the same `Pred` as an index filter;
 //!   4. `Scope::can_see` in memory;
 //!
-//! It also checks the MCP-facing `service::search` result.
+//! It also checks the MCP-facing `service::search` result, and (design 05
+//! M1.1) `service::search` with random Filter v2 `where` conditions over
+//! the visibility inputs (project, tracker, is_private, author, assignee
+//! with `me` and groups; eq/ne/in/not_in/is_null/not_null; and/or), with
+//! and without `q`, against `reference_visible` AND a reference evaluator.
 //!
 //! Needs PostgreSQL 18. Uses OXLEDGER_TEST_DATABASE_URL, or database
 //! `oxledger_test` next to DATABASE_URL / the local docker default (created if
@@ -23,11 +27,14 @@ use oxledger::auth::AuthContext;
 use oxledger::db::{self, push_pred};
 use oxledger::search::SearchIndex;
 use oxledger::service::{self, App, SearchParams};
+use serde_json::{Value as Json, json};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const WORLDS: u64 = 40;
+/// Random `where` filters per viewer and world.
+const WHERES: usize = 4;
 
 struct Rng(u64);
 impl Rng {
@@ -250,6 +257,215 @@ fn reference_visible(w: &World, viewer: Option<&User>, f: &IssueFacts) -> bool {
 
 use common::test_pool;
 
+/// A random v2 `where` and its meaning, written independently of the
+/// server: (json, uses `me`, predicate over the facts with "me" = the
+/// viewer's id and groups).
+type Check = Box<dyn Fn(&IssueFacts, &[Uuid]) -> bool>;
+
+/// One `where` condition over a visibility input.
+fn gen_cond(
+    rng: &mut Rng,
+    w: &World,
+    visible_projects: &[Uuid],
+    viewer: Option<Uuid>,
+) -> (Json, bool, Check) {
+    let principals: Vec<Uuid> = w
+        .users
+        .iter()
+        .map(|u| u.id)
+        .chain(w.groups.iter().map(|g| g.0))
+        .collect();
+    let users: Vec<Uuid> = w.users.iter().map(|u| u.id).collect();
+    // A list of 1–3 ids from `from`, as JSON and as a set.
+    let some = |rng: &mut Rng, from: &[Uuid]| -> Vec<Uuid> {
+        let mut v: Vec<Uuid> = (0..1 + rng.below(3)).map(|_| *rng.pick(from)).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let ids = |v: &[Uuid]| json!(v.iter().map(|u| u.to_string()).collect::<Vec<_>>());
+    let kind = loop {
+        let k = rng.below(5);
+        if k != 0 || !visible_projects.is_empty() {
+            break k;
+        }
+    };
+    match kind {
+        // project / tracker: eq, ne, in, not_in (tracker: is_null too).
+        0 | 1 => {
+            let (field, from): (&str, Vec<Uuid>) = if kind == 0 {
+                ("project", visible_projects.to_vec())
+            } else {
+                ("tracker", w.trackers.clone())
+            };
+            let set = some(rng, &from);
+            let get = move |f: &IssueFacts| {
+                if kind == 0 {
+                    f.project_id
+                } else {
+                    f.tracker_id
+                }
+            };
+            match rng.below(5) {
+                0 => {
+                    let x = set[0];
+                    (
+                        json!({"field": field, "op": "eq", "value": x.to_string()}),
+                        false,
+                        Box::new(move |f, _| get(f) == x),
+                    )
+                }
+                1 => {
+                    let x = set[0];
+                    (
+                        json!({"field": field, "op": "ne", "value": x.to_string()}),
+                        false,
+                        Box::new(move |f, _| get(f) != x),
+                    )
+                }
+                2 => (
+                    json!({"field": field, "op": "in", "value": ids(&set)}),
+                    false,
+                    Box::new(move |f, _| set.contains(&get(f))),
+                ),
+                3 => (
+                    json!({"field": field, "op": "not_in", "value": ids(&set)}),
+                    false,
+                    Box::new(move |f, _| !set.contains(&get(f))),
+                ),
+                _ if kind == 1 => (
+                    json!({"field": field, "op": "is_null"}),
+                    false,
+                    Box::new(|_, _| false),
+                ),
+                _ => (
+                    json!({"field": field, "op": "in", "value": ids(&set)}),
+                    false,
+                    Box::new(move |f, _| set.contains(&get(f))),
+                ),
+            }
+        }
+        2 => {
+            let b = rng.chance(0.5);
+            (
+                json!({"field": "is_private", "op": "eq", "value": b}),
+                false,
+                Box::new(move |f, _| f.is_private == b),
+            )
+        }
+        // author: ids or `me` (alone: me is also created_on_behalf_of, null here).
+        3 => {
+            let me = rng.chance(0.4);
+            let set = some(rng, &users);
+            let pos = rng.chance(0.5);
+            let op = match (pos, rng.chance(0.5)) {
+                (true, true) => "eq",
+                (true, false) => "in",
+                (false, true) => "ne",
+                (false, false) => "not_in",
+            };
+            let value = match (me, op) {
+                (true, "eq" | "ne") => json!({"me": true}),
+                (true, _) => json!([{"me": true}]),
+                (false, "eq" | "ne") => json!(set[0].to_string()),
+                (false, _) => ids(&set),
+            };
+            let one = matches!(op, "eq" | "ne");
+
+            (
+                json!({"field": "author", "op": op, "value": value}),
+                me,
+                Box::new(move |f, _| {
+                    let hit = if me {
+                        Some(f.author_id) == viewer
+                    } else if one {
+                        f.author_id == set[0]
+                    } else {
+                        set.contains(&f.author_id)
+                    };
+                    hit == pos
+                }),
+            )
+        }
+        // assignee: ids and/or `me` (me + my groups), is_null / not_null.
+        _ => {
+            let me = rng.chance(0.4);
+            let set = some(rng, &principals);
+            match rng.below(6) {
+                4 => (
+                    json!({"field": "assignee", "op": "is_null"}),
+                    false,
+                    Box::new(|f, _| f.assigned_to_id.is_none()),
+                ),
+                5 => (
+                    json!({"field": "assignee", "op": "not_null"}),
+                    false,
+                    Box::new(|f, _| f.assigned_to_id.is_some()),
+                ),
+                k => {
+                    let op = ["eq", "ne", "in", "not_in"][k];
+                    let one = k < 2;
+                    let pos = k % 2 == 0;
+                    let value = match (me, one) {
+                        (true, true) => json!({"me": true}),
+                        (false, true) => json!(set[0].to_string()),
+                        (true, false) => {
+                            let mut v = vec![json!({"me": true})];
+                            v.extend(set.iter().map(|u| json!(u.to_string())));
+                            json!(v)
+                        }
+                        (false, false) => ids(&set),
+                    };
+                    (
+                        json!({"field": "assignee", "op": op, "value": value}),
+                        me,
+                        Box::new(move |f, mine| {
+                            let Some(a) = f.assigned_to_id else {
+                                return !pos;
+                            };
+                            let hit = (me && mine.contains(&a))
+                                || (!(me && one)
+                                    && if one { a == set[0] } else { set.contains(&a) });
+                            hit == pos
+                        }),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// A random `where`: a condition, or and/or of 2–3 parts, two levels deep at most.
+fn gen_where(
+    rng: &mut Rng,
+    w: &World,
+    vp: &[Uuid],
+    viewer: Option<Uuid>,
+    depth: usize,
+) -> (Json, bool, Check) {
+    if depth >= 2 || rng.chance(0.4) {
+        return gen_cond(rng, w, vp, viewer);
+    }
+    let and = rng.chance(0.5);
+    let parts: Vec<(Json, bool, Check)> = (0..2 + rng.below(2))
+        .map(|_| gen_where(rng, w, vp, viewer, depth + 1))
+        .collect();
+    let me = parts.iter().any(|p| p.1);
+    let json = json!({ (if and { "and" } else { "or" }): parts.iter().map(|p| p.0.clone()).collect::<Vec<_>>() });
+    let checks: Vec<Check> = parts.into_iter().map(|p| p.2).collect();
+    (
+        json,
+        me,
+        Box::new(move |f, mine| {
+            if and {
+                checks.iter().all(|c| c(f, mine))
+            } else {
+                checks.iter().any(|c| c(f, mine))
+            }
+        }),
+    )
+}
+
 async fn load_world(pool: &PgPool, w: &World) {
     sqlx::query(
         "TRUNCATE outbox, outbox_cursors, issue_keys, issues, workflow_transitions, project_trackers,
@@ -387,6 +603,7 @@ async fn e4_visibility_sql_index_memory_agree_with_reference() {
     let pool = test_pool().await;
     let mut checked = 0usize;
     let mut visible_total = 0usize;
+    let (mut where_checked, mut where_hits) = (0usize, 0usize);
     for seed in 1..=WORLDS {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D));
         let w = gen_world(&mut rng);
@@ -472,14 +689,71 @@ async fn e4_visibility_sql_index_memory_agree_with_reference() {
             );
             checked += 1;
             visible_total += expected.len();
+
+            // Filter v2: visible AND where, with and without q.
+            let visible_projects: Vec<Uuid> = scope.project_ids().collect();
+            let mine: Vec<Uuid> = viewer
+                .map(|u| {
+                    std::iter::once(u.id)
+                        .chain(w.groups.iter().filter(|g| g.1.contains(&u.id)).map(|g| g.0))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for _ in 0..WHERES {
+                let (wj, uses_me, check) =
+                    gen_where(&mut rng, &w, &visible_projects, viewer.map(|u| u.id), 0);
+                let want: BTreeSet<Uuid> = w
+                    .issues
+                    .iter()
+                    .filter(|(id, f)| expected.contains(id) && check(f, &mine))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for q in [None, Some("issue")] {
+                    let r = service::search(
+                        &app,
+                        caller,
+                        SearchParams {
+                            q: q.map(String::from),
+                            where_: Some(wj.clone()),
+                            limit: Some(100),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                    if uses_me && viewer.is_none() {
+                        let e = r.expect_err("anonymous has no me");
+                        let a = oxledger::error::classify(&e).unwrap();
+                        assert_eq!(
+                            a.details.unwrap()["reason"],
+                            "me_unavailable",
+                            "seed {seed}, {who}: {wj}"
+                        );
+                        continue;
+                    }
+                    let got: BTreeSet<Uuid> = r
+                        .unwrap_or_else(|e| panic!("seed {seed}, {who}, q={q:?}: {wj}: {e:#}"))
+                        .items
+                        .iter()
+                        .map(|i| i.id)
+                        .collect();
+                    assert_eq!(got, want, "seed {seed}, {who}, q={q:?}: where {wj}");
+                    where_checked += 1;
+                    where_hits += want.len();
+                }
+            }
         }
     }
+    assert!(
+        where_hits > where_checked,
+        "where checks too sparse: {where_hits} hits over {where_checked} searches"
+    );
     // Guard against a vacuous pass (e.g. everything invisible).
     assert!(
         visible_total > checked,
         "worlds too sparse: {visible_total} visible over {checked} viewers"
     );
     eprintln!(
-        "E4: {checked} viewer checks over {WORLDS} worlds, {visible_total} visible issue-viewer pairs"
+        "E4: {checked} viewer checks over {WORLDS} worlds, {visible_total} visible issue-viewer pairs; \
+         {where_checked} v2 where searches, {where_hits} hits"
     );
 }

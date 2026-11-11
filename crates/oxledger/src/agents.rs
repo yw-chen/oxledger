@@ -23,7 +23,7 @@ use sqlx::{PgConnection, PgPool};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const PROPOSAL_OPS: [&str; 7] = [
+pub const PROPOSAL_OPS: [&str; 10] = [
     "create_issue",
     "update_fields",
     "transition",
@@ -31,11 +31,48 @@ pub const PROPOSAL_OPS: [&str; 7] = [
     "duplicate_of",
     "create_version",
     "update_version",
+    "triage_decide",
+    "log_time",
+    "update_time_entry",
 ];
+/// Contract 05 §4.3 (A1(b)): time commands default to `review` on a new
+/// delegation (and when added later).
+pub const TIME_OPS: [&str; 2] = ["log_time", "update_time_entry"];
+
+/// Contract 05 §6.14: the delegation wizard's warning for `read_own_time`,
+/// word for word (A1(c)). The SPA shows it; the API carries it so the text
+/// has one source.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ReadOwnTimeWarning {
+    /// The bold first line.
+    pub title: String,
+    /// The paragraphs after it.
+    pub body: Vec<String>,
+    /// The checkbox that must be ticked to turn it on.
+    pub ack_label: String,
+    /// The tooltip of the delegation list tag 「可讀我的工時」.
+    pub tag: String,
+    pub tag_tooltip: String,
+}
+
+impl Default for ReadOwnTimeWarning {
+    fn default() -> Self {
+        Self {
+            title: "這個 agent 可以讀你自己的工時紀錄，包括說明文字。".into(),
+            body: vec![
+                "工時說明通常只有你和有權看工時的人看得到。agent 讀了之後，可能把說明抄進議題留言或欄位，讓專案所有成員都看得到。oxledger 不會攔下這種搬移（這是你同意承擔的例外，其他內容仍會攔）。".into(),
+                "agent 讀不到別人的工時，也讀不到工時合計。之後關掉這個開關，agent 已經讀過的內容也收不回來。".into(),
+            ],
+            ack_label: "我了解，仍要開啟".into(),
+            tag: "可讀我的工時".into(),
+            tag_tooltip: "這個 agent 可讀你的工時（含說明）。說明可能被抄到專案成員看得到的地方。".into(),
+        }
+    }
+}
 /// Commands that need the delegator's `manage_versions` for a policy row (§17.11).
 pub const VERSION_OPS: [&str; 2] = ["create_version", "update_version"];
 /// Built-in field keys a delegation may make writable; custom fields are `cf:<id>`.
-pub const BUILTIN_FIELDS: [&str; 7] = [
+pub const BUILTIN_FIELDS: [&str; 8] = [
     "subject",
     "description",
     "assigned_to_id",
@@ -43,6 +80,7 @@ pub const BUILTIN_FIELDS: [&str; 7] = [
     "start_date",
     "due_date",
     "fixed_version_id",
+    "estimated_hours",
 ];
 pub const DEFAULT_DELEGATION_DAYS: i64 = 7;
 pub const MAX_DELEGATION_DAYS: i64 = 30;
@@ -57,12 +95,16 @@ pub struct AgentClientView {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, schemars::JsonSchema)]
 pub struct DelegationView {
     pub id: Uuid,
     pub agent_principal_id: Uuid,
     pub agent_client_id: Uuid,
     pub context_id: Uuid,
+    /// Design 05 §3.12: the runtime the delegation's context belongs to.
+    pub runtime_id: Uuid,
+    /// The role (`personal` for delegations made through the 02 path).
+    pub role_key: String,
     pub project_id: Uuid,
     pub proposal_ops: Vec<String>,
     pub writable_fields: Vec<String>,
@@ -70,6 +112,17 @@ pub struct DelegationView {
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Contract 05 §2.5, §3.5.4: the agent may read the delegator's own time.
+    pub read_own_time: bool,
+    /// When the delegator ticked 「我了解，仍要開啟」.
+    pub read_own_time_ack_at: Option<DateTime<Utc>>,
+    /// Design 05 §3.12.6: project-level pause of this role (writes refused
+    /// with `agent_paused`, reads go on).
+    pub paused_at: Option<DateTime<Utc>>,
+    pub paused_reason: Option<String>,
+    /// The §6.14 warning text (the same on every delegation).
+    #[sqlx(skip)]
+    pub read_own_time_warning: ReadOwnTimeWarning,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -79,6 +132,8 @@ pub struct ContextView {
     /// The agent as history shows it (§16.2), e.g. `claude-code@alice`.
     pub agent_label: String,
     pub agent_client_id: Uuid,
+    /// Design 05 §3.12.2: the runtime whose roles share this context.
+    pub runtime_id: Uuid,
     pub state: String,
     pub created_at: DateTime<Utc>,
     pub closed_at: Option<DateTime<Utc>>,
@@ -101,6 +156,8 @@ pub struct SourceProject {
 pub struct IssuedCredential {
     pub id: Uuid,
     pub context_id: Uuid,
+    /// The role the token acts as (design 05 §3.12.5).
+    pub agent_principal_id: Uuid,
     /// Shown once; only its hash is stored.
     pub token: String,
     pub expires_at: DateTime<Utc>,
@@ -147,55 +204,168 @@ pub async fn audience_consistent(conn: &mut PgConnection, project_id: Uuid) -> R
     .await?)
 }
 
-/// Serializes the (user, client) pair for the rest of the transaction, so two
-/// first delegations cannot both create the agent principal or the first
-/// context (they would hit a unique index and fail with a 500). Advisory locks
-/// are taken before any row lock, so this does not change the §3.7 order.
-async fn serialize_agent(conn: &mut PgConnection, user: Uuid, client: Uuid) -> Result<()> {
+/// Serializes a sponsor's agent management (runtimes, roles, first
+/// delegations, new contexts) for the rest of the transaction, so two
+/// requests cannot both create the same principal, runtime or first context
+/// (they would hit a unique index and fail with a 500) and the Q2 rule (one
+/// active runtime per client) holds under concurrency. Advisory locks are
+/// taken before any row lock, so this does not change the §3.7 order.
+pub(crate) async fn serialize_sponsor(conn: &mut PgConnection, user: Uuid) -> Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 2))")
-        .bind(format!("agent:{user}:{client}"))
+        .bind(format!("agent-sponsor:{user}"))
         .execute(conn)
         .await?;
     Ok(())
 }
 
-/// The agent principal for (user, client), created on first use. The client
-/// must be enabled.
-async fn agent_principal(conn: &mut PgConnection, user: Uuid, client: Uuid) -> Result<Uuid> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT agent_principal_id FROM agent_principals WHERE delegator_user_id = $1 AND agent_client_id = $2",
+/// The `runtime_client_taken` conflict (design 05 §5, Q2).
+pub(crate) fn runtime_client_taken(runtime: Uuid, label: &str) -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::RuntimeClientTaken,
+        "this agent software already runs in another of your runtimes; add the role there, or retire that runtime first",
     )
-    .bind(user)
-    .bind(client)
-    .fetch_optional(&mut *conn)
-    .await?;
-    if let Some(id) = existing {
-        return Ok(id);
+    .with_details(json!({"runtime_id": runtime, "label": label}))
+    .into()
+}
+
+/// The client is enabled and may be chosen by an external delegation (the
+/// built-in client is not, appendix D V11). Returns its name.
+pub(crate) async fn external_client(conn: &mut PgConnection, client: Uuid) -> Result<String> {
+    let row: Option<(String, bool, bool)> =
+        sqlx::query_as("SELECT name, enabled, builtin FROM agent_clients WHERE id = $1")
+            .bind(client)
+            .fetch_optional(&mut *conn)
+            .await?;
+    match row {
+        Some((_, true, true)) => Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            "the built-in AI client cannot be delegated from here",
+        )
+        .with_details(json!({"path": "agent_client_id", "kind": "builtin_client"}))
+        .into()),
+        Some((name, true, false)) => Ok(name),
+        _ => Err(api(ErrorCode::NotFound, "no such agent client")),
     }
-    let names: Option<(String, String)> = sqlx::query_as(
-        "SELECT u.name, c.name FROM principals u, agent_clients c WHERE u.id = $1 AND c.id = $2 AND c.enabled",
+}
+
+/// An active external runtime of `user` that already holds a principal of
+/// `client` (Q2: there is at most one).
+pub(crate) async fn runtime_of_client(
+    conn: &mut PgConnection,
+    user: Uuid,
+    client: Uuid,
+) -> Result<Option<(Uuid, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT r.id, r.label FROM agent_principals p JOIN agent_runtimes r ON r.id = p.runtime_id
+         WHERE p.delegator_user_id = $1 AND p.agent_client_id = $2 AND r.retired_at IS NULL
+         ORDER BY r.created_at LIMIT 1",
     )
     .bind(user)
     .bind(client)
-    .fetch_optional(&mut *conn)
+    .fetch_optional(conn)
+    .await?)
+}
+
+/// A free runtime label for `user`: `base` cut to 56 characters, then
+/// `-2`, `-3`, … (the §2.11 backfill rule, also used for runtimes created
+/// implicitly by the 02 delegation path).
+pub(crate) async fn free_runtime_label(
+    conn: &mut PgConnection,
+    user: Uuid,
+    base: &str,
+) -> Result<String> {
+    let base: String = base.trim().chars().take(56).collect();
+    let base = if base.is_empty() {
+        "agent".to_string()
+    } else {
+        base
+    };
+    let mut n = 1;
+    loop {
+        let cand = if n == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{n}")
+        };
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_runtimes WHERE sponsor_user_id = $1 AND label = $2)",
+        )
+        .bind(user)
+        .bind(&cand)
+        .fetch_one(&mut *conn)
+        .await?;
+        if !taken {
+            return Ok(cand);
+        }
+        n += 1;
+    }
+}
+
+/// Inserts an external runtime. `label` must be free.
+pub(crate) async fn insert_runtime(
+    conn: &mut PgConnection,
+    user: Uuid,
+    session: Uuid,
+    label: &str,
+) -> Result<Uuid> {
+    Ok(sqlx::query_scalar(
+        "INSERT INTO agent_runtimes (sponsor_user_id, kind, label, isolation_ack, created_by_session)
+         VALUES ($1, 'external', $2, true, $3) RETURNING id",
+    )
+    .bind(user)
+    .bind(label)
+    .bind(session)
+    .fetch_one(conn)
+    .await?)
+}
+
+/// What a new role principal is.
+pub(crate) struct NewPrincipal<'a> {
+    pub user: Uuid,
+    pub runtime: Uuid,
+    pub client: Uuid,
+    pub role_key: &'a str,
+    pub template: &'a str,
+    pub template_version: i32,
+    pub duties: &'a str,
+}
+
+/// Inserts an agent principal (a role) into a runtime. The handle (§16.2,
+/// design 05 §2.11): `personal` → `<client>@<login>`, other roles →
+/// `<role_key>@<login>`; a clash takes the first free `-2`, `-3`, …; an
+/// external principal never gets an `oxledger-ai@` handle.
+pub(crate) async fn insert_principal(
+    conn: &mut PgConnection,
+    p: &NewPrincipal<'_>,
+) -> Result<Uuid> {
+    let (user_name, login, client_name): (String, String, String) = sqlx::query_as(
+        "SELECT u.name, coalesce(u.login, ''), c.name FROM principals u, agent_clients c
+         WHERE u.id = $1 AND c.id = $2",
+    )
+    .bind(p.user)
+    .bind(p.client)
+    .fetch_one(&mut *conn)
     .await?;
-    let Some((user_name, client_name)) = names else {
-        return Err(api(ErrorCode::NotFound, "no such agent client"));
+    let display = if p.role_key == "personal" {
+        format!("{user_name} 的 {client_name}")
+    } else {
+        format!("{user_name} 的 {}（{client_name}）", p.role_key)
     };
     let id: Uuid =
         sqlx::query_scalar("INSERT INTO principals (kind, name) VALUES ('agent', $1) RETURNING id")
-            .bind(format!("{user_name} 的 {client_name}"))
+            .bind(display)
             .fetch_one(&mut *conn)
             .await?;
-    let login: String =
-        sqlx::query_scalar("SELECT coalesce(login, '') FROM principals WHERE id = $1")
-            .bind(user)
-            .fetch_one(&mut *conn)
-            .await?;
-    let base = handle_base(&client_name, &login);
-    // UNIQUE and never changed (§16.2): a clash (two clients slugging alike)
-    // takes the first free -2, -3, …; serialize_agent makes this race-free
-    // per (user, client), the unique index across pairs.
+    let mut base = if p.role_key == "personal" {
+        handle_base(&client_name, &login)
+    } else {
+        format!("{}@{login}", p.role_key)
+    };
+    if base.starts_with("oxledger-ai@") && p.template != "builtin_chat" {
+        base = format!("ext-{base}");
+    }
+    // UNIQUE and never changed (§16.2): the sponsor lock makes this
+    // race-free per sponsor, the unique index across sponsors.
     let mut n = 1;
     loop {
         let handle = if n == 1 {
@@ -212,20 +382,103 @@ async fn agent_principal(conn: &mut PgConnection, user: Uuid, client: Uuid) -> R
                 .fetch_one(&mut *conn)
                 .await?;
         if !taken {
-            sqlx::query(
-                "INSERT INTO agent_principals (agent_principal_id, delegator_user_id, agent_client_id, handle)
-                 VALUES ($1,$2,$3,$4)",
+            let r = sqlx::query(
+                "INSERT INTO agent_principals (agent_principal_id, delegator_user_id, agent_client_id, handle,
+                                               runtime_id, role_key, role_template, template_version, duties)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
             )
             .bind(id)
-            .bind(user)
-            .bind(client)
+            .bind(p.user)
+            .bind(p.client)
             .bind(&handle)
+            .bind(p.runtime)
+            .bind(p.role_key)
+            .bind(p.template)
+            .bind(p.template_version)
+            .bind(p.duties)
             .execute(&mut *conn)
-            .await?;
-            return Ok(id);
+            .await;
+            match r {
+                Ok(_) => return Ok(id),
+                Err(sqlx::Error::Database(d))
+                    if d.code().as_deref() == Some("23505")
+                        && d.message().contains("runtime_client_taken") =>
+                {
+                    let (rt, label) = runtime_of_client(&mut *conn, p.user, p.client)
+                        .await?
+                        .unwrap_or((p.runtime, String::new()));
+                    return Err(runtime_client_taken(rt, &label));
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         n += 1;
     }
+}
+
+/// The 02 path (`agent_client_id`): the `personal` principal of (user,
+/// client) in the client's active runtime. On first use the runtime (named
+/// after the client) and the principal are created, as 02 created the
+/// principal; the caller holds [`serialize_sponsor`].
+async fn personal_principal(
+    conn: &mut PgConnection,
+    user: Uuid,
+    session: Uuid,
+    client: Uuid,
+) -> Result<(Uuid, Uuid)> {
+    let client_name = external_client(&mut *conn, client).await?;
+    let existing: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT p.agent_principal_id, p.runtime_id FROM agent_principals p
+         JOIN agent_runtimes r ON r.id = p.runtime_id
+         WHERE p.delegator_user_id = $1 AND p.agent_client_id = $2 AND p.role_key = 'personal'
+           AND r.retired_at IS NULL AND p.retired_at IS NULL",
+    )
+    .bind(user)
+    .bind(client)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(found) = existing {
+        return Ok(found);
+    }
+    // A new role: the same B-31 limit as POST /ai-team (verification D4).
+    crate::ai_team::check_role_limit(&mut *conn, user, "agent_client_id").await?;
+    let runtime = match runtime_of_client(&mut *conn, user, client).await? {
+        Some((r, _)) => r,
+        None => {
+            let label = free_runtime_label(&mut *conn, user, &client_name).await?;
+            insert_runtime(&mut *conn, user, session, &label).await?
+        }
+    };
+    let taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM agent_principals WHERE runtime_id = $1 AND role_key = 'personal')",
+    )
+    .bind(runtime)
+    .fetch_one(&mut *conn)
+    .await?;
+    if taken {
+        // A retired personal role in a live runtime: the 02 path does not
+        // bring it back.
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            "this agent's personal role was retired; create a new role in the AI team page",
+        )
+        .with_details(json!({"path": "agent_client_id", "kind": "role_key_taken"}))
+        .into());
+    }
+    let id = insert_principal(
+        &mut *conn,
+        &NewPrincipal {
+            user,
+            runtime,
+            client,
+            role_key: "personal",
+            template: "personal",
+            template_version: crate::ai_team::TEMPLATE_VERSION,
+            duties: "",
+        },
+    )
+    .await?;
+    Ok((id, runtime))
 }
 
 /// `claude-code@alice`: the client name slugged, then the delegator's login.
@@ -304,6 +557,17 @@ pub(crate) fn quarantined() -> anyhow::Error {
         "the agent's work context can no longer be used because a project's permissions changed; start a new work context",
     )
     .with_details(json!({"kind": "quarantined"}))
+    .into()
+}
+
+/// [`quarantined`] for an agent request: the other roles of the runtime
+/// that stopped with it (design 05 §3.12.2).
+pub(crate) fn quarantined_shared(shared_with: Vec<String>) -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::ContextUnavailable,
+        "the agent's work context can no longer be used because a project's permissions changed; start a new work context",
+    )
+    .with_details(json!({"kind": "quarantined", "shared_with": shared_with}))
     .into()
 }
 
@@ -402,12 +666,18 @@ pub struct DelegationInput {
     pub writable_fields: Vec<String>,
     pub max_ops: Option<i32>,
     pub expires_in_days: Option<i64>,
-    /// Modes inside the ceiling (§16.10); anything not listed is `direct`.
+    /// Modes inside the ceiling (§16.10); anything not listed is `direct`,
+    /// except the time commands (`review`, contract 05 §4.3).
     pub policies: Option<PolicyInput>,
+    /// Contract 05 §3.5.4 A1: let the agent read the delegator's own time.
+    pub read_own_time: bool,
+    /// The delegator ticked 「我了解，仍要開啟」 (§6.14); required with
+    /// `read_own_time`.
+    pub read_own_time_ack: bool,
 }
 
 /// Per-command and per-field modes (§16.3). Keys must be inside the ceiling.
-#[derive(Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, serde::Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyInput {
     #[serde(default)]
@@ -416,8 +686,9 @@ pub struct PolicyInput {
     pub fields: BTreeMap<String, PolicyMode>,
 }
 
-/// Creates a delegation (§3.5). Adds it to the agent's active work context,
-/// or creates the agent's first context. Needs a step-up.
+/// Creates a delegation (§3.5) through the 02 path: the agent is the
+/// `personal` role of `agent_client_id` (design 05 §3.12.3). Adds it to the
+/// runtime's active work context, or creates the first one. Needs a step-up.
 pub async fn create_delegation(
     pool: &PgPool,
     policy: &SessionPolicy,
@@ -425,7 +696,109 @@ pub async fn create_delegation(
     input: DelegationInput,
 ) -> Result<DelegationView> {
     let (user, session) = ctx.require_human_session()?;
-    // Validate the request shape before taking locks.
+    let spec = check_spec(&input)?;
+    let mut tx = pool.begin().await?;
+    check_fields(&mut tx, &input.writable_fields).await?;
+    serialize_sponsor(&mut tx, user).await?;
+    let (agent, runtime) =
+        personal_principal(&mut tx, user, session, input.agent_client_id).await?;
+    let view = delegate_in(
+        &mut tx,
+        policy,
+        ctx,
+        Target {
+            agent,
+            runtime,
+            client: input.agent_client_id,
+        },
+        &input,
+        spec,
+        ClosedAs::Context,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(view)
+}
+
+/// `POST /delegations` with `agent_principal_id` (design 05 §3.1): a
+/// delegation for one of the caller's roles.
+pub async fn create_delegation_for(
+    pool: &PgPool,
+    policy: &SessionPolicy,
+    ctx: &AuthContext,
+    agent: Uuid,
+    input: DelegationInput,
+) -> Result<DelegationView> {
+    let (user, _) = ctx.require_human_session()?;
+    let spec = check_spec(&input)?;
+    let mut tx = pool.begin().await?;
+    check_fields(&mut tx, &input.writable_fields).await?;
+    serialize_sponsor(&mut tx, user).await?;
+    let row: Option<(Uuid, Uuid, bool)> = sqlx::query_as(
+        "SELECT p.runtime_id, p.agent_client_id, p.retired_at IS NULL AND r.retired_at IS NULL
+         FROM agent_principals p JOIN agent_runtimes r ON r.id = p.runtime_id
+         WHERE p.agent_principal_id = $1 AND p.delegator_user_id = $2",
+    )
+    .bind(agent)
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((runtime, client, live)) = row else {
+        return Err(api(ErrorCode::NotFound, "no such agent"));
+    };
+    if !live {
+        return Err(
+            ApiError::new(ErrorCode::InvalidValue, "this agent role was retired")
+                .with_details(json!({"path": "agent_principal_id", "kind": "retired"}))
+                .into(),
+        );
+    }
+    let view = delegate_in(
+        &mut tx,
+        policy,
+        ctx,
+        Target {
+            agent,
+            runtime,
+            client,
+        },
+        &input,
+        spec,
+        ClosedAs::Runtime,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(view)
+}
+
+/// The agent a delegation is for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Target {
+    pub agent: Uuid,
+    pub runtime: Uuid,
+    pub client: Uuid,
+}
+
+/// How "the runtime's context was closed" is reported: the 02 path keeps
+/// `context_unavailable` (`kind = closed`), the design 05 paths say
+/// `runtime_context_closed` (§5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClosedAs {
+    Context,
+    Runtime,
+}
+
+pub(crate) fn runtime_context_closed() -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::RuntimeContextClosed,
+        "this runtime's work context is closed; start a new work context first",
+    )
+    .with_details(json!({"kind": "closed"}))
+    .into()
+}
+
+/// Shape checks before any lock. Returns (max_ops, lifetime).
+pub(crate) fn check_spec(input: &DelegationInput) -> Result<(i32, Duration)> {
     if input.proposal_ops.is_empty() {
         return Err(invalid("proposal_ops", "choose at least one operation"));
     }
@@ -442,6 +815,14 @@ pub async fn create_delegation(
     if let Some(p) = &input.policies {
         check_policy_keys(p, &input.proposal_ops, &input.writable_fields)?;
     }
+    if input.read_own_time && !input.read_own_time_ack {
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            "reading your own time needs the warning acknowledged (read_own_time_ack)",
+        )
+        .with_details(json!({"path": "read_own_time_ack", "kind": "ack_required"}))
+        .into());
+    }
     let max_ops = input.max_ops.unwrap_or(10);
     if !(1..=10).contains(&max_ops) {
         return Err(invalid("max_ops", "max_ops must be between 1 and 10"));
@@ -452,17 +833,19 @@ pub async fn create_delegation(
         MAX_DELEGATION_DAYS,
         "expires_in_days",
     )?;
+    Ok((max_ops, lifetime))
+}
 
-    let mut tx = pool.begin().await?;
-    // Field keys: built-in names or cf:<id> of an existing field.
-    for f in &input.writable_fields {
+/// Field keys: built-in names or cf:<id> of an existing field.
+pub(crate) async fn check_fields(conn: &mut PgConnection, fields: &[String]) -> Result<()> {
+    for f in fields {
         let ok = match f.strip_prefix("cf:") {
             Some(n) => match n.parse::<i32>() {
                 Ok(id) => sqlx::query_scalar::<_, bool>(
                     "SELECT EXISTS (SELECT 1 FROM field_defs WHERE id = $1 AND visible AND index_state <> 'dropping')",
                 )
                 .bind(id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut *conn)
                 .await?,
                 Err(_) => false,
             },
@@ -476,14 +859,44 @@ pub async fn create_delegation(
             );
         }
     }
+    Ok(())
+}
 
-    serialize_agent(&mut tx, user, input.agent_client_id).await?;
-    let agent = agent_principal(&mut tx, user, input.agent_client_id).await?;
+/// The delegation itself, in the runtime's active context (§3.5, design 05
+/// §3.12.2). Locks: runtime FOR UPDATE → context FOR UPDATE → principals →
+/// session (step-up) → client → projects. The caller holds
+/// [`serialize_sponsor`].
+pub(crate) async fn delegate_in(
+    tx: &mut PgConnection,
+    policy: &SessionPolicy,
+    ctx: &AuthContext,
+    t: Target,
+    input: &DelegationInput,
+    (max_ops, lifetime): (i32, Duration),
+    closed_as: ClosedAs,
+) -> Result<DelegationView> {
+    let (user, session) = ctx.require_human_session()?;
+    let Target {
+        agent,
+        runtime,
+        client,
+    } = t;
+    // 0. runtime (FOR UPDATE), still live.
+    let live: Option<bool> = sqlx::query_scalar(
+        "SELECT retired_at IS NULL FROM agent_runtimes WHERE id = $1 AND sponsor_user_id = $2 FOR UPDATE",
+    )
+    .bind(runtime)
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if live != Some(true) {
+        return Err(api(ErrorCode::NotFound, "no such runtime"));
+    }
     // 1. context (FOR UPDATE)
     let active: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM agent_work_contexts WHERE agent_principal_id = $1 AND state = 'active' FOR UPDATE",
+        "SELECT id FROM agent_work_contexts WHERE runtime_id = $1 AND state = 'active' FOR UPDATE",
     )
-    .bind(agent)
+    .bind(runtime)
     .fetch_optional(&mut *tx)
     .await?;
     // 2. principals, 3. session (step-up)
@@ -491,34 +904,38 @@ pub async fn create_delegation(
         .bind(vec![user.min(agent), user.max(agent)])
         .execute(&mut *tx)
         .await?;
-    auth::require_step_up(&mut tx, policy, ctx).await?;
+    auth::require_step_up(&mut *tx, policy, ctx).await?;
     // 4. client
-    lock_enabled_client(&mut tx, input.agent_client_id).await?;
+    lock_enabled_client(&mut *tx, client).await?;
 
     let context = match active {
         Some(c) => c,
         None => {
             let had_one: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM agent_work_contexts WHERE agent_principal_id = $1)",
+                "SELECT EXISTS (SELECT 1 FROM agent_work_contexts WHERE runtime_id = $1)",
             )
-            .bind(agent)
+            .bind(runtime)
             .fetch_one(&mut *tx)
             .await?;
             if had_one {
                 // A closed context exists: only an explicit new context
                 // (with the fresh-context declaration) may follow it.
-                return Err(ApiError::new(
-                    ErrorCode::ContextUnavailable,
-                    "this agent's work context is closed; start a new work context first",
-                )
-                .with_details(json!({"kind": "closed"}))
-                .into());
+                return Err(match closed_as {
+                    ClosedAs::Runtime => runtime_context_closed(),
+                    ClosedAs::Context => ApiError::new(
+                        ErrorCode::ContextUnavailable,
+                        "this agent's work context is closed; start a new work context first",
+                    )
+                    .with_details(json!({"kind": "closed"}))
+                    .into(),
+                });
             }
             sqlx::query_scalar(
-                "INSERT INTO agent_work_contexts (agent_principal_id, fresh_context_ack, created_by_session)
-                 VALUES ($1, true, $2) RETURNING id",
+                "INSERT INTO agent_work_contexts (created_for_principal_id, runtime_id, fresh_context_ack, created_by_session)
+                 VALUES ($1, $2, true, $3) RETURNING id",
             )
             .bind(agent)
+            .bind(runtime)
             .bind(session)
             .fetch_one(&mut *tx)
             .await?
@@ -539,15 +956,15 @@ pub async fn create_delegation(
         .bind(&lock_ids)
         .execute(&mut *tx)
         .await?;
-    if !changed_sources(&mut tx, context, false).await?.is_empty() {
+    if !changed_sources(&mut *tx, context, false).await?.is_empty() {
         return Err(quarantined());
     }
     // The delegator must be able to read the project; otherwise it does not exist for them.
-    let scope = db::load_scope(&mut tx, *ctx).await?;
+    let scope = db::load_scope(&mut *tx, *ctx).await?;
     if !scope.project_ids().any(|p| p == input.project_id) {
         return Err(api(ErrorCode::NotFound, "no such project"));
     }
-    if !audience_consistent(&mut tx, input.project_id).await? {
+    if !audience_consistent(&mut *tx, input.project_id).await? {
         return Err(ApiError::new(
             ErrorCode::ForbiddenOp,
             "agents can only be delegated projects where everyone who can see issues sees the same issues (no \"own\" or tracker-limited roles)",
@@ -556,9 +973,11 @@ pub async fn create_delegation(
         .into());
     }
     let already: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND project_id = $2 AND revoked_at IS NULL)",
+        "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND agent_principal_id = $2
+                          AND project_id = $3 AND revoked_at IS NULL)",
     )
     .bind(context)
+    .bind(agent)
     .bind(input.project_id)
     .fetch_one(&mut *tx)
     .await?;
@@ -575,12 +994,12 @@ pub async fn create_delegation(
         .fetch_one(&mut *tx)
         .await?;
     let now = Utc::now();
-    let view: DelegationView = sqlx::query_as(
+    let id: Uuid = sqlx::query_scalar(
         "INSERT INTO delegations (agent_principal_id, delegator_user_id, context_id, project_id, security_epoch,
-                                  proposal_ops, writable_fields, max_ops, created_at, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         RETURNING id, agent_principal_id, $11::uuid AS agent_client_id, context_id, project_id, proposal_ops,
-                   writable_fields, max_ops, created_at, expires_at, revoked_at",
+                                  proposal_ops, writable_fields, max_ops, created_at, expires_at,
+                                  read_own_time, read_own_time_ack_at, runtime_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $11 THEN $9 END,$12)
+         RETURNING id",
     )
     .bind(agent)
     .bind(user)
@@ -592,13 +1011,15 @@ pub async fn create_delegation(
     .bind(max_ops)
     .bind(now)
     .bind(now + lifetime)
-    .bind(input.agent_client_id)
+    .bind(input.read_own_time)
+    .bind(runtime)
     .fetch_one(&mut *tx)
     .await?;
+    let view = delegation_view(&mut *tx, id).await?;
     // §16.3 rule 1: one row per command and field in the ceiling.
     let manage_versions = {
-        let actor = crate::perm::actor(&mut tx, *ctx).await?;
-        crate::perm::project_perms(&mut tx, &actor, input.project_id)
+        let actor = crate::perm::actor(&mut *tx, *ctx).await?;
+        crate::perm::project_perms(&mut *tx, &actor, input.project_id)
             .await?
             .is_some_and(|pp| pp.allowed_any(crate::perm::MANAGE_VERSIONS))
     };
@@ -611,7 +1032,11 @@ pub async fn create_delegation(
             .commands
             .get(op)
             .copied()
-            .unwrap_or(PolicyMode::Direct);
+            .unwrap_or(if TIME_OPS.contains(&op.as_str()) {
+                PolicyMode::Review
+            } else {
+                PolicyMode::Direct
+            });
         sqlx::query(
             "INSERT INTO delegation_command_policies VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
@@ -632,7 +1057,8 @@ pub async fn create_delegation(
         .execute(&mut *tx)
         .await?;
     }
-    // R grows in the same transaction (M3); never shrinks (M4).
+    // R grows in the same transaction (M3); never shrinks (M4). R belongs to
+    // the runtime's context: every role's delegations add to it.
     sqlx::query(
         "INSERT INTO agent_context_source_projects (context_id, project_id, security_epoch, first_delegation_id)
          VALUES ($1,$2,$3,$4) ON CONFLICT (context_id, project_id) DO NOTHING",
@@ -644,14 +1070,13 @@ pub async fn create_delegation(
     .execute(&mut *tx)
     .await?;
     auth::audit(
-        &mut tx,
+        &mut *tx,
         "delegation_created",
         Some(user),
         Some(view.id),
-        json!({"project_id": input.project_id, "context_id": context}),
+        json!({"project_id": input.project_id, "context_id": context, "agent_principal_id": agent}),
     )
     .await?;
-    tx.commit().await?;
     Ok(view)
 }
 
@@ -874,8 +1299,21 @@ pub async fn set_delegation_policies(
 }
 
 const DELEGATION_COLUMNS: &str =
-    "d.id, d.agent_principal_id, ap.agent_client_id, d.context_id, d.project_id,
-    d.proposal_ops, d.writable_fields, d.max_ops, d.created_at, d.expires_at, d.revoked_at";
+    "d.id, d.agent_principal_id, ap.agent_client_id, d.context_id, d.runtime_id, ap.role_key, d.project_id,
+    d.proposal_ops, d.writable_fields, d.max_ops, d.created_at, d.expires_at, d.revoked_at,
+    d.read_own_time, d.read_own_time_ack_at, d.paused_at, d.paused_reason";
+
+pub(crate) async fn delegation_view(conn: &mut PgConnection, id: Uuid) -> Result<DelegationView> {
+    let sql = format!(
+        "SELECT {DELEGATION_COLUMNS} FROM delegations d
+         JOIN agent_principals ap ON ap.agent_principal_id = d.agent_principal_id
+         WHERE d.id = $1"
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_one(conn)
+        .await?)
+}
 
 pub async fn list_delegations(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<DelegationView>> {
     let (user, _) = ctx.require_human_session()?;
@@ -938,10 +1376,11 @@ async fn context_owned(
     context: Uuid,
     lock: bool,
 ) -> Result<(Uuid, String)> {
+    // Returns (runtime, state). The context belongs to the runtime's sponsor.
     let sql = format!(
-        "SELECT w.agent_principal_id, w.state FROM agent_work_contexts w
-         JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
-         WHERE w.id = $1 AND ap.delegator_user_id = $2{}",
+        "SELECT w.runtime_id, w.state FROM agent_work_contexts w
+         JOIN agent_runtimes rt ON rt.id = w.runtime_id
+         WHERE w.id = $1 AND rt.sponsor_user_id = $2{}",
         if lock { " FOR UPDATE OF w" } else { "" }
     );
     let row: Option<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -959,21 +1398,40 @@ type ContextRow = (
     String,
     DateTime<Utc>,
     Option<DateTime<Utc>>,
+    Uuid,
 );
 
 pub async fn list_contexts(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<ContextView>> {
+    list_contexts_of(pool, ctx, "external").await
+}
+
+/// [`list_contexts`] for runtimes of `kind` (`external`, or `builtin` for
+/// the built-in AI's new context, design 05 §3.13.7).
+pub(crate) async fn list_contexts_of(
+    pool: &PgPool,
+    ctx: &AuthContext,
+    kind: &str,
+) -> Result<Vec<ContextView>> {
     let (user, _) = ctx.require_human_session()?;
     let mut conn = pool.acquire().await?;
+    // A context is the runtime's (design 05 §3.12.2); `agent_principal_id`
+    // stays for 02 clients: the principal it was created for, else the
+    // runtime's first role.
     let rows: Vec<ContextRow> = sqlx::query_as(
-        "SELECT w.id, w.agent_principal_id, ap.agent_client_id, w.state, w.created_at, w.closed_at
-         FROM agent_work_contexts w JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
-         WHERE ap.delegator_user_id = $1 ORDER BY w.created_at DESC",
+        "SELECT w.id, ap.agent_principal_id, ap.agent_client_id, w.state, w.created_at, w.closed_at, w.runtime_id
+         FROM agent_work_contexts w JOIN agent_runtimes rt ON rt.id = w.runtime_id
+         JOIN LATERAL (SELECT p.agent_principal_id, p.agent_client_id FROM agent_principals p
+                       WHERE p.runtime_id = w.runtime_id
+                       ORDER BY p.agent_principal_id = w.created_for_principal_id DESC, p.created_at, p.agent_principal_id
+                       LIMIT 1) ap ON true
+         WHERE rt.sponsor_user_id = $1 AND rt.kind = $2 ORDER BY w.created_at DESC",
     )
     .bind(user)
+    .bind(kind)
     .fetch_all(&mut *conn)
     .await?;
     let mut out = Vec::with_capacity(rows.len());
-    for (id, agent, client, state, created_at, closed_at) in rows {
+    for (id, agent, client, state, created_at, closed_at, runtime_id) in rows {
         let source_projects: Vec<SourceProject> = sqlx::query_as(
             "SELECT project_id, security_epoch FROM agent_context_source_projects WHERE context_id = $1 ORDER BY project_id",
         )
@@ -1001,6 +1459,7 @@ pub async fn list_contexts(pool: &PgPool, ctx: &AuthContext) -> Result<Vec<Conte
             suspended_at,
             suspension_reason,
             agent_client_id: client,
+            runtime_id,
             state,
             created_at,
             closed_at,
@@ -1030,39 +1489,68 @@ pub async fn new_context(
         ));
     }
     let mut tx = pool.begin().await?;
-    let agent = agent_principal(&mut tx, user, agent_client_id).await?;
-    let old: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM agent_work_contexts WHERE agent_principal_id = $1 AND state = 'active' FOR UPDATE",
+    serialize_sponsor(&mut tx, user).await?;
+    let (agent, runtime) = personal_principal(&mut tx, user, session, agent_client_id).await?;
+    let id = runtime_new_context(&mut tx, policy, ctx, runtime, Some(agent)).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+/// A new work context for a runtime (design 05 §3.12.2): the old one closes
+/// with every role's delegations and tokens. The caller holds
+/// [`serialize_sponsor`] and checked `fresh_context_ack`. Needs a step-up.
+pub(crate) async fn runtime_new_context(
+    tx: &mut PgConnection,
+    policy: &SessionPolicy,
+    ctx: &AuthContext,
+    runtime: Uuid,
+    created_for: Option<Uuid>,
+) -> Result<Uuid> {
+    let (user, session) = ctx.require_human_session()?;
+    let live: Option<bool> = sqlx::query_scalar(
+        "SELECT retired_at IS NULL FROM agent_runtimes WHERE id = $1 AND sponsor_user_id = $2 FOR UPDATE",
     )
-    .bind(agent)
+    .bind(runtime)
+    .bind(user)
     .fetch_optional(&mut *tx)
     .await?;
+    if live != Some(true) {
+        return Err(api(ErrorCode::NotFound, "no such runtime"));
+    }
+    let old: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agent_work_contexts WHERE runtime_id = $1 AND state = 'active' FOR UPDATE",
+    )
+    .bind(runtime)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let mut ids: Vec<Uuid> = vec![user];
+    ids.extend(created_for);
+    ids.sort();
     sqlx::query("SELECT id FROM principals WHERE id = ANY($1) ORDER BY id FOR SHARE")
-        .bind(vec![user.min(agent), user.max(agent)])
+        .bind(&ids)
         .execute(&mut *tx)
         .await?;
-    auth::require_step_up(&mut tx, policy, ctx).await?;
-    lock_enabled_client(&mut tx, agent_client_id).await?;
+    auth::require_step_up(&mut *tx, policy, ctx).await?;
     if let Some(old) = old {
-        close_context_locked(&mut tx, old, "replaced_by_new_context").await?;
+        close_context_locked(&mut *tx, old, "replaced_by_new_context").await?;
     }
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent_work_contexts (agent_principal_id, fresh_context_ack, created_by_session)
-         VALUES ($1, true, $2) RETURNING id",
+        "INSERT INTO agent_work_contexts (created_for_principal_id, runtime_id, fresh_context_ack, created_by_session)
+         VALUES ($1, $2, true, $3) RETURNING id",
     )
-    .bind(agent)
+    .bind(created_for)
+    .bind(runtime)
     .bind(session)
     .fetch_one(&mut *tx)
     .await?;
     auth::audit(
-        &mut tx,
+        &mut *tx,
         "context_created",
         Some(user),
         Some(id),
-        json!({"replaced": old}),
+        json!({"replaced": old, "runtime_id": runtime}),
     )
     .await?;
-    tx.commit().await?;
     Ok(id)
 }
 
@@ -1169,12 +1657,28 @@ pub async fn resume_context(
 
 // ---------------------------------------------------------------- tokens
 
-/// Issues a token for an active context (shown once). Needs a step-up.
+/// Issues a token for an active context (shown once). Needs a step-up. The
+/// token is bound to one role (design 05 §3.12.5): with one active role in
+/// the runtime it is that one, otherwise the 02 caller must use
+/// [`issue_credential_for`].
 pub async fn issue_credential(
     pool: &PgPool,
     policy: &SessionPolicy,
     ctx: &AuthContext,
     context: Uuid,
+    label: &str,
+    expires_in_days: Option<i64>,
+) -> Result<IssuedCredential> {
+    issue_credential_for(pool, policy, ctx, context, None, label, expires_in_days).await
+}
+
+/// [`issue_credential`] for a given role (`agent_principal_id`).
+pub async fn issue_credential_for(
+    pool: &PgPool,
+    policy: &SessionPolicy,
+    ctx: &AuthContext,
+    context: Uuid,
+    principal: Option<Uuid>,
     label: &str,
     expires_in_days: Option<i64>,
 ) -> Result<IssuedCredential> {
@@ -1194,7 +1698,41 @@ pub async fn issue_credential(
         .bind(context)
         .execute(&mut *tx)
         .await?;
-    let (_, state) = context_owned(&mut tx, user, context, false).await?;
+    let (runtime, state) = context_owned(&mut tx, user, context, false).await?;
+    let builtin: bool =
+        sqlx::query_scalar("SELECT kind = 'builtin' FROM agent_runtimes WHERE id = $1")
+            .bind(runtime)
+            .fetch_one(&mut *tx)
+            .await?;
+    if builtin {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            "the built-in AI runs inside oxledger and has no tokens",
+        )
+        .with_details(json!({"reason": "builtin_no_token"}))
+        .into());
+    }
+    let roles: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT agent_principal_id FROM agent_principals WHERE runtime_id = $1 AND retired_at IS NULL
+         ORDER BY agent_principal_id",
+    )
+    .bind(runtime)
+    .fetch_all(&mut *tx)
+    .await?;
+    let principal = match principal {
+        Some(p) if roles.contains(&p) => p,
+        // A role of another runtime, a retired one or someone else's: not here.
+        Some(_) => return Err(api(ErrorCode::NotFound, "no such agent")),
+        None if roles.len() == 1 => roles[0],
+        None => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                "this runtime has several roles; say which one the token is for (agent_principal_id)",
+            )
+            .with_details(json!({"path": "agent_principal_id", "reason": "principal_required"}))
+            .into());
+        }
+    };
     auth::require_step_up(&mut tx, policy, ctx).await?;
     if state != "active" {
         return Err(
@@ -1203,32 +1741,81 @@ pub async fn issue_credential(
                 .into(),
         );
     }
+    let issued =
+        insert_credential(&mut tx, user, context, runtime, principal, label, lifetime).await?;
+    tx.commit().await?;
+    Ok(issued)
+}
+
+/// A new token bound to (context, principal) (design 05 §3.12.5). The
+/// caller checked ownership, the step-up and that the context is active.
+pub(crate) async fn insert_credential(
+    conn: &mut PgConnection,
+    user: Uuid,
+    context: Uuid,
+    runtime: Uuid,
+    principal: Uuid,
+    label: &str,
+    lifetime: Duration,
+) -> Result<IssuedCredential> {
     let (token, hash) = auth::new_agent_token();
     let expires_at = Utc::now() + lifetime;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent_credentials (context_id, token_sha256, label, expires_at) VALUES ($1,$2,$3,$4) RETURNING id",
+        "INSERT INTO agent_credentials (context_id, token_sha256, label, expires_at, agent_principal_id, runtime_id)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
     )
     .bind(context)
     .bind(&hash[..])
     .bind(label)
     .bind(expires_at)
-    .fetch_one(&mut *tx)
+    .bind(principal)
+    .bind(runtime)
+    .fetch_one(&mut *conn)
     .await?;
     auth::audit(
-        &mut tx,
+        &mut *conn,
         "agent_token_issued",
         Some(user),
         Some(id),
-        json!({"context_id": context}),
+        json!({"context_id": context, "agent_principal_id": principal}),
     )
     .await?;
-    tx.commit().await?;
     Ok(IssuedCredential {
         id,
         context_id: context,
+        agent_principal_id: principal,
         token,
         expires_at,
     })
+}
+
+/// Token lifetime from the request (1–30 days, default 30).
+pub(crate) fn token_lifetime(v: Option<i64>) -> Result<Duration> {
+    days(v, DEFAULT_TOKEN_DAYS, MAX_TOKEN_DAYS, "expires_in_days")
+}
+
+/// Closes a runtime's active context, if any (the caller holds the runtime
+/// FOR UPDATE): every role's delegations and tokens go with it.
+pub(crate) async fn close_runtime_context(
+    conn: &mut PgConnection,
+    runtime: Uuid,
+    reason: &str,
+) -> Result<Option<Uuid>> {
+    let old: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agent_work_contexts WHERE runtime_id = $1 AND state = 'active' FOR UPDATE",
+    )
+    .bind(runtime)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(c) = old {
+        close_context_locked(&mut *conn, c, reason).await?;
+    }
+    Ok(old)
+}
+
+/// Projects of R whose epoch changed (the shared context is quarantined).
+pub(crate) async fn context_changed(conn: &mut PgConnection, context: Uuid) -> Result<bool> {
+    Ok(!changed_sources(conn, context, false).await?.is_empty())
 }
 
 pub async fn revoke_credential(pool: &PgPool, ctx: &AuthContext, id: Uuid) -> Result<()> {
@@ -1236,8 +1823,8 @@ pub async fn revoke_credential(pool: &PgPool, ctx: &AuthContext, id: Uuid) -> Re
     let mut tx = pool.begin().await?;
     let n = sqlx::query(
         "UPDATE agent_credentials c SET revoked_at = now()
-         FROM agent_work_contexts w JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
-         WHERE c.id = $1 AND c.context_id = w.id AND ap.delegator_user_id = $2 AND c.revoked_at IS NULL",
+         FROM agent_runtimes rt
+         WHERE c.id = $1 AND rt.id = c.runtime_id AND rt.sponsor_user_id = $2 AND c.revoked_at IS NULL",
     )
     .bind(id)
     .bind(user)
@@ -1246,9 +1833,8 @@ pub async fn revoke_credential(pool: &PgPool, ctx: &AuthContext, id: Uuid) -> Re
     .rows_affected();
     if n == 0 {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM agent_credentials c JOIN agent_work_contexts w ON w.id = c.context_id
-             JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
-             WHERE c.id = $1 AND ap.delegator_user_id = $2)",
+            "SELECT EXISTS (SELECT 1 FROM agent_credentials c JOIN agent_runtimes rt ON rt.id = c.runtime_id
+             WHERE c.id = $1 AND rt.sponsor_user_id = $2)",
         )
         .bind(id)
         .bind(user)
@@ -1287,7 +1873,7 @@ pub struct ContextPublish {
 pub struct ContextProject {
     pub project: String,
     pub project_id: Uuid,
-    /// `active`, `revoked` or `expired`.
+    /// `active`, `revoked` or `expired` (this role's delegation).
     pub delegation: String,
     pub readable: bool,
     pub publish: ContextPublish,
@@ -1297,8 +1883,18 @@ pub struct ContextProject {
 pub struct ContextDescription {
     pub context_id: Uuid,
     pub state: String,
-    /// R: every project ever delegated in this context (no reader lists).
+    /// R: every project ever delegated to this role in this context (no
+    /// reader lists).
     pub projects: Vec<ContextProject>,
+    /// How many more projects are in R through other roles of the same
+    /// runtime (design 05 §3.12.2): they count for the audience check and
+    /// quarantine, but are not named. Left out when 0 (every 02 context).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub other_role_projects: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// §5.3: the agent's current work context. A closed or quarantined context
@@ -1321,16 +1917,20 @@ pub async fn describe_context(
         .bind(a.context_id)
         .fetch_one(&mut *tx)
         .await?;
-    let rows: Vec<(Uuid, String, bool, bool)> = sqlx::query_as(
+    let rows: Vec<(Uuid, String, bool, bool, bool)> = sqlx::query_as(
         "SELECT p.id, p.key,
                 EXISTS (SELECT 1 FROM delegations d WHERE d.context_id = r.context_id AND d.project_id = p.id
+                          AND d.agent_principal_id = $2
                           AND d.revoked_at IS NULL AND d.expires_at > clock_timestamp()),
                 EXISTS (SELECT 1 FROM delegations d WHERE d.context_id = r.context_id AND d.project_id = p.id
-                          AND d.revoked_at IS NOT NULL)
+                          AND d.agent_principal_id = $2 AND d.revoked_at IS NOT NULL),
+                EXISTS (SELECT 1 FROM delegations d WHERE d.context_id = r.context_id AND d.project_id = p.id
+                          AND d.agent_principal_id = $2)
          FROM agent_context_source_projects r JOIN projects p ON p.id = r.project_id
          WHERE r.context_id = $1 ORDER BY p.key",
     )
     .bind(a.context_id)
+    .bind(a.agent_principal_id)
     .fetch_all(&mut *tx)
     .await?;
     let scope = crate::db::load_scope(&mut tx, caller).await?;
@@ -1339,10 +1939,16 @@ pub async fn describe_context(
     for (id, ..) in &rows {
         audiences.push(crate::audience::project_audience(&mut tx, *id).await?);
     }
+    // R's projects that only another role of the runtime was delegated are
+    // counted, never named (verification D7): this role never had them, and
+    // their keys would tell it they exist. The publish verdicts below still
+    // weigh them (the audience check is against the whole R).
+    let other_role_projects = rows.iter().filter(|r| !r.4).count();
     let projects = rows
         .iter()
         .enumerate()
-        .map(|(i, (id, key, active, revoked))| {
+        .filter(|(_, r)| r.4)
+        .map(|(i, (id, key, active, revoked, _))| {
             let fits = audiences.iter().all(|r| audiences[i].is_subset(r));
             ContextProject {
                 project: key.clone(),
@@ -1372,5 +1978,155 @@ pub async fn describe_context(
         context_id: a.context_id,
         state,
         projects,
+        other_role_projects,
     })
+}
+
+/// Design 05 §3.12.4: the chain limits (deployment constants; delegations
+/// may only narrow them, which M1 does not offer yet).
+pub const CHAIN_MAX_DEPTH: i32 = 2;
+pub const CHAIN_MAX_WRITES: i32 = 20;
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct RoleSummary {
+    pub key: String,
+    pub template: String,
+    /// The sponsor's free text (shown to the agent itself).
+    pub duties: String,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct RuntimeSummary {
+    pub label: String,
+    /// Handles of the other roles sharing this work context and its R.
+    pub shared_with: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ChainLimits {
+    pub max_depth: i32,
+    pub max_writes: i32,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct AgentLimits {
+    pub agent_chain: ChainLimits,
+}
+
+/// `describe {"scope": "agent_context"}` (design 05 §4.1): the 02 §5.3
+/// context plus the role, the runtime, `read_own_time` and the chain limits.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct AgentContextDescription {
+    #[serde(flatten)]
+    pub context: ContextDescription,
+    pub role: RoleSummary,
+    pub runtime: RuntimeSummary,
+    /// Some active delegation of this role lets it read the delegator's own time.
+    pub read_own_time: bool,
+    pub limits: AgentLimits,
+}
+
+pub async fn describe_agent_context(
+    app: &crate::service::App,
+    caller: AuthContext,
+) -> Result<AgentContextDescription> {
+    let context = describe_context(app, caller).await?;
+    let principal = caller
+        .principal_id()
+        .ok_or_else(|| api(ErrorCode::ForbiddenOp, "scope agent_context is for agents"))?;
+    let mut conn = app.pool.acquire().await?;
+    let (key, template, duties, label, runtime): (String, String, String, String, Uuid) =
+        sqlx::query_as(
+            "SELECT p.role_key, p.role_template, p.duties, r.label, r.id
+             FROM agent_principals p JOIN agent_runtimes r ON r.id = p.runtime_id
+             WHERE p.agent_principal_id = $1",
+        )
+        .bind(principal)
+        .fetch_one(&mut *conn)
+        .await?;
+    let shared_with: Vec<String> = sqlx::query_scalar(
+        "SELECT handle FROM agent_principals WHERE runtime_id = $1 AND agent_principal_id <> $2
+           AND retired_at IS NULL ORDER BY handle",
+    )
+    .bind(runtime)
+    .bind(principal)
+    .fetch_all(&mut *conn)
+    .await?;
+    let read_own_time: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND agent_principal_id = $2
+                          AND read_own_time AND revoked_at IS NULL AND expires_at > clock_timestamp())",
+    )
+    .bind(context.context_id)
+    .bind(principal)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(AgentContextDescription {
+        context,
+        role: RoleSummary {
+            key,
+            template,
+            duties,
+        },
+        runtime: RuntimeSummary { label, shared_with },
+        read_own_time,
+        limits: AgentLimits {
+            agent_chain: ChainLimits {
+                max_depth: CHAIN_MAX_DEPTH,
+                max_writes: CHAIN_MAX_WRITES,
+            },
+        },
+    })
+}
+
+/// Contract 05 §6.14: turns `read_own_time` on (with the warning
+/// acknowledged) or off for one of the caller's delegations. Turning it off
+/// takes effect at once; what the agent already read stays read. Either way
+/// it is a delegation-setting change (§2.5): it needs a step-up like the
+/// other policy changes and bumps `policy_version`.
+pub async fn set_read_own_time(
+    pool: &PgPool,
+    session_policy: &SessionPolicy,
+    ctx: &AuthContext,
+    id: Uuid,
+    enabled: bool,
+    ack: bool,
+) -> Result<DelegationView> {
+    let (user, _) = ctx.require_human_session()?;
+    if enabled && !ack {
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            "reading your own time needs the warning acknowledged (ack)",
+        )
+        .with_details(json!({"path": "ack", "kind": "ack_required"}))
+        .into());
+    }
+    let mut tx = pool.begin().await?;
+    // §3.7 lock order: the browser session (step-up) before the delegation.
+    auth::require_step_up(&mut tx, session_policy, ctx).await?;
+    let found: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE delegations SET read_own_time = $3,
+                read_own_time_ack_at = CASE WHEN $3 THEN now() END,
+                policy_version = policy_version + 1
+         WHERE id = $1 AND delegator_user_id = $2 AND revoked_at IS NULL
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(user)
+    .bind(enabled)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_none() {
+        return Err(ApiError::new(ErrorCode::NotFound, "no such delegation").into());
+    }
+    auth::audit(
+        &mut tx,
+        "delegation_read_own_time",
+        Some(user),
+        Some(id),
+        json!({"enabled": enabled}),
+    )
+    .await?;
+    let view = delegation_view(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(view)
 }

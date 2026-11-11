@@ -41,6 +41,19 @@ pub enum AuthMethod {
     BrowserSession,
     LegacyApiKey,
     AgentToken,
+    /// The server reading on a user's behalf to decide and render their
+    /// notifications (design 05 §3.11.2 step 3) and to count watchers who can
+    /// see an issue (§3.11.1). Built only by
+    /// [`AuthContext::notification_recipient`], never from a request; no
+    /// service that writes or needs a session accepts it.
+    Recipient,
+    /// A tool call of the built-in AI during one run (design 05 §3.13.1,
+    /// appendix D V13). Built only by [`AuthContext::builtin_run`], which
+    /// the run executor calls with a run it loaded from the database; never
+    /// from an HTTP request or an MCP message. `db::effective` re-checks the
+    /// run, the AI settings, the client, the user, the principal and the
+    /// work context on every call; it has no token and no session.
+    BuiltinRun,
     /// Tests and seeding only: a user with no credential row. Does not exist
     /// in builds without the `test-support` feature.
     #[cfg(feature = "test-support")]
@@ -62,6 +75,8 @@ pub struct AuthContext {
     context_id: Option<Uuid>,
     /// AgentToken: the delegator.
     on_behalf_of: Option<Uuid>,
+    /// BuiltinRun: the run (`ai_runs.id`).
+    run_id: Option<Uuid>,
 }
 
 impl AuthContext {
@@ -74,6 +89,7 @@ impl AuthContext {
             credential_id: None,
             context_id: None,
             on_behalf_of: None,
+            run_id: None,
         }
     }
 
@@ -110,6 +126,38 @@ impl AuthContext {
             credential_id: Some(credential_id),
             context_id: Some(context_id),
             on_behalf_of: Some(delegator_id),
+            ..Self::anonymous()
+        }
+    }
+
+    /// What `user_id` may read now, for notification dispatch and
+    /// re-checks (see [`AuthMethod::Recipient`]). `db::effective` accepts it
+    /// only for an active user.
+    pub(crate) fn notification_recipient(user_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(user_id),
+            kind: PrincipalKind::User,
+            method: AuthMethod::Recipient,
+            ..Self::anonymous()
+        }
+    }
+
+    /// The built-in AI acting in run `run_id` (see [`AuthMethod::BuiltinRun`]).
+    /// Crate-private: only `ai::runner` calls it, with ids read from the
+    /// run row; `db::effective` checks that they still belong together.
+    pub(crate) fn builtin_run(
+        agent_id: Uuid,
+        context_id: Uuid,
+        delegator_id: Uuid,
+        run_id: Uuid,
+    ) -> Self {
+        Self {
+            principal_id: Some(agent_id),
+            kind: PrincipalKind::Agent,
+            method: AuthMethod::BuiltinRun,
+            context_id: Some(context_id),
+            on_behalf_of: Some(delegator_id),
+            run_id: Some(run_id),
             ..Self::anonymous()
         }
     }
@@ -151,6 +199,10 @@ impl AuthContext {
     }
     pub fn on_behalf_of(&self) -> Option<Uuid> {
         self.on_behalf_of
+    }
+    /// BuiltinRun: the run.
+    pub fn run_id(&self) -> Option<Uuid> {
+        self.run_id
     }
 
     /// The signed-in person, for "me" in filters. Agents have no "me": they
@@ -772,7 +824,7 @@ pub async fn authenticate_bearer(pool: &PgPool, raw: &str) -> Result<Option<Auth
             "SELECT c.id, w.id, ap.agent_principal_id, ap.delegator_user_id
              FROM agent_credentials c
              JOIN agent_work_contexts w ON w.id = c.context_id
-             JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
+             JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
              WHERE c.token_sha256 = $1 AND c.revoked_at IS NULL AND c.expires_at > now()
                AND w.state = 'active'",
         )

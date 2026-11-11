@@ -14,11 +14,13 @@
 //!   oxledger api-spec [dir]  write <dir>/openapi.json and <dir>/types.ts (default dir: api)
 //!   oxledger seed-demo    fill an empty database with demo data, print API keys
 //!                         (only with --features test-support)
-//!   oxledger reindex      rebuild the search index from PostgreSQL
+//!   oxledger reindex      ask the running server for a blue-green rebuild of the search index
+//!   oxledger reindex --offline   rebuild in this process (server stopped)
 //!
 //! Configuration (environment): DATABASE_URL, OXLEDGER_INDEX_DIR (default ./data/index),
 //! OXLEDGER_BIND (default 127.0.0.1:8080), OXLEDGER_API_KEY (stdio),
-//! OXLEDGER_SPA_ORIGIN (default http://<OXLEDGER_BIND>; non-GET /api/v1 requests must come from it).
+//! OXLEDGER_SPA_ORIGIN (default http://<OXLEDGER_BIND>; non-GET /api/v1 requests must come from it),
+//! OXLEDGER_METRICS_TOKEN (enables GET /metrics with `Authorization: Bearer <token>`).
 
 use anyhow::{Context, Result, bail};
 use oxledger::api::{self, ApiConfig};
@@ -46,18 +48,94 @@ fn env(name: &str, default: Option<&str>) -> Result<String> {
 async fn open_app() -> Result<Arc<App>> {
     let pool = db::connect(&env("DATABASE_URL", None)?).await?;
     let dir = PathBuf::from(env("OXLEDGER_INDEX_DIR", Some("data/index"))?);
+    // The first sync round (background) validates the generation on disk or
+    // builds one; until then free-text search answers search_unavailable.
     let index = SearchIndex::open(Some(&dir))?;
-    let n = index.sync(&pool).await?;
-    tracing::info!(applied = n, "search index caught up");
     Ok(Arc::new(App { pool, index }))
 }
 
-/// Keeps the search index following the outbox.
+/// Keeps the search index following the outbox; picks up `oxledger reindex`
+/// requests, runs the outbox GC hourly and the long-transaction check every
+/// 10 s (design 03 §4.7–4.9).
+/// The upgrade claim of [`spawn_indexer`]: released when dropped unless
+/// the rebuild succeeded (`.1`).
+struct UpgradeClaim(Arc<App>, bool);
+
+impl Drop for UpgradeClaim {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0.index.release_upgrade();
+        }
+    }
+}
+
 fn spawn_indexer(app: Arc<App>) {
+    app.index
+        .metrics
+        .loop_running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::spawn(async move {
+        let mut last_gc = std::time::Instant::now();
+        let mut last_check = std::time::Instant::now();
         loop {
             if let Err(e) = app.index.sync(&app.pool).await {
                 tracing::warn!("index sync failed: {e:#}");
+            }
+            // An index written by an older release (M1.7 schema/semantics
+            // change): rebuild blue-green while the old generation keeps
+            // serving with its own query semantics (design 03 §4.8).
+            if app.index.needs_upgrade() && app.index.claim_upgrade() {
+                let a = app.clone();
+                tokio::spawn(async move {
+                    // Released on every way out but success, a panic
+                    // included, so a later round can try again.
+                    let mut claim = UpgradeClaim(a.clone(), false);
+                    tracing::info!("search index layout is outdated: rebuilding");
+                    match a.index.rebuild(&a.pool).await {
+                        Ok(r) => {
+                            claim.1 = true;
+                            tracing::info!(?r, "search index upgraded");
+                        }
+                        Err(e) => {
+                            tracing::error!("search index upgrade failed: {e:#}");
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                        }
+                    }
+                });
+            }
+            if last_check.elapsed() >= Duration::from_secs(10) {
+                last_check = std::time::Instant::now();
+                let requested: Result<Option<bool>, _> = sqlx::query_scalar(
+                    "UPDATE search_settings SET rebuild_requested_at = NULL
+                     WHERE rebuild_requested_at IS NOT NULL RETURNING true",
+                )
+                .fetch_optional(&app.pool)
+                .await;
+                if let Ok(Some(_)) = requested {
+                    let a = app.clone();
+                    tokio::spawn(async move {
+                        match a.index.rebuild(&a.pool).await {
+                            Ok(r) => tracing::info!(?r, "search index rebuilt"),
+                            Err(e) => tracing::error!("search index rebuild failed: {e:#}"),
+                        }
+                    });
+                }
+                if let Err(e) = oxledger::metrics::check_long_xacts(
+                    &app.pool,
+                    oxledger::metrics::XACT_WARN,
+                    oxledger::metrics::XACT_CRIT,
+                )
+                .await
+                {
+                    tracing::debug!("long transaction check failed: {e:#}");
+                }
+            }
+            if last_gc.elapsed() >= Duration::from_secs(3600) {
+                last_gc = std::time::Instant::now();
+                match app.index.gc(&app.pool).await {
+                    Ok((rows, gens)) => tracing::info!(rows, gens, "search outbox GC"),
+                    Err(e) => tracing::warn!("search outbox GC failed: {e:#}"),
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -75,7 +153,43 @@ fn spawn_field_indexer(app: Arc<App>) {
                 Ok(n) => tracing::info!(fixed = n, "custom field indexes reconciled"),
                 Err(e) => tracing::warn!("custom field index job failed: {e:#}"),
             }
+            // Contract 05 §3.7: conversions a restart interrupted (each
+            // batch is idempotent, so a second runner is harmless).
+            match oxledger::field_admin::resume_conversions(&app.pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(resumed = n, "custom field conversions resumed"),
+                Err(e) => tracing::warn!("custom field conversion job failed: {e:#}"),
+            }
             tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+}
+
+/// Notification dispatch (design 05 §3.11.2): follows the outbox as the
+/// consumer `notify` (target: on the bell within 10 s of the event, B-26)
+/// and removes notifications past their retention once an hour (B-25).
+fn spawn_notifier(app: Arc<App>) {
+    tokio::spawn(async move {
+        let mut last_purge: Option<std::time::Instant> = None;
+        loop {
+            let more = match oxledger::notifications::dispatch_round(&app.pool).await {
+                Ok(r) => r.more,
+                Err(e) => {
+                    tracing::warn!("notification dispatch failed: {e:#}");
+                    false
+                }
+            };
+            if last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                last_purge = Some(std::time::Instant::now());
+                match oxledger::notifications::purge(&app.pool).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(rows = n, "old notifications removed"),
+                    Err(e) => tracing::warn!("notification purge failed: {e:#}"),
+                }
+            }
+            if !more {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
         }
     });
 }
@@ -101,6 +215,24 @@ async fn serve() -> Result<()> {
     spawn_indexer(app.clone());
     spawn_field_indexer(app.clone());
     spawn_sweeper(app.clone());
+    spawn_notifier(app.clone());
+    // The built-in AI (design 05 §3.13.2 Q1): endpoints and keys from the
+    // environment only; a name that does not qualify is not registered and
+    // logged by name and reason (never the URL or the key).
+    {
+        let (ai, warnings) = oxledger::ai::config::from_vars(std::env::vars());
+        for w in warnings {
+            tracing::warn!("{w}");
+        }
+        tracing::info!(
+            endpoints = ?ai.endpoints.keys().collect::<Vec<_>>(),
+            allow_http = ai.allow_http,
+            transport = oxledger::ai::client::TRANSPORT,
+            "AI endpoints registered"
+        );
+        oxledger::ai::config::install(ai);
+        oxledger::ai::runner::spawn_jobs(app.pool.clone());
+    }
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let cfg = ApiConfig {
         spa_origin: env("OXLEDGER_SPA_ORIGIN", Some(&format!("http://{bind}")))?,
@@ -119,7 +251,14 @@ async fn serve() -> Result<()> {
         }
         None => None,
     };
-    let router = api::router_with_github(app, cfg, hook);
+    let mut router = api::router_with_github(app.clone(), cfg, hook);
+    if let Some(t) = std::env::var("OXLEDGER_METRICS_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
+        router = router.merge(api::metrics_routes(app, t));
+        tracing::info!("metrics at /metrics (bearer token)");
+    }
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("listening on http://{bind} (SPA API at /api/v1, MCP at /mcp)");
     axum::serve(
@@ -235,10 +374,23 @@ async fn main() -> Result<()> {
             admin(&args).await
         }
         Some("reindex") => {
-            let app = open_app().await?;
-            oxledger::cursor::init(&app.pool).await?;
-            let n = app.index.rebuild(&app.pool).await?;
-            eprintln!("reindexed ({n} outbox messages applied)");
+            if std::env::args().nth(2).as_deref() == Some("--offline") {
+                let app = open_app().await?;
+                let r = app.index.rebuild(&app.pool).await?;
+                eprintln!(
+                    "rebuilt: generation {} ({} documents, F {})",
+                    r.generation, r.baseline_docs, r.frontier
+                );
+            } else {
+                let pool = db::connect(&env("DATABASE_URL", None)?).await?;
+                sqlx::query("UPDATE search_settings SET rebuild_requested_at = now()")
+                    .execute(&pool)
+                    .await?;
+                eprintln!(
+                    "rebuild requested; the running server builds a new generation in the background\n\
+                     (search keeps working). Without a running server use `oxledger reindex --offline`."
+                );
+            }
             Ok(())
         }
         #[cfg(not(feature = "test-support"))]

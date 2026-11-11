@@ -103,6 +103,11 @@ pub struct CommandDoc {
     /// Citations (`{citation_id, quote}`); checked for agent proposals (S6).
     #[serde(default)]
     pub evidence: Vec<Evidence>,
+    /// Contract 05 §3.6: the `rules_version` from `describe_form`; when the
+    /// rules in force differ, the document fails with `form_rules_changed`.
+    /// Not part of the idempotency hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_rules_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -117,6 +122,14 @@ pub enum OpInput {
     CreateVersion(CreateVersionOp),
     /// §17.9a: agents only; the only op, one precondition on the version.
     UpdateVersion(UpdateVersionOp),
+    /// Contract 05 §3.10.1: decide an issue waiting in Triage.
+    TriageDecide(TriageDecideOp),
+    /// Contract 05 §3.10.2: log time (with issue ops on the same issue, or alone).
+    LogTime(LogTimeOp),
+    /// Contract 05 §3.10.2: the only op, one precondition on the entry.
+    UpdateTimeEntry(UpdateTimeEntryOp),
+    /// Contract 05 §3.10.2: people only; the only op, one precondition.
+    DeleteTimeEntry(DeleteTimeEntryOp),
 }
 
 const KINDS: &[&str] = &[
@@ -127,7 +140,90 @@ const KINDS: &[&str] = &[
     "duplicate_of",
     "create_version",
     "update_version",
+    "triage_decide",
+    "log_time",
+    "update_time_entry",
+    "delete_time_entry",
 ];
+
+/// A time entry's fields (contract 05 §3.10.2). `hours` is a decimal
+/// string; `author_id`, `created_on_behalf_of_id` and `project_id` cannot be
+/// set here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeFields {
+    /// `YYYY-MM-DD`; omitted = today in the org time zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_on: Option<String>,
+    /// Decimal string, 0–1000, at most two decimals (`"1.50"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Json>,
+    /// Omitted = the project's default activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<String>,
+    /// Whose time; omitted = the caller (an agent: its delegator).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
+}
+
+/// `update_time_entry.set`: absent = unchanged; `issue: null` detaches.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeEntrySet {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Json>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<String>,
+    /// People only (with `log_time_for_other_users`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
+    /// `{"type": "issue", …}` in the same project, or `null`.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub issue: Option<Option<TargetRef>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LogTimeOp {
+    pub op_id: Uuid,
+    /// Accepted for symmetry with create_issue; nothing can refer to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// Optional with `issue` (must then match its project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
+    /// An existing issue (`{"type": "issue", "id"|"key"}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<TargetRef>,
+    pub fields: TimeFields,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateTimeEntryOp {
+    pub op_id: Uuid,
+    /// `{"type": "time_entry", "id": …}`.
+    pub target: TargetRef,
+    pub set: TimeEntrySet,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteTimeEntryOp {
+    pub op_id: Uuid,
+    /// `{"type": "time_entry", "id": …}`.
+    pub target: TargetRef,
+}
 
 /// A milestone's fields (§17.9a). Absent = not set; `effective_date: null`
 /// clears the date. `status` only in `update_version`.
@@ -185,7 +281,8 @@ pub struct CreateIssueOp {
     pub project_id: Uuid,
     pub tracker_id: Uuid,
     /// `subject` (required), `description`, `is_private`, `assigned_to_id`,
-    /// `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `cf:<id>`.
+    /// `priority_id`, `fixed_version_id`, `start_date`, `due_date`,
+    /// `estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`.
     pub fields: BTreeMap<String, Json>,
 }
 
@@ -225,6 +322,61 @@ pub struct DuplicateOfOp {
     pub target: TargetRef,
 }
 
+/// What a `triage_decide` op decides (contract 05 §3.10.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageDecision {
+    /// `state = accepted`; may come with update_fields, transition, add_note.
+    Accept,
+    /// `state = declined`; needs a transition to a closed status.
+    Decline,
+    /// `state = duplicate` and the duplicate relation to `duplicate_of`;
+    /// needs a transition to a closed status.
+    Duplicate,
+    /// Hide from the inbox until `snooze_until` or new activity.
+    Snooze,
+    /// End a snooze now.
+    Unsnooze,
+}
+
+impl TriageDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Decline => "decline",
+            Self::Duplicate => "duplicate",
+            Self::Snooze => "snooze",
+            Self::Unsnooze => "unsnooze",
+        }
+    }
+    /// `issue_triage.state` after the decision.
+    pub fn new_state(self) -> &'static str {
+        match self {
+            Self::Accept => "accepted",
+            Self::Decline => "declined",
+            Self::Duplicate => "duplicate",
+            Self::Snooze | Self::Unsnooze => "pending",
+        }
+    }
+}
+
+/// Contract 05 §3.10.1. The A5 flags (`self_triage`, `same_sponsor`) are
+/// computed by the server; they are not parameters.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriageDecideOp {
+    pub op_id: Uuid,
+    /// The issue waiting in Triage (an existing issue).
+    pub target: TargetRef,
+    pub decision: TriageDecision,
+    /// `decision = duplicate` only: the original issue (same project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<TargetRef>,
+    /// `decision = snooze` only: RFC 3339, 1 hour to 90 days from now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_until: Option<String>,
+}
+
 /// `{"type":"issue","id"|"key"}` or `{"type":"temp","ref"}`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -241,6 +393,9 @@ pub enum TargetRef {
     },
     /// A milestone (update_version and its precondition only).
     Version { id: Uuid },
+    /// A time entry (update_time_entry, delete_time_entry and their
+    /// precondition only).
+    TimeEntry { id: Uuid },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -272,6 +427,9 @@ pub struct CommandResult {
     /// One per op, in order.
     pub items: Vec<ItemResult>,
     pub search: SearchReceipt,
+    /// Time entries the document wrote (contract 05 §3.10.2); omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub time_entries: Vec<crate::time_entries::TimeEntryEffect>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -295,6 +453,9 @@ pub struct ItemResult {
     /// The milestone the op wrote (version ops).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_id: Option<Uuid>,
+    /// The time entry the op wrote (time ops, contract 05 §3.10.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_entry_id: Option<Uuid>,
 }
 
 /// What a version command did (§17.9a: the new id is in the response).
@@ -342,7 +503,7 @@ fn op_err(
     ApiError::new(code, msg).with_details(d).into()
 }
 
-fn issue_not_found(what: &str) -> anyhow::Error {
+pub(crate) fn issue_not_found(what: &str) -> anyhow::Error {
     api(ErrorCode::NotFound, format!("no issue {what}"))
 }
 
@@ -350,7 +511,7 @@ fn issue_not_found(what: &str) -> anyhow::Error {
 
 /// A field a command may write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Key {
+pub(crate) enum Key {
     Subject,
     Description,
     AssignedTo,
@@ -358,11 +519,12 @@ enum Key {
     Version,
     StartDate,
     DueDate,
+    EstimatedHours,
     Cf(i32),
 }
 
 impl Key {
-    fn parse(k: &str) -> Option<Key> {
+    pub(crate) fn parse(k: &str) -> Option<Key> {
         Some(match k {
             "subject" => Key::Subject,
             "description" => Key::Description,
@@ -371,6 +533,7 @@ impl Key {
             "fixed_version_id" => Key::Version,
             "start_date" => Key::StartDate,
             "due_date" => Key::DueDate,
+            "estimated_hours" => Key::EstimatedHours,
             _ => {
                 let n = k.strip_prefix("cf:")?;
                 if n.is_empty() || n.len() > 9 || !n.bytes().all(|b| b.is_ascii_digit()) {
@@ -381,7 +544,7 @@ impl Key {
         })
     }
 
-    fn name(self) -> String {
+    pub(crate) fn name(self) -> String {
         match self {
             Key::Subject => "subject".into(),
             Key::Description => "description".into(),
@@ -390,12 +553,13 @@ impl Key {
             Key::Version => "fixed_version_id".into(),
             Key::StartDate => "start_date".into(),
             Key::DueDate => "due_date".into(),
+            Key::EstimatedHours => "estimated_hours".into(),
             Key::Cf(id) => format!("cf:{id}"),
         }
     }
 }
 
-const BUILTIN_KEYS: [Key; 7] = [
+const BUILTIN_KEYS: [Key; 8] = [
     Key::Subject,
     Key::Description,
     Key::AssignedTo,
@@ -403,7 +567,53 @@ const BUILTIN_KEYS: [Key; 7] = [
     Key::Version,
     Key::StartDate,
     Key::DueDate,
+    Key::EstimatedHours,
 ];
+
+/// `issues.estimated_hours` is `numeric(7,2)` (design 05 §2.2).
+pub const MAX_ESTIMATED_HOURS: &str = "99999.99";
+
+/// An `estimated_hours` value from a document or the database → canonical
+/// decimal string, or why not: `Err(None)` = not a decimal string,
+/// `Err(Some(kind))` = out of range or too many decimals.
+pub fn estimated_hours(s: &str) -> std::result::Result<String, Option<&'static str>> {
+    // Decimal syntax first (no length limits here: those are range and
+    // decimals questions, answered after the zeros that do not count).
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    let (ip, fp) = match digits.split_once('.') {
+        Some((i, f)) if !f.is_empty() => (i, f),
+        Some(_) => return Err(None),
+        None => (digits, ""),
+    };
+    if ip.is_empty()
+        || !ip.bytes().all(|b| b.is_ascii_digit())
+        || !fp.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(None);
+    }
+    let ip = ip.trim_start_matches('0');
+    let fp = fp.trim_end_matches('0');
+    let zero = ip.is_empty() && fp.is_empty();
+    if (neg && !zero) || ip.len() > 5 {
+        return Err(Some("out_of_range"));
+    }
+    if fp.len() > 2 {
+        return Err(Some("too_many_decimals"));
+    }
+    let mut out = if ip.is_empty() {
+        "0".to_string()
+    } else {
+        ip.to_string()
+    };
+    if !fp.is_empty() {
+        out.push('.');
+        out.push_str(fp);
+    }
+    Ok(out)
+}
 
 fn date_in_range(d: NaiveDate) -> bool {
     let lo = NaiveDate::from_ymd_opt(MIN_DATE.0, MIN_DATE.1, MIN_DATE.2).unwrap_or(d);
@@ -462,7 +672,7 @@ const CF_TYPES: &[&str] = &[
 /// A custom field value as written: `{"<type>": v}` or `null`. Returns the
 /// type and the canonical value (`Json::Null` = no value). Syntax only; the
 /// field's own type is checked later.
-fn parse_cf(path: &str, v: &Json) -> Result<(Option<&'static str>, Json)> {
+pub(crate) fn parse_cf(path: &str, v: &Json) -> Result<(Option<&'static str>, Json)> {
     let Json::Object(m) = v else {
         if v.is_null() {
             return Ok((None, Json::Null));
@@ -509,7 +719,7 @@ fn parse_cf(path: &str, v: &Json) -> Result<(Option<&'static str>, Json)> {
 }
 
 /// A built-in field value → canonical JSON (`Json::Null` = empty).
-fn parse_builtin(path: &str, key: Key, v: &Json) -> Result<Json> {
+pub(crate) fn parse_builtin(path: &str, key: Key, v: &Json) -> Result<Json> {
     let uuid_or_null = |what: &str| -> Result<Json> {
         match v {
             Json::Null => Ok(Json::Null),
@@ -558,6 +768,27 @@ fn parse_builtin(path: &str, key: Key, v: &Json) -> Result<Json> {
                 Ok(json!(d.to_string()))
             }
             _ => Err(bad(path, "dates are YYYY-MM-DD strings or null")),
+        },
+        Key::EstimatedHours => match v {
+            Json::Null => Ok(Json::Null),
+            Json::String(s) => match estimated_hours(s) {
+                Ok(c) => Ok(json!(c)),
+                Err(None) => Err(bad(
+                    path,
+                    "estimated_hours is a decimal string such as \"1.5\" or null",
+                )),
+                Err(Some(kind)) => Err(ApiError::new(
+                    ErrorCode::InvalidValue,
+                    "estimated_hours is between 0 and 99999.99 with at most two decimals",
+                )
+                .with_details(json!({"path": path, "kind": kind,
+                                     "min": "0", "max": MAX_ESTIMATED_HOURS, "max_decimals": 2}))
+                .into()),
+            },
+            _ => Err(bad(
+                path,
+                "estimated_hours is a decimal string such as \"1.5\" or null",
+            )),
         },
         Key::Cf(_) => unreachable!("custom fields use parse_cf"),
     }
@@ -616,6 +847,23 @@ pub(crate) enum DestKind {
     /// A milestone's name and description: public content of its project
     /// (§17.9a, M8). `New` = created in that project.
     Version(VersionDest),
+    /// A time entry (contract 05 §3.5.4): its readers are the project's
+    /// time readers (`all`) plus the person, cut to the issue's readers.
+    Time(TimeDest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimeDest {
+    /// `project_id` may be omitted with an issue.
+    New {
+        project_id: Option<Uuid>,
+        issue: Option<Uuid>,
+    },
+    /// `issue`: `set.issue` when the op moves the entry.
+    Existing {
+        entry_id: Uuid,
+        issue: Option<Option<Uuid>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,9 +935,39 @@ enum Op {
         version_id: Uuid,
         set: VersionFields,
     },
+    Triage {
+        op_id: Uuid,
+        target: Target,
+        decision: TriageDecision,
+        dup: Option<Target>,
+        snooze_until: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    LogTime {
+        op_id: Uuid,
+        project_id: Option<Uuid>,
+        issue: Option<Uuid>,
+        fields: TimeFields,
+    },
+    UpdateTime {
+        op_id: Uuid,
+        entry_id: Uuid,
+        set: TimeEntrySet,
+        issue: Option<Option<Uuid>>,
+    },
+    DeleteTime {
+        op_id: Uuid,
+        entry_id: Uuid,
+    },
 }
 
 impl Op {
+    fn is_time(&self) -> bool {
+        matches!(
+            self,
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. }
+        )
+    }
+
     fn op_id(&self) -> Uuid {
         match self {
             Op::Create { op_id, .. }
@@ -698,7 +976,11 @@ impl Op {
             | Op::Note { op_id, .. }
             | Op::Duplicate { op_id, .. }
             | Op::CreateVersion { op_id, .. }
-            | Op::UpdateVersion { op_id, .. } => *op_id,
+            | Op::UpdateVersion { op_id, .. }
+            | Op::Triage { op_id, .. }
+            | Op::LogTime { op_id, .. }
+            | Op::UpdateTime { op_id, .. }
+            | Op::DeleteTime { op_id, .. } => *op_id,
         }
     }
 }
@@ -722,9 +1004,18 @@ pub(crate) struct Parsed {
     pub norm: Json,
     /// update_version's precondition.
     version_lock: Option<i32>,
+    /// update_time_entry's / delete_time_entry's precondition.
+    time_lock: Option<i32>,
+    /// Contract 05 §3.6: the rules version the caller saw.
+    pub expected_rules: Option<String>,
 }
 
 impl Parsed {
+    /// `not_found` for issue `id`, named as the caller wrote it.
+    pub(crate) fn issue_not_found(&self, id: Uuid) -> anyhow::Error {
+        issue_not_found(self.refs.get(&id).map_or(&id.to_string(), |r| r))
+    }
+
     /// (op_id, kind) in document order.
     pub fn op_list(&self) -> Vec<(Uuid, &'static str)> {
         self.ops
@@ -738,10 +1029,45 @@ impl Parsed {
                     Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
                     Op::CreateVersion { .. } => perm::OP_CREATE_VERSION,
                     Op::UpdateVersion { .. } => perm::OP_UPDATE_VERSION,
+                    Op::Triage { .. } => perm::OP_TRIAGE_DECIDE,
+                    Op::LogTime { .. } => perm::OP_LOG_TIME,
+                    Op::UpdateTime { .. } => perm::OP_UPDATE_TIME_ENTRY,
+                    Op::DeleteTime { .. } => perm::OP_DELETE_TIME_ENTRY,
                 };
                 (o.op_id(), k)
             })
             .collect()
+    }
+
+    /// Design 05 §3.12.4: the existing issues an agent write of this
+    /// document counts toward (issue ops; `duplicate_of` counts both ends;
+    /// time and version ops do not touch issues). Sorted, distinct.
+    pub(crate) fn chain_issues(&self) -> Vec<Uuid> {
+        let mut out = BTreeSet::new();
+        let mut add = |t: &Target| {
+            if let Target::Issue(id) = t {
+                out.insert(*id);
+            }
+        };
+        for o in &self.ops {
+            match o {
+                Op::Update { target, .. }
+                | Op::Transition { target, .. }
+                | Op::Note { target, .. } => add(target),
+                Op::Triage { target, dup, .. } => {
+                    add(target);
+                    if let Some(d) = dup {
+                        add(d);
+                    }
+                }
+                Op::Duplicate { source, target, .. } => {
+                    add(source);
+                    add(target);
+                }
+                _ => {}
+            }
+        }
+        out.into_iter().collect()
     }
 
     /// Existing target issues.
@@ -773,6 +1099,64 @@ impl Parsed {
             }),
             _ => None,
         }
+    }
+
+    /// Whether every op is a time op (planned by `time_entries::plan` alone).
+    pub(crate) fn time_only(&self) -> bool {
+        self.ops.iter().all(Op::is_time)
+    }
+
+    /// Whether the document has a time op.
+    pub(crate) fn has_time(&self) -> bool {
+        self.ops.iter().any(Op::is_time)
+    }
+
+    /// Whether the document deletes a time entry (people only).
+    pub(crate) fn deletes_time(&self) -> bool {
+        self.ops.iter().any(|o| matches!(o, Op::DeleteTime { .. }))
+    }
+
+    /// The time ops, for `time_entries::plan`.
+    pub(crate) fn time_cmds(&self) -> Vec<crate::time_entries::TimeCmd<'_>> {
+        use crate::time_entries::TimeCmd;
+        self.ops
+            .iter()
+            .enumerate()
+            .filter_map(|(index, o)| match o {
+                Op::LogTime {
+                    op_id,
+                    project_id,
+                    issue,
+                    fields,
+                } => Some(TimeCmd::Log {
+                    index,
+                    op_id: *op_id,
+                    project_id: *project_id,
+                    issue: *issue,
+                    fields,
+                }),
+                Op::UpdateTime {
+                    op_id,
+                    entry_id,
+                    set,
+                    issue,
+                } => Some(TimeCmd::Update {
+                    index,
+                    op_id: *op_id,
+                    entry_id: *entry_id,
+                    lock_version: self.time_lock.expect("parsed with its precondition"),
+                    set,
+                    issue: *issue,
+                }),
+                Op::DeleteTime { op_id, entry_id } => Some(TimeCmd::Delete {
+                    index,
+                    op_id: *op_id,
+                    entry_id: *entry_id,
+                    lock_version: self.time_lock.expect("parsed with its precondition"),
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Where each op writes, for the audience check (§3.8 M8, M9; §6.7
@@ -849,6 +1233,33 @@ impl Parsed {
                     op_index: i,
                     kind: DestKind::Version(VersionDest::Existing(*version_id)),
                 }),
+                Op::Triage { target, dup, .. } => {
+                    for t in std::iter::once(target).chain(dup).filter_map(on) {
+                        out.push(Destination {
+                            op_index: i,
+                            kind: DestKind::Content(t),
+                        });
+                    }
+                }
+                Op::LogTime {
+                    project_id, issue, ..
+                } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::Time(TimeDest::New {
+                        project_id: *project_id,
+                        issue: *issue,
+                    }),
+                }),
+                Op::UpdateTime {
+                    entry_id, issue, ..
+                } => out.push(Destination {
+                    op_index: i,
+                    kind: DestKind::Time(TimeDest::Existing {
+                        entry_id: *entry_id,
+                        issue: *issue,
+                    }),
+                }),
+                Op::DeleteTime { .. } => {}
             }
         }
         out
@@ -858,7 +1269,8 @@ impl Parsed {
     /// delegation policy (§16.3 rule 3: a create's fields count; defaults the
     /// server fills in do not).
     pub(crate) fn policy_items(&self) -> Vec<(usize, &'static str, Vec<String>)> {
-        self.ops
+        let mut out: Vec<(usize, &'static str, Vec<String>)> = self
+            .ops
             .iter()
             .enumerate()
             .map(|(i, o)| match o {
@@ -878,8 +1290,25 @@ impl Parsed {
                 // §17.9a: no field-level policy for versions.
                 Op::CreateVersion { .. } => (i, perm::OP_CREATE_VERSION, Vec::new()),
                 Op::UpdateVersion { .. } => (i, perm::OP_UPDATE_VERSION, Vec::new()),
+                Op::Triage { .. } => (i, perm::OP_TRIAGE_DECIDE, Vec::new()),
+                // Contract 05 §4.3: no field-level policy for time.
+                Op::LogTime { .. } => (i, perm::OP_LOG_TIME, Vec::new()),
+                Op::UpdateTime { .. } => (i, perm::OP_UPDATE_TIME_ENTRY, Vec::new()),
+                Op::DeleteTime { .. } => (i, perm::OP_DELETE_TIME_ENTRY, Vec::new()),
             })
-            .collect()
+            .collect();
+        // A duplicate decision also writes the duplicate relation: the
+        // duplicate_of policy applies too (the stricter of the two wins).
+        for (i, o) in self.ops.iter().enumerate() {
+            if let Op::Triage {
+                decision: TriageDecision::Duplicate,
+                ..
+            } = o
+            {
+                out.push((i, perm::OP_DUPLICATE_OF, Vec::new()));
+            }
+        }
+        out
     }
 
     /// Projects where an issue is created, with the tracker.
@@ -937,7 +1366,147 @@ pub fn canonical_json(v: &Json) -> String {
 
 /// Step 2–4: syntax, structure, issue keys. Needs the connection only to
 /// resolve keys (no locks; a key that does not resolve is `not_found`).
+/// Contract 05 §3.10.2 composition: `update_time_entry` and
+/// `delete_time_entry` are the only op of their document, with exactly one
+/// precondition on the entry; `log_time` ops share one issue (or none, in one
+/// project) and may come with `update_fields`, `transition` and `add_note`
+/// on that same existing issue. Returns the edit's lock_version.
+fn check_time_doc(
+    ops: &[Op],
+    preconditions: &[Precondition],
+    has_time: bool,
+    has_time_edit: bool,
+) -> Result<Option<i32>> {
+    if has_time_edit {
+        if ops.len() != 1 {
+            return Err(bad(
+                "ops",
+                "update_time_entry and delete_time_entry are the only op of their document",
+            ));
+        }
+        let entry = match &ops[0] {
+            Op::UpdateTime { entry_id, .. } | Op::DeleteTime { entry_id, .. } => *entry_id,
+            _ => unreachable!("the only op is the edit"),
+        };
+        return match preconditions {
+            [one]
+                if matches!(one.target, TargetRef::TimeEntry { id } if id == entry)
+                    && one.field_values.is_empty() =>
+            {
+                Ok(Some(one.lock_version))
+            }
+            _ => Err(bad(
+                "preconditions",
+                "a time entry edit needs exactly one precondition: the entry's lock_version",
+            )),
+        };
+    }
+    if preconditions
+        .iter()
+        .any(|p| matches!(p.target, TargetRef::TimeEntry { .. }))
+    {
+        return Err(bad(
+            "preconditions",
+            "a time entry precondition goes with update_time_entry or delete_time_entry",
+        ));
+    }
+    if !has_time {
+        return Ok(None);
+    }
+    let logs: Vec<(Option<Uuid>, Option<Uuid>)> = ops
+        .iter()
+        .filter_map(|o| match o {
+            Op::LogTime {
+                project_id, issue, ..
+            } => Some((*project_id, *issue)),
+            _ => None,
+        })
+        .collect();
+    let issue = logs[0].1;
+    if logs.iter().any(|l| l.1 != issue) {
+        return Err(bad("ops", "the log_time ops of a document share one issue"));
+    }
+    if issue.is_none() && logs.iter().any(|l| l.0 != logs[0].0) {
+        return Err(bad(
+            "ops",
+            "the log_time ops of a document share one project",
+        ));
+    }
+    for (i, o) in ops.iter().enumerate() {
+        let t = match o {
+            Op::LogTime { .. } => continue,
+            Op::Update { target, .. } | Op::Transition { target, .. } | Op::Note { target, .. } => {
+                target
+            }
+            _ => {
+                return Err(bad(
+                    &format!("ops[{i}].kind"),
+                    "log_time goes only with update_fields, transition and add_note on its issue",
+                ));
+            }
+        };
+        if issue.is_none_or(|id| *t != Target::Issue(id)) {
+            return Err(bad(
+                &format!("ops[{i}].target"),
+                "ops next to log_time target the issue the time is logged on",
+            ));
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -> Result<Parsed> {
+    parse_seen(conn, raw, max_ops, None).await
+}
+
+/// [`parse`] for `caller`: an existing target the caller cannot see is
+/// `not_found` before any check about its precondition, the same answer
+/// as for an issue that does not exist (看不到＝不存在, M1.11 gate).
+pub(crate) async fn parse_for(
+    conn: &mut PgConnection,
+    raw: &Json,
+    max_ops: usize,
+    caller: AuthContext,
+) -> Result<Parsed> {
+    let scope = db::write_scope(&mut *conn, caller).await?;
+    parse_seen(conn, raw, max_ops, Some(&scope)).await
+}
+
+/// After [`parse_for`] refused `raw`: a resend of the very request
+/// `caller_id` already made under `operation_id` replays (the replay re-checks
+/// visibility itself, 02 M05), so it is parsed without the cut. Any other
+/// document keeps the cut's answer (`None`); `fp` is the caller's fingerprint
+/// of a parsed document.
+pub(crate) async fn resent(
+    conn: &mut PgConnection,
+    raw: &Json,
+    max_ops: usize,
+    caller_id: Uuid,
+    operation_id: Uuid,
+    fp: impl Fn(&Parsed) -> [u8; 32],
+) -> Result<Option<Parsed>> {
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT fingerprint FROM operation_requests WHERE caller_id = $1 AND operation_id = $2",
+    )
+    .bind(caller_id)
+    .bind(operation_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let Ok(p) = parse(&mut *conn, raw, max_ops).await else {
+        return Ok(None);
+    };
+    Ok((stored.as_slice() == fp(&p).as_slice()).then_some(p))
+}
+
+async fn parse_seen(
+    conn: &mut PgConnection,
+    raw: &Json,
+    max_ops: usize,
+    seen: Option<&ox_core::visibility::Scope>,
+) -> Result<Parsed> {
     let Json::Object(top) = raw else {
         return Err(bad("", "the body is a command document object"));
     };
@@ -1007,6 +1576,23 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 collect(&o.target);
             }
             OpInput::CreateVersion(_) | OpInput::UpdateVersion(_) => {}
+            OpInput::LogTime(o) => {
+                if let Some(t) = &o.issue {
+                    collect(t);
+                }
+            }
+            OpInput::UpdateTimeEntry(o) => {
+                if let Some(Some(t)) = &o.set.issue {
+                    collect(t);
+                }
+            }
+            OpInput::DeleteTimeEntry(_) => {}
+            OpInput::TriageDecide(o) => {
+                collect(&o.target);
+                if let Some(d) = &o.duplicate_of {
+                    collect(d);
+                }
+            }
         }
     }
     for p in &doc.preconditions {
@@ -1051,7 +1637,9 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 path,
                 "a temp ref must name a bind declared by an earlier create_issue",
             )),
-            TargetRef::Version { .. } => Err(bad(path, "this op targets an issue")),
+            TargetRef::Version { .. } | TargetRef::TimeEntry { .. } => {
+                Err(bad(path, "this op targets an issue"))
+            }
         }
     };
 
@@ -1061,6 +1649,8 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     let mut transitions: BTreeSet<Target> = BTreeSet::new();
     let mut has_dup = false;
     let mut has_version = false;
+    let mut has_time = false;
+    let mut has_time_edit = false;
     for (i, op) in doc.ops.iter().enumerate() {
         let p = |s: &str| format!("ops[{i}].{s}");
         let parse_writes = |m: &BTreeMap<String, Json>,
@@ -1222,12 +1812,135 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                     set: o.set.clone(),
                 }
             }
+            OpInput::LogTime(o) => {
+                has_time = true;
+                if let Some(b) = &o.bind
+                    && (b.is_empty() || b.len() > 64)
+                {
+                    return Err(bad(&p("bind"), "bind is 1–64 characters"));
+                }
+                let issue = match &o.issue {
+                    None => None,
+                    Some(t) => match target(t, &p("issue"), &BTreeSet::new())? {
+                        Target::Issue(id) => Some(id),
+                        Target::Temp(_) => unreachable!("no binds were offered"),
+                    },
+                };
+                Op::LogTime {
+                    op_id: o.op_id,
+                    project_id: o.project_id,
+                    issue,
+                    fields: o.fields.clone(),
+                }
+            }
+            OpInput::UpdateTimeEntry(o) => {
+                has_time_edit = true;
+                let TargetRef::TimeEntry { id } = o.target else {
+                    return Err(bad(&p("target"), "update_time_entry targets a time entry"));
+                };
+                let st = &o.set;
+                if st.spent_on.is_none()
+                    && st.hours.is_none()
+                    && st.activity_id.is_none()
+                    && st.comments.is_none()
+                    && st.user_id.is_none()
+                    && st.issue.is_none()
+                {
+                    return Err(bad(&p("set"), "set names at least one field"));
+                }
+                let issue = match &o.set.issue {
+                    None => None,
+                    Some(None) => Some(None),
+                    Some(Some(t)) => match target(t, &p("set.issue"), &BTreeSet::new())? {
+                        Target::Issue(id) => Some(Some(id)),
+                        Target::Temp(_) => unreachable!("no binds were offered"),
+                    },
+                };
+                Op::UpdateTime {
+                    op_id: o.op_id,
+                    entry_id: id,
+                    set: o.set.clone(),
+                    issue,
+                }
+            }
+            OpInput::DeleteTimeEntry(o) => {
+                has_time_edit = true;
+                let TargetRef::TimeEntry { id } = o.target else {
+                    return Err(bad(&p("target"), "delete_time_entry targets a time entry"));
+                };
+                Op::DeleteTime {
+                    op_id: o.op_id,
+                    entry_id: id,
+                }
+            }
+            OpInput::TriageDecide(o) => {
+                let t = target(&o.target, &p("target"), &binds)?;
+                if matches!(t, Target::Temp(_)) {
+                    return Err(bad(&p("target"), "triage_decide targets an existing issue"));
+                }
+                let dup = match (o.decision, &o.duplicate_of) {
+                    (TriageDecision::Duplicate, Some(d)) => {
+                        let d = target(d, &p("duplicate_of"), &binds)?;
+                        if matches!(d, Target::Temp(_)) {
+                            return Err(bad(
+                                &p("duplicate_of"),
+                                "duplicate_of names an existing issue",
+                            ));
+                        }
+                        Some(d)
+                    }
+                    (TriageDecision::Duplicate, None) => {
+                        return Err(bad(
+                            &p("duplicate_of"),
+                            "a duplicate decision names the original issue in duplicate_of",
+                        ));
+                    }
+                    (_, Some(_)) => {
+                        return Err(bad(
+                            &p("duplicate_of"),
+                            "duplicate_of goes only with decision duplicate",
+                        ));
+                    }
+                    (_, None) => None,
+                };
+                let snooze_until = match (o.decision, &o.snooze_until) {
+                    (TriageDecision::Snooze, Some(s)) => Some(
+                        chrono::DateTime::parse_from_rfc3339(s)
+                            .map_err(|_| {
+                                bad(&p("snooze_until"), "snooze_until is an RFC 3339 time")
+                            })?
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    (TriageDecision::Snooze, None) => {
+                        return Err(bad(
+                            &p("snooze_until"),
+                            "a snooze decision needs snooze_until",
+                        ));
+                    }
+                    (_, Some(_)) => {
+                        return Err(bad(
+                            &p("snooze_until"),
+                            "snooze_until goes only with decision snooze",
+                        ));
+                    }
+                    (_, None) => None,
+                };
+                Op::Triage {
+                    op_id: o.op_id,
+                    target: t,
+                    decision: o.decision,
+                    dup,
+                    snooze_until,
+                }
+            }
         };
         if !op_ids.insert(parsed.op_id()) {
             return Err(bad(&p("op_id"), "op_id is unique in the document"));
         }
         ops.push(parsed);
     }
+    check_triage_doc(&ops)?;
+    let time_lock = check_time_doc(&ops, &doc.preconditions, has_time, has_time_edit)?;
     if has_dup && ops.len() != 1 {
         return Err(bad("ops", "duplicate_of is the only op of its document"));
     }
@@ -1278,7 +1991,14 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
                 add(source);
                 add(target);
             }
+            Op::Triage { target, dup, .. } => {
+                add(target);
+                if let Some(d) = dup {
+                    add(d);
+                }
+            }
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
         }
     }
     let mut pre: BTreeMap<Uuid, Pre> = BTreeMap::new();
@@ -1286,7 +2006,7 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         .preconditions
         .iter()
         .enumerate()
-        .filter(|_| !has_version)
+        .filter(|_| !has_version && !has_time_edit)
     {
         let path = format!("preconditions[{i}].target");
         if matches!(p.target, TargetRef::Temp { .. }) {
@@ -1322,6 +2042,13 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
             return Err(bad(&path, "one precondition per target issue"));
         }
     }
+    if let Some(scope) = seen {
+        let ids: Vec<Uuid> = existing.iter().copied().collect();
+        let found = crate::time_entries::seen_issue_projects(&mut *conn, &ids, scope).await?;
+        if let Some(unseen) = existing.iter().find(|id| !found.contains_key(id)) {
+            return Err(issue_not_found(&refs[unseen]));
+        }
+    }
     if let Some(missing) = existing.iter().find(|id| !pre.contains_key(id)) {
         return Err(bad(
             "preconditions",
@@ -1335,6 +2062,9 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
     // The hash covers the normalized document (§16.5): keys replaced by ids,
     // numbers in canonical form, so "12.50" and "12.5" are the same request.
     let mut norm = raw.clone();
+    if let Json::Object(m) = &mut norm {
+        m.remove("expected_rules_version");
+    }
     normalize_refs(&mut norm, &resolved);
     normalize_numbers(&mut norm);
     let hash: [u8; 32] =
@@ -1346,7 +2076,98 @@ pub(crate) async fn parse(conn: &mut PgConnection, raw: &Json, max_ops: usize) -
         refs,
         norm,
         version_lock,
+        time_lock,
+        expected_rules: doc.expected_rules_version.clone(),
     })
+}
+
+/// Contract 05 §3.10.1 structure: at most one `triage_decide`; the other
+/// ops of its document target the same issue and are only those its
+/// decision allows; decline and duplicate carry a transition (whether the
+/// status is closed is checked at step 14); the duplicate relation comes
+/// with the decision, never as a separate `duplicate_of` op.
+fn check_triage_doc(ops: &[Op]) -> Result<()> {
+    let mut found = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| matches!(o, Op::Triage { .. }));
+    let Some((
+        ti,
+        Op::Triage {
+            target: tt,
+            decision,
+            ..
+        },
+    )) = found.next()
+    else {
+        return Ok(());
+    };
+    if let Some((j, _)) = found.next() {
+        return Err(bad(
+            &format!("ops[{j}]"),
+            "at most one triage_decide per document",
+        ));
+    }
+    let mut has_transition = false;
+    for (j, o) in ops.iter().enumerate() {
+        if j == ti {
+            continue;
+        }
+        let pj = format!("ops[{j}]");
+        let on = match (o, decision) {
+            (Op::Duplicate { .. }, _) => {
+                return Err(bad(
+                    &pj,
+                    "the duplicate relation comes with triage_decide (decision duplicate); no separate duplicate_of op",
+                ));
+            }
+            (Op::Note { target, .. }, _) => target,
+            (Op::Update { target, .. }, TriageDecision::Accept) => target,
+            (
+                Op::Transition { target, .. },
+                TriageDecision::Accept | TriageDecision::Decline | TriageDecision::Duplicate,
+            ) => {
+                has_transition |= target == tt;
+                target
+            }
+            _ => {
+                let allowed = match decision {
+                    TriageDecision::Accept => "update_fields, transition and add_note",
+                    TriageDecision::Decline | TriageDecision::Duplicate => {
+                        "a transition and add_note"
+                    }
+                    TriageDecision::Snooze | TriageDecision::Unsnooze => "add_note",
+                };
+                return Err(bad(
+                    &pj,
+                    format!(
+                        "triage_decide {} goes only with {allowed} on the same issue",
+                        decision.as_str()
+                    ),
+                ));
+            }
+        };
+        if on != tt {
+            return Err(bad(
+                &format!("{pj}.target"),
+                "every op of a triage document targets the triaged issue",
+            ));
+        }
+    }
+    // A decline may come without a transition when the issue is already
+    // closed (a plain transition closed it while it waited); whether it is
+    // is a semantic check (`triage_requires_close`). A duplicate always
+    // brings its transition.
+    if *decision == TriageDecision::Duplicate && !has_transition {
+        return Err(bad(
+            "ops",
+            format!(
+                "triage_decide {} needs a transition of the same issue to a closed status",
+                decision.as_str()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Rewrites `{"int"|"float": "…"}` values in ops and preconditions to
@@ -1401,7 +2222,7 @@ fn normalize_refs(doc: &mut Json, resolved: &BTreeMap<String, Uuid>) {
     };
     if let Some(Json::Array(ops)) = doc.get_mut("ops") {
         for op in ops {
-            for f in ["target", "source"] {
+            for f in ["target", "source", "duplicate_of"] {
                 if let Some(t) = op.get_mut(f) {
                     fix(t);
                 }
@@ -1435,6 +2256,8 @@ struct IssueRow {
     fixed_version_id: Option<Uuid>,
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
+    /// `trim_scale(estimated_hours)::text`.
+    estimated_hours: Option<String>,
     is_private: bool,
     lock_version: i32,
     last_event_seq: i64,
@@ -1453,6 +2276,14 @@ impl IssueRow {
                 json!(self.start_date.map(|d| d.to_string())),
             ),
             (Key::DueDate, json!(self.due_date.map(|d| d.to_string()))),
+            (
+                Key::EstimatedHours,
+                json!(
+                    self.estimated_hours
+                        .as_deref()
+                        .and_then(|h| estimated_hours(h).ok())
+                ),
+            ),
         ])
     }
 
@@ -1501,6 +2332,33 @@ struct Work {
     dups: Vec<(Uuid, Uuid, Uuid)>, // (relation id, source, target)
     fields_touched: bool,
     effect: bool,
+    /// A new issue that enters the Triage inbox (contract 05 §3.4).
+    enters_triage: bool,
+    /// The triage decision on this issue (§3.10.1).
+    triage: Option<TriagePlan>,
+    /// Form rules the actor was held to and the final state meets (step
+    /// 14): a write clears only their marks (§3.6.3).
+    form_passed: Vec<String>,
+}
+
+/// A planned `issue_triage` change.
+#[derive(Debug)]
+struct TriagePlan {
+    decision: TriageDecision,
+    /// The row before ([`crate::triage::SNAPSHOT_SQL`]).
+    before: Json,
+    snooze_until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// How a form rule binds the caller ([`Rules::rule_hold`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// Held to it, and may see it named.
+    Bound,
+    /// An agent and a field of the rule is restricted: blocked, unnamed.
+    Blocked,
+    /// Not held to it.
+    Free,
 }
 
 /// Per (project, tracker): what the actor's roles and the field definitions say.
@@ -1509,6 +2367,11 @@ struct Rules {
     by_status: BTreeMap<Uuid, Vec<FieldRule>>,
     cfs: Vec<CfDef>,
     hidden: Vec<HiddenField>,
+    /// The form rules in force (contract 05 §3.6).
+    form: crate::forms::Effective,
+    /// Custom fields a running type conversion copies from: read-only until
+    /// it ends (§3.7).
+    converting: BTreeSet<i32>,
 }
 
 impl Rules {
@@ -1524,6 +2387,56 @@ impl Rules {
     }
     fn cf(&self, id: i32) -> Option<&CfDef> {
         self.cfs.iter().find(|c| c.id == id)
+    }
+    /// The caller may read `key` (built-ins always; a custom field that
+    /// applies and is readable).
+    fn key_readable(&self, key: &str, actor: &Actor, pp: &ProjectPerms) -> bool {
+        match Key::parse(key) {
+            Some(Key::Cf(id)) => self.cf(id).is_some_and(|d| readable(d, actor, pp)),
+            Some(_) => true,
+            None => false,
+        }
+    }
+    /// Whether the caller is held to a form rule (§3.6): only when its
+    /// target and every condition field are readable. A person is never
+    /// held to a rule naming a field they cannot read; an agent is blocked
+    /// (without names) when such a field is restricted here. A rule naming
+    /// a field that no longer applies (inactive, not for this tracker) holds
+    /// no one.
+    fn rule_hold(&self, r: &crate::forms::Rule, actor: &Actor, pp: &ProjectPerms) -> Hold {
+        let mut hold = Hold::Bound;
+        for k in std::iter::once(&r.field).chain(r.when.fields.iter()) {
+            if let Some(Key::Cf(id)) = Key::parse(k) {
+                match self.cf(id) {
+                    None => return Hold::Free,
+                    Some(d) if readable(d, actor, pp) => {}
+                    Some(_) => {
+                        hold = if actor.is_agent() {
+                            Hold::Blocked
+                        } else {
+                            Hold::Free
+                        }
+                    }
+                }
+            }
+        }
+        hold
+    }
+    /// A state for form conditions.
+    fn form_state(
+        &self,
+        tracker: Uuid,
+        status: Uuid,
+        is_private: bool,
+        values: &BTreeMap<Key, Json>,
+    ) -> crate::forms::State {
+        crate::forms::State::of(
+            tracker,
+            status,
+            self.form.category(status),
+            is_private,
+            values.iter().map(|(k, v)| (k.name(), v)),
+        )
     }
 }
 
@@ -1634,7 +2547,25 @@ async fn run(
     operation_id: Uuid,
     doc: &Json,
 ) -> Result<Outcome> {
-    let parsed = parse(&mut *tx, doc, MAX_OPS as usize).await?;
+    let parsed = match parse_for(&mut *tx, doc, MAX_OPS as usize, caller).await {
+        Ok(p) => p,
+        Err(e) => {
+            let fp = |p: &Parsed| fingerprint(ACTION_COMMAND, &p.hash);
+            match resent(
+                &mut *tx,
+                doc,
+                MAX_OPS as usize,
+                who.user_id,
+                operation_id,
+                fp,
+            )
+            .await?
+            {
+                Some(p) => p,
+                None => return Err(e),
+            }
+        }
+    };
     if parsed.version_cmd().is_some() {
         return Err(ApiError::new(
             ErrorCode::UnsupportedOperation,
@@ -1677,6 +2608,7 @@ async fn run(
             "changed": e.changed, "created": e.created,
         })).collect::<Vec<_>>(),
         "items": result.items,
+        "time_entries": result.time_entries,
     });
     complete_request(&mut *tx, request_id, &result_ref).await?;
     Ok(Outcome::Done(result))
@@ -1974,6 +2906,7 @@ pub(crate) async fn evaluate_undo(
         effects,
         items: sim.items,
         search: SearchReceipt { consistent_after },
+        time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
     })
 }
 
@@ -1983,7 +2916,7 @@ pub(crate) async fn check_as(
     caller: AuthContext,
     doc: &Json,
 ) -> Result<()> {
-    let parsed = parse(&mut *conn, doc, MAX_OPS as usize).await?;
+    let parsed = parse_for(&mut *conn, doc, MAX_OPS as usize, caller).await?;
     let ectx = EvalCtx {
         mode: Mode::Validate,
         caller,
@@ -2003,7 +2936,8 @@ pub(crate) async fn current_values(
     let r: Option<IssueRow> = sqlx::query_as(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
                 i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
-                i.fixed_version_id, i.start_date, i.due_date, i.is_private, i.lock_version,
+                i.fixed_version_id, i.start_date, i.due_date,
+                trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
          FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
          WHERE i.id = $1 AND i.archived_at IS NULL",
@@ -2022,6 +2956,36 @@ pub(crate) async fn current_values(
     }
     m.insert("status_id".into(), json!(r.status_id));
     Ok(Some((r.lock_version, r.status_id, m)))
+}
+
+/// An issue's tracker, status, privacy and field values by key name (the
+/// state form conditions see, contract 05 §3.6). Archived issues too.
+pub(crate) async fn issue_state(
+    conn: &mut PgConnection,
+    issue: Uuid,
+) -> Result<Option<(Uuid, Uuid, bool, BTreeMap<String, Json>)>> {
+    let r: Option<IssueRow> = sqlx::query_as(
+        "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
+                i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
+                i.fixed_version_id, i.start_date, i.due_date,
+                trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
+                i.last_event_seq
+         FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         WHERE i.id = $1",
+    )
+    .bind(issue)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(r) = r else { return Ok(None) };
+    let mut m: BTreeMap<String, Json> = r
+        .builtin()
+        .into_iter()
+        .map(|(k, v)| (k.name(), v))
+        .collect();
+    for (k, v) in load_cf_values(&mut *conn, r.id).await? {
+        m.insert(k.name(), v);
+    }
+    Ok(Some((r.tracker_id, r.status_id, r.is_private, m)))
 }
 
 /// The key was used before (§8.7). Same content → the stored result, with
@@ -2079,8 +3043,13 @@ pub(crate) async fn replay(
     let items = serde_json::from_value::<Vec<ItemResult>>(r["items"].clone())
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| i.issue_id.is_some_and(|id| visible.contains_key(&id)))
+        .filter(|i| {
+            i.issue_id.is_some_and(|id| visible.contains_key(&id)) || i.time_entry_id.is_some()
+        })
         .collect();
+    // A replay repeats the time receipts as written (ids and lock versions
+    // only; the entries' contents are read through GET /time-entries).
+    let time_entries = serde_json::from_value(r["time_entries"].clone()).unwrap_or_default();
     Ok(CommandResult {
         status: "succeeded".into(),
         execution_id: json_uuid(&r["execution_id"]).unwrap_or_default(),
@@ -2092,6 +3061,7 @@ pub(crate) async fn replay(
                 .unwrap_or_default()
                 .to_string(),
         },
+        time_entries,
     })
 }
 
@@ -2171,6 +3141,8 @@ pub(crate) struct Sim {
     pub token: Option<String>,
     /// A version document's planned write (§17.9a).
     pub version: Option<crate::versions::Plan>,
+    /// The time ops' planned writes (contract 05 §3.10.2).
+    pub time: Option<crate::time_entries::TimePlan>,
 }
 
 /// Errors §6.7 never stores with a proposal (steps 1–8): the caller may not
@@ -2190,6 +3162,7 @@ pub(crate) fn is_rejection(e: &anyhow::Error) -> bool {
                 | ErrorCode::UnsupportedOperation
                 | ErrorCode::UnsupportedExecutionMode
                 | ErrorCode::TemporarilyUnavailable
+                | ErrorCode::FormRulesChanged
         ),
     }
 }
@@ -2234,6 +3207,7 @@ async fn evaluate(
         effects,
         items: sim.items,
         search: SearchReceipt { consistent_after },
+        time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
     })
 }
 
@@ -2248,6 +3222,18 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             items: vec![plan.item()],
             token,
             version: Some(plan),
+            time: None,
+        });
+    }
+    if doc.time_only() {
+        let (plan, token) =
+            crate::time_entries::plan(&mut *conn, ectx, &doc.time_cmds(), None).await?;
+        return Ok(Sim {
+            work: BTreeMap::new(),
+            items: plan.items(),
+            token,
+            version: None,
+            time: Some(plan),
         });
     }
     let locks = ectx.mode.locks();
@@ -2263,6 +3249,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         };
         match op {
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
             Op::Create { project_id, .. } => {
                 create_projects.insert(*project_id);
             }
@@ -2273,11 +3260,17 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 add(source);
                 add(target);
             }
+            Op::Triage { target, dup, .. } => {
+                add(target);
+                if let Some(d) = dup {
+                    add(d);
+                }
+            }
         }
     }
     let existing: Vec<Uuid> = existing.into_iter().collect();
-    let issue_projects: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id, project_id FROM issues WHERE id = ANY($1) AND archived_at IS NULL",
+    let issue_projects: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id, project_id, tracker_id FROM issues WHERE id = ANY($1) AND archived_at IS NULL",
     )
     .bind(&existing)
     .fetch_all(&mut *conn)
@@ -2290,6 +3283,20 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
     }
     let mut projects: BTreeSet<Uuid> = issue_projects.iter().map(|r| r.1).collect();
     projects.extend(create_projects.iter().copied());
+    // Contract 05 §3.6: the (project, tracker) pairs whose forms apply. A
+    // tracker never changes, so reading it before the locks is safe.
+    let mut form_pairs: BTreeSet<(Uuid, Uuid)> =
+        issue_projects.iter().map(|r| (r.1, r.2)).collect();
+    for op in &doc.ops {
+        if let Op::Create {
+            project_id,
+            tracker_id,
+            ..
+        } = op
+        {
+            form_pairs.insert((*project_id, *tracker_id));
+        }
+    }
 
     // Step 6: projects in UUID order; FOR UPDATE where an issue is created.
     for p in &projects {
@@ -2308,12 +3315,18 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             return Err(api(ErrorCode::NotFound, "no project"));
         }
     }
+    // Step 6b (contract 05 §3.6): the forms of those pairs FOR SHARE, so a
+    // publish (FOR UPDATE) lands wholly before or after this write.
+    if locks {
+        crate::forms::lock_forms(&mut *conn, &form_pairs).await?;
+    }
 
     // Step 7: issues FOR UPDATE in id order.
     let rows: Vec<IssueRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
                 i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
-                i.fixed_version_id, i.start_date, i.due_date, i.is_private, i.lock_version,
+                i.fixed_version_id, i.start_date, i.due_date,
+                trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
          FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
          WHERE i.id = ANY($1) ORDER BY i.id{}",
@@ -2372,6 +3385,12 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         .into_iter()
         .map(|(i, p, s, d)| (i, (p, s, d)))
         .collect();
+
+    // §3.5.5: a mixed document's daily totals come right after the issues
+    // (before the field options and the search token below).
+    if locks && doc.has_time() {
+        crate::time_entries::prelock_totals(&mut *conn, ectx, &doc.time_cmds()).await?;
+    }
 
     // Step 8: custom field definitions FOR SHARE, list options FOR KEY SHARE.
     let dropping: Vec<i32> = sqlx::query_scalar(
@@ -2446,6 +3465,18 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
             format!("custom field cf:{f} is being deleted"),
         ));
     }
+    // Contract 05 §3.6: the rules the caller saw are still the rules.
+    if let Some(expected) = &doc.expected_rules
+        && let Some(current) = crate::forms::pairs_version(&mut *conn, &form_pairs).await?
+        && *expected != current
+    {
+        return Err(ApiError::new(
+            ErrorCode::FormRulesChanged,
+            "the form rules changed since you read them; describe the form again",
+        )
+        .with_details(json!({"expected": expected, "current": current}))
+        .into());
+    }
 
     let mut perms: BTreeMap<Uuid, ProjectPerms> = BTreeMap::new();
     for p in &projects {
@@ -2478,6 +3509,9 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 dups: Vec::new(),
                 fields_touched: false,
                 effect: false,
+                enters_triage: false,
+                triage: None,
+                form_passed: Vec::new(),
             },
         );
     }
@@ -2504,6 +3538,12 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 Op::Note { .. } => perm::OP_ADD_NOTE,
                 Op::Duplicate { .. } => perm::OP_DUPLICATE_OF,
                 Op::Create { .. } => perm::OP_CREATE_ISSUE,
+                Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {
+                    unreachable!("time ops are checked by time_entries::plan")
+                }
+                // The relation of a duplicate decision (checked as
+                // duplicate_of on both ends).
+                Op::Triage { .. } => perm::OP_DUPLICATE_OF,
             };
             if !ok || !actor.delegation_allows(w.project_id, kind, None) {
                 let reason = if pp.writable() {
@@ -2523,11 +3563,49 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         };
         match op {
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {}
+            // Planned by time_entries::plan after the issue ops.
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
             Op::Update { target, .. } | Op::Transition { target, .. } => check(target, "edit")?,
             Op::Note { target, .. } => check(target, "note")?,
             Op::Duplicate { source, target, .. } => {
                 check(source, "edit")?;
                 check(target, "edit")?;
+            }
+            Op::Triage {
+                target,
+                decision,
+                dup,
+                ..
+            } => {
+                // §3.10.1: perm(triage_issues), project level, plus the
+                // delegation's triage_decide.
+                let Target::Issue(id) = target else {
+                    unreachable!("parse rejects temp targets")
+                };
+                let w = &work[id];
+                let pp = &perms[&w.project_id];
+                if !(pp.writable() && pp.allowed_any(perm::TRIAGE_ISSUES))
+                    || !actor.delegation_allows(w.project_id, perm::OP_TRIAGE_DECIDE, None)
+                {
+                    let reason = if pp.writable() {
+                        "permission"
+                    } else {
+                        "project_not_writable"
+                    };
+                    return Err(op_err(
+                        ErrorCode::ForbiddenOp,
+                        i,
+                        op.op_id(),
+                        "you may not triage this issue",
+                        json!({"reason": reason}),
+                    ));
+                }
+                if *decision == TriageDecision::Duplicate {
+                    check(target, "edit")?;
+                    if let Some(d) = dup {
+                        check(d, "edit")?;
+                    }
+                }
             }
             Op::Create { .. } => {}
         }
@@ -2552,11 +3630,54 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
         (Err(p), _) => return Err(p),
         (Ok(()), r) => r?,
     };
+    // Contract 05 §3.10.2: log_time next to issue ops on the same issue,
+    // after them (T5 compares the status before and after the document).
+    let mut time = None;
+    let mut items = items;
+    if doc.has_time() {
+        let cmds = doc.time_cmds();
+        let issue = cmds.iter().find_map(|c| match c {
+            crate::time_entries::TimeCmd::Log { issue, .. } => *issue,
+            _ => None,
+        });
+        let ctx = match issue.and_then(|i| work.get(&i)) {
+            Some(w) => {
+                let before = w.orig.as_ref().map_or(w.status, |o| o.status_id);
+                let (closed_before, closed_after): (bool, bool) = sqlx::query_as(
+                    "SELECT COALESCE((SELECT category = 'done' FROM issue_statuses WHERE id = $1), false),
+                            COALESCE((SELECT category = 'done' FROM issue_statuses WHERE id = $2), false)",
+                )
+                .bind(before)
+                .bind(w.status)
+                .fetch_one(&mut *conn)
+                .await?;
+                Some(crate::time_entries::IssueCtx {
+                    id: w.id,
+                    closed_before,
+                    closed_after,
+                })
+            }
+            None => None,
+        };
+        let (plan, _) = crate::time_entries::plan(&mut *conn, ectx, &cmds, ctx).await?;
+        let mut by_op: BTreeMap<Uuid, ItemResult> = items
+            .into_iter()
+            .chain(plan.items())
+            .map(|it| (it.op_id, it))
+            .collect();
+        items = doc
+            .ops
+            .iter()
+            .filter_map(|o| by_op.remove(&o.op_id()))
+            .collect();
+        time = Some(plan);
+    }
     Ok(Sim {
         work,
         items,
         token,
         version: None,
+        time,
     })
 }
 
@@ -2698,6 +3819,7 @@ async fn run_ops(
             Op::CreateVersion { .. } | Op::UpdateVersion { .. } => {
                 unreachable!("version documents are planned apart")
             }
+            Op::LogTime { .. } | Op::UpdateTime { .. } | Op::DeleteTime { .. } => {}
             Op::Create {
                 op_id,
                 bind,
@@ -2764,6 +3886,7 @@ async fn run_ops(
                     (Key::Version, Json::Null),
                     (Key::StartDate, Json::Null),
                     (Key::DueDate, Json::Null),
+                    (Key::EstimatedHours, Json::Null),
                 ]);
                 let mut w = Work {
                     id,
@@ -2781,6 +3904,9 @@ async fn run_ops(
                     dups: Vec::new(),
                     fields_touched: true,
                     effect: true,
+                    enters_triage: false,
+                    triage: None,
+                    form_passed: Vec::new(),
                 };
                 let r = &rules[&(*project_id, *tracker_id)];
                 let ro = r.at(initial);
@@ -2803,6 +3929,21 @@ async fn run_ops(
                     values.insert(wr.key, v);
                 }
                 w.values = values;
+                // Contract 05 §3.4: the project's Triage is on, and the
+                // creator is an agent, or every new issue enters, or the
+                // creator may not triage.
+                let settings: Option<(bool, String)> = sqlx::query_as(
+                    "SELECT enabled, entry_rule FROM project_triage_settings WHERE project_id = $1",
+                )
+                .bind(project_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                w.enters_triage = settings.is_some_and(|(enabled, rule)| {
+                    enabled
+                        && (on_behalf.is_some()
+                            || rule == "all_new"
+                            || !pp.allowed_any(perm::TRIAGE_ISSUES))
+                });
                 let mut payload: Map<String, Json> = w
                     .values
                     .iter()
@@ -2812,10 +3953,14 @@ async fn run_ops(
                 payload.insert("status_id".into(), json!(initial));
                 payload.insert("is_private".into(), json!(private));
                 let fields_list: Vec<String> = payload.keys().cloned().collect();
+                let mut created = json!({"fields": payload});
+                if w.enters_triage {
+                    created["triage"] = json!("pending");
+                }
                 w.events.push(PendingEvent {
                     kind: "created",
                     op_id: *op_id,
-                    payload: json!({"fields": payload}),
+                    payload: created,
                     note_id: None,
                     fields: fields_list,
                 });
@@ -2828,6 +3973,7 @@ async fn run_ops(
                     status: "applied".into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Update { op_id, target, set } => {
@@ -2891,6 +4037,7 @@ async fn run_ops(
                     status: if applied { "applied" } else { "no_effect" }.into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Transition { op_id, target, to } => {
@@ -2947,6 +4094,7 @@ async fn run_ops(
                     status: if applied { "applied" } else { "no_effect" }.into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Note {
@@ -2990,6 +4138,7 @@ async fn run_ops(
                     status: "applied".into(),
                     issue_id: Some(id),
                     version_id: None,
+                    time_entry_id: None,
                 });
             }
             Op::Duplicate {
@@ -2998,69 +4147,138 @@ async fn run_ops(
                 target,
             } => {
                 let (s, t) = (resolve(source), resolve(target));
-                if s == t {
-                    return Err(fail(
-                        ErrorCode::RelationNotAllowed,
-                        "an issue cannot duplicate itself".into(),
-                        json!({"reason": "self"}),
-                    ));
-                }
-                let (ws, wt) = (&work[&s], &work[&t]);
-                if ws.project_id != wt.project_id {
-                    return Err(fail(
-                        ErrorCode::RelationNotAllowed,
-                        "duplicates must be in the same project".into(),
-                        json!({"reason": "cross_project"}),
-                    ));
-                }
-                let pp = &perms[&ws.project_id];
-                if !pp.allowed(perm::MANAGE_ISSUE_RELATIONS, ws.tracker_id) {
-                    return Err(fail(
-                        ErrorCode::ForbiddenOp,
-                        "you may not manage relations of this issue".into(),
-                        json!({"reason": "permission"}),
-                    ));
-                }
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM issue_duplicates WHERE source_issue_id = $1 AND target_issue_id = $2)",
-                )
-                .bind(s)
-                .bind(t)
-                .fetch_one(&mut *conn)
-                .await?;
-                if !exists {
-                    let rel = Uuid::now_v7();
-                    let src = work.get_mut(&s).expect("source");
-                    src.dups.push((rel, s, t));
-                    src.effect = true;
-                    src.events.push(PendingEvent {
-                        kind: "duplicate_added",
-                        op_id: *op_id,
-                        payload: json!({"role": "source", "other_issue_id": t}),
-                        note_id: None,
-                        fields: Vec::new(),
-                    });
-                    let tgt = work.get_mut(&t).expect("target");
-                    tgt.effect = true;
-                    tgt.events.push(PendingEvent {
-                        kind: "duplicate_added",
-                        op_id: *op_id,
-                        payload: json!({"role": "target", "other_issue_id": s}),
-                        note_id: None,
-                        fields: Vec::new(),
-                    });
-                }
+                let exists = add_duplicate(&mut *conn, work, perms, s, t, *op_id)
+                    .await?
+                    .map_err(|(code, msg, extra)| fail(code, msg.into(), extra))?;
                 items.push(ItemResult {
                     op_id: *op_id,
                     status: if exists { "no_effect" } else { "applied" }.into(),
                     issue_id: Some(s),
                     version_id: None,
+                    time_entry_id: None,
+                });
+            }
+            Op::Triage {
+                op_id,
+                target,
+                decision,
+                dup,
+                snooze_until,
+            } => {
+                let id = resolve(target);
+                let row: Option<(String, bool, Json, chrono::DateTime<chrono::Utc>)> =
+                    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                        "SELECT t.state,
+                                COALESCE(t.snoozed_until > now() AND i.updated_at <= t.snoozed_at, false),
+                                {}, now()
+                         FROM issue_triage t JOIN issues i ON i.id = t.issue_id
+                         WHERE t.issue_id = $1",
+                        crate::triage::SNAPSHOT_SQL
+                    )))
+                    .bind(id)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+                let Some((state, snoozed, before, now)) = row else {
+                    return Err(fail(
+                        ErrorCode::TriageStateInvalid,
+                        "this issue is not waiting in Triage".into(),
+                        json!({"state": "none"}),
+                    ));
+                };
+                if state != "pending" {
+                    return Err(fail(
+                        ErrorCode::TriageStateInvalid,
+                        format!("this issue was already triaged ({state})"),
+                        json!({"state": state}),
+                    ));
+                }
+                if *decision == TriageDecision::Unsnooze && !snoozed {
+                    return Err(fail(
+                        ErrorCode::TriageStateInvalid,
+                        "this issue is not snoozed".into(),
+                        json!({"state": state, "snoozed": false}),
+                    ));
+                }
+                if let Some(until) = snooze_until
+                    // One minute of slack: a client's "now + 1 hour" passes.
+                    && (*until < now + chrono::Duration::minutes(59)
+                        || *until > now + chrono::Duration::days(90))
+                {
+                    return Err(fail(
+                        ErrorCode::InvalidValue,
+                        "snooze_until is 1 hour to 90 days from now".into(),
+                        json!({"path": format!("ops[{i}].snooze_until"), "kind": "snooze_range"}),
+                    ));
+                }
+                if let (TriageDecision::Duplicate, Some(d)) = (decision, dup) {
+                    add_duplicate(&mut *conn, work, perms, id, resolve(d), *op_id)
+                        .await?
+                        .map_err(|(code, msg, extra)| fail(code, msg.into(), extra))?;
+                }
+                let w = work.get_mut(&id).expect("target");
+                let mut payload = json!({"old": state, "new": decision.new_state()});
+                match decision {
+                    TriageDecision::Snooze => payload["snoozed_until"] = json!(snooze_until),
+                    TriageDecision::Unsnooze => payload["snoozed_until"] = Json::Null,
+                    _ => {}
+                }
+                w.events.push(PendingEvent {
+                    kind: "triage_changed",
+                    op_id: *op_id,
+                    payload,
+                    note_id: None,
+                    fields: vec![crate::triage::FIELD_KEY.into()],
+                });
+                w.triage = Some(TriagePlan {
+                    decision: *decision,
+                    before,
+                    snooze_until: *snooze_until,
+                });
+                w.effect = true;
+                if *decision == TriageDecision::Accept {
+                    // C3/R7: an accepted issue gets the final-state checks.
+                    w.fields_touched = true;
+                }
+                items.push(ItemResult {
+                    op_id: *op_id,
+                    status: "applied".into(),
+                    issue_id: Some(id),
+                    version_id: None,
+                    time_entry_id: None,
                 });
             }
         }
     }
 
+    // §3.10.1: decline and duplicate end in a closed status (R27: a
+    // semantic check, invalid_value).
+    for w in work.values() {
+        if let Some(TriagePlan {
+            decision: TriageDecision::Decline | TriageDecision::Duplicate,
+            ..
+        }) = &w.triage
+        {
+            let done: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM issue_statuses WHERE id = $1 AND category = 'done')",
+            )
+            .bind(w.status)
+            .fetch_one(&mut *conn)
+            .await?;
+            if !done {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidValue,
+                    "declining or marking a duplicate needs the issue to end in a closed status (send a transition to one)",
+                )
+                .with_details(
+                    json!({"issue_id": w.id, "kind": "triage_requires_close", "path": "ops"}),
+                )
+                .into());
+            }
+        }
+    }
+
     // Step 14: final state — date order (R4) and required fields (§6.3).
+    let mut form_passed: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
     for w in work.values() {
         if !w.fields_touched {
             continue;
@@ -3113,8 +4331,175 @@ async fn run_ops(
             .with_details(d)
             .into());
         }
+        // Contract 05 §3.6: the L1 form rules on the final state.
+        if r.form.rules.is_empty() {
+            continue;
+        }
+        let names: BTreeMap<String, Json> = w
+            .values
+            .iter()
+            .map(|(k, v)| (k.name(), v.clone()))
+            .collect();
+        let fin = r.form_state(w.tracker_id, w.status, w.is_private, &w.values);
+        let mut fields: Vec<String> = Vec::new();
+        let mut rule_ids: Vec<String> = Vec::new();
+        let mut blocked = false;
+        for rule in crate::forms::missing(&r.form, &fin, &names) {
+            match r.rule_hold(rule, actor, pp) {
+                Hold::Free => {}
+                Hold::Blocked => blocked = true,
+                Hold::Bound => {
+                    if !fields.contains(&rule.field) {
+                        fields.push(rule.field.clone());
+                    }
+                    rule_ids.push(rule.id.clone());
+                }
+            }
+        }
+        if !fields.is_empty() || blocked {
+            let mut d = json!({"issue_id": w.id, "fields": fields, "reason": "form_rule"});
+            if let Some(first) = rule_ids.first() {
+                d["rule_id"] = json!(first);
+                d["rule_ids"] = json!(rule_ids);
+            }
+            if blocked {
+                d["blocked"] = json!(true);
+            }
+            return Err(ApiError::new(
+                ErrorCode::RequiredFieldMissing,
+                "the form rules require fields that are empty",
+            )
+            .with_details(d)
+            .into());
+        }
+        let orig_names: Option<BTreeMap<String, Json>> = w.orig.as_ref().map(|_| {
+            w.orig_values
+                .iter()
+                .map(|(k, v)| (k.name(), v.clone()))
+                .collect()
+        });
+        let mut agent_blocked: Option<&crate::forms::Rule> = None;
+        for rule in crate::forms::disallowed(&r.form, &fin, &names, orig_names.as_ref()) {
+            match r.rule_hold(rule, actor, pp) {
+                Hold::Free => {}
+                Hold::Blocked => {
+                    // The agent wrote the value: name the field when it can
+                    // read it, never the rule.
+                    agent_blocked.get_or_insert(rule);
+                }
+                Hold::Bound => {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidValue,
+                        format!("the form rules do not allow this value of {}", rule.field),
+                    )
+                    .with_details(json!({"issue_id": w.id, "field": rule.field,
+                                         "kind": "rule_disallowed", "rule_id": rule.id,
+                                         "allowed": rule.values}))
+                    .into());
+                }
+            }
+        }
+        if let Some(rule) = agent_blocked {
+            let mut d = json!({"issue_id": w.id, "kind": "rule_disallowed", "blocked": true});
+            if r.key_readable(&rule.field, actor, pp) {
+                d["field"] = json!(rule.field);
+            }
+            return Err(ApiError::new(
+                ErrorCode::InvalidValue,
+                "the form rules do not allow a value here",
+            )
+            .with_details(d)
+            .into());
+        }
+        // The rules this write was held to and meets: only their marks clear.
+        let broken = crate::forms::violations(&r.form.rules, &fin, &names);
+        let passed: Vec<String> = r
+            .form
+            .rules
+            .iter()
+            .filter(|x| {
+                x.kind != crate::forms::RuleKind::ReadonlyIf
+                    && !broken.contains(&x.id)
+                    && r.rule_hold(x, actor, pp) == Hold::Bound
+            })
+            .map(|x| x.id.clone())
+            .collect();
+        form_passed.insert(w.id, passed);
+    }
+    for (id, p) in form_passed {
+        if let Some(w) = work.get_mut(&id) {
+            w.form_passed = p;
+        }
     }
     Ok(items)
+}
+
+type OpFailure = (ErrorCode, &'static str, Json);
+
+/// The duplicate relation `s` → `t` (02 §6.2: not itself, same project,
+/// `manage_issue_relations`), planned on both issues. `Ok(Ok(true))` when
+/// it exists already (no effect).
+async fn add_duplicate(
+    conn: &mut PgConnection,
+    work: &mut BTreeMap<Uuid, Work>,
+    perms: &BTreeMap<Uuid, ProjectPerms>,
+    s: Uuid,
+    t: Uuid,
+    op_id: Uuid,
+) -> Result<std::result::Result<bool, OpFailure>> {
+    if s == t {
+        return Ok(Err((
+            ErrorCode::RelationNotAllowed,
+            "an issue cannot duplicate itself",
+            json!({"reason": "self"}),
+        )));
+    }
+    let (ws, wt) = (&work[&s], &work[&t]);
+    if ws.project_id != wt.project_id {
+        return Ok(Err((
+            ErrorCode::RelationNotAllowed,
+            "duplicates must be in the same project",
+            json!({"reason": "cross_project"}),
+        )));
+    }
+    let pp = &perms[&ws.project_id];
+    if !pp.allowed(perm::MANAGE_ISSUE_RELATIONS, ws.tracker_id) {
+        return Ok(Err((
+            ErrorCode::ForbiddenOp,
+            "you may not manage relations of this issue",
+            json!({"reason": "permission"}),
+        )));
+    }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM issue_duplicates WHERE source_issue_id = $1 AND target_issue_id = $2)",
+    )
+    .bind(s)
+    .bind(t)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !exists {
+        let rel = Uuid::now_v7();
+        let src = work.get_mut(&s).expect("source");
+        src.dups.push((rel, s, t));
+        src.effect = true;
+        src.events.push(PendingEvent {
+            kind: "duplicate_added",
+            op_id,
+            payload: json!({"role": "source", "other_issue_id": t}),
+            note_id: None,
+            fields: Vec::new(),
+        });
+        let tgt = work.get_mut(&t).expect("target");
+        tgt.effect = true;
+        tgt.events.push(PendingEvent {
+            kind: "duplicate_added",
+            op_id,
+            payload: json!({"role": "target", "other_issue_id": s}),
+            note_id: None,
+            fields: Vec::new(),
+        });
+    }
+    Ok(Ok(exists))
 }
 
 /// Steps 15–17: issues, custom fields, notes, relations, events, field
@@ -3128,6 +4513,12 @@ pub(crate) async fn write_effects(
     if let Some(plan) = &sim.version {
         crate::versions::write_plan(&mut *conn, plan, at).await?;
         return Ok(Vec::new());
+    }
+    if let Some(plan) = &sim.time {
+        crate::time_entries::write_plan(&mut *conn, plan, at).await?;
+        if doc.time_only() {
+            return Ok(Vec::new());
+        }
     }
     let (work, items) = (&sim.work, &sim.items);
     let execution_id = at.execution_ref;
@@ -3156,6 +4547,11 @@ pub(crate) async fn write_effects(
             };
             if w.effect {
                 write_cfs(&mut *conn, w).await?;
+                // Contract 05 §3.6.3: a write that passed the form checks
+                // clears the issue's accept_and_mark marks.
+                if w.fields_touched && !w.form_passed.is_empty() {
+                    crate::forms::clear_marks(&mut *conn, w.id, &w.form_passed).await?;
+                }
             }
         } else {
             key = insert_issue(&mut *conn, w).await?;
@@ -3195,15 +4591,39 @@ pub(crate) async fn write_effects(
                 .execute(&mut *conn)
                 .await?;
             }
+            // §3.10.1: the triage row first, so the event carries the A5 flags.
+            let triage_after = match &w.triage {
+                Some(plan) => Some(write_triage(&mut *conn, id, plan, at).await?),
+                None => None,
+            };
             let base = w.orig.as_ref().map(|o| o.last_event_seq).unwrap_or(0);
             for (n, ev) in w.events.iter().enumerate() {
+                let payload = match (&triage_after, ev.kind) {
+                    (Some(after), "triage_changed") => {
+                        let mut p = ev.payload.clone();
+                        p["self_triage"] = after["self_triage"].clone();
+                        p["same_sponsor"] = after["same_sponsor"].clone();
+                        p
+                    }
+                    _ => ev.payload.clone(),
+                };
+                // The issue_field_changes rows (design 05 §2.2) in the same
+                // statement, through the mapping the 0020 backfill uses.
                 let event_id: Uuid = sqlx::query_scalar(
-                    "INSERT INTO issue_events (issue_id, seq, kind, origin, actor_id, actor_kind,
-                                               proposer_id, approver_id, on_behalf_of_id, delegation_id,
-                                               agent_client_id, operation_request_id, command_execution_id,
-                                               changeset_id, changeset_version, execution_id, op_id,
-                                               note_id, payload)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id",
+                    "WITH ev AS (
+                       INSERT INTO issue_events (issue_id, seq, kind, origin, actor_id, actor_kind,
+                                                 proposer_id, approver_id, on_behalf_of_id, delegation_id,
+                                                 agent_client_id, operation_request_id, command_execution_id,
+                                                 changeset_id, changeset_version, execution_id, op_id,
+                                                 note_id, payload)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                       RETURNING id, issue_id, kind, payload, at
+                     ), projected AS (
+                       INSERT INTO issue_field_changes (event_id, issue_id, field_key, old_ref, new_ref, at)
+                       SELECT ev.id, ev.issue_id, r.field_key, r.old_ref, r.new_ref, ev.at
+                       FROM ev, issue_field_change_rows(ev.kind, ev.payload) r
+                     )
+                     SELECT id FROM ev",
                 )
                 .bind(id)
                 .bind(base + 1 + n as i64)
@@ -3223,7 +4643,7 @@ pub(crate) async fn write_effects(
                 .bind(at.changeset_execution_id)
                 .bind(ev.op_id)
                 .bind(ev.note_id)
-                .bind(&ev.payload)
+                .bind(&payload)
                 .fetch_one(&mut *conn)
                 .await?;
                 for f in &ev.fields {
@@ -3258,6 +4678,13 @@ pub(crate) async fn write_effects(
                     .collect();
                 if o.status_id != w.status {
                     changed.push(("status_id".into(), json!(o.status_id), json!(w.status)));
+                }
+                if let (Some(plan), Some(after)) = (&w.triage, &triage_after) {
+                    changed.push((
+                        crate::triage::FIELD_KEY.into(),
+                        plan.before.clone(),
+                        after.clone(),
+                    ));
                 }
                 for (k, before, after) in changed {
                     sqlx::query(
@@ -3324,6 +4751,14 @@ async fn load_rules(
             by_status,
             cfs,
             hidden,
+            form: crate::forms::effective(&mut *conn, project, tracker).await?,
+            converting: sqlx::query_scalar::<_, i32>(
+                "SELECT from_field_id FROM custom_field_conversions WHERE state = 'running'",
+            )
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect(),
         },
     );
     Ok(())
@@ -3400,6 +4835,18 @@ async fn check_write(
         },
         _ => None,
     };
+    if let Key::Cf(id) = wr.key
+        && rules.converting.contains(&id)
+        && orig.and_then(|o| o.get(&wr.key)) != Some(&wr.value)
+        && !(wr.value.is_null() && orig.is_some_and(|o| !o.contains_key(&wr.key)))
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidValue,
+            format!("{name} is being converted into a new field; it is read-only until that ends"),
+        )
+        .with_details(detail(json!({"kind": "field_converting"})))
+        .into());
+    }
     let op = op_kind;
     if !actor.delegation_allows(w.project_id, op, Some(&name)) {
         return Err(ApiError::new(
@@ -3416,6 +4863,34 @@ async fn check_write(
         )
         .with_details(detail(json!({})))
         .into());
+    }
+    // Contract 05 §3.6: readonly_if, judged on the issue as it was at the
+    // start of the transaction (an issue created in this document has none).
+    if let Some(o) = &w.orig {
+        let base = rules.form_state(o.tracker_id, o.status_id, o.is_private, &w.orig_values);
+        let mut blocked = false;
+        for r in crate::forms::readonly_rules(&rules.form, &name, &base) {
+            match rules.rule_hold(r, actor, pp) {
+                Hold::Free => {}
+                Hold::Blocked => blocked = true,
+                Hold::Bound => {
+                    return Err(ApiError::new(
+                        ErrorCode::ReadonlyField,
+                        format!("{name} is read-only here under the form rules"),
+                    )
+                    .with_details(detail(json!({"reason": "form_rule", "rule_id": r.id})))
+                    .into());
+                }
+            }
+        }
+        if blocked {
+            return Err(ApiError::new(
+                ErrorCode::ReadonlyField,
+                format!("{name} is read-only here under the form rules"),
+            )
+            .with_details(detail(json!({"reason": "form_rule", "blocked": true})))
+            .into());
+        }
     }
     let value = wr.value.clone();
     let original = orig.and_then(|o| o.get(&wr.key)).cloned();
@@ -3552,6 +5027,44 @@ async fn check_write(
     Ok(value)
 }
 
+/// Writes a decision to `issue_triage` and returns the new row
+/// ([`crate::triage::SNAPSHOT_SQL`]). A5 (§2.4): `self_triage` when an
+/// agent decides an issue it created; `same_sponsor` when an agent decides
+/// another agent's issue and both act for the same person. Only decisions
+/// (not snooze) set them.
+async fn write_triage(
+    conn: &mut PgConnection,
+    issue: Uuid,
+    plan: &TriagePlan,
+    at: &Attribution,
+) -> Result<Json> {
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE issue_triage t SET
+             state = $2::text,
+             snoozed_until = $3::timestamptz,
+             snoozed_at = CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE now() END,
+             snoozed_by = CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE $4::uuid END,
+             decided_at = CASE WHEN $2::text = 'pending' THEN NULL ELSE now() END,
+             decided_by = CASE WHEN $2::text = 'pending' THEN NULL ELSE $4::uuid END,
+             self_triage = ($2::text <> 'pending' AND $5::text = 'agent' AND i.author_id = $4::uuid),
+             same_sponsor = ($2::text <> 'pending' AND $5::text = 'agent' AND i.author_id <> $4::uuid
+                             AND EXISTS (SELECT 1 FROM agent_principals a
+                                         JOIN agent_principals b ON b.delegator_user_id = a.delegator_user_id
+                                         WHERE a.agent_principal_id = $4::uuid
+                                           AND b.agent_principal_id = i.author_id))
+         FROM issues i WHERE i.id = t.issue_id AND t.issue_id = $1
+         RETURNING {}",
+        crate::triage::SNAPSHOT_SQL
+    )))
+    .bind(issue)
+    .bind(plan.decision.new_state())
+    .bind(plan.snooze_until)
+    .bind(at.actor_id)
+    .bind(at.actor_kind)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     let (pkey, number): (String, i32) = sqlx::query_as(
         "UPDATE projects SET issue_counter = issue_counter + 1 WHERE id = $1 RETURNING key, issue_counter",
@@ -3563,8 +5076,8 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     sqlx::query(
         "INSERT INTO issues (id, project_id, tracker_id, status_id, subject, description, author_id,
                              created_on_behalf_of_id, assigned_to_id, priority_id, fixed_version_id,
-                             start_date, due_date, is_private, last_event_seq)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+                             start_date, due_date, is_private, last_event_seq, estimated_hours)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::numeric)",
     )
     .bind(w.id)
     .bind(w.project_id)
@@ -3583,6 +5096,7 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     // Every event of a new issue is known now, so its single INSERT sets the
     // final sequence and the outbox trigger fires once (§6.9).
     .bind(w.events.len() as i64)
+    .bind(v(Key::EstimatedHours).as_str().map(String::from))
     .execute(&mut *conn)
     .await?;
     let key = format!("{pkey}-{number}");
@@ -3594,6 +5108,16 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
         .execute(&mut *conn)
         .await?;
     write_cfs(&mut *conn, w).await?;
+    if w.enters_triage {
+        sqlx::query(
+            "INSERT INTO issue_triage (issue_id, project_id, state, entered_at)
+             VALUES ($1, $2, 'pending', now())",
+        )
+        .bind(w.id)
+        .bind(w.project_id)
+        .execute(&mut *conn)
+        .await?;
+    }
     Ok(key)
 }
 
@@ -3602,6 +5126,7 @@ async fn update_issue(conn: &mut PgConnection, w: &Work, last_event_seq: i64) ->
     sqlx::query(
         "UPDATE issues SET status_id = $2, subject = $3, description = $4, assigned_to_id = $5,
                 priority_id = $6, fixed_version_id = $7, start_date = $8, due_date = $9,
+                estimated_hours = $11::numeric,
                 lock_version = lock_version + 1, last_event_seq = $10, updated_at = now()
          WHERE id = $1",
     )
@@ -3615,6 +5140,7 @@ async fn update_issue(conn: &mut PgConnection, w: &Work, last_event_seq: i64) ->
     .bind(json_date(&v(Key::StartDate)))
     .bind(json_date(&v(Key::DueDate)))
     .bind(last_event_seq)
+    .bind(v(Key::EstimatedHours).as_str().map(String::from))
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -3704,6 +5230,38 @@ mod tests {
         assert_eq!(Key::parse("cf:x"), None);
         assert_eq!(Key::parse("status_id"), None);
         assert_eq!(Key::parse("author_id"), None);
+    }
+
+    #[test]
+    fn estimated_hours_values() {
+        assert_eq!(estimated_hours("1.50").as_deref(), Ok("1.5"));
+        assert_eq!(estimated_hours("0.00").as_deref(), Ok("0"));
+        assert_eq!(estimated_hours("-0").as_deref(), Ok("0"));
+        assert_eq!(estimated_hours("99999.99").as_deref(), Ok("99999.99"));
+        assert_eq!(estimated_hours("100000"), Err(Some("out_of_range")));
+        assert_eq!(estimated_hours("-1"), Err(Some("out_of_range")));
+        assert_eq!(estimated_hours("1.255"), Err(Some("too_many_decimals")));
+        assert_eq!(estimated_hours("1.250").as_deref(), Ok("1.25"));
+        assert_eq!(estimated_hours("1e2"), Err(None));
+        // Beyond canonical_number's length limits: decided by value.
+        assert_eq!(
+            estimated_hours("1.123456789012"),
+            Err(Some("too_many_decimals"))
+        );
+        assert_eq!(estimated_hours("1.00000000000").as_deref(), Ok("1"));
+        assert_eq!(
+            estimated_hours("123456789012345678901"),
+            Err(Some("out_of_range"))
+        );
+        assert_eq!(estimated_hours("000000000000000000001").as_deref(), Ok("1"));
+        assert_eq!(estimated_hours("1."), Err(None));
+        assert_eq!(estimated_hours(".5"), Err(None));
+        assert_eq!(estimated_hours("-"), Err(None));
+        assert_eq!(estimated_hours("+1"), Err(None));
+        assert_eq!(estimated_hours("-0.00").as_deref(), Ok("0"));
+        assert_eq!(estimated_hours(""), Err(None));
+        assert_eq!(Key::parse("estimated_hours"), Some(Key::EstimatedHours));
+        assert_eq!(Key::EstimatedHours.name(), "estimated_hours");
     }
 
     #[test]
