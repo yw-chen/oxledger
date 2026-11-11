@@ -215,11 +215,12 @@ pub(crate) async fn viewer(conn: &mut PgConnection, caller: AuthContext) -> Resu
         Some(a) => {
             let ps: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT project_id FROM delegations
-                 WHERE context_id = $1 AND read_own_time AND revoked_at IS NULL AND expires_at > now()
-                   AND project_id = ANY($2) ORDER BY project_id",
+                 WHERE context_id = $1 AND agent_principal_id = $3 AND read_own_time AND revoked_at IS NULL
+                   AND expires_at > now() AND project_id = ANY($2) ORDER BY project_id",
             )
             .bind(a.context_id)
             .bind(&a.projects)
+            .bind(a.agent_principal_id)
             .fetch_all(&mut *conn)
             .await?;
             if ps.is_empty() {

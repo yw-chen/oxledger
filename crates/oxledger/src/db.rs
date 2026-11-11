@@ -120,18 +120,20 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             .await?,
         ),
         AuthMethod::AgentToken => {
-            // Token, context, agent, delegator and client, all valid now.
+            // Token, context, agent (the role the token is bound to, design
+            // 05 §3.12.5), runtime, delegator and client, all valid now.
             let row: Option<(Uuid, Uuid, Uuid, bool)> = sqlx::query_as(
                 "SELECT w.id, ap.agent_principal_id, ap.delegator_user_id, d.is_admin
                  FROM agent_credentials c
-                 JOIN agent_work_contexts w ON w.id = c.context_id
-                 JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
+                 JOIN agent_work_contexts w ON w.id = c.context_id AND w.runtime_id = c.runtime_id
+                 JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
+                 JOIN agent_runtimes rt ON rt.id = c.runtime_id
                  JOIN principals a ON a.id = ap.agent_principal_id
                  JOIN principals d ON d.id = ap.delegator_user_id
                  JOIN agent_clients cl ON cl.id = ap.agent_client_id
-                 WHERE c.id = $1 AND c.context_id = $2 AND ap.agent_principal_id = $3
+                 WHERE c.id = $1 AND c.context_id = $2 AND c.agent_principal_id = $3
                    AND c.revoked_at IS NULL AND c.expires_at > now()
-                   AND w.state = 'active'
+                   AND w.state = 'active' AND rt.retired_at IS NULL AND ap.retired_at IS NULL
                    AND a.kind = 'agent' AND a.status = 'active'
                    AND d.kind = 'user' AND d.status = 'active'
                    AND cl.enabled",
@@ -169,14 +171,29 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             .fetch_one(&mut *conn)
             .await?;
             if changed {
-                return Err(crate::agents::quarantined());
+                // Design 05 §3.12.2 (T-M1-87): every role of the runtime
+                // stops; say which others share the context.
+                let shared_with: Vec<String> = sqlx::query_scalar(
+                    "SELECT p.handle FROM agent_principals p
+                     JOIN agent_work_contexts w ON w.runtime_id = p.runtime_id
+                     WHERE w.id = $1 AND p.agent_principal_id <> $2 AND p.retired_at IS NULL
+                     ORDER BY p.handle",
+                )
+                .bind(context_id)
+                .bind(agent_id)
+                .fetch_all(&mut *conn)
+                .await?;
+                return Err(crate::agents::quarantined_shared(shared_with));
             }
+            // Reads follow this role's own delegations; R (above) is the
+            // runtime's (design 05 §3.12.2, T-M1-88).
             let delegated: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT project_id FROM delegations
-                 WHERE context_id = $1 AND revoked_at IS NULL AND expires_at > now()
+                 WHERE context_id = $1 AND agent_principal_id = $2 AND revoked_at IS NULL AND expires_at > now()
                  ORDER BY project_id",
             )
             .bind(context_id)
+            .bind(agent_id)
             .fetch_all(&mut *conn)
             .await?;
             // A project that stopped being audience-consistent is not readable,

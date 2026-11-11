@@ -455,3 +455,27 @@ date	stage	decision	why	alternatives	source
 2026-11-11	M1	新增 event_reasons，顯示的 reasons 只取讀得到的事件；first_at／last_at 不重算	獨立驗證 D6：重算時間會和 read-all 的 before（DB 的 last_at）衝突	時間也重算	migrations/0028_notifications.sql;crates/oxledger/src/notifications.rs
 2026-11-11	M1	未讀數快取最多 10,000 人，滿了遇到新的人就整批清空	獨立驗證 D7：沒有上限；不加新 crate	LRU	crates/oxledger/src/notifications.rs
 2026-11-11	M1	worker 數改由 OXLEDGER_NOTIFY_WORKERS 設定（1–16，預設 4）	每個 worker 佔一條連線，要能配合連線池大小	固定 4	crates/oxledger/src/notifications.rs
+2026-11-11	M1	0029 加 agent_runtimes.lock_version、agent_principals.retired_at、changesets.chain_review	改名要樂觀鎖；agent_principals 沒有 status 欄可記退役；鏈上限送審的提案不能勾選核准	用 audit 事件推算	migrations/0029_ai_team.sql
+2026-11-11	M1	POST /delegations 的 agent_client_id 舊寫法保留，落在該 client 的 personal 角色	02 的 agent 與前端不用改	只收 agent_principal_id	crates/oxledger/src/agents.rs;crates/oxledger/src/api.rs
+2026-11-11	M1	暫停不要 step-up、恢復要 step-up；站台管理員的暫停只有站台管理員能恢復，專案層只有同一層能恢復	止血要快，放行要確認	兩者都要 step-up	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	暫停擋直接寫、提案與核准後套用；validate 不擋	validate 不寫入	validate 也擋	crates/oxledger/src/changesets.rs
+2026-11-11	M1	qa 範本的 transition 一律 review（待使用者決定白名單存哪裡）	契約要白名單但沒有存放處；先取較窄的	全部 direct	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	範本寫成完整 allow-list（沒列的寫 off）；POST /ai-team 的 policies 可覆寫範本	範本之後改版不影響既有角色；覆寫是贊助人的選擇，執行時仍和贊助人權限取交集	只存範本名稱、執行時查	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	POST /ai-team 至少一個委派；角色上限 20 用 invalid_value kind role_limit；重送回 token null	沒有委派的角色沒有用途；token 只出現一次	回 409	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	AI 團隊列表不分頁（next_cursor 一律 null）；可見＝贊助人或在看得到的專案有未撤銷（含過期）委派	每個贊助人最多 20 個角色	keyset 分頁	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	鏈檢查在配額之前用 FOR UPDATE 鎖 issue 列；validate 也做（rollback）。獨立驗證 M14 後更正：正確性來自 lock_version 前置條件（每個鏈計數的 issue 都是既有 target，每次寫入都 +1），這把鎖是第二道防線，讓後到者得到 agent_chain 送審而不是 conflict	兩個 agent 併發時計數正確（T-M1-97、v_chain_concurrent_at_limit）	advisory lock；拿掉鎖	crates/oxledger/src/changesets.rs
+2026-11-11	M1	核准後套用由 issue_events（origin external_agent）trigger 清鏈	P4：核准就是人介入；不用改套用程式	套用程式自己刪	migrations/0029_ai_team.sql
+2026-11-11	M1	describe agent_context 委派狀態加 other_role；quarantined 的 details 加 shared_with	共用脈絡時 agent 要知道是誰的委派、誰一起停	不說明	crates/oxledger/src/agents.rs;crates/oxledger/src/db.rs
+2026-11-11	M1	runtime 換新脈絡的 carry_over_delegations 先拒絕（invalid_argument）	M1.10 再做	靜默忽略	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	pm_assistant 改 subject／description 一律 review（待使用者確認）	欄位政策對 update_fields 一律適用；先取較窄的	subject 走 direct	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	AI 團隊活動與統計逐筆過濾：每個事件走 issue_view::event_view，diff 的 cf 欄位依 readable_cf_ids，過濾後空的 execution 不顯示也不計數（獨立驗證 D1）	看不到＝不存在；只寫了私人備註或受限欄位的寫入不能從活動頁或統計看出來	只看 issue 可讀	crates/oxledger/src/undo.rs;crates/oxledger/src/issue_view.rs
+2026-11-11	M1	寫入檢查暫停時用 FOR SHARE 讀角色列與委派列，持有到 commit（獨立驗證 D2）	暫停會等進行中的寫入，之後開始的寫入一定被擋；寫入之間不互擋	FOR UPDATE（寫入互相序列化）；不鎖	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	站台管理員暫停記在 runtime（admin_paused_*），同贊助人在該 runtime 或同 client 新建的角色由 trigger 繼承，只有站台管理員能解除（獨立驗證 D3）	退役角色或 runtime 再重開不能繞過管理員暫停	記在 client 層；禁止退役被暫停的角色	migrations/0029_ai_team.sql;crates/oxledger/src/ai_team.rs
+2026-11-11	M1	暫停資訊回 paused_by（sponsor／site_admin／project），只給看得到完整資訊的人；pause.scope 固定 principal（獨立驗證 D3）	讓贊助人知道為什麼自己不能恢復	回暫停者 id	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	舊路徑 POST /delegations 新建角色時共用 20 個角色上限檢查（獨立驗證 D4）	兩條路徑規則一致	舊路徑不設限	crates/oxledger/src/ai_team.rs;crates/oxledger/src/agents.rs
+2026-11-11	M1	02 留下的 oxledger-ai@… 外觀 handle 不改資料，只在 0029 RAISE NOTICE 數量並在 upgrade-notes 給查詢 SQL；要不要自動改名待使用者決定（獨立驗證 D5）	改使用者資料要使用者同意	升級時自動改名	migrations/0029_ai_team.sql;docs/impl/upgrade-notes.md
+2026-11-11	M1	principal_required 放在 details.reason（獨立驗證 D6）	契約 §5 的錯誤細節用 reason	details.kind	crates/oxledger/src/agents.rs;crates/oxledger/src/openapi.rs
+2026-11-11	M1	describe agent_context 只列本角色的委派專案，其他角色帶進 R 的專案只給數量 other_role_projects（獨立驗證 D7；取代上面 other_role 狀態那筆的列出部分）	看不到＝不存在；契約 §4.1 只說 02 §5.3 的內容，沒要求列出其他角色的專案	列出 other_role 專案	crates/oxledger/src/agents.rs
+2026-11-11	M1	AI 團隊可見性：站台管理員看全部外部角色（含未委派）；非贊助人要在委派專案是成員（本人或群組），公開專案非成員不算；內建 AI 在列表與詳細頁都排除到 M1.10（獨立驗證 D8）	§3.12.1 事故處理要管理員看全部；§3.12.5「看得到該專案的成員」；契約沒寫內建，先取較窄的	管理員照一般規則；讀得到就算	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	恢復時重查斷路器，脈絡停用中回 agent_suspended（獨立驗證 D9）	恢復不能繞過斷路器	只查隔離	crates/oxledger/src/ai_team.rs
+2026-11-11	M1	T-M1-66a 的 evidence 情況用兩個角色都讀得到的 issue 當 evidence（獨立驗證 D10）	讀不到的 evidence 在第 7 步就回 source_unverifiable，到不了受眾檢查，這是設計	改檢查順序	crates/oxledger/tests/m1_9_ai_team.rs

@@ -174,11 +174,12 @@ pub async fn actor(conn: &mut PgConnection, ctx: AuthContext) -> Result<Actor> {
         Some(a) => {
             let rows: Vec<(Uuid, Vec<String>, Vec<String>, i32)> = sqlx::query_as(
                 "SELECT project_id, proposal_ops, writable_fields, max_ops FROM delegations
-                 WHERE context_id = $1 AND revoked_at IS NULL AND expires_at > now()
+                 WHERE context_id = $1 AND agent_principal_id = $3 AND revoked_at IS NULL AND expires_at > now()
                    AND project_id = ANY($2)",
             )
             .bind(a.context_id)
             .bind(&a.projects)
+            .bind(a.agent_principal_id)
             .fetch_all(&mut *conn)
             .await?;
             Some(

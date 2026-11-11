@@ -790,7 +790,7 @@ pub async fn authenticate_bearer(pool: &PgPool, raw: &str) -> Result<Option<Auth
             "SELECT c.id, w.id, ap.agent_principal_id, ap.delegator_user_id
              FROM agent_credentials c
              JOIN agent_work_contexts w ON w.id = c.context_id
-             JOIN agent_principals ap ON ap.agent_principal_id = w.agent_principal_id
+             JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
              WHERE c.token_sha256 = $1 AND c.revoked_at IS NULL AND c.expires_at > now()
                AND w.state = 'active'",
         )

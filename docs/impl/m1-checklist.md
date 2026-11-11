@@ -15,7 +15,7 @@
 | M1.6 首頁與介面角色 | 0026；`/me/*`、範本；首頁小工具資料 | T-M1-60、61 | 實作完成（2026-11-10；`m1_6_home` 6 個、`m1_6_upgrade` 1 個、`home` 單元測試 2 個；前端未接；未 commit）。**0026 不動權限、不 bump epoch** |
 | M1.7 搜尋 | 0027；BM25F 欄位與 fast field；別名展開；概念管理；藍綠重建切換 | T-M1-62…65；E1 nDCG＠10 不低於 0.810；E2 用獨立查詢集量別名增益（只記錄） | 實作完成（2026-11-10；`m1_7_search` 12 個、`m1_7_upgrade` 1 個、E1 單元測試 2 個；獨立驗證 D1–D7 已修；前端未接；未 commit）。**0027 不動權限、不 bump epoch**；索引自動藍綠重建。E1 不展開 0.809525（固定；門檻 0.8095 = M0 四捨五入，待確認）；E2 受阻（沒有獨立查詢集） |
 | M1.8 通知 | 0028；`notify` consumer；`/notifications*`、`/issues/{key}/watch`、`/me/notification-preferences`；GC 與 lag 監控；保留清除 | T-M1-70…83、125、126、132；派送延遲 p95 ≤ 10 秒（本機 1 萬張單、50 人）；前端鈴鐺、通知中心、關注、偏好可用 | 後端實作完成，獨立驗證 D1–D7 已修（2026-11-11；`m1_8_notifications` 32 個＋效能 1 個（`#[ignore]`）、`m1_8_upgrade` 1 個；前端未接；未 commit）。**0028 不動權限、不 bump epoch**。派送延遲 p95 5.45 秒（加上收件人鎖之後；本機、10 人同時寫入 600 個事件，量法見 M1.8-D15） |
-| M1.9 AI 團隊 | 0029；runtime、角色 principal、共用脈絡；token 綁 principal；principal／專案層暫停；鏈上限；`/ai-team*`、`/me/agent-runtimes*`；角色範本；`describe agent_context` | T-M1-84…99、66a、121、123、124、127、128、133；02 的 E4w、§9.6 受眾測試、§16.7b 全部重跑全綠；既有 agent token 升級後照常可用 | — |
+| M1.9 AI 團隊 | 0029；runtime、角色 principal、共用脈絡；token 綁 principal；principal／專案層暫停；鏈上限；`/ai-team*`、`/me/agent-runtimes*`；角色範本；`describe agent_context` | T-M1-84…99、66a、121、123、124、127、128、133；02 的 E4w、§9.6 受眾測試、§16.7b 全部重跑全綠；既有 agent token 升級後照常可用 | 後端實作完成，獨立驗證的缺陷 D1…D10、M14 已修（2026-11-11；`m1_9_ai_team` 32 個、`m1_9_upgrade` 2 個；全套 test-support 與 test-support,github 全綠，含 s8_gate 的 E4w-2…6、s8_gate_extra、s6_audience、m1_0_estimated_hours；前端未接；未 commit）。**0029 不動權限、不 bump epoch**。待使用者決定：qa 範本的 transition 白名單（M1.9-D6）、pm_assistant 改 subject 走 review（M1.9-D7）、`oxledger-ai@…` 外觀 handle 要不要自動改名（M1.9-D15） |
 | M1.10 右欄 AI 對話 | 0030；feature `ai`；部署端點登記與 IP 驗證；兩種 provider 串流；執行層；`AuthMethod::BuiltinRun`；工時汙染；`/ai/*`、`/admin/ai/*`；D12 與保存清除；假 provider 測試伺服器 | T-M1-100…118、119、120、122、129、130、131、134；前端右欄對話與設定頁可用；真的 Anthropic key 與自架 OpenAI 相容端點各手動跑一次並記錄 | — |
 | M1.11 發布門檻 | E4w 對新命令與新身分全套、T-M1-66…69、E5 子集、通知與 AI 對話的 canary 洩漏測試；T-M1-119、120、121、122、127 | 越權、繞過政策、重複效果、canary 洩漏 = 0；key 送往非登記主機 = 0、內建 AI 讀工時後的 direct 寫入 = 0；核心情境正確率 ≥ 90%；`upgrade-notes.md` 寫好 0029、0030 | — |
 
@@ -425,3 +425,54 @@
 - 獨立驗證後追加（`m1_8_notifications.rs` 10 個）：`v_read_all_before_marks_row_committed_after_list`（D1：x 的派送卡在自動關注、y 的派送卡在 progress 列；放開 y 後 y 等 alice 的鎖，列表一直是空的；x 回來後兩列依 commit 順序出現；之後 x 有新事件，read-all 只標 y）、`v_watcher_count_with_many_invisible_watchers`（D2：1000 個看不到的關注者，GET < 500 ms）、`v_watcher_count_matches_scope`（D2：管理員、群組指派、default／own、tracker 限制、公開專案 non_member、鎖定、封存專案，SQL 與 load_scope 結果一致）、`v_on_my_agents_off_also_for_watching`（D3）、`v_unwatch_during_auto_watch`（D4：派送在 `notify.after_auto_watch` 卡住時取消關注要等，最後 optout 成立）、`v_poison_issue_is_skipped`（D5：`notify.issue:<id>` 連續 5 次失敗，第 5 次跳過、其他 issue 第一輪就送出、metric 增加、之後的新事件照送）、`v_reasons_follow_visible_events`（D6）、`v_redacted_before_dispatch_not_sent`、`v_progress_lock_with_read_between`、`v_revocation_variants`（欄位改受限、issue 改私有、移到沒加入的專案、事件層級遮蔽（列保留、只有標記）、角色失去 view_issues）。mutation：拿掉派送的收件人鎖 → D1 測試失敗；拿掉 watch 的鎖 → D4 測試失敗（都已還原）。`t_m1_125_user_guard` 補上錯誤訊息斷言（確認是 guard 擋的，不是其他 CHECK）。
 - `m1_8_upgrade.rs`：0027 → 0028：epoch 不變、`notify` cursor 為 active、有 30 個事件的舊單 progress 回填為 30；升級後 cursor 倒回 0 仍只送第 31 個事件。
 - 沒測到：前端（鈴鐺、通知中心、關注按鈕、偏好畫面）未接；`main.rs` 的派送與清除迴圈沒有整合測試（測試直接呼叫 `dispatch_round`／`dispatch_all`／`purge`）；多個 serve 行程同時派送只靠 progress 列鎖，沒有專門測試。
+
+## M1.9 疑點與照建議的做法
+
+- M1.9-D1 **權限與 epoch**：0029 不動 `role_permissions`、角色或成員，不 bump `security_epoch`（`m1_9_upgrade` 用 `run_to(28)`→`run_to(29)` 驗證）。AI 團隊頁、暫停、退役都用既有的身分判斷（贊助人、站台管理員、該專案有 `manage_project` 的人），沒有新權限。
+- M1.9-D2 **契約之外多加的欄位**：`agent_runtimes.lock_version`（改名的樂觀鎖）、`agent_principals.retired_at`（`agent_principals` 沒有 status 欄，退役要有地方記）、`changesets.chain_review`（鏈上限送審的提案不能勾選核准、待審佇列顯示原因）。另加兩個 trigger：`delegations_fill_runtime`（舊程式路徑沒帶 runtime_id 時自動補）、`agent_credentials_freeze`（token 的 context、principal、runtime 不可改）。
+- M1.9-D3 **舊路徑相容**：`POST /delegations` 帶 `agent_client_id`（02 的寫法）照舊可用，落在該 client 的 `personal` 角色（沒有就自動建 runtime 與角色）；帶 `agent_principal_id` 則落在指定角色。兩者恰好一個，否則 `invalid_request`。`/agent-contexts*` 保留為別名；當 runtime 只有一個角色時 `POST /agent-contexts/{id}/credentials` 不帶 `agent_principal_id` 也行，有多個角色時回 `invalid_argument`（`details.reason = "principal_required"`，照契約 §5；獨立驗證 D6 前是 `details.kind`）。舊路徑新建角色時一樣受 20 個角色上限（`role_limit`，`path = agent_client_id`；獨立驗證 D4）。
+- M1.9-D4 **暫停**：暫停不要 step-up（要能立刻止血），恢復要 step-up。principal 層：贊助人或站台管理員；站台管理員的暫停只有站台管理員能恢復，贊助人的暫停贊助人或站台管理員能恢復。專案層：該專案有 `manage_project` 的人或贊助人，理由必填（`required_field_missing`），只有同一層能恢復。暫停擋所有寫入路徑（直接寫、提案、核准後套用）；`validate` 不擋（只是預覽）。恢復時重驗脈絡、隔離狀態、斷路器（脈絡被 02 §16.6 停用時回 `agent_suspended`，要先恢復脈絡；獨立驗證 D9）與至少一個可用的委派。
+  - **（獨立驗證 D2）** 寫入檢查暫停時用 `FOR SHARE` 讀 `agent_principals` 與該委派列，持有到寫入 commit：暫停會等進行中的寫入結束，暫停 commit 之後開始的寫入一定被擋。寫入之間不互擋（共用鎖）。測試 `v_pause_waits_for_running_write`（fault point `ai_team.after_pause_check`；拿掉 `FOR SHARE` 時測試失敗，已還原）。
+  - **（獨立驗證 D3）** 站台管理員暫停角色時，同時在該 runtime 記 `admin_paused_*`（0029 新欄位）。trigger `agent_principals_inherit_admin_pause`：同一個贊助人之後新建的角色，只要在這個 runtime，或 client 相同（含已退役的 runtime 裡的角色），一建立就是「站台管理員暫停」，只有站台管理員能解除。所以退役角色或整個 runtime 再重開都繞不過。站台管理員恢復時，一併清掉這些 runtime 上的標記（同 runtime 還有別的角色被站台管理員暫停時保留）。
+  - **（獨立驗證 D3）** 誰暫停的：詳細頁的 `pause.paused_by`（`sponsor`／`site_admin`，只給贊助人與站台管理員）；專案層在該專案的政策列 `paused_by`（`sponsor`／`site_admin`／`project`，只給看得到該政策列的人：贊助人、站台管理員、該專案管理者）。`pause.scope` 現在固定是 `principal`。專案層暫停可由贊助人解除（契約允許），不改。
+- M1.9-D5 **鏈上限**：判斷順序照 §3.12.4：結構驗證 → 政策（`off` 一律 `forbidden_op`）→ 鏈（只有 `direct` 會被改成送審）→ 配額。鏈檢查前用 `FOR UPDATE` 鎖相關 issue 列。**（獨立驗證 M14 的分析）** 這把鎖是第二道防線，不是計數正確的原因：鏈計數的 issue 一定是文件的既有 target，每個既有 target 都要帶 `lock_version` 前置條件，每次有效寫入都讓 `lock_version` +1（02 K8），執行器在 `FOR UPDATE` 的列上比對。所以兩個同時寫同一張單的直接寫入最多只有一個 commit，沒有這把鎖也不會超過上限。這把鎖只讓後到的那個等在這裡、看到新的計數（得到 `agent_chain` 送審而不是 `conflict`），並在前置條件哪天變成選填時仍然成立。因為拿掉它也沒有測試會失敗，所以沒有另寫確定性測試，理由寫在 `chain_exceeded` 的註解。`v_chain_concurrent_at_limit` 驗證 19 次後兩個並行寫入：鏈停在 20，另一個送審。`validate` 也做鏈檢查（同樣上鎖，交易最後 rollback）。核准後套用的事件 origin 是 `external_agent`，由 `issue_events` trigger 清掉鏈（P4：人核准就是人介入）。
+- M1.9-D6 **qa 範本的 transition 白名單**：契約要 qa 只能直接做白名單內的狀態轉換，但沒有存白名單的地方。**目前 qa 的 transition 一律 `review`（比契約窄）**，待使用者決定白名單放哪裡。
+- M1.9-D7 **pm_assistant 的 subject／description 是 `review`**：欄位政策對 `update_fields` 一律適用，所以 pm 改標題也送審。**待使用者確認**（和 D6 一起）。
+- M1.9-D8 **範本與請求的政策**：範本寫成完整的 allow-list（沒列的 op 與欄位寫 `off` 列）；`POST /ai-team` 的 `delegations[].policies` 可以覆寫範本（贊助人自己的選擇；執行時一律再和贊助人自己的權限取交集，所以不會超過贊助人能做的事）。`builtin_chat` 不能由外部建立。
+- M1.9-D9 **`POST /ai-team`**：至少一個委派；一個贊助人最多 20 個 active 角色（`invalid_value`，kind `role_limit`）；`Idempotency-Key` 必填，重送回相同 id、`token: null`（token 只出現一次）。共用 runtime 時回 `warnings[]`（kind `shared_runtime`，列出其他角色、R 的來源專案與 `time_readers`）。
+- M1.9-D10 **AI 團隊列表**（獨立驗證 D8 後改）：
+  - 看得到的角色＝自己是贊助人，或在「自己是成員（本人或所屬群組）且讀得到」的專案有未撤銷（含過期）的委派。
+  - 公開專案的非成員（只靠 non_member 角色讀）不算：契約 §3.12.5 寫「看得到該專案的成員」。
+  - 站台管理員看得到所有外部角色，包含沒有委派的（§3.12.1 事故處理）。
+  - 內建 AI（builtin runtime）在列表與詳細頁都排除（契約沒寫，M1.10 再定）。贊助人對自己的內建 AI 發 token 仍回 `builtin_no_token`。
+  - 非贊助人看不到 `duties`、`blocked_7d`。
+  - 看不到的角色在詳細頁回 `not_found`，和不存在、已退役完全相同（HTTP 層 `v_http_invisible_equals_missing` 比對狀態、本文、標頭）。
+  - `next_cursor` 目前一律 null（上限 20 個角色 × 贊助人，不分頁）。
+- M1.9-D14 **活動與統計逐筆過濾**（獨立驗證 D1）：
+  - 每筆 execution 逐個事件用 issue 歷史同一個函式（`issue_view::event_view`）判斷。讀不到的私人備註、受限欄位（M1.5 `visible`／欄位角色，`readable_cf_ids`）、另一端看不到的 duplicate 都去掉。
+  - diff 的 `cf:<id>` 欄位依觀看者可讀的欄位過濾。
+  - 過濾後什麼都不剩的 execution 整筆不顯示，也不計入統計（`writes_today`、`undo_rate_7d`）。
+  - 02 §16.10 的贊助人活動頁用同一個函式，一起變嚴。
+- M1.9-D15 **02 留下的 `oxledger-ai@…` 外觀 handle**（獨立驗證 D5）：0029 不改使用者資料，只 `RAISE NOTICE` 印出數量；upgrade-notes 附查詢 SQL。0029 之後新建的外部角色不能用這種 handle（trigger 擋）。**升級時要不要自動改名，待使用者決定。**
+- M1.9-D11 **`describe agent_context`**（獨立驗證 D7 後改）：
+  - 只列這個角色自己被委派過的專案。
+  - 同一 runtime 其他角色帶進 R 的專案只給數量 `other_role_projects`（0 時不出現，02 的 `scope: context` 輸出不變），不回 key 與 id。這些專案仍算進受眾判斷。
+  - 契約 §4.1 只說「02 §5.3 的工作脈絡內容」，沒有要求逐一列出其他角色的專案，所以照建議改。
+  - `context_unavailable`（quarantined）的 details 多 `shared_with`（同 runtime 其他角色的 handle），讓 agent 知道不是只有自己停。
+- M1.9-D12 **`carry_over_delegations`** 先拒絕（`invalid_argument`），M1.10 再做。
+- M1.9-D13 **一個 client 一個 runtime**（Q2）：由 trigger 保證（併發時一方 `runtime_client_taken`）；runtime 退役後 client 釋出。
+
+### 測試
+
+- `m1_9_ai_team.rs`（32 個）：
+  - 實作時寫的 13 個：`t_m1_85_88_shared_context`（85、86、87、88、66a 代表子集，含帶 evidence 的情況）、`t_m1_89_runtime_new_context`、`t_m1_90_pause`、`t_m1_91_92_team_page`、`t_m1_93_95_98_123_chain`、`t_m1_94_chain_writes`、`t_m1_96_97_chain_reads_and_concurrency`、`t_m1_99_templates`、`t_m1_121_one_runtime_per_client`、`t_m1_124_check_lists_match_code`、`t_m1_127_builtin`（另驗內建 AI 不在列表與詳細頁）、`t_m1_128_delegations_by_principal_and_alias`、`t_m1_133_time_readers`。
+  - 併入獨立驗證的 13 個：`v_activity_hides_private_note_writes`、`v_chain_ignores_log_time`（T-M1-96 的 `log_time` 部分）、`v_chain_concurrent_at_limit`、`v_q2_trigger_concurrent_sql`、`v_chain_review_not_queue_approvable`、`v_chain_review_tickable_shape_not_queue_approvable`、`v_agent_cannot_write_as_human`、`v_template_cannot_exceed_sponsor`、`v_alias_lands_on_personal`、`v_resume_needs_step_up`、`v_pause_reason_not_leaked`、`v_http_invisible_equals_missing`、`v_shared_warning_is_own`。
+  - 為驗證缺陷新加的 6 個：`v_activity_hides_restricted_field_writes`（D1 受眾欄位）、`v_pause_waits_for_running_write`（D2）、`v_admin_pause_not_bypassed_by_retire`（D3）、`v_alias_respects_role_limit`（D4）、`v_resume_rechecks_breaker`（D9）、`v_team_visibility_admin_and_public_non_member`（D8）。
+- `m1_9_upgrade.rs`（2 個）：
+  - `t_m1_84_upgrade_ai_team`：0028 → 0029，V2 四種情況（只有關閉的脈絡、沒有脈絡、client 名稱 100 字、前 56 字相同的標籤衝突），epoch 不變，舊 token 照常認證且範圍相同。
+  - `v_upgrade_with_suspension_and_lookalike_handle`：被斷路器停用的脈絡與兩份委派升級後照舊；02 的 `oxledger-ai@u` handle 保留不改，upgrade-notes 的查詢找得到它（D5）。
+- T-M1-66a 帶 evidence（獨立驗證 D10）：引用另一個角色讀不到的 issue 時，第 7 步 evidence 檢查先回 `source_unverifiable`，到不了受眾檢查。這是設計：evidence 必須在該 agent 自己的讀取範圍內。測試改用兩個 agent 都讀得到的 WEB issue 描述當 evidence，第 7 步通過、第 8 步受眾檢查回 `audience_expansion_forbidden`，兩者相同。
+- 沒測到：
+  - T-M1-66a 只測代表子集（筆記、欄位、建單三種公開寫入，以及帶 evidence 的筆記），不是 02 E4w 全集。
+  - 升級測試沒有帶未套用的提案。
+  - 前端未接。

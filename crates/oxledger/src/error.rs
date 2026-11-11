@@ -160,6 +160,12 @@ pub enum ErrorCode {
     /// Design 05 §3.9: the label already belongs (active) to another
     /// concept; `details.concept_id`, `details.pref_label`, `details.label`.
     ConceptLabelTaken,
+    /// Design 05 §5: a role or delegation for a runtime whose work context
+    /// is closed; start a new work context first.
+    RuntimeContextClosed,
+    /// Design 05 §5 (Q2): the agent software already runs in another active
+    /// runtime of this sponsor; `details.runtime_id`, `details.label`.
+    RuntimeClientTaken,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -176,7 +182,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 63] = [
+    pub const ALL: [ErrorCode; 65] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -240,6 +246,8 @@ impl ErrorCode {
         Self::FormInvalid,
         Self::FormPublishBlocked,
         Self::ConceptLabelTaken,
+        Self::RuntimeContextClosed,
+        Self::RuntimeClientTaken,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -307,6 +315,8 @@ impl ErrorCode {
             Self::FormInvalid => "form_invalid",
             Self::FormPublishBlocked => "form_publish_blocked",
             Self::ConceptLabelTaken => "concept_label_taken",
+            Self::RuntimeContextClosed => "runtime_context_closed",
+            Self::RuntimeClientTaken => "runtime_client_taken",
         }
     }
 
@@ -371,6 +381,7 @@ impl ErrorCode {
             Self::FormRulesChanged | Self::FormPublishBlocked => 409,
             Self::FormInvalid => 422,
             Self::ConceptLabelTaken => 409,
+            Self::RuntimeContextClosed | Self::RuntimeClientTaken => 409,
         }
     }
 
@@ -451,6 +462,7 @@ impl ErrorCode {
             Self::FormRulesChanged | Self::FormInvalid => &[FixInput],
             Self::FormPublishBlocked => &[AskHuman],
             Self::ConceptLabelTaken => &[FixInput, AskHuman],
+            Self::RuntimeContextClosed | Self::RuntimeClientTaken => &[AskHuman],
         }
     }
 }

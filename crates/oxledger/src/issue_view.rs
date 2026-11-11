@@ -1003,7 +1003,7 @@ async fn display(conn: &mut PgConnection, field: &str, v: &Json) -> Result<Json>
 
 /// Custom field ids the caller may read in this issue's project (agents:
 /// `visible = true` only).
-async fn readable_cf_ids(
+pub(crate) async fn readable_cf_ids(
     conn: &mut PgConnection,
     reader: &Reader,
     caller: AuthContext,

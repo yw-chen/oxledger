@@ -202,6 +202,10 @@ pub enum DescribeScope {
     /// What `search` can filter (`where`) and sort by, optionally within one
     /// `project` (design 05 §3.2).
     FilterFields,
+    /// Agents only: `context` plus your role, the runtime you share, whether
+    /// you may read the delegator's time, and the agent chain limits
+    /// (design 05 §4.1).
+    AgentContext,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -247,6 +251,8 @@ pub struct DescribeResult {
     pub context: Option<crate::agents::ContextDescription>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_fields: Option<crate::filter::v2::FilterFields>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_context: Option<crate::agents::AgentContextDescription>,
 }
 
 // ---------------------------------------------------------------- shared pieces
@@ -981,6 +987,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 issue_actions: None,
                 context: None,
                 filter_fields: None,
+                agent_context: None,
             })
         }
         DescribeScope::IssueActions => {
@@ -994,6 +1001,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 issue_actions: Some(issue_actions(app, caller, &key).await?),
                 context: None,
                 filter_fields: None,
+                agent_context: None,
             })
         }
         DescribeScope::Context => {
@@ -1007,6 +1015,21 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 issue_actions: None,
                 context: Some(crate::agents::describe_context(app, caller).await?),
                 filter_fields: None,
+                agent_context: None,
+            })
+        }
+        DescribeScope::AgentContext => {
+            let (None, None, None) = (&p.project, &p.tracker, &p.issue_key) else {
+                return Err(user_err(
+                    "scope agent_context takes no `project`, `tracker` or `issue_key`",
+                ));
+            };
+            Ok(DescribeResult {
+                project_tracker: None,
+                issue_actions: None,
+                context: None,
+                filter_fields: None,
+                agent_context: Some(crate::agents::describe_agent_context(app, caller).await?),
             })
         }
         DescribeScope::FilterFields => {
@@ -1022,6 +1045,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 filter_fields: Some(
                     crate::filter::v2::filter_fields(app, caller, p.project.as_deref()).await?,
                 ),
+                agent_context: None,
             })
         }
     }

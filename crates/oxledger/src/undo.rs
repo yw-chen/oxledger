@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uuid::Uuid;
 
 #[cfg(feature = "test-support")]
@@ -1639,6 +1639,210 @@ pub async fn activity(
     issue: Option<&str>,
 ) -> Result<Activity> {
     let user = person(&caller)?;
+    activity_of(
+        app,
+        caller,
+        agent,
+        user,
+        from,
+        to,
+        issue,
+        ActivityView::Sponsor,
+    )
+    .await
+}
+
+/// Design 05 §3.12.5 stats: `agent`'s executions on behalf of `sponsor` in
+/// [from, to] that touched an issue the caller can read now, with how many
+/// of them a person undid. Invisible writes count nowhere (T-M1-92).
+pub(crate) async fn visible_stats(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    sponsor: Uuid,
+    agent: Uuid,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<(Uuid, DateTime<Utc>, bool)>> {
+    let mut out = Vec::new();
+    let mut reader = crate::citations::Reader::new(&mut *conn, caller).await?;
+    let mut cf = HashMap::new();
+    for (id, at, _) in agent_executions(&mut *conn, sponsor, agent, from, to).await? {
+        if readable_execution(&mut *conn, &mut reader, caller, &mut cf, id)
+            .await?
+            .is_none()
+        {
+            continue;
+        }
+        let undone: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM command_executions WHERE reverts_execution_id = $1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        out.push((id, at, undone));
+    }
+    Ok(out)
+}
+
+/// What of execution `id` the caller may read now (design 05 §3.12.5,
+/// U35), event by event with the issue history's own rule
+/// ([`crate::issue_view::event_view`]): a private note the caller cannot
+/// read, a restricted custom field (M1.5 `visible`/roles), the hidden end of
+/// a duplicate are left out. The keys of the issues with something readable
+/// and the readable field changes, or `None` when nothing is left (the
+/// write then shows and counts nowhere).
+async fn readable_execution(
+    conn: &mut PgConnection,
+    reader: &mut crate::citations::Reader,
+    caller: AuthContext,
+    cf: &mut HashMap<Uuid, Vec<i32>>,
+    id: Uuid,
+) -> Result<Option<(Vec<String>, Vec<ActivityDiff>)>> {
+    use crate::issue_view::{EventCache, EventRow, IssueRef};
+    let issues = touched_issues(&mut *conn, id).await?;
+    let keys_map = visible(&mut *conn, caller, &issues).await?;
+    if keys_map.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<Uuid> = keys_map.keys().copied().collect();
+    let refs: Vec<(Uuid, Uuid, Uuid)> =
+        sqlx::query_as("SELECT id, project_id, tracker_id FROM issues WHERE id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    let refs: HashMap<Uuid, IssueRef> = refs
+        .into_iter()
+        .map(|(id, project, tracker)| {
+            (
+                id,
+                IssueRef {
+                    id,
+                    project,
+                    tracker,
+                },
+            )
+        })
+        .collect();
+    for r in refs.values() {
+        if let std::collections::hash_map::Entry::Vacant(e) = cf.entry(r.project) {
+            let ids =
+                crate::issue_view::readable_cf_ids(&mut *conn, reader, caller, r.project).await?;
+            e.insert(ids);
+        }
+    }
+    let mut shown: BTreeSet<Uuid> = BTreeSet::new();
+    type Row = (
+        Uuid,
+        Uuid,
+        i64,
+        String,
+        DateTime<Utc>,
+        String,
+        Json,
+        Option<Uuid>,
+        bool,
+    );
+    let events: Vec<Row> = sqlx::query_as(
+        "SELECT e.issue_id, e.id, e.seq, e.kind, e.at, p.name, e.payload, e.note_id,
+                e.redaction_id IS NOT NULL
+         FROM issue_events e JOIN principals p ON p.id = e.actor_id
+         WHERE (e.command_execution_id = $1 OR e.execution_id = $1) AND e.issue_id = ANY($2)
+         ORDER BY e.issue_id, e.seq",
+    )
+    .bind(id)
+    .bind(&ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (issue, eid, seq, kind, at, actor, payload, note_id, redacted) in events {
+        if shown.contains(&issue) {
+            continue;
+        }
+        let Some(r) = refs.get(&issue).copied() else {
+            continue;
+        };
+        let mut cache = EventCache::default();
+        cache.readable_cf = cf.get(&r.project).cloned();
+        let row = EventRow {
+            id: eid,
+            seq,
+            kind,
+            at,
+            actor,
+            payload,
+            note_id,
+            redacted,
+        };
+        if crate::issue_view::event_view(&mut *conn, reader, caller, r, &mut cache, row)
+            .await?
+            .is_some()
+        {
+            shown.insert(issue);
+        }
+    }
+    let ch: Vec<(Uuid, String, Option<Json>, Option<Json>)> = sqlx::query_as(
+        "SELECT issue_id, field_key, before_value, after_value FROM execution_field_changes
+         WHERE execution_id = $1 ORDER BY issue_id, field_key",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut diff = Vec::new();
+    for (i, f, b, a) in ch {
+        let (Some(key), Some(r)) = (keys_map.get(&i), refs.get(&i)) else {
+            continue;
+        };
+        if let Some(n) = f.strip_prefix("cf:")
+            && !n
+                .parse::<i32>()
+                .is_ok_and(|n| cf.get(&r.project).is_some_and(|ids| ids.contains(&n)))
+        {
+            continue; // a restricted field
+        }
+        shown.insert(i);
+        diff.push(ActivityDiff {
+            key: key.clone(),
+            field: f,
+            before: b.unwrap_or(Json::Null),
+            after: a.unwrap_or(Json::Null),
+        });
+    }
+    let mut keys: Vec<String> = shown
+        .iter()
+        .filter_map(|i| keys_map.get(i).cloned())
+        .collect();
+    keys.sort();
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((keys, diff)))
+}
+
+/// Who reads [`activity_of`] (design 05 §3.12.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityView {
+    /// The sponsor (02 §16.10): their undos and the audience blocks too.
+    Sponsor,
+    /// A site admin on the AI team page: the audience blocks, no undos.
+    Admin,
+    /// Anyone else who sees the role: its writes, filtered to what they read.
+    Member,
+}
+
+/// The executions of `agent` on behalf of `sponsor`, newest first, each
+/// kept only when the caller can read one of its issues now, and only the
+/// readable issues' keys and diffs (the same filter for every viewer).
+#[allow(clippy::too_many_arguments)]
+pub async fn activity_of(
+    app: &App,
+    caller: AuthContext,
+    agent: Uuid,
+    sponsor: Uuid,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    issue: Option<&str>,
+    view: ActivityView,
+) -> Result<Activity> {
+    let user = person(&caller)?;
     let mut tx = app.pool.begin().await?;
     sqlx::query("SET TRANSACTION READ ONLY")
         .execute(&mut *tx)
@@ -1649,62 +1853,50 @@ pub async fn activity(
         .await?;
     let from = from.unwrap_or(now - chrono::Duration::days(UNDO_DAYS));
     let to = to.unwrap_or(now);
-    let mut rows = agent_executions(&mut tx, user, agent, from, to).await?;
-    let undos: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
-        "SELECT u.id, u.created_at, 'undo' FROM command_executions u
-         WHERE u.actor_id = $1 AND u.reverts_execution_id IS NOT NULL
-           AND u.created_at >= $2 AND u.created_at <= $3",
-    )
-    .bind(user)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&mut *tx)
-    .await?;
-    rows.extend(undos);
-    let blocked: Vec<DateTime<Utc>> = sqlx::query_scalar(
+    let mut rows = agent_executions(&mut tx, sponsor, agent, from, to).await?;
+    if view == ActivityView::Sponsor {
+        let undos: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
+            "SELECT u.id, u.created_at, 'undo' FROM command_executions u
+             WHERE u.actor_id = $1 AND u.reverts_execution_id IS NOT NULL
+               AND u.created_at >= $2 AND u.created_at <= $3",
+        )
+        .bind(user)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *tx)
+        .await?;
+        rows.extend(undos);
+    }
+    let blocked: Vec<DateTime<Utc>> = if view == ActivityView::Member {
+        Vec::new()
+    } else {
+        sqlx::query_scalar(
         "SELECT l.at FROM agent_write_log l
          JOIN agent_principals ap ON ap.agent_principal_id = l.agent_principal_id
          WHERE l.agent_principal_id = $1 AND ap.delegator_user_id = $2 AND l.kind = 'audience_blocked'
            AND l.at >= $3 AND l.at <= $4",
-    )
-    .bind(agent)
-    .bind(user)
-    .bind(from)
-    .bind(to)
-    .fetch_all(&mut *tx)
-    .await?;
+        )
+        .bind(agent)
+        .bind(sponsor)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *tx)
+        .await?
+    };
     let mut items = Vec::new();
+    let mut reader = crate::citations::Reader::new(&mut tx, caller).await?;
+    let mut cf = HashMap::new();
     for (id, at, kind) in rows {
-        let issues = touched_issues(&mut tx, id).await?;
-        let keys_map = visible(&mut tx, caller, &issues).await?;
-        if keys_map.is_empty() {
+        let Some((keys, diff)) =
+            readable_execution(&mut tx, &mut reader, caller, &mut cf, id).await?
+        else {
             continue; // nothing of it is readable now
-        }
-        let mut keys: Vec<String> = keys_map.values().cloned().collect();
-        keys.sort();
+        };
         if let Some(k) = issue
             && !keys.iter().any(|x| x == k)
         {
             continue;
         }
-        let ch: Vec<(Uuid, String, Option<Json>, Option<Json>)> = sqlx::query_as(
-            "SELECT issue_id, field_key, before_value, after_value FROM execution_field_changes
-             WHERE execution_id = $1 ORDER BY issue_id, field_key",
-        )
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await?;
-        let diff = ch
-            .into_iter()
-            .filter_map(|(i, f, b, a)| {
-                Some(ActivityDiff {
-                    key: keys_map.get(&i)?.clone(),
-                    field: f,
-                    before: b.unwrap_or(Json::Null),
-                    after: a.unwrap_or(Json::Null),
-                })
-            })
-            .collect();
         let undoable = match exec_info(&mut tx, id).await? {
             Some(info) if info.owner == user => {
                 build_preview(&mut tx, caller, id, &info).await?.automatic()
@@ -1799,10 +1991,14 @@ pub async fn summary(app: &App, caller: AuthContext) -> Result<AgentSummary> {
         }
     }
     let suspended: Vec<(Uuid, Uuid, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT c.id, c.agent_principal_id, w.suspension_reason, w.suspended_at
+        "SELECT c.id, ap.agent_principal_id, w.suspension_reason, w.suspended_at
          FROM agent_context_write_controls w JOIN agent_work_contexts c ON c.id = w.context_id
-         JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
-         WHERE ap.delegator_user_id = $1 AND w.suspended_at IS NOT NULL
+         JOIN agent_runtimes rt ON rt.id = c.runtime_id
+         JOIN LATERAL (SELECT p.agent_principal_id FROM agent_principals p WHERE p.runtime_id = c.runtime_id
+                       ORDER BY p.agent_principal_id = c.created_for_principal_id DESC, p.created_at,
+                                p.agent_principal_id
+                       LIMIT 1) ap ON true
+         WHERE rt.sponsor_user_id = $1 AND w.suspended_at IS NOT NULL
            AND w.suspension_reason <> 'manual'
          ORDER BY w.suspended_at DESC",
     )

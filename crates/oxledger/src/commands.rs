@@ -1034,6 +1034,37 @@ impl Parsed {
             .collect()
     }
 
+    /// Design 05 §3.12.4: the existing issues an agent write of this
+    /// document counts toward (issue ops; `duplicate_of` counts both ends;
+    /// time and version ops do not touch issues). Sorted, distinct.
+    pub(crate) fn chain_issues(&self) -> Vec<Uuid> {
+        let mut out = BTreeSet::new();
+        let mut add = |t: &Target| {
+            if let Target::Issue(id) = t {
+                out.insert(*id);
+            }
+        };
+        for o in &self.ops {
+            match o {
+                Op::Update { target, .. }
+                | Op::Transition { target, .. }
+                | Op::Note { target, .. } => add(target),
+                Op::Triage { target, dup, .. } => {
+                    add(target);
+                    if let Some(d) = dup {
+                        add(d);
+                    }
+                }
+                Op::Duplicate { source, target, .. } => {
+                    add(source);
+                    add(target);
+                }
+                _ => {}
+            }
+        }
+        out.into_iter().collect()
+    }
+
     /// Existing target issues.
     pub fn targets(&self) -> Vec<Uuid> {
         self.pre.keys().copied().collect()

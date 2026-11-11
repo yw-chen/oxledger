@@ -115,3 +115,33 @@
 - 新增 `user_column_guard()`：關注、通知、偏好、靜音只能屬於 user（agent、群組寫入回 `check_violation`）。
 - 新 API（前端要接）：`GET /notifications`、`GET /notifications/unread-count`、`POST /notifications/{id}/read`、`POST /notifications/{id}/unread`、`POST /notifications/read-all`、`PUT|DELETE /issues/{key}/watch`、`GET|PUT /me/notification-preferences`；`GET /issues/{key}` 多了 `watch`（只有人登入時有）。沒有 email。
 
+## 0029_ai_team（M1.9，AI 團隊）
+
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`、角色或成員，`security_epoch` 不變（升級測試驗證）。
+- **既有 agent 自動搬進 runtime**：每個既有的 agent principal 各得到一個外部 runtime（`backfilled = true`、`isolation_ack = true`），角色是 `personal`（範本 `personal` v1）。runtime 名稱取 client 名稱前 56 字，同一個人撞名時加 `-2`、`-3`…（最長 60 字）；`created_by_session` 取該 principal 最新的脈絡（不論狀態），沒有脈絡時是空的。因為每個 principal 原本就有自己的脈絡，搬完後每個 runtime 的 R 和原來相同，不會變寬或變窄。
+- **既有的脈絡、委派、token 都綁到該 runtime**：`agent_work_contexts.agent_principal_id` 改名為 `created_for_principal_id`（只供稽核）；委派與 token 補上 `runtime_id`，token 補上 `agent_principal_id`。**既有 token 升級後照常可用**，身分與可讀範圍不變；既有委派不受影響（升級測試驗證）；未處理的提案只多一欄 `chain_review`（NULL），升級測試沒有帶提案。
+- **之後的行為改變**：
+  - 同一個人、同一個 client 只能有一個未退役的 runtime（`runtime_client_taken`，409）。要重來請在同一個 runtime 開新脈絡，或先退役它。
+  - 同一個 runtime 的所有角色共用一個脈絡與 R：隔離（epoch 變動）、斷路器暫停、開新脈絡都會讓整個 runtime 的角色一起停；錯誤的 details 有 `shared_with`。
+  - 新的鏈上限：同一張單在沒有人介入下被 agent 連續寫入超過 20 次，或換手深度超過 2，原本會直接寫入的命令改為送審（`review_required`，reason `agent_chain`）。人的寫入、undo、核准套用都會重新計算。
+  - 暫停：贊助人或站台管理員可暫停整個角色，專案管理者可暫停角色在自己專案的寫入；暫停中所有寫入（含核准後套用）回 `forbidden_op`（reason `agent_paused`）。恢復時會重查斷路器（脈絡停用中回 `agent_suspended`）。
+  - 站台管理員暫停會記在 runtime（新欄位 `agent_runtimes.admin_paused_at`／`admin_paused_by`／`admin_paused_reason`）。同一個人之後在這個 runtime 或同一個 client 新建的角色，一建立就是暫停（trigger `agent_principals_inherit_admin_pause`），退役再重開繞不過，只有站台管理員能解除。升級時這些欄位都是空的。
+  - 暫停資訊：`pause.scope` 固定是 `principal`；新增 `pause.paused_by`（`sponsor`／`site_admin`）與專案政策列的 `paused_by`（`sponsor`／`site_admin`／`project`），只給看得到完整資訊的人。
+  - AI 團隊頁的可見性：站台管理員看得到所有外部角色（含沒有委派的）；其他人要在該角色被委派的專案是成員（本人或所屬群組）才看得到，公開專案的非成員看不到；內建 AI 不出現在列表與詳細頁（M1.10 再定）。
+  - 活動頁與統計逐筆過濾：只寫了觀看者讀不到的私人備註或受限欄位的寫入不會出現，也不計數。02 §16.10 的贊助人活動頁一起變嚴。
+  - `POST /delegations`（舊路徑）新建角色時也受每人 20 個角色上限（`invalid_value`，kind `role_limit`）。
+  - 錯誤細節：發 token 時有多個角色回 `invalid_argument`，`details.reason = "principal_required"`（不是 `details.kind`）。
+  - `describe agent_context`：只列這個角色自己的委派專案；同 runtime 其他角色帶進 R 的專案只給數量 `other_role_projects`（0 時不出現）。
+- **02 留下的 `oxledger-ai@…` 外觀 handle**：02 允許使用者把 agent 的 handle 取成 `oxledger-ai@…`，看起來像內建 AI。0029 **不改這些資料**，只在升級時用 `RAISE NOTICE` 印出數量（`0029: N agent handle(s) start with oxledger-ai@ and look like the built-in AI; see upgrade-notes.md`）。0029 之後新建的外部角色已經不能用這種 handle。管理員可以用下面的查詢找出來，自行決定要不要請使用者改名：
+
+  ```sql
+  SELECT ap.agent_principal_id, ap.handle
+  FROM agent_principals ap
+  JOIN agent_runtimes r ON r.id = ap.runtime_id
+  WHERE r.kind = 'external' AND ap.handle LIKE 'oxledger-ai@%';
+  ```
+
+  升級時要不要自動改名，**待使用者決定**。
+- `agent_write_log.kind` 的 CHECK 重建為既有值的聯集再加 `chain_review`、`time_taint_review`（後者給 M1.10）。
+- 新 API（前端要接）：`GET|POST /ai-team`、`GET /ai-team/templates`、`GET /ai-team/{id}`、`GET /ai-team/{id}/activity`、`POST /ai-team/{id}/pause|resume|retire|credentials`、`GET /me/agent-runtimes`、`PATCH /me/agent-runtimes/{id}`、`POST /me/agent-runtimes/{id}/new-context|retire`。`POST /delegations` 新增 `agent_principal_id`（和 `agent_client_id` 擇一）；`/agent-contexts*` 保留為相容別名。
+

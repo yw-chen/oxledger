@@ -20,6 +20,23 @@ use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+/// Every `agent_write_log.kind` (the union rule of design 05 §2.1; T-M1-124
+/// compares it with the CHECK constraint). `time_taint_review` is written
+/// by the built-in AI (M1.10).
+pub const WRITE_LOG_KINDS: [&str; 11] = [
+    "direct_write",
+    "issue_create",
+    "issue_write",
+    "propose",
+    "audience_blocked",
+    "version_create",
+    "version_write",
+    "validate",
+    "time_write",
+    "chain_review",
+    "time_taint_review",
+];
+
 /// Initial values (deployment may lower them; a delegation only narrows).
 pub mod limits {
     /// §16.6: successful direct writes (documents) per agent.
@@ -366,6 +383,26 @@ pub async fn record_proposal(
     sqlx::query(
         "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
          VALUES ($1, $2, $3, 'propose')",
+    )
+    .bind(agent)
+    .bind(context)
+    .bind(delegation)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Design 05 §3.12.4: a `direct` document the chain limit sent for review.
+/// An audit row only; no counter reads this kind.
+pub async fn log_chain_review(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind)
+         VALUES ($1, $2, $3, 'chain_review')",
     )
     .bind(agent)
     .bind(context)

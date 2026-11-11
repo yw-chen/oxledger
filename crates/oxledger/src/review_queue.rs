@@ -170,7 +170,33 @@ pub async fn eligibility(
     validation_status: &str,
     stored_rules_version: Option<&str>,
 ) -> Result<Eligibility> {
+    eligibility_for(
+        conn,
+        viewer,
+        body,
+        validation_status,
+        stored_rules_version,
+        None,
+    )
+    .await
+}
+
+/// [`eligibility`] of a stored ChangeSet: one the agent chain limit sent
+/// for review (`chain_review`) never qualifies (design 05 §3.12.4).
+pub async fn eligibility_for(
+    conn: &mut PgConnection,
+    viewer: AuthContext,
+    body: &Json,
+    validation_status: &str,
+    stored_rules_version: Option<&str>,
+    chain_review: Option<&str>,
+) -> Result<Eligibility> {
     let mut reasons = shape_reasons(body);
+    // Design 05 §3.12.4: sent by the agent chain limit → read it in full.
+    // The reason carries no counts (appendix D V21).
+    if let Some(c) = chain_review {
+        reasons.push(format!("agent_chain:{c}"));
+    }
     reasons.extend(long_custom_fields(&mut *conn, body).await?);
     if validation_status != "passed" {
         reasons.push(format!("validation:{validation_status}"));

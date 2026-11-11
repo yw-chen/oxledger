@@ -186,6 +186,11 @@ pub struct ProposeResult {
     pub review_url: String,
     pub expires_at: DateTime<Utc>,
     pub next_actions: Vec<NextAction>,
+    /// `command_submit` with `reason = "agent_chain"` (design 05 §3.12.4):
+    /// `{exceeded: "depth"|"writes", max_depth, max_writes}`, never the
+    /// chain's counts or agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Json>,
 }
 
 /// An error as the owner sees it on a failed execution or a validation.
@@ -287,6 +292,10 @@ pub struct ChangesetSummary {
     pub review_modes: Vec<String>,
     /// Contract 05 §3.6.3: the form rules changed since this version.
     pub rules_changed: bool,
+    /// Design 05 §3.12.4: `depth` (換手過多) or `writes` (寫入次數過多) when
+    /// the agent chain limit sent it for review; no counts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_chain: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -395,11 +404,13 @@ struct CsRow {
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     group_id: Option<Uuid>,
+    /// Design 05 §3.12.4: `depth` or `writes` when the chain limit sent it.
+    chain_review: Option<String>,
 }
 
 const CS_COLS: &str =
     "id, context_project_id, proposer_id, on_behalf_of_id, delegation_id, context_id,
-                       current_version, state, created_at, expires_at, group_id";
+                       current_version, state, created_at, expires_at, group_id, chain_review";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct VerRow {
@@ -793,6 +804,46 @@ pub(crate) async fn targets_readable(
     Ok(readable_targets(conn, caller, body).await?.is_some())
 }
 
+/// Design 05 §3.12.5 stats: `agent`'s ChangeSets the caller can read in
+/// full (the destination project and every target of the current version):
+/// the pending ones, or (with `chain_since`) the chain reviews since then.
+pub(crate) async fn count_readable(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    agent: Uuid,
+    chain_since: Option<DateTime<Utc>>,
+) -> Result<i64> {
+    let rows: Vec<(Uuid, i32, Uuid)> = sqlx::query_as(
+        "SELECT id, current_version, context_project_id FROM changesets
+         WHERE proposer_id = $1
+           AND CASE WHEN $2::timestamptz IS NULL THEN state = 'proposed'
+                    ELSE chain_review IS NOT NULL AND created_at >= $2 END",
+    )
+    .bind(agent)
+    .bind(chain_since)
+    .fetch_all(&mut *conn)
+    .await?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let scope = db::load_scope(&mut *conn, caller).await?;
+    let projects: std::collections::BTreeSet<Uuid> = scope.project_ids().collect();
+    let mut n = 0;
+    for (id, version, project) in rows {
+        if !projects.contains(&project) {
+            continue;
+        }
+        let Some(v) = load_version(&mut *conn, id, version).await? else {
+            continue;
+        };
+        let Some(body) = v.body else { continue };
+        if readable_targets(&mut *conn, caller, &body).await?.is_some() {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// Targets as (id, key) when `caller` can see every one; `None` otherwise.
 async fn readable_targets(
     conn: &mut PgConnection,
@@ -967,8 +1018,16 @@ fn delegation_gone() -> anyhow::Error {
     )
 }
 
-/// The work context FOR SHARE and active.
+/// The runtime row, then the work context, FOR SHARE (design 05 §3.12.2
+/// lock order); the context must be active.
 async fn lock_context_row(conn: &mut PgConnection, context: Uuid) -> Result<()> {
+    sqlx::query(
+        "SELECT 1 FROM agent_runtimes WHERE id = (SELECT runtime_id FROM agent_work_contexts WHERE id = $1)
+         FOR SHARE",
+    )
+    .bind(context)
+    .execute(&mut *conn)
+    .await?;
     let state: Option<String> =
         sqlx::query_scalar("SELECT state FROM agent_work_contexts WHERE id = $1 FOR SHARE")
             .bind(context)
@@ -1042,10 +1101,11 @@ async fn agent_step1(
     if let Some(c) = who.credential {
         let ok: Option<bool> = sqlx::query_scalar(
             "SELECT revoked_at IS NULL AND expires_at > clock_timestamp() FROM agent_credentials
-             WHERE id = $1 AND context_id = $2 FOR SHARE",
+             WHERE id = $1 AND context_id = $2 AND agent_principal_id = $3 FOR SHARE",
         )
         .bind(c)
         .bind(who.context)
+        .bind(who.agent)
         .fetch_optional(&mut *conn)
         .await?;
         if ok != Some(true) {
@@ -1058,19 +1118,22 @@ async fn agent_step1(
     let d: Option<DelegRow> = sqlx::query_as(
         "SELECT id, project_id, proposal_ops, writable_fields, max_ops, expires_at, policy_version
          FROM delegations
-         WHERE context_id = $1 AND project_id = $2 AND revoked_at IS NULL
+         WHERE context_id = $1 AND project_id = $2 AND agent_principal_id = $3 AND revoked_at IS NULL
            AND expires_at > clock_timestamp() FOR SHARE",
     )
     .bind(who.context)
     .bind(dest)
+    .bind(who.agent)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(d) = d else {
         let ever: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND project_id = $2)",
+            "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND project_id = $2
+                              AND agent_principal_id = $3)",
         )
         .bind(who.context)
         .bind(dest)
+        .bind(who.agent)
         .fetch_one(&mut *conn)
         .await?;
         return Err(if ever {
@@ -1378,13 +1441,20 @@ async fn agent_write_tx(
         let v = r["version"].as_i64().unwrap_or(1) as i32;
         // §16.5: a key that answered review_required keeps that answer.
         let reason = r["reason"].as_str().unwrap_or("requested").to_string();
+        let details = r.get("details").filter(|d| !d.is_null()).cloned();
         return agent_view(&mut *conn, caller, id, v, spa_origin)
             .await
-            .map(|proposal| SubmitResult::ReviewRequired { reason, proposal });
+            .map(|mut proposal| {
+                proposal.details = details;
+                SubmitResult::ReviewRequired { reason, proposal }
+            });
     };
 
     // §16.6: a suspended context writes nothing (reads go on).
     quota::check_not_suspended(&mut *conn, who.context).await?;
+    // Design 05 §3.12.5: a paused role (or its delegation here) writes
+    // nothing, proposals included; reads go on.
+    crate::ai_team::check_not_paused(&mut *conn, who.agent, deleg.id).await?;
     // §8.9: two writes per delegation at a time (replays returned above).
     quota::take_proposal_slot(&mut *conn, deleg.id).await?;
     fault("agent_write.after_slot").await?;
@@ -1444,16 +1514,28 @@ async fn agent_write_tx(
     let source_ids: Vec<Uuid> = sources.iter().map(|s| s.0).collect();
     crate::audience::check(&mut *conn, &parsed, &source_ids, who.delegator).await?;
 
-    let reason = match (submit, &decision) {
+    // Design 05 §3.12.4: after the policy (an `off` op was refused above),
+    // the chain limit can only turn `direct` into `review`.
+    let chain = match (submit, &decision) {
         (Some(false), policy::Decision::Direct) => {
+            chain_exceeded(&mut *conn, who.agent, &parsed.chain_issues()).await?
+        }
+        _ => None,
+    };
+    let reason = match (submit, &decision, chain) {
+        (Some(false), policy::Decision::Direct, None) => {
             return agent_direct(
                 &mut *conn, caller, &who, &deleg, &parsed, &sources, request_id,
             )
             .await;
         }
-        (Some(false), _) => "policy",
+        (Some(false), _, Some(_)) => "agent_chain",
+        (Some(false), _, None) => "policy",
         _ => "requested",
     };
+    if chain.is_some() {
+        quota::log_chain_review(&mut *conn, who.agent, who.context, deleg.id).await?;
+    }
 
     // Steps 5, 6 and 9: the simulation as the agent. Rejections are not stored.
     let ectx = EvalCtx {
@@ -1526,10 +1608,20 @@ async fn agent_write_tx(
         rules_version: pre_rules,
     };
     let hash = store_version(&mut *conn, &parsed, &stored).await?;
+    let details = chain.map(chain_details);
+    if let Some(exceeded) = chain {
+        // The queue shows why (without numbers) and keeps it out of bulk
+        // approval (§3.12.4).
+        sqlx::query("UPDATE changesets SET chain_review = $2 WHERE id = $1")
+            .bind(cs_id)
+            .bind(exceeded)
+            .execute(&mut *conn)
+            .await?;
+    }
     commands::complete_request(
         &mut *conn,
         request_id,
-        &json!({"changeset_id": cs_id, "version": version, "reason": reason}),
+        &json!({"changeset_id": cs_id, "version": version, "reason": reason, "details": details}),
     )
     .await?;
 
@@ -1553,6 +1645,7 @@ async fn agent_write_tx(
         review_url: format!("{spa_origin}{}", review_path(cs_id, version)),
         expires_at,
         next_actions: next_for(&status),
+        details,
     };
     Ok(SubmitResult::ReviewRequired {
         reason: reason.to_string(),
@@ -1632,10 +1725,19 @@ async fn agent_direct(
         .bind(execution_id)
         .execute(&mut *conn)
         .await?;
+    // Design 05 §3.12.4: extend the chains of the existing issues written
+    // (rows already locked by `chain_exceeded`); the largest goes to the
+    // append-only audit row.
+    let mut chain =
+        chain_record(&mut *conn, who.agent, execution_id, &parsed.chain_issues()).await?;
+    if !parsed.creates().is_empty() {
+        chain = Some(chain.map_or((1, 0), |(w, d)| (w.max(1), d)));
+    }
     sqlx::query(
         "INSERT INTO command_executions (id, operation_request_id, actor_id, on_behalf_of_id, origin,
-                                         delegation_id, context_id, policy_version, command_hash, consistent_after)
-         VALUES ($1, $2, $3, $4, 'agent_direct', $5, $6, $7, $8, $9)",
+                                         delegation_id, context_id, policy_version, command_hash, consistent_after,
+                                         agent_chain_writes, agent_chain_depth)
+         VALUES ($1, $2, $3, $4, 'agent_direct', $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(execution_id)
     .bind(request_id)
@@ -1646,6 +1748,8 @@ async fn agent_direct(
     .bind(deleg.policy_version)
     .bind(&parsed.hash[..])
     .bind(&consistent_after)
+    .bind(chain.map(|c| c.0))
+    .bind(chain.map(|c| c.1))
     .execute(&mut *conn)
     .await?;
     for (p, e) in sources {
@@ -1684,6 +1788,8 @@ async fn agent_direct(
         .filter(|e| e.created)
         .map(|e| e.issue_id)
         .collect();
+    // A new issue starts its chain with this write (counted as (1, 0) above).
+    chain_record(&mut *conn, who.agent, execution_id, &created).await?;
     quota::record_direct(
         &mut *conn,
         who.agent,
@@ -1731,6 +1837,97 @@ async fn agent_direct(
         search: commands::SearchReceipt { consistent_after },
         next_actions: Vec::new(),
     })
+}
+
+/// Design 05 §3.12.4: whether a direct write of `agent` to `issues` would
+/// make a chain exceed the limits: `Some("depth")` or `Some("writes")`. The
+/// issue rows are locked FOR UPDATE in id order first (the engine's issue
+/// lock, taken again by the simulation), so concurrent agents on one issue
+/// count in turn (T-M1-97).
+async fn chain_exceeded(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    issues: &[Uuid],
+) -> Result<Option<&'static str>> {
+    if issues.is_empty() {
+        return Ok(None);
+    }
+    // A second line of defence, not the one that keeps the count right
+    // (verification M14). Every issue the chain counts is an existing
+    // target of the document, and every existing target needs a
+    // `lock_version` precondition (`commands::parse`); every effect bumps
+    // `lock_version` (02 K8) and the executor checks it on the row it holds
+    // FOR UPDATE. So of two concurrent direct writes touching one issue at
+    // most one commits, and the chain cannot be counted past its limit
+    // without this lock either. The lock only makes the loser wait here and
+    // see the new count (an `agent_chain` review) instead of a `conflict`,
+    // and keeps the rule true if preconditions ever become optional.
+    sqlx::query("SELECT id FROM issues WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(issues)
+        .execute(&mut *conn)
+        .await?;
+    let rows: Vec<(i32, i32, Uuid)> = sqlx::query_as(
+        "SELECT writes, depth, last_agent_principal_id FROM issue_agent_chains
+         WHERE issue_id = ANY($1) ORDER BY issue_id",
+    )
+    .bind(issues)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut writes = false;
+    for (w, d, last) in rows {
+        if d + i32::from(last != agent) > crate::agents::CHAIN_MAX_DEPTH {
+            return Ok(Some("depth"));
+        }
+        writes |= w + 1 > crate::agents::CHAIN_MAX_WRITES;
+    }
+    Ok(writes.then_some("writes"))
+}
+
+/// The `review_required` details of a chain review (no counts, no agent
+/// names: appendix D V21).
+fn chain_details(exceeded: &str) -> Json {
+    json!({
+        "exceeded": exceeded,
+        "max_depth": crate::agents::CHAIN_MAX_DEPTH,
+        "max_writes": crate::agents::CHAIN_MAX_WRITES,
+    })
+}
+
+/// After a direct write: extends the chains of the written issues (a new
+/// issue starts one). Returns the largest (writes, depth) for the audit
+/// columns.
+async fn chain_record(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    execution: Uuid,
+    issues: &[Uuid],
+) -> Result<Option<(i32, i32)>> {
+    let mut max: Option<(i32, i32)> = None;
+    for issue in issues {
+        let (w, d): (i32, i32) = sqlx::query_as(
+            "INSERT INTO issue_agent_chains AS c (issue_id, started_at, started_by_execution_id, writes, depth,
+                                                  last_agent_principal_id, agents, updated_at)
+             VALUES ($1, clock_timestamp(), $2, 1, 0, $3, ARRAY[$3], clock_timestamp())
+             ON CONFLICT (issue_id) DO UPDATE SET
+                 writes = c.writes + 1,
+                 depth = c.depth + (c.last_agent_principal_id <> EXCLUDED.last_agent_principal_id)::int,
+                 last_agent_principal_id = EXCLUDED.last_agent_principal_id,
+                 agents = CASE WHEN EXCLUDED.last_agent_principal_id = ANY(c.agents) OR cardinality(c.agents) >= 20
+                               THEN c.agents ELSE c.agents || EXCLUDED.last_agent_principal_id END,
+                 updated_at = clock_timestamp()
+             RETURNING writes, depth",
+        )
+        .bind(issue)
+        .bind(execution)
+        .bind(agent)
+        .fetch_one(&mut *conn)
+        .await?;
+        max = Some(match max {
+            None => (w, d),
+            Some((mw, md)) => (mw.max(w), md.max(d)),
+        });
+    }
+    Ok(max)
 }
 
 struct StoreVersion<'a> {
@@ -1929,6 +2126,7 @@ async fn agent_view(
         review_url: format!("{spa_origin}{}", review_path(id, version)),
         expires_at: cs.expires_at,
         next_actions,
+        details: None,
     })
 }
 
@@ -2438,8 +2636,13 @@ pub async fn validate_command(
         deadlines: Vec::new(),
         author: Some((who.agent, Some(who.delegator))),
     };
+    // Design 05 §3.12.4: the chain limit counts in `would_require_review`.
+    let chain = decision == policy::Decision::Direct
+        && chain_exceeded(&mut tx, who.agent, &parsed.chain_issues())
+            .await?
+            .is_some();
     let sim = commands::simulate(&mut tx, &ectx, &parsed).await;
-    let review = decision == policy::Decision::Review;
+    let review = decision == policy::Decision::Review || chain;
     let r = crate::forms::outcome(&mut tx, &parsed, sim, review).await;
     tx.rollback().await?;
     r
@@ -2709,9 +2912,15 @@ pub async fn list(
                             .unwrap_or("blocked")
                             .to_string();
                         let stored = v.as_ref().and_then(|v| v.rules_version.as_deref());
-                        let e =
-                            crate::review_queue::eligibility(&mut tx, caller, &b, &status, stored)
-                                .await?;
+                        let e = crate::review_queue::eligibility_for(
+                            &mut tx,
+                            caller,
+                            &b,
+                            &status,
+                            stored,
+                            cs.chain_review.as_deref(),
+                        )
+                        .await?;
                         rules_changed = e.reasons.iter().any(|r| r == "rules_changed");
                         warnings = e.warnings.clone();
                         review_modes = e.review_modes();
@@ -2746,6 +2955,7 @@ pub async fn list(
             validation,
             review_modes,
             rules_changed,
+            agent_chain: cs.chain_review,
         });
     }
     tx.commit().await?;
@@ -3734,6 +3944,14 @@ async fn accept(
     if !deleg_ok {
         return Err(delegation_gone());
     }
+    // Design 05 §3.12.5 (appendix D V25): a proposal of a paused role is not
+    // approved, like one of a revoked delegation.
+    crate::ai_team::check_not_paused(
+        &mut *conn,
+        cs.proposer_id,
+        cs.delegation_id.unwrap_or_default(),
+    )
+    .await?;
     if readable_targets(&mut *conn, caller, ver.body.as_ref().expect("checked"))
         .await?
         .is_none()
@@ -3752,12 +3970,13 @@ async fn accept(
             .and_then(|j| j["status"].as_str())
             .unwrap_or("blocked")
             .to_string();
-        let e = crate::review_queue::eligibility(
+        let e = crate::review_queue::eligibility_for(
             &mut *conn,
             caller,
             ver.body.as_ref().expect("checked"),
             &status,
             ver.rules_version.as_deref(),
+            cs.chain_review.as_deref(),
         )
         .await?;
         if !e.queue_ok() {
@@ -3920,6 +4139,13 @@ async fn apply_tx(
     let Some((deleg_expires, true)) = deleg else {
         return Err(delegation_gone());
     };
+    // Design 05 §3.12.5 (V25): paused since the approval → no effect.
+    crate::ai_team::check_not_paused(
+        &mut *conn,
+        cs.proposer_id,
+        cs.delegation_id.unwrap_or_default(),
+    )
+    .await?;
     let client: Option<(Uuid, bool)> = sqlx::query_as(
         "SELECT c.id, c.enabled FROM agent_clients c
          JOIN agent_principals ap ON ap.agent_client_id = c.id
@@ -3986,12 +4212,13 @@ async fn apply_tx(
     .fetch_one(&mut *conn)
     .await?;
     if mode == "queue" {
-        let e = crate::review_queue::eligibility(
+        let e = crate::review_queue::eligibility_for(
             &mut *conn,
             caller,
             &body,
             "passed",
             ver.rules_version.as_deref(),
+            cs.chain_review.as_deref(),
         )
         .await?;
         if !e.queue_ok() {

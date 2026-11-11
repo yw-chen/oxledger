@@ -174,6 +174,8 @@ export type ChangesetList = {
 };
 
 export type ChangesetSummary = {
+  /** Design 05 §3.12.4: `depth` (換手過多) or `writes` (寫入次數過多) when the agent chain limit sent it for review; no counts. */
+  agent_chain?: string | null;
   changeset_id: string;
   created_at: string;
   current_version: number;
@@ -320,6 +322,8 @@ export type ContextView = {
   closed_at: string | null;
   created_at: string;
   id: string;
+  /** Design 05 §3.12.2: the runtime whose roles share this context. */
+  runtime_id: string;
   /** R: every project ever granted to this context, with the epoch recorded then. */
   source_projects: Array<SourceProject>;
   state: string;
@@ -373,8 +377,35 @@ export type Coverage = {
   truncated: boolean;
 };
 
+/** `POST /ai-team` (§3.12.3). */
+export type CreateRoleInput = {
+  client_id: string;
+  delegations: Array<RoleDelegation>;
+  duties?: string;
+  read_own_time?: boolean;
+  read_own_time_ack?: boolean;
+  /** Defaults to the template's (§4.4); required for `personal` and `custom`. */
+  role_key?: string | null;
+  runtime: RuntimeChoice;
+  template: string;
+  token_expires_in_days?: number | null;
+  /** Token label (default: the handle). */
+  token_label?: string | null;
+};
+
 export type Created = {
   id: string;
+};
+
+export type CreatedRole = {
+  credential_id: string;
+  delegations: Array<DelegationView>;
+  principal: PrincipalRef;
+  runtime: RuntimeRef;
+  /** Shown once; `null` on a replay of the same Idempotency-Key. */
+  token: string | null;
+  token_expires_at: string;
+  warnings: Array<SharedRuntimeWarning>;
 };
 
 export type Creation = {
@@ -386,8 +417,15 @@ export type Creation = {
 };
 
 export type CredentialBody = {
+  /** Design 05 §3.1 (compatibility alias): the role the token is for; may be left out only when the runtime has one active role. */
+  agent_principal_id?: string | null;
   expires_in_days?: number | null;
   label?: string;
+};
+
+export type CredentialInput = {
+  expires_in_days?: number | null;
+  label?: string | null;
 };
 
 /** A custom field as `resolve(kind: "custom_field")` describes it (design 03 §2.4): what a filter on it needs. */
@@ -439,7 +477,10 @@ export type DefaultViewRead = {
 };
 
 export type DelegationBody = {
-  agent_client_id: string;
+  /** The 02 form: the `personal` role of this client (created, with its runtime, on first use). Give exactly one of the two. */
+  agent_client_id?: string | null;
+  /** Design 05 §3.1: one of the caller's roles (from `GET /ai-team`). */
+  agent_principal_id?: string | null;
   expires_in_days?: number | null;
   max_ops?: number | null;
   /** Modes inside the ceiling (§16.3); unlisted commands and fields are direct, except `log_time` and `update_time_entry` (review, contract 05 §4.3). */
@@ -461,6 +502,9 @@ export type DelegationView = {
   expires_at: string;
   id: string;
   max_ops: number;
+  /** Design 05 §3.12.6: project-level pause of this role (writes refused with `agent_paused`, reads go on). */
+  paused_at: string | null;
+  paused_reason: string | null;
   project_id: string;
   proposal_ops: Array<string>;
   /** Contract 05 §2.5, §3.5.4: the agent may read the delegator's own time. */
@@ -470,6 +514,10 @@ export type DelegationView = {
   /** The §6.14 warning text (the same on every delegation). */
   read_own_time_warning: ReadOwnTimeWarning;
   revoked_at: string | null;
+  /** The role (`personal` for delegations made through the 02 path). */
+  role_key: string;
+  /** Design 05 §3.12: the runtime the delegation's context belongs to. */
+  runtime_id: string;
   writable_fields: Array<string>;
 };
 
@@ -563,7 +611,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -1039,6 +1087,8 @@ export type IssueTriage = {
 };
 
 export type IssuedCredential = {
+  /** The role the token acts as (design 05 §3.12.5). */
+  agent_principal_id: string;
   context_id: string;
   expires_at: string;
   id: string;
@@ -1225,6 +1275,12 @@ export type NewOption = {
   label: string;
   /** Default: after the last option. */
   position?: number | null;
+};
+
+export type NewRuntime = {
+  /** "does not share files, memory or credentials with my other runtimes". */
+  isolation_ack: boolean;
+  label: string;
 };
 
 /** `POST /projects/{id}/versions`. */
@@ -1488,6 +1544,23 @@ export type PasswordBody = {
   password: string;
 };
 
+export type PauseInfo = {
+  paused_at: string;
+  /** `sponsor` or `site_admin`: the sponsor and site administrators only. */
+  paused_by?: string | null;
+  reason?: string | null;
+  /** Always `principal` (project pauses are on the policy rows). */
+  scope: string;
+};
+
+export type PauseInput = {
+  project_id?: string | null;
+  /** 1–500 characters; required for `project`. */
+  reason?: string | null;
+  /** `principal` (the whole role) or `project` (its delegation there). */
+  scope: string;
+};
+
 export type PendingChangesets = {
   ids: Array<string>;
   would_fail: number;
@@ -1600,8 +1673,13 @@ export type PreviewInput2 = {
   swimlane?: string | null;
 };
 
-/** An issue's author or a decider; `on_behalf_of` for agents. */
 export type PrincipalRef = {
+  handle: string;
+  id: string;
+};
+
+/** An issue's author or a decider; `on_behalf_of` for agents. */
+export type PrincipalRef2 = {
   id: string;
   /** `user` or `agent`. */
   kind: string;
@@ -1633,6 +1711,20 @@ export type ProjectHealthSettings = {
   health_at_risk_days: number | null;
   health_at_risk_open_pct: number | null;
   inherit_org: boolean;
+};
+
+export type ProjectPolicy = {
+  commands: Record<string, PolicyMode>;
+  delegation_id: string;
+  expires_at: string;
+  fields: Record<string, PolicyMode>;
+  paused_at: string | null;
+  /** Who paused it here: `sponsor`, `site_admin` or `project` (a manager of the project). Only on this policy row, i.e. for the viewers who may see the project's policy. */
+  paused_by: string | null;
+  paused_reason: string | null;
+  project: string;
+  project_id: string;
+  read_own_time: boolean;
 };
 
 export type ProjectRef = {
@@ -1724,6 +1816,11 @@ export type Redacted = {
   security_epoch: number;
 };
 
+export type RenameRuntimeInput = {
+  label: string;
+  lock_version: number;
+};
+
 export type RepoLink = {
   full_name: string;
   is_private: boolean;
@@ -1772,6 +1869,11 @@ export type ResolveResult = {
   valid_values?: Array<string>;
 };
 
+export type ResumeInput = {
+  project_id?: string | null;
+  scope: string;
+};
+
 /** `POST /changesets/{id}/revise-and-apply`. */
 export type ReviseAndApplyInput = {
   expected_current_version: number;
@@ -1807,6 +1909,19 @@ export type Revoked = {
   link_id: string | null;
   pr_ids: Array<string>;
   security_epoch: number;
+};
+
+export type RoleDelegation = {
+  expires_in_days?: number | null;
+  max_ops?: number | null;
+  /** Changes to the template's modes (the confirmation table); keys must be inside the ceiling. */
+  policies?: PolicyInput | null;
+  project_id: string;
+};
+
+export type RoleRef = {
+  key: string;
+  template: string;
 };
 
 export type RollbackInput = {
@@ -1861,6 +1976,69 @@ export type RunOverride = {
   q?: string | null;
   /** A Filter AST v2 ANDed with the view's conditions. */
   where_and?: unknown;
+};
+
+/** `{"id": …}` for an existing runtime or `{"new": {…}}`. */
+export type RuntimeChoice = {
+  id?: string | null;
+  new?: NewRuntime | null;
+};
+
+export type RuntimeInfo = {
+  id: string;
+  kind: string;
+  label: string;
+  lock_version: number;
+  /** The other active roles sharing the work context and its R. */
+  shared_with: Array<string>;
+  /** Keys of R (the shared source projects). */
+  sources: Array<string>;
+  /** Roles whose active delegation reads your own time (appendix D V10). */
+  time_readers: Array<string>;
+};
+
+export type RuntimeNewContextInput = {
+  /** The built-in runtime only (M1.10, §3.13.7). */
+  carry_over_delegations?: boolean;
+  /** External runtimes: the "starts without what it read before" declaration. */
+  fresh_context_ack?: boolean;
+};
+
+export type RuntimeRef = {
+  id: string;
+  label: string;
+};
+
+export type RuntimeRole = {
+  handle: string;
+  id: string;
+  retired: boolean;
+  role_key: string;
+};
+
+export type RuntimeView = {
+  /** Created by the 0029 upgrade from a 02 agent. */
+  backfilled: boolean;
+  /** The active work context, if any. */
+  context_id: string | null;
+  created_at: string;
+  id: string;
+  /** `external` or `builtin`. */
+  kind: string;
+  label: string;
+  lock_version: number;
+  retired_at: string | null;
+  roles: Array<RuntimeRole>;
+  /** Keys of R in the active context. */
+  sources: Array<string>;
+  time_readers: Array<string>;
+};
+
+export type SafetySummary = {
+  /** Commands not `off` in this project (no fields, no duties). */
+  allowed_commands: Array<string>;
+  project: string;
+  project_id: string;
 };
 
 export type ScheduleSettings = {
@@ -2027,6 +2205,14 @@ export type SettingEvents = {
   next_cursor: string | null;
 };
 
+export type SharedRuntimeWarning = {
+  /** `shared_runtime`. */
+  kind: string;
+  roles: Array<string>;
+  sources: Array<string>;
+  time_readers: Array<string>;
+};
+
 /** A left-nav shortcut as stored. */
 export type Shortcut = {
   /** `view`: a view id or `builtin:…`. */
@@ -2066,6 +2252,11 @@ export type SortInput = {
 export type SourceProject = {
   project_id: string;
   security_epoch: number;
+};
+
+export type SponsorRef = {
+  id: string;
+  name: string;
 };
 
 export type StateView = {
@@ -2186,12 +2377,92 @@ export type TargetView = {
   key: string;
 };
 
+/** `GET /ai-team/{id}`: the fields depend on the viewer (§3.12.5). */
+export type TeamDetail = {
+  /** What this viewer may do: `pause`, `resume`, `retire`, `credentials`. */
+  actions: Array<string>;
+  /** The sponsor's free text: only for the sponsor and site administrators (V9). */
+  duties?: string | null;
+  handle: string;
+  id: string;
+  pause?: PauseInfo | null;
+  /** Sponsor and site admins: every delegation; a project manager: the projects they manage and read; others: empty. */
+  policies: Array<ProjectPolicy>;
+  role: RoleRef;
+  /** Sponsor and site admins only. */
+  runtime?: RuntimeInfo | null;
+  /** The projects the viewer can read, with the commands allowed there. */
+  safety_summary: Array<SafetySummary>;
+  sponsor: SponsorRef;
+  stats: TeamStats;
+  /** Always `only_visible`: the numbers count what the viewer can read. */
+  stats_scope: string;
+  /** `active`, `paused`, `quarantined` or `retired`. */
+  status: string;
+  template_update?: TemplateUpdate | null;
+};
+
+export type TeamList = {
+  items: Array<TeamMember>;
+  /** Always null in M1 (a sponsor has at most 20 active roles). */
+  next_cursor: string | null;
+};
+
+/** One row of `GET /ai-team` (§3.12.5). */
+export type TeamMember = {
+  /** The sponsor's free text: only for the sponsor and site administrators (V9). */
+  duties?: string | null;
+  handle: string;
+  id: string;
+  role: RoleRef;
+  sponsor: SponsorRef;
+  stats: TeamStats;
+  /** Always `only_visible`: the numbers count what the viewer can read. */
+  stats_scope: string;
+  /** `active`, `paused`, `quarantined` or `retired`. */
+  status: string;
+};
+
+export type TeamStats = {
+  /** Audience blocks in 7 days: the sponsor and site administrators only. */
+  blocked_7d?: number | null;
+  chain_reviews_7d: number;
+  pending_reviews: number;
+  undo_rate_7d: UndoRate;
+  writes_today: number;
+};
+
 /** `GET /home/templates?roles=`. */
 export type Template = {
   default_views: Record<string, string>;
   nav_shortcuts: Array<Shortcut>;
   roles: Array<string>;
   widgets: Array<Widget>;
+};
+
+export type TemplatePolicies = {
+  commands: Record<string, PolicyMode>;
+  fields: Record<string, PolicyMode>;
+};
+
+/** One template, as a full allow-list over the delegation's ceiling. */
+export type TemplateSpec = {
+  /** Every op and field of the ceiling with its mode; unlisted ones are `off`. */
+  policies: TemplatePolicies;
+  /** The ceiling: every proposal op. */
+  proposal_ops: Array<string>;
+  /** Whether the template turns `read_own_time` on (it still needs the ack). */
+  read_own_time: boolean;
+  template: string;
+  template_version: number;
+  /** The ceiling: every built-in field, plus list custom fields for `triage`. */
+  writable_fields: Array<string>;
+};
+
+export type TemplateUpdate = {
+  current_version: number;
+  latest_version: number;
+  outdated: boolean;
 };
 
 /** The thresholds in use (org default or the project override); a null value turns `deadline_near_incomplete` off. */
@@ -2432,10 +2703,10 @@ export type TriageCounts = {
 export type TriageDecision = "accept" | "decline" | "duplicate" | "snooze" | "unsnooze";
 
 export type TriageItem = {
-  author: PrincipalRef;
+  author: PrincipalRef2;
   created_at: string;
   decided_at?: string | null;
-  decided_by?: PrincipalRef | null;
+  decided_by?: PrincipalRef2 | null;
   /** `view=decided`: `accepted`, `declined` or `duplicate`. */
   decision?: string | null;
   entered_at: string;
@@ -2576,6 +2847,11 @@ export type UndoPreview = {
   triage: Array<UndoTriage>;
   version_created?: UndoVersionCreate | null;
   version_fields: Array<UndoVersionField>;
+};
+
+export type UndoRate = {
+  total: number;
+  undone: number;
 };
 
 export type UndoRecords = {
@@ -3076,6 +3352,15 @@ export interface Endpoints {
   "POST /agent-credentials/{id}/revoke": { body: Empty; data: Done };
   "GET /agents/{id}/activity": { body: never; data: Activity2 };
   "POST /agents/{id}/incident-recovery/preview": { body: IncidentInput; data: IncidentPreview };
+  "GET /ai-team": { body: never; data: TeamList };
+  "POST /ai-team": { body: CreateRoleInput; data: CreatedRole };
+  "GET /ai-team/templates": { body: never; data: Array<TemplateSpec> };
+  "GET /ai-team/{id}": { body: never; data: TeamDetail };
+  "GET /ai-team/{id}/activity": { body: never; data: Activity2 };
+  "POST /ai-team/{id}/credentials": { body: CredentialInput; data: IssuedCredential };
+  "POST /ai-team/{id}/pause": { body: PauseInput; data: Done };
+  "POST /ai-team/{id}/resume": { body: ResumeInput; data: Done };
+  "POST /ai-team/{id}/retire": { body: Empty; data: Done };
   "POST /auth/login": { body: LoginBody; data: LoginData };
   "GET /auth/login-context": { body: never; data: LoginContextData };
   "POST /auth/logout": { body: never; data: Done };
@@ -3122,6 +3407,10 @@ export interface Endpoints {
   "POST /issues/{key}/notes/{note_id}/redact": { body: RedactInput; data: Redacted };
   "DELETE /issues/{key}/watch": { body: never; data: WatchState };
   "PUT /issues/{key}/watch": { body: Empty; data: WatchState };
+  "GET /me/agent-runtimes": { body: never; data: Array<RuntimeView> };
+  "PATCH /me/agent-runtimes/{id}": { body: RenameRuntimeInput; data: RuntimeView };
+  "POST /me/agent-runtimes/{id}/new-context": { body: RuntimeNewContextInput; data: ContextView };
+  "POST /me/agent-runtimes/{id}/retire": { body: Empty; data: Done };
   "GET /me/home": { body: never; data: HomeView };
   "PUT /me/home": { body: HomePut; data: HomeView };
   "POST /me/home/apply-template": { body: ApplyTemplate; data: Applied };

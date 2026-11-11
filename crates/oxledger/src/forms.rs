@@ -1762,11 +1762,12 @@ async fn agent_policies(
         return Ok(None);
     }
     let d: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM delegations WHERE context_id = $1 AND project_id = $2
+        "SELECT id FROM delegations WHERE context_id = $1 AND project_id = $2 AND agent_principal_id = $3
            AND revoked_at IS NULL AND expires_at > now()",
     )
     .bind(context)
     .bind(project)
+    .bind(caller.principal_id())
     .fetch_optional(&mut *conn)
     .await?;
     Ok(match d {

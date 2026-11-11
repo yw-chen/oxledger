@@ -322,6 +322,21 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/agent-contexts/{id}/resume", post(resume_context))
         .route("/agent-contexts/{id}/credentials", post(issue_credential))
         .route("/agent-credentials/{id}/revoke", post(revoke_credential))
+        .route("/ai-team", get(ai_team_list).post(ai_team_create))
+        .route("/ai-team/templates", get(ai_team_templates))
+        .route("/ai-team/{id}", get(ai_team_get))
+        .route("/ai-team/{id}/activity", get(ai_team_activity))
+        .route("/ai-team/{id}/pause", post(ai_team_pause))
+        .route("/ai-team/{id}/resume", post(ai_team_resume))
+        .route("/ai-team/{id}/retire", post(ai_team_retire))
+        .route("/ai-team/{id}/credentials", post(ai_team_credentials))
+        .route("/me/agent-runtimes", get(my_runtimes))
+        .route("/me/agent-runtimes/{id}", patch(rename_runtime))
+        .route(
+            "/me/agent-runtimes/{id}/new-context",
+            post(runtime_new_context),
+        )
+        .route("/me/agent-runtimes/{id}/retire", post(retire_runtime))
         .fallback(|| async { ApiFailure(api(ErrorCode::NotFound, "no such endpoint")) })
         .method_not_allowed_fallback(|| async {
             ApiFailure(
@@ -1049,7 +1064,13 @@ async fn agent_clients(
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationBody {
-    pub agent_client_id: Uuid,
+    /// Design 05 §3.1: one of the caller's roles (from `GET /ai-team`).
+    #[serde(default)]
+    pub agent_principal_id: Option<Uuid>,
+    /// The 02 form: the `personal` role of this client (created, with its
+    /// runtime, on first use). Give exactly one of the two.
+    #[serde(default)]
+    pub agent_client_id: Option<Uuid>,
     pub project_id: Uuid,
     pub proposal_ops: Vec<String>,
     pub writable_fields: Vec<String>,
@@ -2478,23 +2499,42 @@ async fn create_delegation(
     ApiJson(b): ApiJson<DelegationBody>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    let d = agents::create_delegation(
-        &st.app.pool,
-        &st.cfg.session,
-        &ctx,
-        DelegationInput {
-            agent_client_id: b.agent_client_id,
-            project_id: b.project_id,
-            proposal_ops: b.proposal_ops,
-            writable_fields: b.writable_fields,
-            max_ops: b.max_ops,
-            expires_in_days: b.expires_in_days,
-            policies: b.policies,
-            read_own_time: b.read_own_time.unwrap_or(false),
-            read_own_time_ack: b.read_own_time_ack.unwrap_or(false),
-        },
-    )
-    .await?;
+    let input = |client: Uuid| DelegationInput {
+        agent_client_id: client,
+        project_id: b.project_id,
+        proposal_ops: b.proposal_ops.clone(),
+        writable_fields: b.writable_fields.clone(),
+        max_ops: b.max_ops,
+        expires_in_days: b.expires_in_days,
+        policies: b.policies.clone(),
+        read_own_time: b.read_own_time.unwrap_or(false),
+        read_own_time_ack: b.read_own_time_ack.unwrap_or(false),
+    };
+    let d = match (b.agent_principal_id, b.agent_client_id) {
+        (Some(p), None) => {
+            agents::create_delegation_for(
+                &st.app.pool,
+                &st.cfg.session,
+                &ctx,
+                p,
+                input(Uuid::nil()),
+            )
+            .await?
+        }
+        (None, Some(c)) => {
+            agents::create_delegation(&st.app.pool, &st.cfg.session, &ctx, input(c)).await?
+        }
+        _ => {
+            return Err(ApiFailure(
+                ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "give either agent_principal_id or agent_client_id",
+                )
+                .with_details(json!({"path": "agent_principal_id"}))
+                .into(),
+            ));
+        }
+    };
     Ok(ok(d))
 }
 
@@ -2623,6 +2663,10 @@ pub struct CredentialBody {
     #[serde(default)]
     pub label: String,
     pub expires_in_days: Option<i64>,
+    /// Design 05 §3.1 (compatibility alias): the role the token is for;
+    /// may be left out only when the runtime has one active role.
+    #[serde(default)]
+    pub agent_principal_id: Option<Uuid>,
 }
 
 async fn issue_credential(
@@ -2632,16 +2676,184 @@ async fn issue_credential(
     ApiJson(b): ApiJson<CredentialBody>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    let c = agents::issue_credential(
+    let c = agents::issue_credential_for(
         &st.app.pool,
         &st.cfg.session,
         &ctx,
         id_param(&id)?,
+        b.agent_principal_id,
         &b.label,
         b.expires_in_days,
     )
     .await?;
     Ok(ok(c))
+}
+
+// ---------------------------------------------------------------- AI team (design 05 §3.12)
+
+async fn ai_team_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    // An unparsable project id lists nothing, like a missing one.
+    let project = q
+        .get("project")
+        .map(|p| p.parse::<Uuid>().unwrap_or(Uuid::nil()));
+    Ok(ok(crate::ai_team::list(
+        &st.app,
+        ctx,
+        project,
+        q.get("handle").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn ai_team_templates(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::templates(&st.app.pool, &ctx).await?))
+}
+
+async fn ai_team_create(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(b): ApiJson<crate::ai_team::CreateRoleInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(created(
+        crate::ai_team::create(&st.app, &st.cfg.session, ctx, key, &b).await?,
+    ))
+}
+
+async fn ai_team_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::ai_team::detail(&st.app, ctx, id_param(&id)?).await?
+    ))
+}
+
+async fn ai_team_activity(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::activity(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        time_param(&q, "from")?,
+        time_param(&q, "to")?,
+    )
+    .await?))
+}
+
+async fn ai_team_pause(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::PauseInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::pause(&st.app, ctx, id_param(&id)?, &b).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_team_resume(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::ResumeInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::resume(&st.app, &st.cfg.session, ctx, id_param(&id)?, &b).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_team_retire(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::retire(&st.app, &st.cfg.session, ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
+}
+
+async fn ai_team_credentials(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::CredentialInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(created(
+        crate::ai_team::issue_credential(&st.app, &st.cfg.session, ctx, id_param(&id)?, &b).await?,
+    ))
+}
+
+async fn my_runtimes(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::runtimes(&st.app, ctx).await?))
+}
+
+async fn rename_runtime(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::RenameRuntimeInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::rename_runtime(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+        &b,
+    )
+    .await?))
+}
+
+async fn runtime_new_context(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<crate::ai_team::RuntimeNewContextInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::runtime_new_context(
+        &st.app,
+        &st.cfg.session,
+        ctx,
+        id_param(&id)?,
+        &b,
+    )
+    .await?))
+}
+
+async fn retire_runtime(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::ai_team::retire_runtime(&st.app, &st.cfg.session, ctx, id_param(&id)?).await?;
+    Ok(ok(Done::default()))
 }
 
 async fn revoke_credential(

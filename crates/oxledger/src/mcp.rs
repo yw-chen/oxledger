@@ -409,7 +409,7 @@ impl OxServer {
 
     #[tool(
         name = "describe",
-        description = "Before writing, ask what is possible. scope=project_tracker with `project` (key or id) and `tracker` (name or id): the fields of that issue type, their types and options, which ops you could use, creation rules, limits and what this version does not support. scope=issue_actions with `issue_key`: which fields you can change now, the statuses you can move it to (with the fields required or read-only afterwards), notes and duplicate. scope=filter_fields (optional `project`): what search's `where` and `sort` take (fields, ops, options, today). Only what you may read or propose is listed; nothing here authorizes a write.",
+        description = "Before writing, ask what is possible. scope=project_tracker with `project` (key or id) and `tracker` (name or id): the fields of that issue type, their types and options, which ops you could use, creation rules, limits and what this version does not support. scope=issue_actions with `issue_key`: which fields you can change now, the statuses you can move it to (with the fields required or read-only afterwards), notes and duplicate. scope=filter_fields (optional `project`): what search's `where` and `sort` take (fields, ops, options, today). scope=agent_context: your work context, your role and duties, the other roles sharing your runtime, whether you may read your delegator's time, and the agent chain limits. Only what you may read or propose is listed; nothing here authorizes a write.",
         annotations(read_only_hint = true)
     )]
     async fn describe(
@@ -559,7 +559,7 @@ impl OxServer {
 
     #[tool(
         name = "command_submit",
-        description = "Write a command document as your delegation allows: when every command and field in it is `direct` (and require_review is false) it is applied now (outcome applied, with effects and search.consistent_after); when anything needs review a proposal is created instead (outcome review_required with review_url: a person approves it in the web app; you cannot). `off` commands are refused (forbidden_op, reason policy). Also takes one create_version or update_version op as its own document. Resend the same operation_id to retry; never invent ids. log_time records time for the person who delegated you only (user_id defaults to them). Time entries cannot be deleted by agents.",
+        description = "Write a command document as your delegation allows: when every command and field in it is `direct` (and require_review is false) it is applied now (outcome applied, with effects and search.consistent_after); when anything needs review a proposal is created instead (outcome review_required with review_url: a person approves it in the web app; you cannot). `off` commands are refused (forbidden_op, reason policy). Also takes one create_version or update_version op as its own document. Resend the same operation_id to retry; never invent ids. log_time records time for the person who delegated you only (user_id defaults to them). Time entries cannot be deleted by agents. If several agents keep writing the same issue without a person in between, further writes are sent for review (reason \"agent_chain\"); do not retry to get around it.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

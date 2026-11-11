@@ -600,6 +600,13 @@
       },
       "ChangesetSummary": {
         "properties": {
+          "agent_chain": {
+            "description": "Design 05 §3.12.4: `depth` (換手過多) or `writes` (寫入次數過多) when\nthe agent chain limit sent it for review; no counts.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "changeset_id": {
             "format": "uuid",
             "type": "string"
@@ -1162,6 +1169,11 @@
             "format": "uuid",
             "type": "string"
           },
+          "runtime_id": {
+            "description": "Design 05 §3.12.2: the runtime whose roles share this context.",
+            "format": "uuid",
+            "type": "string"
+          },
           "source_projects": {
             "description": "R: every project ever granted to this context, with the epoch recorded then.",
             "items": {
@@ -1177,6 +1189,7 @@
           "id",
           "agent_principal_id",
           "agent_client_id",
+          "runtime_id",
           "state",
           "created_at",
           "closed_at",
@@ -1338,6 +1351,71 @@
         ],
         "type": "object"
       },
+      "CreateRoleInput": {
+        "additionalProperties": false,
+        "description": "`POST /ai-team` (§3.12.3).",
+        "properties": {
+          "client_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "delegations": {
+            "items": {
+              "$ref": "#/components/schemas/RoleDelegation"
+            },
+            "type": "array"
+          },
+          "duties": {
+            "default": "",
+            "type": "string"
+          },
+          "read_own_time": {
+            "default": false,
+            "type": "boolean"
+          },
+          "read_own_time_ack": {
+            "default": false,
+            "type": "boolean"
+          },
+          "role_key": {
+            "default": null,
+            "description": "Defaults to the template's (§4.4); required for `personal` and `custom`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeChoice"
+          },
+          "template": {
+            "type": "string"
+          },
+          "token_expires_in_days": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "token_label": {
+            "default": null,
+            "description": "Token label (default: the handle).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "runtime",
+          "client_id",
+          "template",
+          "delegations"
+        ],
+        "type": "object"
+      },
       "Created": {
         "properties": {
           "id": {
@@ -1347,6 +1425,53 @@
         },
         "required": [
           "id"
+        ],
+        "type": "object"
+      },
+      "CreatedRole": {
+        "properties": {
+          "credential_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "delegations": {
+            "items": {
+              "$ref": "#/components/schemas/DelegationView"
+            },
+            "type": "array"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/PrincipalRef"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeRef"
+          },
+          "token": {
+            "description": "Shown once; `null` on a replay of the same Idempotency-Key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/SharedRuntimeWarning"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "principal",
+          "runtime",
+          "token",
+          "credential_id",
+          "token_expires_at",
+          "delegations",
+          "warnings"
         ],
         "type": "object"
       },
@@ -1381,6 +1506,15 @@
       "CredentialBody": {
         "additionalProperties": false,
         "properties": {
+          "agent_principal_id": {
+            "default": null,
+            "description": "Design 05 §3.1 (compatibility alias): the role the token is for;\nmay be left out only when the runtime has one active role.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "expires_in_days": {
             "format": "int64",
             "type": [
@@ -1391,6 +1525,27 @@
           "label": {
             "default": "",
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CredentialInput": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_days": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "label": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -1549,8 +1704,22 @@
         "additionalProperties": false,
         "properties": {
           "agent_client_id": {
+            "default": null,
+            "description": "The 02 form: the `personal` role of this client (created, with its\nruntime, on first use). Give exactly one of the two.",
             "format": "uuid",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_principal_id": {
+            "default": null,
+            "description": "Design 05 §3.1: one of the caller's roles (from `GET /ai-team`).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expires_in_days": {
             "format": "int64",
@@ -1611,7 +1780,6 @@
           }
         },
         "required": [
-          "agent_client_id",
           "project_id",
           "proposal_ops",
           "writable_fields"
@@ -1648,6 +1816,20 @@
             "format": "int32",
             "type": "integer"
           },
+          "paused_at": {
+            "description": "Design 05 §3.12.6: project-level pause of this role (writes refused\nwith `agent_paused`, reads go on).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "project_id": {
             "format": "uuid",
             "type": "string"
@@ -1681,6 +1863,15 @@
               "null"
             ]
           },
+          "role_key": {
+            "description": "The role (`personal` for delegations made through the 02 path).",
+            "type": "string"
+          },
+          "runtime_id": {
+            "description": "Design 05 §3.12: the runtime the delegation's context belongs to.",
+            "format": "uuid",
+            "type": "string"
+          },
           "writable_fields": {
             "items": {
               "type": "string"
@@ -1693,6 +1884,8 @@
           "agent_principal_id",
           "agent_client_id",
           "context_id",
+          "runtime_id",
+          "role_key",
           "project_id",
           "proposal_ops",
           "writable_fields",
@@ -1702,6 +1895,8 @@
           "revoked_at",
           "read_own_time",
           "read_own_time_ack_at",
+          "paused_at",
+          "paused_reason",
           "read_own_time_warning"
         ],
         "type": "object"
@@ -2297,6 +2492,16 @@
           {
             "const": "concept_label_taken",
             "description": "Design 05 §3.9: the label already belongs (active) to another\nconcept; `details.concept_id`, `details.pref_label`, `details.label`.",
+            "type": "string"
+          },
+          {
+            "const": "runtime_context_closed",
+            "description": "Design 05 §5: a role or delegation for a runtime whose work context\nis closed; start a new work context first.",
+            "type": "string"
+          },
+          {
+            "const": "runtime_client_taken",
+            "description": "Design 05 §5 (Q2): the agent software already runs in another active\nruntime of this sponsor; `details.runtime_id`, `details.label`.",
             "type": "string"
           }
         ]
@@ -4144,6 +4349,11 @@
       },
       "IssuedCredential": {
         "properties": {
+          "agent_principal_id": {
+            "description": "The role the token acts as (design 05 §3.12.5).",
+            "format": "uuid",
+            "type": "string"
+          },
           "context_id": {
             "format": "uuid",
             "type": "string"
@@ -4164,6 +4374,7 @@
         "required": [
           "id",
           "context_id",
+          "agent_principal_id",
           "token",
           "expires_at"
         ],
@@ -4803,6 +5014,23 @@
         },
         "required": [
           "label"
+        ],
+        "type": "object"
+      },
+      "NewRuntime": {
+        "additionalProperties": false,
+        "properties": {
+          "isolation_ack": {
+            "description": "\"does not share files, memory or credentials with my other runtimes\".",
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "isolation_ack"
         ],
         "type": "object"
       },
@@ -5837,6 +6065,65 @@
         ],
         "type": "object"
       },
+      "PauseInfo": {
+        "properties": {
+          "paused_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "paused_by": {
+            "description": "`sponsor` or `site_admin`: the sponsor and site administrators only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "description": "Always `principal` (project pauses are on the policy rows).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "paused_at"
+        ],
+        "type": "object"
+      },
+      "PauseInput": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "default": null,
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "default": null,
+            "description": "1–500 characters; required for `project`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "description": "`principal` (the whole role) or `project` (its delegation there).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
       "PendingChangesets": {
         "properties": {
           "ids": {
@@ -6294,6 +6581,22 @@
         "type": "object"
       },
       "PrincipalRef": {
+        "properties": {
+          "handle": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "handle"
+        ],
+        "type": "object"
+      },
+      "PrincipalRef2": {
         "description": "An issue's author or a decider; `on_behalf_of` for agents.",
         "properties": {
           "id": {
@@ -6418,6 +6721,73 @@
           "inherit_org",
           "health_at_risk_days",
           "health_at_risk_open_pct"
+        ],
+        "type": "object"
+      },
+      "ProjectPolicy": {
+        "properties": {
+          "commands": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "type": "object"
+          },
+          "delegation_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "type": "object"
+          },
+          "paused_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paused_by": {
+            "description": "Who paused it here: `sponsor`, `site_admin` or `project` (a manager\nof the project). Only on this policy row, i.e. for the viewers who\nmay see the project's policy.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paused_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "read_own_time": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "delegation_id",
+          "project_id",
+          "project",
+          "expires_at",
+          "read_own_time",
+          "paused_at",
+          "paused_reason",
+          "paused_by",
+          "commands",
+          "fields"
         ],
         "type": "object"
       },
@@ -6704,6 +7074,23 @@
         ],
         "type": "object"
       },
+      "RenameRuntimeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "lock_version"
+        ],
+        "type": "object"
+      },
       "RepoLink": {
         "properties": {
           "full_name": {
@@ -6873,6 +7260,26 @@
         ],
         "type": "object"
       },
+      "ResumeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "default": null,
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
       "ReviseAndApplyInput": {
         "additionalProperties": false,
         "description": "`POST /changesets/{id}/revise-and-apply`.",
@@ -6994,6 +7401,62 @@
           "security_epoch",
           "link_id",
           "pr_ids"
+        ],
+        "type": "object"
+      },
+      "RoleDelegation": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_days": {
+            "default": null,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_ops": {
+            "default": null,
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "policies": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Changes to the template's modes (the confirmation table); keys must\nbe inside the ceiling."
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "type": "object"
+      },
+      "RoleRef": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "template"
         ],
         "type": "object"
       },
@@ -7167,6 +7630,236 @@
             "description": "A Filter AST v2 ANDed with the view's conditions."
           }
         },
+        "type": "object"
+      },
+      "RuntimeChoice": {
+        "additionalProperties": false,
+        "description": "`{\"id\": …}` for an existing runtime or `{\"new\": {…}}`.",
+        "properties": {
+          "id": {
+            "default": null,
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "new": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewRuntime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "RuntimeInfo": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "shared_with": {
+            "description": "The other active roles sharing the work context and its R.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "description": "Keys of R (the shared source projects).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "time_readers": {
+            "description": "Roles whose active delegation reads your own time (appendix D V10).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "lock_version",
+          "shared_with",
+          "sources",
+          "time_readers"
+        ],
+        "type": "object"
+      },
+      "RuntimeNewContextInput": {
+        "additionalProperties": false,
+        "properties": {
+          "carry_over_delegations": {
+            "default": false,
+            "description": "The built-in runtime only (M1.10, §3.13.7).",
+            "type": "boolean"
+          },
+          "fresh_context_ack": {
+            "default": false,
+            "description": "External runtimes: the \"starts without what it read before\" declaration.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "RuntimeRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "RuntimeRole": {
+        "properties": {
+          "handle": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "retired": {
+            "type": "boolean"
+          },
+          "role_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "handle",
+          "role_key",
+          "retired"
+        ],
+        "type": "object"
+      },
+      "RuntimeView": {
+        "properties": {
+          "backfilled": {
+            "description": "Created by the 0029 upgrade from a 02 agent.",
+            "type": "boolean"
+          },
+          "context_id": {
+            "description": "The active work context, if any.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`external` or `builtin`.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/RuntimeRole"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "description": "Keys of R in the active context.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "time_readers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "lock_version",
+          "backfilled",
+          "created_at",
+          "retired_at",
+          "context_id",
+          "sources",
+          "time_readers",
+          "roles"
+        ],
+        "type": "object"
+      },
+      "SafetySummary": {
+        "properties": {
+          "allowed_commands": {
+            "description": "Commands not `off` in this project (no fields, no duties).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "project": {
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "project",
+          "allowed_commands"
+        ],
         "type": "object"
       },
       "ScheduleSettings": {
@@ -7773,6 +8466,39 @@
         ],
         "type": "object"
       },
+      "SharedRuntimeWarning": {
+        "properties": {
+          "kind": {
+            "description": "`shared_runtime`.",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "time_readers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "roles",
+          "sources",
+          "time_readers"
+        ],
+        "type": "object"
+      },
       "Shortcut": {
         "description": "A left-nav shortcut as stored.",
         "properties": {
@@ -7897,6 +8623,22 @@
         "required": [
           "project_id",
           "security_epoch"
+        ],
+        "type": "object"
+      },
+      "SponsorRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ],
         "type": "object"
       },
@@ -8336,6 +9078,209 @@
         ],
         "type": "object"
       },
+      "TeamDetail": {
+        "description": "`GET /ai-team/{id}`: the fields depend on the viewer (§3.12.5).",
+        "properties": {
+          "actions": {
+            "description": "What this viewer may do: `pause`, `resume`, `retire`, `credentials`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "duties": {
+            "description": "The sponsor's free text: only for the sponsor and site administrators (V9).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handle": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "pause": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PauseInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policies": {
+            "description": "Sponsor and site admins: every delegation; a project manager: the\nprojects they manage and read; others: empty.",
+            "items": {
+              "$ref": "#/components/schemas/ProjectPolicy"
+            },
+            "type": "array"
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleRef"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sponsor and site admins only."
+          },
+          "safety_summary": {
+            "description": "The projects the viewer can read, with the commands allowed there.",
+            "items": {
+              "$ref": "#/components/schemas/SafetySummary"
+            },
+            "type": "array"
+          },
+          "sponsor": {
+            "$ref": "#/components/schemas/SponsorRef"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/TeamStats"
+          },
+          "stats_scope": {
+            "description": "Always `only_visible`: the numbers count what the viewer can read.",
+            "type": "string"
+          },
+          "status": {
+            "description": "`active`, `paused`, `quarantined` or `retired`.",
+            "type": "string"
+          },
+          "template_update": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "handle",
+          "role",
+          "sponsor",
+          "status",
+          "stats",
+          "stats_scope",
+          "policies",
+          "safety_summary",
+          "actions"
+        ],
+        "type": "object"
+      },
+      "TeamList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TeamMember"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Always null in M1 (a sponsor has at most 20 active roles).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "TeamMember": {
+        "description": "One row of `GET /ai-team` (§3.12.5).",
+        "properties": {
+          "duties": {
+            "description": "The sponsor's free text: only for the sponsor and site administrators (V9).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handle": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleRef"
+          },
+          "sponsor": {
+            "$ref": "#/components/schemas/SponsorRef"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/TeamStats"
+          },
+          "stats_scope": {
+            "description": "Always `only_visible`: the numbers count what the viewer can read.",
+            "type": "string"
+          },
+          "status": {
+            "description": "`active`, `paused`, `quarantined` or `retired`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "handle",
+          "role",
+          "sponsor",
+          "status",
+          "stats",
+          "stats_scope"
+        ],
+        "type": "object"
+      },
+      "TeamStats": {
+        "properties": {
+          "blocked_7d": {
+            "description": "Audience blocks in 7 days: the sponsor and site administrators only.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "chain_reviews_7d": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pending_reviews": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "undo_rate_7d": {
+            "$ref": "#/components/schemas/UndoRate"
+          },
+          "writes_today": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "writes_today",
+          "pending_reviews",
+          "undo_rate_7d",
+          "chain_reviews_7d"
+        ],
+        "type": "object"
+      },
       "Template": {
         "description": "`GET /home/templates?roles=`.",
         "properties": {
@@ -8369,6 +9314,91 @@
           "widgets",
           "nav_shortcuts",
           "default_views"
+        ],
+        "type": "object"
+      },
+      "TemplatePolicies": {
+        "properties": {
+          "commands": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "type": "object"
+          },
+          "fields": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PolicyMode"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "commands",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "TemplateSpec": {
+        "description": "One template, as a full allow-list over the delegation's ceiling.",
+        "properties": {
+          "policies": {
+            "$ref": "#/components/schemas/TemplatePolicies",
+            "description": "Every op and field of the ceiling with its mode; unlisted ones are `off`."
+          },
+          "proposal_ops": {
+            "description": "The ceiling: every proposal op.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "read_own_time": {
+            "description": "Whether the template turns `read_own_time` on (it still needs the ack).",
+            "type": "boolean"
+          },
+          "template": {
+            "type": "string"
+          },
+          "template_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "writable_fields": {
+            "description": "The ceiling: every built-in field, plus list custom fields for `triage`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "template",
+          "template_version",
+          "proposal_ops",
+          "writable_fields",
+          "policies",
+          "read_own_time"
+        ],
+        "type": "object"
+      },
+      "TemplateUpdate": {
+        "properties": {
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "latest_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "outdated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "current_version",
+          "latest_version",
+          "outdated"
         ],
         "type": "object"
       },
@@ -9271,7 +10301,7 @@
       "TriageItem": {
         "properties": {
           "author": {
-            "$ref": "#/components/schemas/PrincipalRef"
+            "$ref": "#/components/schemas/PrincipalRef2"
           },
           "created_at": {
             "format": "date-time",
@@ -9287,7 +10317,7 @@
           "decided_by": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PrincipalRef"
+                "$ref": "#/components/schemas/PrincipalRef2"
               },
               {
                 "type": "null"
@@ -9839,6 +10869,23 @@
           "version_fields",
           "triage",
           "time_entries"
+        ],
+        "type": "object"
+      },
+      "UndoRate": {
+        "properties": {
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "undone": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "undone",
+          "total"
         ],
         "type": "object"
       },
@@ -13138,7 +14185,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "New agent token (shown once).",
+        "summary": "New agent token (shown once). Compatibility alias: in a runtime with more than one active role the body needs `agent_principal_id`, otherwise `invalid_argument` with `details.reason = \"principal_required\"`.",
         "x-access": "stepup",
         "x-csrf": true
       }
@@ -13479,6 +14526,563 @@
         },
         "summary": "Freeze the list of your agent's executions since a time (§16.7): newest first, each marked automatic or needs_choice. Send one undo per item, in order; pausing the agent first is advised.",
         "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai-team": {
+      "get": {
+        "operationId": "get_ai_team",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The AI team the caller may see (?project=, ?handle=); numbers count only what the caller can read.",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_ai_team",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CreatedRole"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Create a role bot: runtime, role, delegations and its first token (shown once; null on a replay). Idempotency-Key.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/ai-team/templates": {
+      "get": {
+        "operationId": "get_ai_team_templates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/TemplateSpec"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Role templates (full allow-lists; unlisted commands and fields are off).",
+        "x-access": "session"
+      }
+    },
+    "/ai-team/{id}": {
+      "get": {
+        "operationId": "get_ai_team_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One role: fields depend on the viewer (duties and runtime for the sponsor and site admins only).",
+        "x-access": "session"
+      }
+    },
+    "/ai-team/{id}/activity": {
+      "get": {
+        "operationId": "get_ai_team_id_activity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Activity2"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The role's writes, filtered to what the caller can read.",
+        "x-access": "session"
+      }
+    },
+    "/ai-team/{id}/credentials": {
+      "post": {
+        "operationId": "post_ai_team_id_credentials",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IssuedCredential"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "New token for the role in its runtime's active context (sponsor; shown once).",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/ai-team/{id}/pause": {
+      "post": {
+        "operationId": "post_ai_team_id_pause",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Pause the role (scope principal: sponsor or site admin) or its delegation in one project (scope project: also that project's managers; reason required).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/ai-team/{id}/resume": {
+      "post": {
+        "operationId": "post_ai_team_id_resume",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Resume the layer you may resume, after re-checking the context and a usable delegation.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/ai-team/{id}/retire": {
+      "post": {
+        "operationId": "post_ai_team_id_retire",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Retire the role for good: its delegations and tokens are revoked (sponsor).",
+        "x-access": "stepup",
         "x-csrf": true
       }
     },
@@ -16360,6 +17964,268 @@
         },
         "summary": "Watch the issue yourself (design 05 §3.11.1); it also clears an earlier unwatch, so automatic watching applies again. Only issues you can see (not_found otherwise, exactly as for a missing key). Body {}; naturally idempotent: no Idempotency-Key. watcher_count counts active users who can see the issue now (at most 100; watcher_count_capped). There is no watcher list (B-24).",
         "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/me/agent-runtimes": {
+      "get": {
+        "operationId": "get_me_agent_runtimes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/RuntimeView"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Your runtimes, their roles, shared sources and time readers.",
+        "x-access": "session"
+      }
+    },
+    "/me/agent-runtimes/{id}": {
+      "patch": {
+        "operationId": "patch_me_agent_runtimes_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameRuntimeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RuntimeView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Rename a runtime (lock_version).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/me/agent-runtimes/{id}/new-context": {
+      "post": {
+        "operationId": "post_me_agent_runtimes_id_new_context",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeNewContextInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ContextView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Start a new work context for the runtime: every role's delegations and tokens are revoked; R starts empty.",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/me/agent-runtimes/{id}/retire": {
+      "post": {
+        "operationId": "post_me_agent_runtimes_id_retire",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Retire an external runtime: its context closes and its roles retire.",
+        "x-access": "stepup",
         "x-csrf": true
       }
     },
