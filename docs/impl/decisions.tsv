@@ -435,3 +435,23 @@ date	stage	decision	why	alternatives	source
 2026-11-10	M1	概念清單 limit 在 HTTP 與服務層都 clamp 到 1–100	獨立驗證 D7b：兩層不一致；契約沒寫，比照其他清單端點	超出範圍回 invalid_argument	crates/oxledger/src/concepts.rs;crates/oxledger/src/api.rs
 2026-11-10	M1	升級 rebuild 的 claim 用 drop guard 釋放（失敗或 panic），成功才保留	獨立驗證 D7a：panic 會讓 upgrading 永遠為 true	catch_unwind	crates/oxledger/src/main.rs
 2026-11-10	M1	不新增刪除標籤／概念的 API，列為後續項；upgrade-notes 改寫成保留 staging、改 hidden、改名、重新啟用	契約只列 GET／POST／PATCH；獨立驗證 D7c	新增 DELETE 端點	docs/impl/upgrade-notes.md
+2026-11-10	M1	progress 每張 issue 一個交易，整批完成後才前進 cursor（契約寫同一交易）	縮短交易、不拖住搜尋 GC 的 xmin；progress 列已防重送（T-M1-77）	progress 與 cursor 同一交易	crates/oxledger/src/notifications.rs
+2026-11-10	M1	一輪內 4 個 worker 平行處理不同 issue，同一 issue 的收件人批次寫入	逐人寫入時 p95 12.5 秒超過 10 秒門檻；改後 5.53／6.71 秒（兩次量測）	單執行緒逐人寫入	crates/oxledger/src/notifications.rs
+2026-11-10	M1	first_at／last_at 用派送時間（clock_timestamp）	read-all 的 before 以列表載入時的 last_at 為準，晚到的列不會被標已讀	用事件時間	migrations/0028_notifications.sql;crates/oxledger/src/notifications.rs
+2026-11-10	M1	read、unread、read-all、watch 不收 Idempotency-Key；偏好 PUT 收	前四者天然冪等；偏好有 lock_version 與多欄位，比照其他設定	全部收 Idempotency-Key	crates/oxledger/src/api.rs
+2026-11-10	M1	被遮蔽的事件不派送；已派送的在讀取時顯示 redacted 標記並保留該列	通知不是 D12 的副本，只存參照	讀取時把整列藏起來	crates/oxledger/src/notifications.rs
+2026-11-10	M1	列表每列最多 3 筆事件加 more_events；一列最多存 50 個事件 id	控制回應大小；CHECK 上限 50	回傳全部事件	crates/oxledger/src/notifications.rs
+2026-11-10	M1	看不到的 project 篩選回空清單；看不到的自己的列 read／unread 回 not_found；read-all 不回筆數	避免成為存在性 oracle	回 not_found／回筆數	crates/oxledger/src/notifications.rs
+2026-11-10	M1	agent 寫筆記時自動關注寫給委派者；被移除指派的前一位也收到該事件	agent 不能是關注者；前一位需要知道被拿掉	不自動關注／只給新指派對象	crates/oxledger/src/notifications.rs
+2026-11-10	M1	新增 AuthMethod::Recipient 供派送時用收件人身分重驗	沿用 db::load_scope 與 Reader 的同一套可見性規則	另寫一套可見性查詢	crates/oxledger/src/auth.rs;crates/oxledger/src/db.rs
+2026-11-10	M1	看不到的既有靜音專案保留但不顯示；靜音只收看得到的專案	撤權後恢復時靜音仍在，也不洩漏專案存在	撤權時刪除靜音	crates/oxledger/src/notifications.rs
+2026-11-10	M1	手動關注會把既有的自動來源改成 manual 並清 optout	使用者明確表態優先於自動規則	保留自動來源	crates/oxledger/src/notifications.rs
+2026-11-10	M1	未讀數快取放在行程記憶體	只在 2 秒逾時時用；多行程各自一份，最壞是回 null	存 DB	crates/oxledger/src/notifications.rs
+2026-11-11	M1	派送讀時間前依序取每個收件人的 advisory xact lock，read-all 取同一把鎖	獨立驗證 D1：平行派送時先讀時間、後 commit 的列會被 before 一起標掉；鎖讓同一人的列依 last_at 順序 commit，before 是時間戳不必改前端	snapshot／xmin token 當 before（要改 API 與前端）	crates/oxledger/src/notifications.rs
+2026-11-11	M1	watcher_count 改成一句 SQL 依 load_scope 規則判斷可見性，並以 test-support 函式和 Rust 結果比對	獨立驗證 D2：每人 load_scope，1000 個看不到的關注者時 GET 3.7 秒	降低掃描上限、移出寫交易	crates/oxledger/src/notifications.rs
+2026-11-11	M1	on_my_agents=false 時自己委派的 agent 做的事一律不通知委派者（含 watching、author）（待使用者確認）	獨立驗證 D3：照開關字面意思；契約 §3.11.2 沒寫清楚	只關掉 agent_on_behalf 這個原因	crates/oxledger/src/notifications.rs
+2026-11-11	M1	自動關注與 watch 共用 (issue, 人) 的 advisory xact lock	獨立驗證 D4：併發時 optout 會失效	派送用 FOR SHARE 讀 optout	crates/oxledger/src/notifications.rs
+2026-11-11	M1	同一 issue 連續失敗 5 次就跳過其待送事件（log＋notify_skipped_issues_total），連線類錯誤不計次；停用開關待使用者決定	獨立驗證 D5：一張壞掉的 issue 會卡住所有通知與 outbox GC；不計連線錯誤以免資料庫短暫斷線就全部跳過	一律重試	crates/oxledger/src/notifications.rs;crates/oxledger/src/metrics.rs
+2026-11-11	M1	新增 event_reasons，顯示的 reasons 只取讀得到的事件；first_at／last_at 不重算	獨立驗證 D6：重算時間會和 read-all 的 before（DB 的 last_at）衝突	時間也重算	migrations/0028_notifications.sql;crates/oxledger/src/notifications.rs
+2026-11-11	M1	未讀數快取最多 10,000 人，滿了遇到新的人就整批清空	獨立驗證 D7：沒有上限；不加新 crate	LRU	crates/oxledger/src/notifications.rs
+2026-11-11	M1	worker 數改由 OXLEDGER_NOTIFY_WORKERS 設定（1–16，預設 4）	每個 worker 佔一條連線，要能配合連線池大小	固定 4	crates/oxledger/src/notifications.rs

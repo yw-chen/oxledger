@@ -4019,6 +4019,17 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "watch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Contract 05 §3.11.1: whether the caller watches this issue. People\nonly (agents never watch, §4.6); absent for agents."
           }
         },
         "required": [
@@ -4502,6 +4513,29 @@
         ],
         "type": "object"
       },
+      "Marked": {
+        "description": "`POST /notifications/{id}/read|unread`.",
+        "properties": {
+          "id": {
+            "description": "The row now holding these events (after `unread` merged it into\nanother unread row of the same issue, that row's id).",
+            "format": "uuid",
+            "type": "string"
+          },
+          "merged_into": {
+            "description": "`unread` joined this row to the issue's other unread row (the old id\nno longer exists).",
+            "type": "boolean"
+          },
+          "read": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "read",
+          "merged_into"
+        ],
+        "type": "object"
+      },
       "MatchInfo": {
         "description": "Which fields matched, recomputed from the current text (design 03 §3.4 step 6).",
         "properties": {
@@ -4912,6 +4946,254 @@
         "required": [
           "can_add",
           "can_set_private"
+        ],
+        "type": "object"
+      },
+      "NotificationActor": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "user, agent or system. Show agents as \"name〔agent〕\".",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "on_behalf_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "NotificationEvent": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/NotificationActor"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "created, fields_changed, status_changed, note_added, triage_changed, …",
+            "type": "string"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "summary": {
+            "description": "What the caller may see of the event, as in the issue history\n(`recent_events.detail`); a note adds `note_excerpt` (first 140\ncharacters; absent when the note was retracted or redacted),\n`private` and `redacted`. Absent when the event was redacted (D12)."
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "at",
+          "actor"
+        ],
+        "type": "object"
+      },
+      "NotificationIssue": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "project": {
+            "$ref": "#/components/schemas/NotificationProject"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "subject",
+          "project"
+        ],
+        "type": "object"
+      },
+      "NotificationItem": {
+        "properties": {
+          "events": {
+            "description": "The newest readable events (at most 3), newest first.",
+            "items": {
+              "$ref": "#/components/schemas/NotificationEvent"
+            },
+            "type": "array"
+          },
+          "first_at": {
+            "description": "When the first and the latest event of this row arrived.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "issue": {
+            "$ref": "#/components/schemas/NotificationIssue"
+          },
+          "kind": {
+            "description": "`issue` (`ai_budget` arrives with M1.10).",
+            "type": "string"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "more_events": {
+            "description": "Readable events of this row not in `events`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "read": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "description": "watching, assigned, author, agent_on_behalf, triage_decided.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "read",
+          "reasons",
+          "first_at",
+          "last_at",
+          "issue",
+          "events",
+          "more_events"
+        ],
+        "type": "object"
+      },
+      "NotificationList": {
+        "properties": {
+          "items": {
+            "description": "Newest arrival first. Rows with nothing the caller can read now are\nleft out without a trace.",
+            "items": {
+              "$ref": "#/components/schemas/NotificationItem"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "NotificationPreferences": {
+        "description": "`GET /me/notification-preferences` (§3.11.4).",
+        "properties": {
+          "auto_watch_assignee": {
+            "type": "boolean"
+          },
+          "auto_watch_author": {
+            "description": "Watch automatically what I create, what is assigned to me, where I\nwrite a note.",
+            "type": "boolean"
+          },
+          "auto_watch_note": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "muted_projects": {
+            "description": "Projects (ids) that send me nothing; only projects I can see.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "on_assigned": {
+            "description": "issues assigned to me (or to my group),",
+            "type": "boolean"
+          },
+          "on_author": {
+            "description": "issues I created,",
+            "type": "boolean"
+          },
+          "on_my_agents": {
+            "description": "what my agents did,",
+            "type": "boolean"
+          },
+          "on_self": {
+            "description": "and my own changes (off by default).",
+            "type": "boolean"
+          },
+          "on_triage_decided": {
+            "description": "the Triage outcome of issues I reported,",
+            "type": "boolean"
+          },
+          "on_watching": {
+            "description": "Notify me about: issues I watch,",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lock_version",
+          "on_watching",
+          "on_assigned",
+          "on_author",
+          "on_triage_decided",
+          "on_my_agents",
+          "on_self",
+          "auto_watch_author",
+          "auto_watch_assignee",
+          "auto_watch_note",
+          "muted_projects"
+        ],
+        "type": "object"
+      },
+      "NotificationProject": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name"
         ],
         "type": "object"
       },
@@ -5581,6 +5863,22 @@
             "format": "uuid",
             "type": "string"
           },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "PersonRef2": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
           "kind": {
             "description": "`user`, `group` or `agent`.",
             "type": "string"
@@ -5697,6 +5995,94 @@
         "type": "object"
       },
       "PreferencesPut": {
+        "additionalProperties": false,
+        "description": "`PUT /me/notification-preferences`: fields left out stay as they are.",
+        "properties": {
+          "auto_watch_assignee": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "auto_watch_author": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "auto_watch_note": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "muted_projects": {
+            "default": null,
+            "description": "The whole list of project ids to mute (at most 200, each visible to\nyou; otherwise `invalid_value` kind `unknown_project`).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "on_assigned": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "on_author": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "on_my_agents": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "on_self": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "on_triage_decided": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "on_watching": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "PreferencesPut2": {
         "additionalProperties": false,
         "description": "`PUT /me/preferences`: fields left out stay as they are.",
         "properties": {
@@ -6193,6 +6579,33 @@
           "rules_version",
           "layout_version",
           "marked"
+        ],
+        "type": "object"
+      },
+      "ReadAllDone": {
+        "properties": {
+          "before": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "before"
+        ],
+        "type": "object"
+      },
+      "ReadAllInput": {
+        "additionalProperties": false,
+        "description": "`POST /notifications/read-all` body.",
+        "properties": {
+          "before": {
+            "description": "Mark rows whose `last_at` is at or before this (the first row's\n`last_at` when the list was loaded), so later arrivals stay unread.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "before"
         ],
         "type": "object"
       },
@@ -9738,6 +10151,34 @@
         ],
         "type": "object"
       },
+      "UnreadCount": {
+        "description": "`GET /notifications/unread-count`.",
+        "properties": {
+          "capped": {
+            "description": "More than 99: show \"99+\".",
+            "type": "boolean"
+          },
+          "count": {
+            "description": "Unread rows with something readable now, at most 99; `null` when it\ncould not be counted in time and the caller's permissions changed\nsince the last count (show no number).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "stale": {
+            "description": "Not counted within 2 seconds: the last count (or null).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "count",
+          "capped",
+          "stale"
+        ],
+        "type": "object"
+      },
       "ValidateCommandInput": {
         "additionalProperties": false,
         "description": "`POST /commands/validate` and MCP `validate`.",
@@ -10330,7 +10771,7 @@
           "created_by": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PersonRef"
+                "$ref": "#/components/schemas/PersonRef2"
               },
               {
                 "type": "null"
@@ -10387,7 +10828,7 @@
           "updated_by": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PersonRef"
+                "$ref": "#/components/schemas/PersonRef2"
               },
               {
                 "type": "null"
@@ -10408,7 +10849,7 @@
       "ViewEvent": {
         "properties": {
           "actor": {
-            "$ref": "#/components/schemas/PersonRef"
+            "$ref": "#/components/schemas/PersonRef2"
           },
           "at": {
             "format": "date-time",
@@ -10681,7 +11122,7 @@
           "updated_by": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PersonRef"
+                "$ref": "#/components/schemas/PersonRef2"
               },
               {
                 "type": "null"
@@ -10695,6 +11136,64 @@
           "kind",
           "name",
           "editable"
+        ],
+        "type": "object"
+      },
+      "WatchInfo": {
+        "description": "`GET /issues/{key}` → `watch` (people only; agents never watch).",
+        "properties": {
+          "auto_reason": {
+            "description": "Why the caller watches automatically: author, assignee or note.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "opted_out": {
+            "description": "The caller unwatched this issue: being assigned, writing a note\nand so on will not watch it again.",
+            "type": "boolean"
+          },
+          "watcher_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "watcher_count_capped": {
+            "type": "boolean"
+          },
+          "watching": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "watching",
+          "opted_out",
+          "watcher_count",
+          "watcher_count_capped"
+        ],
+        "type": "object"
+      },
+      "WatchState": {
+        "description": "`PUT|DELETE /issues/{key}/watch`.",
+        "properties": {
+          "watcher_count": {
+            "description": "Active users who can see the issue now and watch it (at most 100).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "watcher_count_capped": {
+            "description": "More than 100: show \"100+\".",
+            "type": "boolean"
+          },
+          "watching": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "watching",
+          "watcher_count",
+          "watcher_count_capped"
         ],
         "type": "object"
       },
@@ -15736,6 +16235,134 @@
         "x-csrf": true
       }
     },
+    "/issues/{key}/watch": {
+      "delete": {
+        "operationId": "delete_issues_key_watch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WatchState"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Stop watching the issue; later assignments or notes do not watch it again automatically (GET /issues/{key} watch.opted_out). Naturally idempotent.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "put": {
+        "operationId": "put_issues_key_watch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WatchState"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Watch the issue yourself (design 05 §3.11.1); it also clears an earlier unwatch, so automatic watching applies again. Only issues you can see (not_found otherwise, exactly as for a missing key). Body {}; naturally idempotent: no Idempotency-Key. watcher_count counts active users who can see the issue now (at most 100; watcher_count_capped). There is no watcher list (B-24).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/me/home": {
       "get": {
         "operationId": "get_me_home",
@@ -15903,6 +16530,113 @@
         "x-csrf": true
       }
     },
+    "/me/notification-preferences": {
+      "get": {
+        "operationId": "get_me_notification_preferences",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/NotificationPreferences"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_me_notification_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/NotificationPreferences"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Change the caller's notification settings. Header Idempotency-Key; lock_version as read; fields left out stay; muted_projects replaces the whole list (at most 200 project ids, each visible to the caller). conflict carries current_lock_version and current. invalid_value kinds: unknown_project (missing and not visible are one answer), too_many_projects.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/me/preferences": {
       "get": {
         "operationId": "get_me_preferences",
@@ -15957,7 +16691,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PreferencesPut"
+                "$ref": "#/components/schemas/PreferencesPut2"
               }
             }
           },
@@ -16057,6 +16791,304 @@
         },
         "summary": "The caller's own time for one ISO week (design 05 §3.5.2): query week=YYYY-Www (default this week). Rows are (project, issue, activity); days follow org week_start.",
         "x-access": "session"
+      }
+    },
+    "/notifications": {
+      "get": {
+        "operationId": "get_notifications",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/NotificationList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The caller's notifications (design 05 §3.11.3), newest arrival first. Query: filter (unread, default; all), project (key or id; one the caller cannot see gives an empty list), limit (clamped to 1–100, default 50), cursor. Every row is checked again with the caller's permissions now: a row with nothing readable is left out without a trace; events show only what the issue history would show the caller (newest 3, more_events counts the rest; note_excerpt is the first 140 characters). A page may have fewer items than limit while next_cursor is set.",
+        "x-access": "session"
+      }
+    },
+    "/notifications/read-all": {
+      "post": {
+        "operationId": "post_notifications_read_all",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadAllInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ReadAllDone"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Mark every unread row whose last_at is at or before {before} as read (send the first row's last_at from when the list was loaded, so later arrivals stay unread). Naturally idempotent: no Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/notifications/unread-count": {
+      "get": {
+        "operationId": "get_notifications_unread_count",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UnreadCount"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The bell (design 05 §3.11.3): unread rows with something readable now, at most 99 (capped: show 99+). Counted within 2 seconds, else stale: true with the last count, or count: null when the caller's permissions changed since (show no number). Poll every 60 s while the tab is visible and on focus.",
+        "x-access": "session"
+      }
+    },
+    "/notifications/{id}/read": {
+      "post": {
+        "operationId": "post_notifications_id_read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Marked"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Mark one row read. Another person's id and a row with nothing readable now are not_found. Naturally idempotent: no Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/notifications/{id}/unread": {
+      "post": {
+        "operationId": "post_notifications_id_unread",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Marked"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Mark one row unread. When the issue already has another unread row, this row's events join it and the answer is that row's id with merged_into: true (this id stops existing). Naturally idempotent: no Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
       }
     },
     "/operations/{id}": {

@@ -306,6 +306,10 @@ pub struct IssueDetail {
     /// issue broke rules published after it was written); the next write
     /// that passes the rules clears them. Empty when none.
     pub form_rule_marks: Vec<String>,
+    /// Contract 05 §3.11.1: whether the caller watches this issue. People
+    /// only (agents never watch, §4.6); absent for agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<crate::notifications::WatchInfo>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -2343,6 +2347,10 @@ pub(crate) async fn get_in(
         None,
     )
     .await?;
+    let watch = match caller.user_id() {
+        Some(me) => Some(crate::notifications::watch_info(&mut *conn, me, row.id).await?),
+        None => None,
+    };
 
     Ok((
         row.id,
@@ -2371,6 +2379,7 @@ pub(crate) async fn get_in(
             custom_fields,
             triage,
             form_rule_marks,
+            watch,
         },
     ))
 }

@@ -104,3 +104,14 @@
 - **既有概念標籤（R18）**：0027 之前用 seed 或匯入寫進 `aliases`（`entity_kind = 'concept'`）的標籤，每個概念 id 會補一列 `concepts`（偏好標籤取 `pref` 標籤，沒有就取 bytewise 最小的標籤；建立者是 system principal）。標籤用 `casefold(normalize(label, NFC))` 比較（大小寫、NFC／NFD 視為相同；`casefold` 跟資料庫的 collation，和其他名稱規則一樣），**撞名的不會讓 migration 失敗**：每組只留一個 `active`（`pref` 標籤優先，再來是最舊的概念、bytewise 最小的標籤），其他改成 `staging`（不展開），並以 `NOTICE` 印出筆數。接著每個概念保證只有一個啟用的 `pref` 標籤（就是概念名稱）：被降級的 `pref` 改成 `alt`；沒有啟用 `pref` 的概念從剩下的啟用標籤挑一個當名稱（`alt` 優先於 `hidden`，再取 bytewise 最小）；一個啟用標籤都不剩的概念改成 `retired`（標籤保留為 `staging`）。升級後請管理員到概念管理檢查 `staging` 標籤與被退役的概念，可以做的處理是：保留 `staging`（不展開、不佔名稱，非管理員看不到）、改成 `hidden`（`PATCH …/labels/{label} {kind: hidden}`）、把概念改名（`PATCH /admin/concepts/{id} {pref_label}`）或重新啟用。目前**沒有刪除標籤或概念的 API**（列為後續項）。
 - 新的部分唯一索引 `aliases_concept_label_uq`（只限 `entity_kind = 'concept' AND status = 'active'`）建立在正規化後的字串上；PostgreSQL 大版本升級若改了 Unicode 版本，依 PostgreSQL 的說明對這個索引 `REINDEX`。
 - 概念與標籤的變更不寫 `issue_events`，也不動任何 epoch；改了概念之後，下一次搜尋就用新的展開（展開在查詢時做，不需要重建索引）。
+
+## 0028_notifications（M1.8，通知）
+
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`、角色或成員，`security_epoch` 不變（升級測試驗證）。關注、通知、偏好都是個人狀態，不寫 issue 歷史、不動 `lock_version`。
+- **升級之前的事件不會補送**：0028 新增 outbox consumer `notify`（cursor 從升級當下開始），並為每張既有 issue 在 `notification_issue_progress` 回填目前最後一個事件的序號；升級後第一個新事件只送那一個。升級後沒有任何關注（關注表是新的），通知從「建立者、指派對象、之後的關注」開始累積。
+- **outbox GC 會等 `notify`**：`notify` 是 active 的 cursor，派送落後時 outbox 不會被清。`/metrics` 新增 `notify_outbox_pending`、`notify_outbox_oldest_pending_age_seconds`、`notify_dispatch_delay_seconds`、`notify_rounds_total`、`notify_events_total`、`notify_deliveries_total`、`notify_last_success_timestamp_seconds`；`notify_outbox_pending` 持續上升代表派送卡住。目前沒有停用通知的開關（刪掉 `notify` cursor 列，下一輪會從頭補建，progress 會擋住重送）。
+- `serve` 每秒跑一輪派送，每小時清一次過期通知（已讀 30 天、未讀 90 天）。一輪內平行派送的 worker 數由環境變數 `OXLEDGER_NOTIFY_WORKERS` 決定（1–16，預設 4；超出範圍用 4 並記 warn）。**每個 worker 派送時佔一條資料庫連線**，和 API 請求共用同一個連線池（sqlx 預設 10 條）：worker 數要留給 API 足夠的連線，例如連線池 10 條時不要設超過 4–5。
+- 同一張 issue 連續 5 次派送失敗（不含連線類錯誤）時，它當時待送的事件會被跳過（log 有 `skipping the issue's pending events`，`/metrics` 的 `notify_skipped_issues_total` 增加），其他 issue 不受影響。
+- 新增 `user_column_guard()`：關注、通知、偏好、靜音只能屬於 user（agent、群組寫入回 `check_violation`）。
+- 新 API（前端要接）：`GET /notifications`、`GET /notifications/unread-count`、`POST /notifications/{id}/read`、`POST /notifications/{id}/unread`、`POST /notifications/read-all`、`PUT|DELETE /issues/{key}/watch`、`GET|PUT /me/notification-preferences`；`GET /issues/{key}` 多了 `watch`（只有人登入時有）。沒有 email。
+

@@ -75,6 +75,14 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             is_admin: false,
             agent: None,
         }),
+        AuthMethod::Recipient => user(
+            sqlx::query_scalar(
+                "SELECT is_admin FROM principals WHERE id = $1 AND kind = 'user' AND status = 'active'",
+            )
+            .bind(ctx.principal_id())
+            .fetch_optional(&mut *conn)
+            .await?,
+        ),
         #[cfg(feature = "test-support")]
         AuthMethod::TestUser => user(
             sqlx::query_scalar(

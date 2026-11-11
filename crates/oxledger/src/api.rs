@@ -167,6 +167,19 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             get(me_preferences).put(me_preferences_put),
         )
         .route("/me/home", get(me_home).put(me_home_put))
+        .route(
+            "/me/notification-preferences",
+            get(notification_prefs).put(notification_prefs_put),
+        )
+        .route("/notifications", get(notifications_list))
+        .route("/notifications/unread-count", get(notifications_unread))
+        .route("/notifications/read-all", post(notifications_read_all))
+        .route("/notifications/{id}/read", post(notification_read))
+        .route("/notifications/{id}/unread", post(notification_unread))
+        .route(
+            "/issues/{key}/watch",
+            axum::routing::put(issue_watch).delete(issue_unwatch),
+        )
         .route("/me/home/apply-template", post(me_home_apply))
         .route("/home/templates", get(home_templates))
         .route("/time-activities", get(time_activities))
@@ -2944,6 +2957,106 @@ async fn conversion_start(
         &st.cfg.session,
         ctx,
         id_param(&id)?,
+    )
+    .await?))
+}
+
+// ---------------------------------------------------------------- notifications (design 05 §3.11)
+
+async fn notifications_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let p = crate::notifications::ListQuery {
+        filter: q.get("filter").cloned(),
+        project: q.get("project").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(&q, "limit")?.map(|l| l.clamp(1, 100) as u32),
+    };
+    Ok(ok(crate::notifications::list(&st.app, ctx, &p).await?))
+}
+
+async fn notifications_unread(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::notifications::unread_count(&st.app, ctx).await?))
+}
+
+async fn notification_read(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::notifications::mark_read(&st.app, ctx, &id).await?))
+}
+
+async fn notification_unread(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::mark_unread(&st.app, ctx, &id).await?
+    ))
+}
+
+async fn notifications_read_all(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::notifications::ReadAllInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::read_all(&st.app, ctx, &body).await?
+    ))
+}
+
+async fn issue_watch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::watch(&st.app, ctx, &key, true).await?
+    ))
+}
+
+async fn issue_unwatch(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(key): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::notifications::watch(&st.app, ctx, &key, false).await?
+    ))
+}
+
+async fn notification_prefs(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::notifications::preferences(&st.app, ctx).await?))
+}
+
+async fn notification_prefs_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::notifications::PreferencesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::notifications::put_preferences(
+        &st.app, ctx, key, &body,
     )
     .await?))
 }

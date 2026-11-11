@@ -41,6 +41,12 @@ pub enum AuthMethod {
     BrowserSession,
     LegacyApiKey,
     AgentToken,
+    /// The server reading on a user's behalf to decide and render their
+    /// notifications (design 05 §3.11.2 step 3) and to count watchers who can
+    /// see an issue (§3.11.1). Built only by
+    /// [`AuthContext::notification_recipient`], never from a request; no
+    /// service that writes or needs a session accepts it.
+    Recipient,
     /// Tests and seeding only: a user with no credential row. Does not exist
     /// in builds without the `test-support` feature.
     #[cfg(feature = "test-support")]
@@ -110,6 +116,18 @@ impl AuthContext {
             credential_id: Some(credential_id),
             context_id: Some(context_id),
             on_behalf_of: Some(delegator_id),
+            ..Self::anonymous()
+        }
+    }
+
+    /// What `user_id` may read now, for notification dispatch and
+    /// re-checks (see [`AuthMethod::Recipient`]). `db::effective` accepts it
+    /// only for an active user.
+    pub(crate) fn notification_recipient(user_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(user_id),
+            kind: PrincipalKind::User,
+            method: AuthMethod::Recipient,
             ..Self::anonymous()
         }
     }

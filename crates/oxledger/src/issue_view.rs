@@ -758,12 +758,12 @@ pub(crate) async fn last_activity_at(
     Ok(latest.first().map_or(created, |e| e.at))
 }
 
-/// The issue an attached block is about.
+/// The issue an attached block (or a notification, design 05 §3.11) is about.
 #[derive(Clone, Copy)]
-struct IssueRef {
-    id: Uuid,
-    project: Uuid,
-    tracker: Uuid,
+pub(crate) struct IssueRef {
+    pub(crate) id: Uuid,
+    pub(crate) project: Uuid,
+    pub(crate) tracker: Uuid,
 }
 
 /// `include`: actions, recent notes, recent events (same read scope).
@@ -949,15 +949,23 @@ async fn recent_notes(
 // ---------------------------------------------------------------- events
 
 #[derive(sqlx::FromRow)]
-struct EventRow {
-    id: Uuid,
-    seq: i64,
-    kind: String,
-    at: DateTime<Utc>,
-    actor: String,
-    payload: Json,
-    note_id: Option<Uuid>,
-    redacted: bool,
+pub(crate) struct EventRow {
+    pub(crate) id: Uuid,
+    pub(crate) seq: i64,
+    pub(crate) kind: String,
+    pub(crate) at: DateTime<Utc>,
+    pub(crate) actor: String,
+    pub(crate) payload: Json,
+    pub(crate) note_id: Option<Uuid>,
+    pub(crate) redacted: bool,
+}
+
+/// What [`event_view`] looks up once per reader and issue.
+#[derive(Default)]
+pub(crate) struct EventCache {
+    /// Readable custom field ids in the issue's project (loaded on first use).
+    pub(crate) readable_cf: Option<Vec<i32>>,
+    notes: HashMap<Uuid, bool>,
 }
 
 /// Names for ids in event payloads (contract 02 §7.3: shown as names).
@@ -1115,10 +1123,9 @@ async fn visible_events(
     issue: IssueRef,
     limit: u32,
 ) -> Result<(Vec<EventView>, bool)> {
-    let mut readable_cf: Option<Vec<i32>> = None;
+    let mut cache = EventCache::default();
     let mut out = Vec::new();
     let mut before: Option<i64> = None;
-    let mut notes: HashMap<Uuid, bool> = HashMap::new();
     loop {
         let rows: Vec<EventRow> = sqlx::query_as(
             "SELECT e.id, e.seq, e.kind, e.at, p.name AS actor, e.payload, e.note_id,
@@ -1136,79 +1143,100 @@ async fn visible_events(
         before = Some(last.seq);
         let n = rows.len() as i64;
         for r in rows {
-            // Notes first: a hidden note's event is left out even when redacted.
-            if let Some(note) = r.note_id
-                && !note_ok(&mut *conn, reader, &mut notes, issue, note).await?
-            {
+            let Some(v) = event_view(&mut *conn, reader, caller, issue, &mut cache, r).await?
+            else {
                 continue;
-            }
-            let detail = if r.redacted {
-                None
-            } else {
-                match r.kind.as_str() {
-                    "created" | "fields_changed" => {
-                        if readable_cf.is_none() {
-                            readable_cf = Some(
-                                readable_cf_ids(&mut *conn, reader, caller, issue.project).await?,
-                            );
-                        }
-                        let rc = readable_cf.as_deref().unwrap_or_default();
-                        let changes = r.kind == "fields_changed";
-                        let key = if changes { "changes" } else { "fields" };
-                        let empty = Map::new();
-                        let map = r.payload[key].as_object().unwrap_or(&empty);
-                        let shown = filter_fields(&mut *conn, rc, map, changes).await?;
-                        if changes && shown.is_empty() {
-                            continue;
-                        }
-                        let mut d = json!({ key: shown });
-                        if let Some(t) = r.payload.get("triage") {
-                            d["triage"] = t.clone();
-                        }
-                        Some(d)
-                    }
-                    // Contract 05 §3.4: the decision and its A5 flags
-                    // ("自建自分流" in the history).
-                    "triage_changed" => Some(json!({
-                        "old": r.payload["old"],
-                        "new": r.payload["new"],
-                        "self_triage": r.payload["self_triage"],
-                        "same_sponsor": r.payload["same_sponsor"],
-                        "snoozed_until": r.payload["snoozed_until"],
-                    })),
-                    "status_changed" => Some(json!({
-                        "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
-                        "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
-                    })),
-                    "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
-                    "duplicate_added" | "duplicate_removed" => {
-                        let other = r.payload["other_issue_id"]
-                            .as_str()
-                            .and_then(|s| s.parse::<Uuid>().ok());
-                        let Some(other) = other else { continue };
-                        let Some(k) = visible_key(&mut *conn, reader, other).await? else {
-                            continue;
-                        };
-                        Some(json!({"role": r.payload["role"], "other_key": k}))
-                    }
-                    _ => None,
-                }
             };
             if out.len() as u32 >= limit {
                 return Ok((out, true));
             }
-            out.push(EventView {
-                event_id: r.id,
-                kind: r.kind,
-                at: r.at,
-                actor: r.actor,
-                detail,
-                redacted: r.redacted,
-            });
+            out.push(v);
         }
         if n < PAGE {
             break;
         }
     }
     Ok((out, false))
+}
+
+/// One event as `caller` may see it now, or `None` when nothing of it is
+/// readable (a hidden note, only unreadable fields, the other end of a
+/// duplicate out of sight). The issue itself must already be visible to
+/// `caller`. Issue history (`recent_events`) and notifications (design 05
+/// §3.11.2 step 3, §3.11.3) both use this one function, so they agree.
+pub(crate) async fn event_view(
+    conn: &mut PgConnection,
+    reader: &mut Reader,
+    caller: AuthContext,
+    issue: IssueRef,
+    cache: &mut EventCache,
+    r: EventRow,
+) -> Result<Option<EventView>> {
+    // Notes first: a hidden note's event is left out even when redacted.
+    if let Some(note) = r.note_id
+        && !note_ok(&mut *conn, reader, &mut cache.notes, issue, note).await?
+    {
+        return Ok(None);
+    }
+    let detail = if r.redacted {
+        None
+    } else {
+        match r.kind.as_str() {
+            "created" | "fields_changed" => {
+                if cache.readable_cf.is_none() {
+                    cache.readable_cf =
+                        Some(readable_cf_ids(&mut *conn, reader, caller, issue.project).await?);
+                }
+                let rc = cache.readable_cf.as_deref().unwrap_or_default();
+                let changes = r.kind == "fields_changed";
+                let key = if changes { "changes" } else { "fields" };
+                let empty = Map::new();
+                let map = r.payload[key].as_object().unwrap_or(&empty);
+                let shown = filter_fields(&mut *conn, rc, map, changes).await?;
+                if changes && shown.is_empty() {
+                    return Ok(None);
+                }
+                let mut d = json!({ key: shown });
+                if let Some(t) = r.payload.get("triage") {
+                    d["triage"] = t.clone();
+                }
+                Some(d)
+            }
+            // Contract 05 §3.4: the decision and its A5 flags
+            // ("自建自分流" in the history).
+            "triage_changed" => Some(json!({
+                "old": r.payload["old"],
+                "new": r.payload["new"],
+                "self_triage": r.payload["self_triage"],
+                "same_sponsor": r.payload["same_sponsor"],
+                "snoozed_until": r.payload["snoozed_until"],
+            })),
+            "status_changed" => Some(json!({
+                "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
+                "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
+            })),
+            "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
+            "duplicate_added" | "duplicate_removed" => {
+                let other = r.payload["other_issue_id"]
+                    .as_str()
+                    .and_then(|s| s.parse::<Uuid>().ok());
+                let Some(other) = other else {
+                    return Ok(None);
+                };
+                let Some(k) = visible_key(&mut *conn, reader, other).await? else {
+                    return Ok(None);
+                };
+                Some(json!({"role": r.payload["role"], "other_key": k}))
+            }
+            _ => None,
+        }
+    };
+    Ok(Some(EventView {
+        event_id: r.id,
+        kind: r.kind,
+        at: r.at,
+        actor: r.actor,
+        detail,
+        redacted: r.redacted,
+    }))
 }

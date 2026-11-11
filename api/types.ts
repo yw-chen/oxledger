@@ -1007,6 +1007,8 @@ export type IssueDetail = {
   /** Contract 05 §3.4: the Triage state; null when the issue never entered the inbox. */
   triage: IssueTriage | null;
   updated_at: string;
+  /** Contract 05 §3.11.1: whether the caller watches this issue. People only (agents never watch, §4.6); absent for agents. */
+  watch?: WatchInfo | null;
 };
 
 export type IssueDev = {
@@ -1143,6 +1145,15 @@ export type LoginData = {
   user_id: string;
 };
 
+/** `POST /notifications/{id}/read|unread`. */
+export type Marked = {
+  /** The row now holding these events (after `unread` merged it into another unread row of the same issue, that row's id). */
+  id: string;
+  /** `unread` joined this row to the issue's other unread row (the old id no longer exists). */
+  merged_into: boolean;
+  read: boolean;
+};
+
 /** Which fields matched, recomputed from the current text (design 03 §3.4 step 6). */
 export type MatchInfo = {
   /** Design 05 §3.9: concept labels added to the query that occur in this issue's text (a hidden label shows as the concept's name). Absent when none. */
@@ -1253,6 +1264,83 @@ export type NextVersion = {
 export type NoteActions = {
   can_add: boolean;
   can_set_private: boolean;
+};
+
+export type NotificationActor = {
+  id: string;
+  /** user, agent or system. Show agents as "name〔agent〕". */
+  kind: string;
+  name: string;
+  on_behalf_of?: PersonRef | null;
+};
+
+export type NotificationEvent = {
+  actor: NotificationActor;
+  at: string;
+  id: string;
+  /** created, fields_changed, status_changed, note_added, triage_changed, … */
+  kind: string;
+  redacted?: boolean;
+  /** What the caller may see of the event, as in the issue history (`recent_events.detail`); a note adds `note_excerpt` (first 140 characters; absent when the note was retracted or redacted), `private` and `redacted`. Absent when the event was redacted (D12). */
+  summary?: unknown;
+};
+
+export type NotificationIssue = {
+  key: string;
+  project: NotificationProject;
+  subject: string;
+};
+
+export type NotificationItem = {
+  /** The newest readable events (at most 3), newest first. */
+  events: Array<NotificationEvent>;
+  /** When the first and the latest event of this row arrived. */
+  first_at: string;
+  id: string;
+  issue: NotificationIssue;
+  /** `issue` (`ai_budget` arrives with M1.10). */
+  kind: string;
+  last_at: string;
+  /** Readable events of this row not in `events`. */
+  more_events: number;
+  read: boolean;
+  /** watching, assigned, author, agent_on_behalf, triage_decided. */
+  reasons: Array<string>;
+};
+
+export type NotificationList = {
+  /** Newest arrival first. Rows with nothing the caller can read now are left out without a trace. */
+  items: Array<NotificationItem>;
+  next_cursor: string | null;
+};
+
+/** `GET /me/notification-preferences` (§3.11.4). */
+export type NotificationPreferences = {
+  auto_watch_assignee: boolean;
+  /** Watch automatically what I create, what is assigned to me, where I write a note. */
+  auto_watch_author: boolean;
+  auto_watch_note: boolean;
+  lock_version: number;
+  /** Projects (ids) that send me nothing; only projects I can see. */
+  muted_projects: Array<string>;
+  /** issues assigned to me (or to my group), */
+  on_assigned: boolean;
+  /** issues I created, */
+  on_author: boolean;
+  /** what my agents did, */
+  on_my_agents: boolean;
+  /** and my own changes (off by default). */
+  on_self: boolean;
+  /** the Triage outcome of issues I reported, */
+  on_triage_decided: boolean;
+  /** Notify me about: issues I watch, */
+  on_watching: boolean;
+};
+
+export type NotificationProject = {
+  id: string;
+  key: string;
+  name: string;
 };
 
 /** `ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field. */
@@ -1407,6 +1495,11 @@ export type PendingChangesets = {
 
 export type PersonRef = {
   id: string;
+  name: string;
+};
+
+export type PersonRef2 = {
+  id: string;
   /** `user`, `group` or `agent`. */
   kind: string;
   name: string;
@@ -1439,8 +1532,24 @@ export type Precondition = {
   target: TargetRef;
 };
 
-/** `PUT /me/preferences`: fields left out stay as they are. */
+/** `PUT /me/notification-preferences`: fields left out stay as they are. */
 export type PreferencesPut = {
+  auto_watch_assignee?: boolean | null;
+  auto_watch_author?: boolean | null;
+  auto_watch_note?: boolean | null;
+  lock_version: number;
+  /** The whole list of project ids to mute (at most 200, each visible to you; otherwise `invalid_value` kind `unknown_project`). */
+  muted_projects?: Array<string> | null;
+  on_assigned?: boolean | null;
+  on_author?: boolean | null;
+  on_my_agents?: boolean | null;
+  on_self?: boolean | null;
+  on_triage_decided?: boolean | null;
+  on_watching?: boolean | null;
+};
+
+/** `PUT /me/preferences`: fields left out stay as they are. */
+export type PreferencesPut2 = {
   /** The whole map: project id or `*` → a view id (or the object `GET` returned). */
   default_views?: Record<string, DefaultViewInput> | null;
   density?: string | null;
@@ -1569,6 +1678,16 @@ export type PublishResult = {
   part: string;
   rules_version: string;
   version: number;
+};
+
+export type ReadAllDone = {
+  before: string;
+};
+
+/** `POST /notifications/read-all` body. */
+export type ReadAllInput = {
+  /** Mark rows whose `last_at` is at or before this (the first row's `last_at` when the list was loaded), so later arrivals stay unread. */
+  before: string;
 };
 
 export type ReadOwnTimeBody = {
@@ -2552,6 +2671,16 @@ export type Unmapped = {
   status_count?: number | null;
 };
 
+/** `GET /notifications/unread-count`. */
+export type UnreadCount = {
+  /** More than 99: show "99+". */
+  capped: boolean;
+  /** Unread rows with something readable now, at most 99; `null` when it could not be counted in time and the caller's permissions changed since the last count (show no number). */
+  count: number | null;
+  /** Not counted within 2 seconds: the last count (or null). */
+  stale: boolean;
+};
+
 /** `POST /commands/validate` and MCP `validate`. */
 export type ValidateCommandInput = {
   /** A command document, as for command_submit. */
@@ -2719,7 +2848,7 @@ export type ViewDeleted = {
 export type ViewDetail = {
   created_at?: string | null;
   /** Personal: the owner; project: who created it (not an owner). */
-  created_by?: PersonRef | null;
+  created_by?: PersonRef2 | null;
   /** The normalized definition (design 05 §3.3): ids instead of names; `me`, `next` and relative dates kept dynamic. */
   def: unknown;
   editable: boolean;
@@ -2732,11 +2861,11 @@ export type ViewDetail = {
   project_unavailable?: boolean;
   scope: string;
   updated_at?: string | null;
-  updated_by?: PersonRef | null;
+  updated_by?: PersonRef2 | null;
 };
 
 export type ViewEvent = {
-  actor: PersonRef;
+  actor: PersonRef2;
   at: string;
   id: string;
   /** `created`, `updated`, `deleted`. */
@@ -2807,7 +2936,27 @@ export type ViewSummary = {
   /** `builtin`, `personal` or `project`. */
   scope: string;
   updated_at?: string | null;
-  updated_by?: PersonRef | null;
+  updated_by?: PersonRef2 | null;
+};
+
+/** `GET /issues/{key}` → `watch` (people only; agents never watch). */
+export type WatchInfo = {
+  /** Why the caller watches automatically: author, assignee or note. */
+  auto_reason?: string | null;
+  /** The caller unwatched this issue: being assigned, writing a note and so on will not watch it again. */
+  opted_out: boolean;
+  watcher_count: number;
+  watcher_count_capped: boolean;
+  watching: boolean;
+};
+
+/** `PUT|DELETE /issues/{key}/watch`. */
+export type WatchState = {
+  /** Active users who can see the issue now and watch it (at most 100). */
+  watcher_count: number;
+  /** More than 100: show "100+". */
+  watcher_count_capped: boolean;
+  watching: boolean;
 };
 
 /** One condition. Values: ids (uuid) or names / keys / logins for project, tracker, priority, status, assignee, author; `{"me": true}` (or "me") for assignee and author (assignee also matches the caller's groups); `{"next": true}` for fixed_version (needs exactly one project); `"YYYY-MM-DD"` or `{"rel": "today", "offset": -3}` for dates; `within` takes `{"range": "this_week"|"last_week"|"next_week"|"this_month"| "last_month"|"last_n_days"|"next_n_days", "n"?: 1–366}`; decimal strings for estimated_hours and spent_hours; status_category `todo`/`doing`/`done`/`open`; custom fields `{"list": "<option id>"}`, `{"user": "<id>"}`, `{"int": "12"}`, `{"date": "…"}`, … or plain values as in `filter`. */
@@ -2971,12 +3120,21 @@ export interface Endpoints {
   "GET /issues/{key}/dev": { body: never; data: IssueDev };
   "POST /issues/{key}/events/{event_id}/redact": { body: RedactInput; data: Redacted };
   "POST /issues/{key}/notes/{note_id}/redact": { body: RedactInput; data: Redacted };
+  "DELETE /issues/{key}/watch": { body: never; data: WatchState };
+  "PUT /issues/{key}/watch": { body: Empty; data: WatchState };
   "GET /me/home": { body: never; data: HomeView };
   "PUT /me/home": { body: HomePut; data: HomeView };
   "POST /me/home/apply-template": { body: ApplyTemplate; data: Applied };
+  "GET /me/notification-preferences": { body: never; data: NotificationPreferences };
+  "PUT /me/notification-preferences": { body: PreferencesPut; data: NotificationPreferences };
   "GET /me/preferences": { body: never; data: PreferencesView };
-  "PUT /me/preferences": { body: PreferencesPut; data: PreferencesView };
+  "PUT /me/preferences": { body: PreferencesPut2; data: PreferencesView };
   "GET /me/timesheet": { body: never; data: Timesheet };
+  "GET /notifications": { body: never; data: NotificationList };
+  "POST /notifications/read-all": { body: ReadAllInput; data: ReadAllDone };
+  "GET /notifications/unread-count": { body: never; data: UnreadCount };
+  "POST /notifications/{id}/read": { body: Empty; data: Marked };
+  "POST /notifications/{id}/unread": { body: Empty; data: Marked };
   "GET /operations/{id}": { body: never; data: OperationView };
   "GET /org/schedule-settings": { body: never; data: OrgScheduleSettings };
   "PUT /org/schedule-settings": { body: OrgScheduleSettingsInput; data: OrgScheduleSettings };

@@ -23,6 +23,7 @@ pub mod home;
 pub mod issue_view;
 pub mod mcp;
 pub mod metrics;
+pub mod notifications;
 pub mod openapi;
 pub mod perm;
 pub mod policy;

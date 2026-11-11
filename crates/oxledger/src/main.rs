@@ -165,6 +165,35 @@ fn spawn_field_indexer(app: Arc<App>) {
     });
 }
 
+/// Notification dispatch (design 05 §3.11.2): follows the outbox as the
+/// consumer `notify` (target: on the bell within 10 s of the event, B-26)
+/// and removes notifications past their retention once an hour (B-25).
+fn spawn_notifier(app: Arc<App>) {
+    tokio::spawn(async move {
+        let mut last_purge: Option<std::time::Instant> = None;
+        loop {
+            let more = match oxledger::notifications::dispatch_round(&app.pool).await {
+                Ok(r) => r.more,
+                Err(e) => {
+                    tracing::warn!("notification dispatch failed: {e:#}");
+                    false
+                }
+            };
+            if last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                last_purge = Some(std::time::Instant::now());
+                match oxledger::notifications::purge(&app.pool).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(rows = n, "old notifications removed"),
+                    Err(e) => tracing::warn!("notification purge failed: {e:#}"),
+                }
+            }
+            if !more {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
+        }
+    });
+}
+
 /// Deletes expired login challenges.
 fn spawn_sweeper(app: Arc<App>) {
     tokio::spawn(async move {
@@ -186,6 +215,7 @@ async fn serve() -> Result<()> {
     spawn_indexer(app.clone());
     spawn_field_indexer(app.clone());
     spawn_sweeper(app.clone());
+    spawn_notifier(app.clone());
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let cfg = ApiConfig {
         spa_origin: env("OXLEDGER_SPA_ORIGIN", Some(&format!("http://{bind}")))?,

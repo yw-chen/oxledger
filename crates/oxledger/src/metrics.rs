@@ -203,6 +203,145 @@ impl SearchMetrics {
     }
 }
 
+/// Notification dispatch (design 05 §3.11.2, M1.8): rounds and the delay
+/// from an event's transaction start to its dispatch commit.
+pub struct NotifyMetrics {
+    delay: Mutex<Histogram>,
+    rounds_ok: AtomicU64,
+    rounds_failed: AtomicU64,
+    events: AtomicU64,
+    delivered: AtomicU64,
+    skipped: AtomicU64,
+    last_success_unix: AtomicU64,
+}
+
+pub static NOTIFY: NotifyMetrics = NotifyMetrics {
+    delay: Mutex::new(Histogram {
+        counts: [0; BUCKETS.len()],
+        count: 0,
+        sum: 0.0,
+    }),
+    rounds_ok: AtomicU64::new(0),
+    rounds_failed: AtomicU64::new(0),
+    events: AtomicU64::new(0),
+    delivered: AtomicU64::new(0),
+    skipped: AtomicU64::new(0),
+    last_success_unix: AtomicU64::new(0),
+};
+
+impl NotifyMetrics {
+    pub(crate) fn round(&self, _took: Duration, ok: Option<&crate::notifications::Round>) {
+        match ok {
+            Some(r) => {
+                self.rounds_ok.fetch_add(1, Ordering::Relaxed);
+                self.events.fetch_add(r.events as u64, Ordering::Relaxed);
+                self.delivered
+                    .fetch_add(r.delivered as u64, Ordering::Relaxed);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                self.last_success_unix.store(now, Ordering::Relaxed);
+            }
+            None => {
+                self.rounds_failed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// An issue whose pending events were skipped after repeated failures.
+    pub(crate) fn skipped(&self) {
+        self.skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn delay(&self, d: Duration) {
+        if let Ok(mut h) = self.delay.lock() {
+            h.observe(d.as_secs_f64());
+        }
+    }
+
+    async fn render(&self, out: &mut String, pool: &PgPool) -> Result<()> {
+        {
+            let h = self
+                .delay
+                .lock()
+                .map_err(|_| anyhow::anyhow!("metrics lock poisoned"))?;
+            let _ = writeln!(
+                out,
+                "# HELP notify_dispatch_delay_seconds Time from an issue event's transaction start to its dispatch"
+            );
+            let _ = writeln!(out, "# TYPE notify_dispatch_delay_seconds histogram");
+            h.render(out, "notify_dispatch_delay_seconds", "");
+        }
+        let _ = writeln!(out, "# HELP notify_rounds_total Dispatch rounds by result");
+        let _ = writeln!(out, "# TYPE notify_rounds_total counter");
+        for (k, c) in [("ok", &self.rounds_ok), ("failed", &self.rounds_failed)] {
+            let _ = writeln!(
+                out,
+                "notify_rounds_total{{result=\"{k}\"}} {}",
+                c.load(Ordering::Relaxed)
+            );
+        }
+        let _ = writeln!(out, "# HELP notify_events_total Issue events dispatched");
+        let _ = writeln!(out, "# TYPE notify_events_total counter");
+        let _ = writeln!(
+            out,
+            "notify_events_total {}",
+            self.events.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP notify_deliveries_total Notification rows written or extended"
+        );
+        let _ = writeln!(out, "# TYPE notify_deliveries_total counter");
+        let _ = writeln!(
+            out,
+            "notify_deliveries_total {}",
+            self.delivered.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP notify_skipped_issues_total Issues whose pending events were skipped after repeated dispatch failures"
+        );
+        let _ = writeln!(out, "# TYPE notify_skipped_issues_total counter");
+        let _ = writeln!(
+            out,
+            "notify_skipped_issues_total {}",
+            self.skipped.load(Ordering::Relaxed)
+        );
+        gauge(
+            out,
+            "notify_last_success_timestamp_seconds",
+            "Unix time of the last successful dispatch round",
+            self.last_success_unix.load(Ordering::Relaxed) as f64,
+        );
+        // The outbox after the notify cursor: while it grows the consumer
+        // lags and also holds back the outbox GC.
+        let (pending, oldest): (i64, Option<f64>) = sqlx::query_as(
+            "SELECT count(o.id), extract(epoch FROM now() - min(o.created_at))::float8
+             FROM outbox_cursors c LEFT JOIN outbox o
+               ON o.topic = 'issue' AND (o.xid, o.id) > (c.last_xid, c.last_id)
+             WHERE c.consumer = 'notify'",
+        )
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or((0, None));
+        gauge(
+            out,
+            "notify_outbox_pending",
+            "Outbox events after the notify cursor",
+            pending as f64,
+        );
+        gauge(
+            out,
+            "notify_outbox_oldest_pending_age_seconds",
+            "Age of the oldest event the notify consumer has not passed",
+            oldest.unwrap_or(0.0).max(0.0),
+        );
+        Ok(())
+    }
+}
+
 /// An open transaction that holds an xid (03 §4.7): these hold back the
 /// search frontier, in any database of the instance.
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -447,5 +586,6 @@ pub async fn render(pool: &PgPool, index: &SearchIndex) -> Result<String> {
         "Age of the oldest transaction holding an xid, instance-wide",
         oldest_xid.max(0.0),
     );
+    NOTIFY.render(&mut out, pool).await?;
     Ok(out)
 }
