@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>oxledger</title>
+		<script>
+			try { const t = localStorage.getItem('ox.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+		</script>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="off">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

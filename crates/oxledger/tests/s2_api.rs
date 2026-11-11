@@ -363,6 +363,51 @@ async fn s2_api() {
         );
     }
 
+    // ---------------------------------------------- P1 gaps G1, G2
+    // GET /projects: only what the caller can see.
+    let resp = call(&r, "GET", "/projects", None, Some(&a), &[]).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let keys: Vec<&str> = resp.body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["PAGE"]);
+    assert_eq!(resp.body["data"][0]["id"], json!(p.to_string()));
+    let resp = call(&r, "GET", "/projects", None, Some(&b), &[]).await;
+    assert_eq!(resp.body["data"][0]["key"], "BOBS");
+    assert_eq!(resp.body["data"].as_array().unwrap().len(), 1);
+    // GET /issues/{key}/view: full detail with the optional blocks; the
+    // invisible issue looks exactly like a missing one.
+    let path = format!("/issues/{}/view?include=recent_notes,recent_events", page_keys[0]);
+    let resp = call(&r, "GET", &path, None, Some(&a), &[]).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(resp.body["data"]["key"], json!(page_keys[0]));
+    assert!(resp.body["data"]["recent_notes"]["items"].is_array());
+    assert!(resp.body["data"]["recent_events"]["items"].is_array());
+    assert!(resp.body["data"].get("fixed_version").is_some(), "{}", resp.body);
+    assert!(resp.body["data"].get("priority").is_some());
+    assert!(resp.body["data"]["children"].is_array());
+    assert_eq!(resp.body["data"]["project_key"], "PAGE");
+    assert_eq!(resp.body["data"]["project_id"], json!(p.to_string()));
+    assert_eq!(resp.body["data"]["tracker_id"], json!(tracker.to_string()));
+    assert_eq!(resp.body["data"]["assigned_to_id"], Value::Null);
+    assert!(resp.body["data"].get("actions").is_none());
+    let hidden = call(&r, "GET", &format!("/issues/{bobs_key}/view"), None, Some(&a), &[]).await;
+    let missing = call(&r, "GET", "/issues/PAGE-999/view", None, Some(&a), &[]).await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    assert_eq!(hidden.code(), "not_found");
+    assert_eq!(missing.code(), "not_found");
+    assert_eq!(
+        hidden.body["error"]["message"].as_str().unwrap().replace(&bobs_key, "K"),
+        missing.body["error"]["message"].as_str().unwrap().replace("PAGE-999", "K")
+    );
+    let bad = call(&r, "GET", &format!("{path}&note_limit=x"), None, Some(&a), &[]).await;
+    assert_eq!(bad.code(), "invalid_argument");
+    let bad = call(&r, "GET", &format!("/issues/{}/view?include=nope", page_keys[0]), None, Some(&a), &[]).await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.body);
+
     // ---------------------------------------------- REST search, keyset paging
     let search = |body: Value, who: Browser| {
         let r = r.clone();

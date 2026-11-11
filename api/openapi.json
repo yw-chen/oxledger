@@ -822,6 +822,10 @@
             "format": "uuid",
             "type": "string"
           },
+          "agent_label": {
+            "description": "The agent as history shows it (§16.2), e.g. `claude-code@alice`.",
+            "type": "string"
+          },
           "agent_principal_id": {
             "format": "uuid",
             "type": "string"
@@ -858,15 +862,32 @@
           },
           "state": {
             "type": "string"
+          },
+          "suspended_at": {
+            "description": "Writes paused (§16.6, §16.10): when, and `manual` or the breaker's reason.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suspension_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "agent_principal_id",
+          "agent_label",
           "agent_client_id",
           "state",
           "created_at",
           "closed_at",
+          "suspended_at",
+          "suspension_reason",
           "source_projects",
           "changed_projects"
         ],
@@ -1653,6 +1674,39 @@
         ],
         "type": "object"
       },
+      "EventView": {
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "detail": {
+            "description": "The event's content as the caller may see it (readable fields only;\nids shown as names). Absent when redacted."
+          },
+          "event_id": {
+            "description": "Opaque id (for `POST /issues/{key}/events/{event_id}/redact`); the\ninternal sequence number is never returned.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "created | fields_changed | status_changed | note_added | duplicate_added",
+            "type": "string"
+          },
+          "redacted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "event_id",
+          "kind",
+          "at",
+          "actor"
+        ],
+        "type": "object"
+      },
       "Evidence": {
         "additionalProperties": false,
         "properties": {
@@ -1812,6 +1866,10 @@
       "FieldSchema": {
         "properties": {
           "constraints": true,
+          "delegable": {
+            "description": "The field may be put in an agent delegation's `writable_fields`\n(02 §3.5: agents never read or write `visible = false` custom fields).",
+            "type": "boolean"
+          },
           "key": {
             "description": "`subject`, `assigned_to_id`, … or `cf:<id>` for custom fields.",
             "type": "string"
@@ -1860,7 +1918,8 @@
           "key",
           "type",
           "required",
-          "ops"
+          "ops",
+          "delegable"
         ],
         "type": "object"
       },
@@ -2657,7 +2716,7 @@
         "properties": {
           "candidates": {
             "items": {
-              "$ref": "#/components/schemas/VersionBrief"
+              "$ref": "#/components/schemas/VersionBrief2"
             },
             "type": [
               "array",
@@ -2675,7 +2734,7 @@
           },
           "undated": {
             "items": {
-              "$ref": "#/components/schemas/VersionBrief"
+              "$ref": "#/components/schemas/VersionBrief2"
             },
             "type": [
               "array",
@@ -2685,7 +2744,7 @@
           "version": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/VersionBrief"
+                "$ref": "#/components/schemas/VersionBrief2"
               },
               {
                 "type": "null"
@@ -2710,6 +2769,56 @@
         "required": [
           "can_add",
           "can_set_private"
+        ],
+        "type": "object"
+      },
+      "NoteView": {
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "citation_id": {
+            "description": "Cites the whole note (source kind issue_note).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "is_private": {
+            "type": "boolean"
+          },
+          "note_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "redacted": {
+            "description": "The body was redacted (D12); there is no citation for it.",
+            "type": "boolean"
+          },
+          "retracted": {
+            "description": "Retracted by an undo (§16.7): the body is hidden, the note stays.",
+            "type": "boolean"
+          },
+          "retracted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "note_id",
+          "author",
+          "created_at",
+          "is_private",
+          "body"
         ],
         "type": "object"
       },
@@ -3299,6 +3408,68 @@
         ],
         "type": "object"
       },
+      "ProjectItem": {
+        "description": "One project the caller can see (P1 gap G2: the SPA's navigation).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "description": "The issue key prefix, e.g. `AUTH`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name"
+        ],
+        "type": "object"
+      },
+      "RecentEvents": {
+        "properties": {
+          "items": {
+            "description": "Newest first.",
+            "items": {
+              "$ref": "#/components/schemas/EventView"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "More readable events exist.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "RecentNotes": {
+        "properties": {
+          "items": {
+            "description": "Newest first.",
+            "items": {
+              "$ref": "#/components/schemas/NoteView"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "More readable notes exist.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "RedactInput": {
         "properties": {
           "reason": {
@@ -3601,6 +3772,10 @@
       },
       "ScheduleSettings": {
         "properties": {
+          "can_manage": {
+            "description": "The caller may change these settings (`manage_versions`).",
+            "type": "boolean"
+          },
           "effective": {
             "$ref": "#/components/schemas/HealthValues"
           },
@@ -3620,6 +3795,7 @@
           }
         },
         "required": [
+          "can_manage",
           "effective",
           "source",
           "org",
@@ -4195,6 +4371,285 @@
         "required": [
           "project_id",
           "security_epoch"
+        ],
+        "type": "object"
+      },
+      "SpaIssue": {
+        "description": "The issue page of the SPA (`GET /issues/{key}/view`, P1 gap G1): every\n`get` field plus the full detail (dates, author, children, custom fields,\nallowed statuses) and the ids an edit form sends back, read in one\ntransaction so the parts agree.",
+        "properties": {
+          "actions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueActions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allowed_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "assigned_to_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assignee": {
+            "description": "null when unassigned.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assignee_kind": {
+            "description": "user | group (a group assignee is not a person).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/IssueBrief"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "citations": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Field → citation_id of the whole field (`citations`).",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "custom_fields": {
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldValue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueDev"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`include: [\"dev\"]`: pull requests that name this issue (§19.7), a\nread-only projection that may lag GitHub by minutes (`synced_at`)."
+          },
+          "due_date": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fixed_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VersionBrief"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The milestone (`fixed_version_id`); null when none."
+          },
+          "is_private": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "last_activity_at": {
+            "description": "The latest domain activity the caller can see (not `updated_at`, which\nalso moves for notes the caller cannot read).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "project_key": {
+            "description": "The current project key (the key prefix).",
+            "type": "string"
+          },
+          "recent_events": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecentEvents"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recent_notes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecentNotes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested_key": {
+            "description": "Set when the requested key is an old key of a moved issue.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status_since": {
+            "description": "When the issue last entered its current status (a transition that changed\nnothing does not count); the creation time if it never changed. null when\nthe history is missing or redacted (then status_since_known is false).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_since_known": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracker_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "get_many: left out to keep the response small; call `get` for this key.",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "project_key",
+          "project_id",
+          "tracker_id",
+          "status_id",
+          "assigned_to_id",
+          "priority_id"
         ],
         "type": "object"
       },
@@ -5333,6 +5788,42 @@
         "type": "object"
       },
       "VersionBrief": {
+        "description": "A milestone as `get` names it.",
+        "properties": {
+          "deleted": {
+            "description": "Soft-deleted (D-11): the issue keeps pointing at it until changed.",
+            "type": "boolean"
+          },
+          "effective_date": {
+            "description": "YYYY-MM-DD or null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "description": "The current name; show \"（已刪除）\" after it when `deleted` (§17.14).",
+            "type": "string"
+          },
+          "status": {
+            "description": "open | locked | closed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "effective_date",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "VersionBrief2": {
         "properties": {
           "effective_date": {
             "type": [
@@ -5449,6 +5940,10 @@
       },
       "VersionList": {
         "properties": {
+          "can_manage": {
+            "description": "The caller may create and change versions here (`manage_versions`);\nthe SPA hides those controls otherwise.",
+            "type": "boolean"
+          },
           "next": {
             "anyOf": [
               {
@@ -5472,6 +5967,7 @@
         },
         "required": [
           "today",
+          "can_manage",
           "versions"
         ],
         "type": "object"
@@ -8494,6 +8990,65 @@
         "x-csrf": true
       }
     },
+    "/issues/{key}/view": {
+      "get": {
+        "operationId": "get_issues_key_view",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SpaIssue"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). not_found for invisible and missing issues alike.",
+        "x-access": "session"
+      }
+    },
     "/operations/{id}": {
       "get": {
         "operationId": "get_operations_id",
@@ -8658,6 +9213,58 @@
         "summary": "Change the organization defaults (a system administrator). Header Idempotency-Key. lock_version must match (conflict).",
         "x-access": "session",
         "x-csrf": true
+      }
+    },
+    "/projects": {
+      "get": {
+        "operationId": "get_projects",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/ProjectItem"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The projects whose issues you can see (the read scope of search), ordered by key.",
+        "x-access": "session"
       }
     },
     "/projects/{id}/assignees": {

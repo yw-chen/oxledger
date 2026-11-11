@@ -371,4 +371,59 @@ async fn eligibility_needs_short_fields_and_validation() {
         .unwrap();
     assert_eq!(e.reasons, vec!["validation:failed".to_string()]);
     assert_eq!(e.review_modes(), vec!["detail".to_string()]);
+
+    // P1: a stored proposal carries custom values typed ({"<type>": v});
+    // the queue shows the proposed value like the current one (§15.3:
+    // names, not ids).
+    let list: i32 = sqlx::query_scalar(
+        "INSERT INTO field_defs (name, ftype) VALUES ('Severity', 'list') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let high: Uuid = sqlx::query_scalar(
+        "INSERT INTO field_options (field_id, label) VALUES ($1, 'High') RETURNING id",
+    )
+    .bind(list)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let est: i32 = sqlx::query_scalar(
+        "INSERT INTO field_defs (name, ftype) VALUES ('Estimate', 'float') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let pts: i32 = sqlx::query_scalar(
+        "INSERT INTO field_defs (name, ftype) VALUES ('Points', 'int') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let who: i32 = sqlx::query_scalar(
+        "INSERT INTO field_defs (name, ftype) VALUES ('Reviewer', 'user') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let i = w.issue(w.web, "typed diff").await;
+    let doc = json!({"ops": [{"kind": "update_fields", "target": {"type": "issue", "id": i},
+        "set": {format!("cf:{list}"): {"list": high}, format!("cf:{est}"): {"float": "5.5"}, format!("cf:{pts}"): {"int": "8"},
+                format!("cf:{who}"): {"user": w.bob}, format!("cf:{short}"): {"string": "x"}}}]});
+    let keys = std::collections::BTreeMap::from([(i, "WEB-1".to_string())]);
+    let rows = oxledger::review_queue::diff(&mut c, alice, &doc, &keys)
+        .await
+        .unwrap();
+    let after = |id: i32| {
+        rows.iter()
+            .find(|r| r.field == format!("cf:{id}"))
+            .unwrap()
+            .after
+            .clone()
+    };
+    assert_eq!(after(list), json!({"id": high, "label": "High"}));
+    assert_eq!(after(est), json!(5.5));
+    assert_eq!(after(pts), json!(8));
+    assert_eq!(after(who)["name"], "bob");
+    assert_eq!(after(short), json!("x"));
 }

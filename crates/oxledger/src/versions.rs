@@ -101,6 +101,9 @@ pub struct Thresholds {
 pub struct VersionList {
     /// The org time zone's date (R10).
     pub today: String,
+    /// The caller may create and change versions here (`manage_versions`);
+    /// the SPA hides those controls otherwise.
+    pub can_manage: bool,
     pub versions: Vec<VersionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<NextVersion>,
@@ -707,6 +710,7 @@ pub async fn list(
     tx.commit().await?;
     Ok(VersionList {
         today: today.to_string(),
+        can_manage: a.manage,
         versions,
         next,
     })
@@ -2704,6 +2708,8 @@ pub struct ProjectHealthSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ScheduleSettings {
+    /// The caller may change these settings (`manage_versions`).
+    pub can_manage: bool,
     pub effective: HealthValues,
     /// `org` or `project`.
     pub source: String,
@@ -2763,7 +2769,11 @@ fn check_ranges(days: Option<i32>, pct: Option<i32>) -> Result<()> {
     Ok(())
 }
 
-async fn settings_in(conn: &mut PgConnection, project: Uuid) -> Result<ScheduleSettings> {
+async fn settings_in(
+    conn: &mut PgConnection,
+    project: Uuid,
+    can_manage: bool,
+) -> Result<ScheduleSettings> {
     type Row = (
         Option<i32>,
         Option<i32>,
@@ -2782,6 +2792,7 @@ async fn settings_in(conn: &mut PgConnection, project: Uuid) -> Result<ScheduleS
     .await?;
     let t = thresholds(&mut *conn, project).await?;
     Ok(ScheduleSettings {
+        can_manage,
         effective: HealthValues {
             health_at_risk_days: t.at_risk_days,
             health_at_risk_open_pct: t.at_risk_open_pct,
@@ -2810,8 +2821,8 @@ pub async fn schedule_settings(
     let project = describe::visible_project(&mut tx, caller, project)
         .await
         .map_err(|_| not_found())?;
-    access(&mut tx, caller, project).await?;
-    let s = settings_in(&mut tx, project).await?;
+    let a = access(&mut tx, caller, project).await?;
+    let s = settings_in(&mut tx, project, a.manage).await?;
     tx.commit().await?;
     Ok(s)
 }
@@ -2876,7 +2887,7 @@ pub async fn put_schedule_settings(
             &fp,
         )
         .await?;
-        let s = settings_in(&mut tx, project).await?;
+        let s = settings_in(&mut tx, project, true).await?;
         tx.commit().await?;
         return Ok(s);
     };
@@ -2919,7 +2930,7 @@ pub async fn put_schedule_settings(
     .execute(&mut *tx)
     .await?;
     commands::complete_request(&mut tx, request_id, &json!({"project_id": project})).await?;
-    let s = settings_in(&mut tx, project).await?;
+    let s = settings_in(&mut tx, project, true).await?;
     tx.commit().await?;
     Ok(s)
 }

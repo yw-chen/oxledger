@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "oxledger-backend",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "web/e2e/backend.mjs",
+        "serve",
+        "oxledger_fe_dev"
+      ],
+      "port": 18080
+    },
+    {
+      "name": "oxledger-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "web",
+        "run",
+        "dev"
+      ],
+      "port": 5174
+    }
+  ]
+}

@@ -331,5 +331,10 @@ async fn s6_quota() {
         suspended_reason(&write(&w, agent, ia, "paused").await.unwrap_err()),
         "manual"
     );
+    // P1 gap G3: the delegation page sees the pause.
+    let views = agents::list_contexts(&pool, &w.alice_ctx).await.unwrap();
+    let v = views.iter().find(|c| c.id == ctx).unwrap();
+    assert!(v.suspended_at.is_some());
+    assert_eq!(v.suspension_reason.as_deref(), Some("manual"));
     faults::clear();
 }

@@ -556,6 +556,7 @@ async fn s3_permissions() {
     let serialized = serde_json::to_string(&s).unwrap();
     assert!(!serialized.contains("Secret"), "{serialized}");
     let b = field(&s, &browser_k).unwrap();
+    assert!(b.delegable, "visible custom fields are delegable");
     assert!(b.required);
     let opts = b.options.as_ref().unwrap();
     assert_eq!(opts.len(), 2);
@@ -584,6 +585,9 @@ async fn s3_permissions() {
     assert_eq!(field(&s, "subject").unwrap().ops, ["create", "update"]);
     assert!(field(&s, &secret_k).is_some(), "Reporter reads Secret");
     assert!(field(&s, &budget_k).is_none());
+    // The SPA's delegation wizard offers only fields an agent may be given.
+    assert!(!field(&s, &secret_k).unwrap().delegable, "visible = false is not delegable");
+    assert!(field(&s, "subject").unwrap().delegable);
     assert_eq!(s.creation.is_private.allowed_values, [false, true]);
 
     // Viewer: reads, no ops, cannot create.

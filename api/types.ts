@@ -222,6 +222,8 @@ export type Consistency = {
 
 export type ContextView = {
   agent_client_id: string;
+  /** The agent as history shows it (§16.2), e.g. `claude-code@alice`. */
+  agent_label: string;
   agent_principal_id: string;
   /** Source projects whose settings changed since (the context can no longer be used). */
   changed_projects: Array<string>;
@@ -231,6 +233,9 @@ export type ContextView = {
   /** R: every project ever granted to this context, with the epoch recorded then. */
   source_projects: Array<SourceProject>;
   state: string;
+  /** Writes paused (§16.6, §16.10): when, and `manual` or the breaker's reason. */
+  suspended_at: string | null;
+  suspension_reason: string | null;
 };
 
 export type Created = {
@@ -385,6 +390,18 @@ export type EventActor = {
   name: string;
 };
 
+export type EventView = {
+  actor: string;
+  at: string;
+  /** The event's content as the caller may see it (readable fields only; ids shown as names). Absent when redacted. */
+  detail?: unknown;
+  /** Opaque id (for `POST /issues/{key}/events/{event_id}/redact`); the internal sequence number is never returned. */
+  event_id: string;
+  /** created | fields_changed | status_changed | note_added | duplicate_added */
+  kind: string;
+  redacted?: boolean;
+};
+
 export type Evidence = {
   citation_id: string;
   quote: string;
@@ -426,6 +443,8 @@ export type FieldAction = {
 
 export type FieldSchema = {
   constraints?: unknown;
+  /** The field may be put in an agent delegation's `writable_fields` (02 §3.5: agents never read or write `visible = false` custom fields). */
+  delegable: boolean;
   /** `subject`, `assigned_to_id`, … or `cf:<id>` for custom fields. */
   key: string;
   /** Display name (custom fields). */
@@ -660,16 +679,31 @@ export type NextAction = "fix_input" | "refresh_and_revise" | "retry_same_reques
 
 /** §17.10: `resolved`, `ambiguous` or `none`. */
 export type NextVersion = {
-  candidates?: Array<VersionBrief> | null;
+  candidates?: Array<VersionBrief2> | null;
   outcome: string;
   reason?: string | null;
-  undated?: Array<VersionBrief> | null;
-  version?: VersionBrief | null;
+  undated?: Array<VersionBrief2> | null;
+  version?: VersionBrief2 | null;
 };
 
 export type NoteActions = {
   can_add: boolean;
   can_set_private: boolean;
+};
+
+export type NoteView = {
+  author: string;
+  body: string;
+  /** Cites the whole note (source kind issue_note). */
+  citation_id?: string | null;
+  created_at: string;
+  is_private: boolean;
+  note_id: string;
+  /** The body was redacted (D12); there is no citation for it. */
+  redacted?: boolean;
+  /** Retracted by an undo (§16.7): the body is hidden, the note stays. */
+  retracted?: boolean;
+  retracted_by?: string | null;
 };
 
 /** `ne` also matches issues without a value; `lt`/`le`/`gt`/`ge`/`between` need an int, float or date field. */
@@ -816,6 +850,28 @@ export type ProjectHealthSettings = {
   inherit_org: boolean;
 };
 
+/** One project the caller can see (P1 gap G2: the SPA's navigation). */
+export type ProjectItem = {
+  id: string;
+  /** The issue key prefix, e.g. `AUTH`. */
+  key: string;
+  name: string;
+};
+
+export type RecentEvents = {
+  /** Newest first. */
+  items: Array<EventView>;
+  /** More readable events exist. */
+  truncated: boolean;
+};
+
+export type RecentNotes = {
+  /** Newest first. */
+  items: Array<NoteView>;
+  /** More readable notes exist. */
+  truncated: boolean;
+};
+
 export type RedactInput = {
   /** Why (1–500 characters). Never paste the original text here. */
   reason: string;
@@ -907,6 +963,8 @@ export type Revoked = {
 };
 
 export type ScheduleSettings = {
+  /** The caller may change these settings (`manage_versions`). */
+  can_manage: boolean;
   effective: HealthValues;
   lock_version: number;
   org: HealthValues;
@@ -1068,6 +1126,58 @@ export type SettingEvents = {
 export type SourceProject = {
   project_id: string;
   security_epoch: number;
+};
+
+/** The issue page of the SPA (`GET /issues/{key}/view`, P1 gap G1): every `get` field plus the full detail (dates, author, children, custom fields, allowed statuses) and the ids an edit form sends back, read in one transaction so the parts agree. */
+export type SpaIssue = {
+  actions?: IssueActions | null;
+  allowed_statuses?: Array<string> | null;
+  assigned_to_id: string | null;
+  /** null when unassigned. */
+  assignee?: string | null;
+  /** user | group (a group assignee is not a person). */
+  assignee_kind?: string | null;
+  author?: string | null;
+  children?: Array<IssueBrief> | null;
+  /** Field → citation_id of the whole field (`citations`). */
+  citations?: Record<string, string> | null;
+  created_at?: string | null;
+  custom_fields?: Array<CustomFieldValue> | null;
+  description?: string | null;
+  /** `include: ["dev"]`: pull requests that name this issue (§19.7), a read-only projection that may lag GitHub by minutes (`synced_at`). */
+  dev?: IssueDev | null;
+  due_date?: string | null;
+  /** The milestone (`fixed_version_id`); null when none. */
+  fixed_version?: VersionBrief | null;
+  is_private?: boolean | null;
+  key: string;
+  /** The latest domain activity the caller can see (not `updated_at`, which also moves for notes the caller cannot read). */
+  last_activity_at?: string | null;
+  lock_version?: number | null;
+  parent?: string | null;
+  priority?: string | null;
+  priority_id: string | null;
+  project?: string | null;
+  project_id: string;
+  /** The current project key (the key prefix). */
+  project_key: string;
+  recent_events?: RecentEvents | null;
+  recent_notes?: RecentNotes | null;
+  /** Set when the requested key is an old key of a moved issue. */
+  requested_key?: string | null;
+  start_date?: string | null;
+  status?: string | null;
+  status_category?: string | null;
+  status_id: string;
+  /** When the issue last entered its current status (a transition that changed nothing does not count); the creation time if it never changed. null when the history is missing or redacted (then status_since_known is false). */
+  status_since?: string | null;
+  status_since_known?: boolean | null;
+  subject?: string | null;
+  tracker?: string | null;
+  tracker_id: string;
+  /** get_many: left out to keep the response small; call `get` for this key. */
+  truncated?: boolean;
+  updated_at?: string | null;
 };
 
 export type StateView = {
@@ -1369,7 +1479,20 @@ export type Validation = {
   warnings: Array<string>;
 };
 
+/** A milestone as `get` names it. */
 export type VersionBrief = {
+  /** Soft-deleted (D-11): the issue keeps pointing at it until changed. */
+  deleted: boolean;
+  /** YYYY-MM-DD or null. */
+  effective_date: string | null;
+  id: string;
+  /** The current name; show "（已刪除）" after it when `deleted` (§17.14). */
+  name: string;
+  /** open | locked | closed. */
+  status: string;
+};
+
+export type VersionBrief2 = {
   effective_date?: string | null;
   id: string;
   name: string;
@@ -1402,6 +1525,8 @@ export type VersionFields = {
 };
 
 export type VersionList = {
+  /** The caller may create and change versions here (`manage_versions`); the SPA hides those controls otherwise. */
+  can_manage: boolean;
   next?: NextVersion | null;
   /** The org time zone's date (R10). */
   today: string;
@@ -1524,9 +1649,11 @@ export interface Endpoints {
   "GET /issues/{key}/dev": { body: never; data: IssueDev };
   "POST /issues/{key}/events/{event_id}/redact": { body: RedactInput; data: Redacted };
   "POST /issues/{key}/notes/{note_id}/redact": { body: RedactInput; data: Redacted };
+  "GET /issues/{key}/view": { body: never; data: SpaIssue };
   "GET /operations/{id}": { body: never; data: OperationView };
   "GET /org/schedule-settings": { body: never; data: OrgScheduleSettings };
   "PUT /org/schedule-settings": { body: OrgScheduleSettingsInput; data: OrgScheduleSettings };
+  "GET /projects": { body: never; data: Array<ProjectItem> };
   "GET /projects/{id}/assignees": { body: never; data: AssigneeList };
   "GET /projects/{id}/dev": { body: never; data: ProjectDev };
   "DELETE /projects/{id}/dev/prs/{pr_id}/hide": { body: never; data: HideResult };
