@@ -612,7 +612,7 @@ BPMN 描述的是活動、事件和 token 的流動；oxledger 的 workflow 描�
 |---|---|---|
 | M1 | list／board 加寫入閉環；薄版的 `view.open／state／act`；受控的 list／board render | 任意圖型；擷取使用者畫面 |
 | M1 後續 | parent mindmap、唯讀 ontology 局部鄰域；共用節點 ID、上限與截斷契約 | 自由畫圖；AI 自動寫入 ontology |
-| M2 | 自由 mindmap 圖件、圖件版本與連結權限；BPMN 圖件的檢視與編寫 | 從 BPMN 發布 workflow；流程執行 |
+| P5（原 M2；2026-11-13 依 06 A1 (a) 移到 P5 契約） | 自由 mindmap 圖件、圖件版本與連結權限；BPMN 圖件的檢視與編寫 | 從 BPMN 發布 workflow；流程執行 |
 | M3 | Gantt：先唯讀，再單筆改日期 + ChangeSet 預覽；dashboard | 沒有排程模型就宣稱自動順延 |
 | M3 後續 | 依賴、工作日曆、約束都定好之後的連鎖排程；workflow 圖形編輯器 | 任意 BPMN 無損轉換 |
 | 另外決定 | 受限的 BPMN ↔ workflow 映射、發布、遷移 | 把 BPMN 執行引擎當附帶功能 |
@@ -639,7 +639,7 @@ BPMN 描述的是活動、事件和 token 的流動；oxledger 的 workflow 描�
 | view session（TTL、revision、重新授權） | 🆕 | M1 |
 | `view.kinds／open／state／act` | 🆕 | M1 薄版 |
 | `view.render` + 受控 render 頁 + 上限 + 稽核 | 🆕 | M1（list／board） |
-| 圖件儲存：穩定節點 ID、版本、併發、連結權限、匯入安全（BPMN XML、SVG） | 🆕 | M2 |
+| 圖件儲存：穩定節點 ID、版本、併發、連結權限、匯入安全（BPMN XML、SVG） | 🆕 | P5（原 M2，見 06 A1） |
 | 確定性排程計算器（依賴型態、工作日曆、約束） | 🆕 | M3 |
 | workflow 圖形編輯器、BPMN 映射的診斷報告 | 🆕 | M3 後續、另外決定 |
 | 截圖契約測試（不多畫資料、可見性一致、中文正常、輸出不超限） | 🆕 | 跟著 render 一起做 |
