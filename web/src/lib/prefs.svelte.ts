@@ -1,37 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Per-person conveniences kept in this browser (decision P1-D3: there is no
-// server endpoint for personal settings yet; gap G4). Nothing here is
-// authority: losing it only resets the layout.
+// Per-browser conveniences (collapsed nav, collaboration column). Theme,
+// density, home widgets and shortcuts are personal settings on the server
+// (contract 05 §3.8, lib/me.svelte.ts); the theme is also cached here so a
+// reload does not flash the wrong colours before the server answers.
 
-export type WidgetKind = 'decide' | 'agents' | 'mine' | 'milestones' | 'recent' | 'query';
-export type Widget = { id: string; kind: WidgetKind; wide: boolean; title?: string; query?: string; project?: string };
-
-export const WIDGET_TITLES: Record<WidgetKind, string> = {
-	decide: '需要你決定',
-	agents: 'Agent 今天做了什麼',
-	mine: '指派給我',
-	milestones: '里程碑',
-	recent: '最近更新',
-	query: '存起來的篩選'
-};
-
-export const DEFAULT_WIDGETS: Widget[] = [
-	{ id: 'decide', kind: 'decide', wide: true },
-	{ id: 'agents', kind: 'agents', wide: false },
-	{ id: 'mine', kind: 'mine', wide: false },
-	{ id: 'milestones', kind: 'milestones', wide: false },
-	{ id: 'recent', kind: 'recent', wide: false }
-];
+export type Theme = 'dark' | 'light' | 'high_contrast' | 'system';
+export const THEMES: Theme[] = ['dark', 'light', 'high_contrast', 'system'];
+export const THEME_LABEL: Record<Theme, string> = { dark: '深色', light: '淺色', high_contrast: '高對比', system: '跟隨系統' };
+export type Density = 'comfortable' | 'compact';
+export const DENSITY_LABEL: Record<Density, string> = { comfortable: '寬鬆', compact: '緊湊' };
 
 type Prefs = {
-	theme: 'dark' | 'light';
+	theme: Theme;
+	density: Density;
 	navMini: boolean;
 	collabTab: 'ai' | 'activity';
 	collabHidden: boolean;
-	widgets: Widget[];
 };
 
-const DEFAULTS: Prefs = { theme: 'dark', navMini: false, collabTab: 'activity', collabHidden: false, widgets: DEFAULT_WIDGETS };
+const DEFAULTS: Prefs = { theme: 'dark', density: 'comfortable', navMini: false, collabTab: 'activity', collabHidden: false };
 
 function read(key: string): Partial<Prefs> {
 	try {
@@ -41,30 +28,23 @@ function read(key: string): Partial<Prefs> {
 	}
 }
 
-export const prefs = $state<Prefs>({ ...DEFAULTS, widgets: [...DEFAULT_WIDGETS] });
+export const prefs = $state<Prefs>({ ...DEFAULTS });
 let storeKey = 'ox.prefs.anon';
 
-/** U22: "需要你決定" is always there and cannot be removed (only moved). */
-export function normalizeWidgets(ws: Widget[] | undefined): Widget[] {
-	const list = Array.isArray(ws) ? ws.filter((w) => w && w.kind in WIDGET_TITLES) : [...DEFAULT_WIDGETS];
-	if (!list.some((w) => w.kind === 'decide')) list.unshift({ id: 'decide', kind: 'decide', wide: true });
-	const seen = new Set<string>();
-	return list.filter((w) => (seen.has(w.id) ? false : (seen.add(w.id), true)));
-}
+export const asTheme = (t: unknown): Theme => (THEMES.includes(t as Theme) ? (t as Theme) : 'dark');
 
 export function loadPrefs(userId: string | null) {
 	storeKey = `ox.prefs.${userId ?? 'anon'}`;
 	const p = read(storeKey);
-	prefs.theme = p.theme === 'light' ? 'light' : 'dark';
+	prefs.theme = asTheme(p.theme);
+	prefs.density = p.density === 'compact' ? 'compact' : 'comfortable';
 	prefs.navMini = !!p.navMini;
 	prefs.collabTab = p.collabTab === 'ai' ? 'ai' : 'activity';
 	prefs.collabHidden = !!p.collabHidden;
-	prefs.widgets = normalizeWidgets(p.widgets);
 	applyTheme();
 }
 
 export function savePrefs() {
-	prefs.widgets = normalizeWidgets(prefs.widgets);
 	try {
 		localStorage.setItem(storeKey, JSON.stringify(prefs));
 		localStorage.setItem('ox.theme', prefs.theme);
@@ -73,12 +53,20 @@ export function savePrefs() {
 	}
 }
 
-export function applyTheme() {
-	if (typeof document !== 'undefined') document.documentElement.dataset.theme = prefs.theme;
+/** The colours actually shown: 「跟隨系統」 picks dark or light from the OS. */
+export function resolvedTheme(t: Theme, prefersLight: boolean): 'dark' | 'light' | 'hc' {
+	if (t === 'high_contrast') return 'hc';
+	if (t === 'system') return prefersLight ? 'light' : 'dark';
+	return t;
 }
 
-export function toggleTheme() {
-	prefs.theme = prefs.theme === 'dark' ? 'light' : 'dark';
-	applyTheme();
-	savePrefs();
+let mq: MediaQueryList | null = null;
+export function applyTheme() {
+	if (typeof document === 'undefined') return;
+	if (!mq && typeof matchMedia === 'function') {
+		mq = matchMedia('(prefers-color-scheme: light)');
+		mq.addEventListener?.('change', () => prefs.theme === 'system' && applyTheme());
+	}
+	document.documentElement.dataset.theme = resolvedTheme(prefs.theme, !!mq?.matches);
+	document.documentElement.dataset.density = prefs.density;
 }

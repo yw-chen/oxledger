@@ -14,9 +14,21 @@
 	import { toast } from '$lib/toast.svelte';
 	import { FLAG } from '$lib/health';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import FieldInput from '$lib/components/FieldInput.svelte';
 	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
 	import { issueValues, labelOf, show } from '$lib/render';
+	import type { InboxSettings, IssueTriage, TimeEntryView, TriageDecision } from '$api/types';
+	import { logTimeDoc, logTimeOp, showHours, type LogInput } from '$lib/hours';
+	import { refreshTriageCounts } from '$lib/counts.svelte';
+	import TriageDecide from '$lib/components/TriageDecide.svelte';
+	import TimeCard from '$lib/components/TimeCard.svelte';
+	import LogTime from '$lib/components/LogTime.svelte';
+	import FormSections from '$lib/components/FormSections.svelte';
+	import type { FormDescription } from '$api/types';
+	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
+	import { RULE_KIND } from '$lib/formdesign';
+	import type { WatchInfo } from '$api/types';
+	import WatchButton from '$lib/components/WatchButton.svelte';
+	import { markIssueRead } from '$lib/notifs.svelte';
 
 	const key = $derived(decodeURIComponent(page.params.key ?? '').toUpperCase());
 	let issue = $state<SpaIssue | null>(null);
@@ -47,6 +59,7 @@
 				query: { include: 'actions,recent_notes,recent_events,dev', note_limit: 10, event_limit: 20 }
 			});
 			issue = v;
+			loadDescribe(v);
 			if (!schema || schema.project_id !== v.project_id || schema.tracker_id !== v.tracker_id) {
 				const [s, a, vl] = await Promise.all([
 					api('GET /projects/{id}/trackers/{tracker_id}/schema', { path: { id: v.project_id, tracker_id: v.tracker_id } }),
@@ -66,8 +79,43 @@
 	$effect(() => {
 		mode = null;
 		conflict = false;
+		triagePanel = null;
 		load(key);
 	});
+
+	// ---- Triage bar (contract 05 §6.4): while the issue waits in the inbox ----
+	let triage = $state<IssueTriage | null>(null);
+	let inbox = $state<InboxSettings | null>(null);
+	let triagePanel = $state<TriageDecision | null>(null);
+	$effect(() => {
+		const v = issue;
+		if (!v || (v.triage !== 'pending' && v.triage !== 'snoozed')) {
+			triage = null;
+			return;
+		}
+		const k = v.key;
+		api('GET /issues/{key}', { path: { key: k } })
+			.then((d) => {
+				if (issue?.key === k) triage = d.triage;
+			})
+			.catch(() => (triage = null));
+		api('GET /projects/{id}/triage', { path: { id: v.project_id }, query: { limit: 1 } })
+			.then((l) => (inbox = l.settings ?? null))
+			.catch(() => (inbox = null));
+	});
+	function triageDone(r: 'done' | 'gone' | 'conflict', text?: string) {
+		triagePanel = null;
+		toast(text ?? '', r === 'done' ? 'ok' : 'w');
+		load(key);
+		refreshTriageCounts();
+	}
+
+	// ---- time (contract 05 §6.6) ----
+	let timeEntries = $state<TimeEntryView[]>([]);
+	let timeReload = $state(0);
+	let logWith = $state(false);
+	let logEntry = $state<LogInput | null>(null);
+	let timeHint = $state('');
 
 	const currentValues = (v: SpaIssue) => issueValues(v, schema?.fields ?? []);
 	const editable = $derived.by(() => {
@@ -79,6 +127,57 @@
 			.filter((x) => x.act?.editable)
 			.map((x) => ({ f: x.f, required: !!x.act?.required }));
 	});
+
+	// ---- form (contract 05 §6.14): layout, show_if, required_if, rule marks ----
+	let describe = $state<FormDescription | null>(null);
+	/** The view does not carry `form_rule_marks` (gap G32): read the issue itself. */
+	let fetchedMarks = $state<string[]>([]);
+	/** §6.16: the caller's watch state, also only on `GET /issues/{key}`. */
+	let watch = $state<WatchInfo | null>(null);
+	let readFor = '';
+	function loadDescribe(v: SpaIssue) {
+		api('GET /issues/{key}', { path: { key: v.key } })
+			.then((d) => {
+				if (issue?.key !== v.key) return;
+				fetchedMarks = v.form_rule_marks ?? d.form_rule_marks ?? [];
+				watch = d.watch ?? null;
+			})
+			.catch(() => {
+				fetchedMarks = v.form_rule_marks ?? [];
+				watch = null;
+			});
+		// §3.11.3: opening the issue reads its notification.
+		if (readFor !== v.key) {
+			readFor = v.key;
+			markIssueRead(v.key);
+		}
+		api('GET /projects/{id}/trackers/{t}/form', { path: { id: v.project_id, t: v.tracker_id }, query: { op: 'update', issue: v.key } })
+			.then((d) => {
+				if (issue?.key === v.key) describe = d;
+			})
+			.catch(() => (describe = null));
+	}
+	/** Rule id → 「根本原因 必填」 (from the rules the reader may see). */
+	const ruleText = $derived.by(() => {
+		const m = new Map<string, { key: string; text: string }>();
+		for (const f of describe?.fields ?? []) {
+			const name = f.name ?? fieldLabel(f.key);
+			for (const [list, kind] of [[f.required_if, 'required_if'], [f.allowed_values_if, 'allowed_values_if'], [f.readonly_if, 'readonly_if']] as const)
+				for (const r of list ?? []) m.set(r.rule_id, { key: f.key, text: `${name} ${kind === 'allowed_values_if' ? '的值不在允許清單' : RULE_KIND[kind]}` });
+		}
+		return m;
+	});
+	const marks = $derived(fetchedMarks);
+	const markedKeys = $derived(new Set(marks.map((id) => ruleText.get(id)?.key).filter((k): k is string => !!k)));
+	const editValues = $derived(issue ? condValues(form, schema?.fields ?? [], { tracker: issue.tracker_id, status: issue.status_id, status_category: issue.status_category ?? null, is_private: issue.is_private ?? null }) : {});
+	const editHidden = $derived(hiddenKeys(describe?.layout, editValues));
+	const editEntries = $derived(
+		editable.map((e) => {
+			const d = describe?.fields.find((f) => f.key === e.f.key);
+			return { f: e.f, required: e.required || (d ? requiredNow({ required: false, required_if: d.required_if }, editValues) : false) };
+		})
+	);
+	const editMissing = $derived(editEntries.filter((e) => e.required && !editHidden.has(e.f.key) && (form[e.f.key] === undefined || form[e.f.key] === null || String(form[e.f.key]).trim() === '')));
 
 	function openEdit() {
 		if (!issue) return;
@@ -114,6 +213,8 @@
 			conflict = false;
 			note = { body: '', private: false };
 			dupKey = '';
+			logWith = false;
+			timeReload++;
 			ripple = true;
 			setTimeout(() => (ripple = false), 400);
 			await load(key);
@@ -139,13 +240,28 @@
 
 	function saveEdit() {
 		if (!issue) return;
-		const set = wireFields(changedFields(start, form), schema?.fields ?? []);
-		if (!Object.keys(set).length) {
+		// A field the layout hides right now is not sent (show_if, §6.14).
+		const changed = changedFields(start, form);
+		for (const k of editHidden) delete changed[k];
+		const set = wireFields(changed, schema?.fields ?? []);
+		// 「同時記工時」 (§6.6): the entry rides in the same document (§3.10.2).
+		if (logWith && !logEntry) {
+			// Opened but not valid: never save silently without the time.
+			timeHint = '「同時記工時」的時數或日期不完整；請修正，或收起「同時記工時」再儲存。';
+			return;
+		}
+		timeHint = '';
+		const withTime = logWith && logEntry ? logEntry : null;
+		if (!Object.keys(set).length && !withTime) {
 			mode = null;
 			return;
 		}
 		const lock = issue.lock_version ?? 0;
-		return send(doc([{ kind: 'update_fields', op_id: op(), target: issueRef(key), set }], [{ key, lock }]), '已儲存');
+		const ops = Object.keys(set).length ? [{ kind: 'update_fields' as const, op_id: op(), target: issueRef(key), set }] : [];
+		if (withTime) ops.push(logTimeOp(withTime) as never);
+		const done = withTime ? (ops.length > 1 ? `已儲存，並記了 ${showHours(withTime.hours)} 小時` : `已記 ${showHours(withTime.hours)} 小時`) : '已儲存';
+		const d = ops.length > 1 || !withTime ? doc(ops, [{ key, lock }]) : logTimeDoc(withTime);
+		return send(d, done);
 	}
 	function transition(to: string, name: string) {
 		if (!issue) return;
@@ -211,8 +327,17 @@
 		fields_changed: '修改欄位',
 		status_changed: '轉狀態',
 		note_added: '新增 note',
-		duplicate_added: '標為重複'
+		duplicate_added: '標為重複',
+		triage_changed: '分流'
 	};
+	const TRIAGE: Record<string, string> = { pending: '待分流', snoozed: '稍後處理', accepted: '接受', declined: '拒絕', duplicate: '重複' };
+	/** History with time entries merged in (§6.6: they come from their own list, by their own visibility). */
+	type HistItem = { at: string; ev?: NonNullable<NonNullable<SpaIssue['recent_events']>['items']>[number]; te?: TimeEntryView };
+	const history = $derived.by(() => {
+		const out: HistItem[] = (issue?.recent_events?.items ?? []).map((ev) => ({ at: ev.at, ev }));
+		for (const te of timeEntries) out.push({ at: te.created_at, te });
+		return out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+	});
 	/** History names custom fields `cf:N` and stores `{"<type>": v}`. */
 	const lookups = $derived({ fields: schema?.fields ?? [], assignees, versions });
 	const changeLabel = (k: string) => labelOf(k, lookups);
@@ -262,6 +387,8 @@
 			<span class="key" style="font-size:15px">{v.key}</span>
 			<h1 style="margin:0" data-testid="issue-subject">{v.subject}</h1>
 			{#if v.is_private}<span class="chip c-warn">私有</span>{/if}
+			<span style="flex:1"></span>
+			{#if watch}<WatchButton issueKey={v.key} {watch} />{/if}
 		</div>
 		<div class="propstrip" data-testid="props">
 			<div class="pc"><span class="k">狀態</span><span data-testid="status">{v.status}</span></div>
@@ -271,6 +398,7 @@
 			<div class="pc"><span class="k">里程碑</span>
 				{#if v.fixed_version}<a href="/project/{v.project_key}/milestones">{v.fixed_version.name}{v.fixed_version.deleted ? '（已刪除）' : ''}</a>{:else}—{/if}
 			</div>
+			<div class="pc"><span class="k">預估工時</span><span data-testid="estimated">{v.estimated_hours != null ? `${showHours(v.estimated_hours)} 小時` : '—'}</span></div>
 			<div class="pc"><span class="k">開始 → 到期</span><span class="mono">{v.start_date ?? '—'} → {v.due_date ?? '—'}</span></div>
 			<div class="pc"><span class="k">作者</span>{v.author}</div>
 			<div class="pc"><span class="k">更新</span>{fmtTime(v.updated_at)}</div>
@@ -282,12 +410,49 @@
 			</dl>
 		{/if}
 
+		{#if marks.length}
+			<div class="banner w" data-testid="rule-marks">
+				這張單不符合目前的表單規則（{marks.map((id) => ruleText.get(id)?.text ?? '一條你看不到的規則').join('、')}），下次修改時要補齊。
+			</div>
+		{/if}
+
 		<div class="actbar" data-testid="actbar">
 			{#if editable.length}<button class="btn" onclick={openEdit} disabled={uncertain} data-testid="edit">編輯</button>{/if}
 			{#if v.actions?.transitions.length}<button class="btn" onclick={() => openMode('transition')} disabled={uncertain} data-testid="transition">轉狀態</button>{/if}
 			{#if v.actions?.notes?.can_add}<button class="btn" onclick={() => openMode('note')} disabled={uncertain} data-testid="add-note">新增 note</button>{/if}
 			{#if v.actions?.duplicate_of?.can_propose}<button class="btn" onclick={() => openMode('dup')} disabled={uncertain} data-testid="dup">標為重複</button>{/if}
 		</div>
+
+		{#if triage && (triage.state === 'pending' || triage.state === 'snoozed')}
+			<div class="banner i triagebar" data-testid="triage-bar">
+				<b>這張單在 Triage 收件匣等待分流</b>{#if triage.snoozed_until}・稍後處理到 {fmtTime(triage.snoozed_until)}{/if}
+				<span class="sp"></span>
+				{#if triage.can_decide}
+					{#if triage.snoozed_until}
+						<button class="btn sm" onclick={() => (triagePanel = 'unsnooze')} data-testid="tb-unsnooze">取消稍後</button>
+					{:else}
+						<button class="btn sm pri" onclick={() => (triagePanel = 'accept')} data-testid="tb-accept">接受</button>
+						<button class="btn sm" onclick={() => (triagePanel = 'decline')} data-testid="tb-decline">拒絕</button>
+						<button class="btn sm" onclick={() => (triagePanel = 'duplicate')} data-testid="tb-dup">重複…</button>
+						<button class="btn sm" onclick={() => (triagePanel = 'snooze')} data-testid="tb-snooze">稍後</button>
+					{/if}
+				{:else}
+					<span class="dim">你可以查看，但不能分流。</span>
+				{/if}
+				<a class="btn sm ghost" href="/project/{v.project_key}/triage">收件匣 →</a>
+			</div>
+			{#if triagePanel}
+				<TriageDecide
+					item={{ key: v.key, lock_version: v.lock_version ?? 0, subject: v.subject ?? '' }}
+					projectId={v.project_id}
+					projectKey={v.project_key}
+					settings={inbox}
+					decision={triagePanel}
+					ondone={triageDone}
+					oncancel={() => (triagePanel = null)}
+				/>
+			{/if}
+		{/if}
 
 		{#if conflict}
 			<div class="banner w" data-testid="conflict">
@@ -304,9 +469,15 @@
 				{#if kept.length}
 					<div class="hint" data-testid="kept">已載入最新內容；只保留你改過的欄位：{kept.map((k) => labelOf(k, lookups)).join('、')}。其他欄位是別人剛改的最新值。</div>
 				{/if}
-				{#each editable as e (e.f.key)}
-					<FieldInput field={e.f} bind:value={form[e.f.key]} {assignees} {versions} required={e.required} />
-				{/each}
+				<FormSections fields={editEntries} layout={describe?.layout} bind:form values={editValues} {assignees} {versions} marks={markedKeys} />
+				{#if editMissing.length}<div class="hint" data-testid="edit-missing">還要填：{editMissing.map((e) => e.f.name ?? fieldLabel(e.f.key)).join('、')}</div>{/if}
+				{#if v.spent_hours != null}
+					<details class="withtime" bind:open={logWith} data-testid="edit-with-time">
+						<summary>同時記工時</summary>
+						{#if logWith}<LogTime projectId={v.project_id} issueKey={v.key} embedded bind:value={logEntry} />{/if}
+						{#if timeHint && logWith}<div class="err" role="alert" data-testid="time-hint">{timeHint}</div>{/if}
+					</details>
+				{/if}
 				<div class="row">
 					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
@@ -370,6 +541,9 @@
 				{#if v.recent_notes?.truncated}<div class="hint">只顯示最新 10 則（第一版沒有完整 note 分頁）。</div>{/if}
 			</div>
 			<div>
+				{#if v.spent_hours != null}
+					<TimeCard issueKey={v.key} projectId={v.project_id} projectKey={v.project_key} estimated={v.estimated_hours} spent={v.spent_hours} reloadKey={timeReload} bind:entries={timeEntries} onlogged={() => { timeReload++; load(key); }} />
+				{/if}
 				{#if v.dev}
 					<div class="card" data-testid="dev-card">
 						<h3>開發</h3>
@@ -388,13 +562,28 @@
 					</div>
 				{/if}
 				<h2>歷史</h2>
-				{#each v.recent_events?.items ?? [] as ev (ev.event_id)}
-					<div class="ev" data-testid="event">
-						<b>{EVENT[ev.kind] ?? ev.kind}</b>・<span>{ev.actor}</span>
-						<span class="dim">・{fmtTime(ev.at)}</span>
-						{#if ev.redacted}<div class="dim">（內容已遮蔽）</div>{/if}
-						{#each eventLines(ev.detail) as line, i (i)}<div>{line}</div>{/each}
-					</div>
+				{#each history as h (h.ev ? `e${h.ev.event_id}` : `t${h.te?.id}`)}
+					{#if h.ev}
+						{@const ev = h.ev}
+						<div class="ev" data-testid="event">
+							<b>{EVENT[ev.kind] ?? ev.kind}</b>・<span>{ev.actor}</span>
+							<span class="dim">・{fmtTime(ev.at)}</span>
+							{#if ev.redacted}<div class="dim">（內容已遮蔽）</div>{/if}
+							{#if ev.kind === 'triage_changed' && ev.detail && typeof ev.detail === 'object'}
+								{@const d = ev.detail as Record<string, unknown>}
+								<div>{TRIAGE[String(d.old)] ?? d.old ?? '—'} → {TRIAGE[String(d.new)] ?? d.new}{#if d.self_triage}<span class="chip c-warn" style="margin-left:4px">自建自分流</span>{/if}</div>
+							{:else}
+								{#each eventLines(ev.detail) as line, i (i)}<div>{line}</div>{/each}
+							{/if}
+						</div>
+					{:else if h.te}
+						{@const te = h.te}
+						<div class="ev tev" data-testid="time-event">
+							<span>{te.user.name}</span>{#if te.author.kind === 'agent'}<span class="agent-label" style="margin-left:4px" title={te.author.on_behalf_of ? `代表 ${te.author.on_behalf_of.name}` : ''}>agent</span>{/if}
+							記了 {showHours(te.hours)} 小時・{te.activity.name}
+							<span class="dim">・{fmtTime(te.created_at)}（{te.spent_on}）</span>
+						</div>
+					{/if}
 				{:else}
 					<div class="empty">沒有歷史。</div>
 				{/each}

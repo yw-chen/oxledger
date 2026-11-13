@@ -6,7 +6,7 @@
 	import type { SessionItem } from '$api/types';
 	import { api } from '$lib/api';
 	import { fmtShort } from '$lib/format';
-	import { applyTheme, DEFAULT_WIDGETS, prefs, savePrefs } from '$lib/prefs.svelte';
+	import { prefs, savePrefs } from '$lib/prefs.svelte';
 	import { session, signOut } from '$lib/session.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
@@ -60,11 +60,10 @@
 		}
 	}
 	function resetLayout() {
-		prefs.widgets = DEFAULT_WIDGETS.map((w) => ({ ...w }));
 		prefs.navMini = false;
 		prefs.collabHidden = false;
 		savePrefs();
-		toast('首頁與欄位版面已恢復預設', 'ok');
+		toast('欄位版面已恢復預設', 'ok');
 	}
 	const others = $derived(items?.filter((s) => !s.current).length ?? 0);
 </script>
@@ -99,12 +98,15 @@
 		<div class="hint">agent 用的 token 不在這裡，請到「我的 agent 委派」管理。</div>
 	{/if}
 
+	<h2 style="margin-top:22px">偏好</h2>
+	<div class="card">
+		<div>介面角色、首頁、外觀、左欄捷徑與通知，存在你的帳號，換電腦也會跟著走。</div>
+		<div class="row" style="gap:6px;margin-top:6px"><a class="btn sm" href="/me/preferences" data-testid="link-preferences">偏好設定</a><a class="btn sm" href="/me/notifications">通知偏好</a></div>
+	</div>
+
 	<h2 style="margin-top:22px">這個瀏覽器的版面</h2>
 	<div class="card">
-		<label class="row" style="gap:6px">外觀
-			<select bind:value={prefs.theme} onchange={() => { applyTheme(); savePrefs(); }}><option value="dark">深色</option><option value="light">淺色</option></select>
-		</label>
-		<div class="hint">版面設定只存在這個瀏覽器，換電腦不會跟著走。</div>
-		<button class="btn sm" style="margin-top:6px" onclick={resetLayout}>首頁與欄位恢復預設</button>
+		<div class="hint">左欄收合、右欄開關只存在這個瀏覽器。</div>
+		<button class="btn sm" style="margin-top:6px" onclick={resetLayout}>欄位恢復預設</button>
 	</div>
 </div>

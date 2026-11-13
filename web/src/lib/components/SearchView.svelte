@@ -10,6 +10,8 @@
 	import { splitHighlights } from '$lib/highlight';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 	import { pendingCreated, type JustCreated } from '$lib/created.svelte';
+	import { projectByKey } from '$lib/session.svelte';
+	import { searchToWhere } from '$lib/filter';
 
 	let { scopeProject = null }: { scopeProject?: string | null } = $props();
 
@@ -104,6 +106,40 @@
 		{ label: '未完成', key: 'status', value: 'open' },
 		{ label: '逾期', key: 'overdue', value: 'true' }
 	]);
+	// 「存成視圖」 (contract 05 §6.1): the current search as a personal list
+	// view; the structured part becomes conditions, the rest stays as text.
+	let saving = $state<{ name: string } | null>(null);
+	let saveError = $state<unknown>(null);
+	let saveBusy = $state(false);
+	let saveMsg = $state('');
+	async function saveView() {
+		if (!saving) return;
+		saveBusy = true;
+		saveError = null;
+		saveMsg = '';
+		const proj = params.project ? projectByKey(params.project.toUpperCase()) : null;
+		if (params.project && !proj) {
+			// Dropping the project would widen the view: say so instead.
+			saveMsg = `找不到專案 ${params.project}，或你看不到它；這個查詢不能存成視圖。`;
+			saveBusy = false;
+			return;
+		}
+		const def = {
+			kind: 'list',
+			query: { where: searchToWhere(params, proj?.id ?? null), q: params.q || null },
+			columns: ['key', 'subject', 'status', 'assignee', 'priority', 'due_date'],
+			sort: [{ field: 'updated_at', dir: 'desc' }]
+		};
+		try {
+			const v = await api('POST /views', { body: { scope: 'personal', kind: 'list', name: saving.name.trim(), def, project_id: proj?.id ?? null } });
+			saving = null;
+			goto(proj ? `/project/${proj.key}/views/${encodeURIComponent(v.id)}` : `/views/${encodeURIComponent(v.id)}`);
+		} catch (e) {
+			saveError = e;
+		} finally {
+			saveBusy = false;
+		}
+	}
 	function toggle(k: string, v: string) {
 		const u = new URL(url);
 		if (u.searchParams.get(k) === v) u.searchParams.delete(k);
@@ -124,6 +160,8 @@
 			<button class="btn sm" class:on={url.searchParams.get(f.key) === f.value} onclick={() => toggle(f.key, f.value)}>{f.label}</button>
 		{/each}
 		<span class="hint">語法：project: status: tracker: assignee: version:，其他字是全文。</span>
+		<span style="flex:1"></span>
+		{#if !syntax}<button class="btn sm" onclick={() => ((saving = { name: text.trim().slice(0, 60) || '新視圖' }), (saveError = null))} data-testid="save-as-view">存成視圖</button>{/if}
 	</div>
 	{#if syntax}
 		<div class="err" role="alert" data-testid="syntax-error">
@@ -183,3 +221,19 @@
 		{/if}
 	{/if}
 </div>
+
+{#if saving}
+	<div class="modal-bg" role="presentation">
+		<div class="modal" role="dialog" aria-modal="true" aria-label="存成視圖" data-testid="save-view-form">
+			<h3>存成視圖</h3>
+			<label class="f"><span>名稱</span><input type="text" bind:value={saving.name} maxlength="60" data-testid="sv-name" /></label>
+			<div class="hint">存成只有你看得到的個人列表視圖；之後可以在視圖裡改條件、欄位與排序。</div>
+			{#if saveMsg}<div class="err" role="alert" data-testid="sv-msg">{saveMsg}</div>{/if}
+			<ErrorBox error={saveError} />
+			<div class="row" style="gap:8px;margin-top:10px">
+				<button class="btn pri" onclick={saveView} disabled={saveBusy || !saving.name.trim()} data-testid="sv-submit">{saveBusy ? '儲存中…' : '儲存'}</button>
+				<button class="btn" onclick={() => (saving = null)}>取消</button>
+			</div>
+		</div>
+	</div>
+{/if}
