@@ -909,6 +909,21 @@ pub async fn activity(
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
 ) -> Result<crate::undo::Activity> {
+    let q = crate::undo::ActivityQuery {
+        from,
+        to,
+        ..Default::default()
+    };
+    activity_page(app, ctx, id, &q).await
+}
+
+/// [`activity`] with an issue filter, a cursor and a page size (G24).
+pub async fn activity_page(
+    app: &App,
+    ctx: AuthContext,
+    id: Uuid,
+    q: &crate::undo::ActivityQuery,
+) -> Result<crate::undo::Activity> {
     let (sponsor, view) = {
         let mut tx = crate::service::read_tx(app).await?;
         let v = viewer(&mut tx, ctx).await?;
@@ -923,7 +938,7 @@ pub async fn activity(
             },
         )
     };
-    crate::undo::activity_of(app, ctx, id, sponsor, from, to, None, view).await
+    crate::undo::activity_of(app, ctx, id, sponsor, q, view).await
 }
 
 // ---------------------------------------------------------------- create a role
@@ -1845,6 +1860,33 @@ pub async fn issue_credential(
         .await?;
     tx.commit().await?;
     Ok(out)
+}
+
+/// `GET /ai-team/{principal}/credentials` (G14): the role's tokens in every
+/// work context, newest first, without the token or its hash. The sponsor
+/// and site administrators; a role the caller cannot see is `not_found`,
+/// one they see only as a project member is `forbidden_op` `not_sponsor`
+/// (as `POST`).
+pub async fn list_credentials(
+    app: &App,
+    ctx: AuthContext,
+    id: Uuid,
+) -> Result<agents::CredentialList> {
+    let mut tx = crate::service::read_tx(app).await?;
+    let v = viewer(&mut tx, ctx).await?;
+    let (_, s) = load_seen(&mut tx, &v, id).await?;
+    if s == Seen::Member {
+        return Err(not_sponsor());
+    }
+    let items = agents::credential_rows(
+        &mut tx,
+        "c.agent_principal_id = $1 AND $2::uuid IS NULL",
+        id,
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(agents::CredentialList { items })
 }
 
 // ---------------------------------------------------------------- runtimes

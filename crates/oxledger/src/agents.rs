@@ -163,6 +163,125 @@ pub struct IssuedCredential {
     pub expires_at: DateTime<Utc>,
 }
 
+/// G14: one agent token as its sponsor (or a site admin) sees it; never the
+/// token or its hash.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct CredentialSummary {
+    pub id: Uuid,
+    pub label: String,
+    pub context_id: Uuid,
+    /// The role the token acts as.
+    pub agent_principal_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// Last successful bearer authentication, written at most once a
+    /// minute; null when never used since 0031.
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked: bool,
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// `active`, `revoked`, `expired` or `context_closed` (the work context
+    /// was closed: the token no longer works although it was not revoked).
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct CredentialList {
+    /// Newest first.
+    pub items: Vec<CredentialSummary>,
+}
+
+/// Tokens matching `cond` (aliases `c` = agent_credentials, `w` = its work
+/// context; `$1`, `$2` bound by the caller), newest first.
+pub(crate) async fn credential_rows(
+    conn: &mut PgConnection,
+    cond: &str,
+    a: Uuid,
+    b: Option<Uuid>,
+) -> Result<Vec<CredentialSummary>> {
+    type Row = (
+        Uuid,
+        String,
+        Uuid,
+        Uuid,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+        String,
+    );
+    let sql = format!(
+        "SELECT c.id, c.label, c.context_id, c.agent_principal_id, c.created_at, c.expires_at,
+                c.last_used_at, c.revoked_at,
+                CASE WHEN c.revoked_at IS NOT NULL THEN 'revoked'
+                     WHEN c.expires_at <= now() THEN 'expired'
+                     WHEN w.state <> 'active' THEN 'context_closed'
+                     ELSE 'active' END
+         FROM agent_credentials c JOIN agent_work_contexts w ON w.id = c.context_id
+         WHERE {cond}
+         ORDER BY c.created_at DESC, c.id DESC"
+    );
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(a)
+        .bind(b)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| CredentialSummary {
+            id: r.0,
+            label: r.1,
+            context_id: r.2,
+            agent_principal_id: r.3,
+            created_at: r.4,
+            expires_at: r.5,
+            last_used_at: r.6,
+            revoked: r.7.is_some(),
+            revoked_at: r.7,
+            state: r.8,
+        })
+        .collect())
+}
+
+/// `GET /agent-contexts/{id}/credentials` (G14): the tokens of one of the
+/// caller's work contexts, optionally of one role (`agent_principal_id`;
+/// a context's runtime may hold several). Someone else's context, or a role
+/// that is not this runtime's: `not_found`.
+pub async fn list_context_credentials(
+    pool: &PgPool,
+    ctx: &AuthContext,
+    context: Uuid,
+    principal: Option<Uuid>,
+) -> Result<CredentialList> {
+    let (user, _) = ctx.require_human_session()?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    db::effective(&mut tx, *ctx).await?;
+    let (runtime, _) = context_owned(&mut tx, user, context, false).await?;
+    if let Some(p) = principal {
+        let ours: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_principals WHERE agent_principal_id = $1 AND runtime_id = $2)",
+        )
+        .bind(p)
+        .bind(runtime)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !ours {
+            return Err(api(ErrorCode::NotFound, "no such agent"));
+        }
+    }
+    let items = credential_rows(
+        &mut tx,
+        "c.context_id = $1 AND ($2::uuid IS NULL OR c.agent_principal_id = $2)",
+        context,
+        principal,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(CredentialList { items })
+}
+
 // ---------------------------------------------------------------- helpers
 
 fn invalid(path: &str, msg: impl Into<String>) -> anyhow::Error {

@@ -653,7 +653,7 @@ pub async fn derived(conn: &mut PgConnection, project: Uuid, actor: Uuid) -> Res
                       UNION SELECT changeset_id FROM changeset_version_source_projects WHERE project_id = $1";
     let contents = sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE proposal_contents pc
-         SET body = NULL, state = 'redacted', redacted_at = now(), redacted_by = $2
+         SET body = NULL, baseline = NULL, state = 'redacted', redacted_at = now(), redacted_by = $2
          FROM changeset_versions v
          WHERE v.content_id = pc.id AND pc.state = 'available' AND v.changeset_id IN ({changesets})"
     )))

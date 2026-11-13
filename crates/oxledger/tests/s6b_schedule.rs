@@ -418,8 +418,18 @@ async fn timeline_view() {
         .unwrap();
     // A viewer without manage_versions: the SPA hides create/change.
     assert!(!before_list.can_manage);
-    assert!(versions::list(&w.app, a, "WEB", None, None).await.unwrap().can_manage);
-    assert!(!versions::schedule_settings(&w.app, dave_ctx, "WEB").await.unwrap().can_manage);
+    assert!(
+        versions::list(&w.app, a, "WEB", None, None)
+            .await
+            .unwrap()
+            .can_manage
+    );
+    assert!(
+        !versions::schedule_settings(&w.app, dave_ctx, "WEB")
+            .await
+            .unwrap()
+            .can_manage
+    );
     let (p1, _) = mk(&w, "private between", true).await;
     place(&w, p1, Some(days(t, 2)), Some(days(t, 4)), Some(near)).await;
     let (p2, _) = mk(&w, "private undated", true).await;

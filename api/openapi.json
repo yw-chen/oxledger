@@ -70,14 +70,23 @@
       "Activity2": {
         "properties": {
           "items": {
+            "description": "Newest first (`at`, then id).",
             "items": {
               "$ref": "#/components/schemas/ActivityItem"
             },
             "type": "array"
+          },
+          "next_cursor": {
+            "description": "G24: the next page (same filters), signed and bound to the caller;\nnull on the last page.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -923,6 +932,13 @@
             "format": "int32",
             "type": "integer"
           },
+          "diff": {
+            "description": "G12: every changed field of this version with display values, as the\nqueue shows it (`before` = the issue now, `after` = proposed,\n`original` = when the agent proposed it, G13). Empty with\n`content_unavailable`.",
+            "items": {
+              "$ref": "#/components/schemas/DiffRow"
+            },
+            "type": "array"
+          },
           "edit_method": {
             "type": "string"
           },
@@ -1011,7 +1027,8 @@
           "requires_human_approval",
           "review_url",
           "last_execution",
-          "rules_changed"
+          "rules_changed",
+          "diff"
         ],
         "type": "object"
       },
@@ -1802,6 +1819,85 @@
         },
         "type": "object"
       },
+      "CredentialList": {
+        "properties": {
+          "items": {
+            "description": "Newest first.",
+            "items": {
+              "$ref": "#/components/schemas/CredentialSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "CredentialSummary": {
+        "description": "G14: one agent token as its sponsor (or a site admin) sees it; never the\ntoken or its hash.",
+        "properties": {
+          "agent_principal_id": {
+            "description": "The role the token acts as.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "context_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "description": "Last successful bearer authentication, written at most once a\nminute; null when never used since 0031.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`active`, `revoked`, `expired` or `context_closed` (the work context\nwas closed: the token no longer works although it was not revoked).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "context_id",
+          "agent_principal_id",
+          "created_at",
+          "expires_at",
+          "last_used_at",
+          "revoked",
+          "revoked_at",
+          "state"
+        ],
+        "type": "object"
+      },
       "CustomFieldInfo": {
         "description": "A custom field as `resolve(kind: \"custom_field\")` describes it (design\n03 §2.4): what a filter on it needs.",
         "properties": {
@@ -2276,9 +2372,16 @@
             "description": "`assigned_to_id`, `status`, `cf:<id>`, …",
             "type": "string"
           },
+          "has_original": {
+            "description": "False when no value was recorded for this field: an owner's\nrevision, a proposal stored before 0031, redacted content, a field\nthe proposing agent could not read then or you cannot read now, or a\nrow that is not a field (note, triage, time).",
+            "type": "boolean"
+          },
           "label": {
             "description": "Display name.",
             "type": "string"
+          },
+          "original": {
+            "description": "G13: the value when the agent proposed this version, rendered like\n`before` (null when unset). Meaningful only with `has_original`."
           },
           "target": {
             "$ref": "#/components/schemas/DiffTarget"
@@ -2289,7 +2392,9 @@
           "field",
           "label",
           "before",
-          "after"
+          "after",
+          "original",
+          "has_original"
         ],
         "type": "object"
       },
@@ -16438,6 +16543,63 @@
       }
     },
     "/agent-contexts/{id}/credentials": {
+      "get": {
+        "operationId": "get_agent_contexts_id_credentials",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CredentialList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Tokens of one of your work contexts, newest first (compatibility alias of GET /ai-team/{id}/credentials). Query agent_principal_id narrows to one role of the context's runtime (not_found for another runtime's role). Never the token or its hash.",
+        "x-access": "session"
+      },
       "post": {
         "operationId": "post_agent_contexts_id_credentials",
         "parameters": [
@@ -16772,7 +16934,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Your agent's direct writes, applied proposals, refusals and undos, newest first (§16.10). Query from, to (RFC 3339), issue (a key). Only issues you can read now.",
+        "summary": "Your agent's direct writes, applied proposals, refusals and undos, newest first by (at, id) (§16.10). Query from, to (RFC 3339, inclusive; default the last 30 days), issue (a key; refusals are left out), cursor (next_cursor of the previous page, same filters), limit (1-200, default 50). Only issues you can read now; what you cannot read counts toward neither the page nor the cursor.",
         "x-access": "session"
       }
     },
@@ -17119,11 +17281,68 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "The role's writes, filtered to what the caller can read.",
+        "summary": "The role's writes, filtered to what the caller can read. Same query as GET /agents/{id}/activity: from, to, issue, cursor, limit.",
         "x-access": "session"
       }
     },
     "/ai-team/{id}/credentials": {
+      "get": {
+        "operationId": "get_ai_team_id_credentials",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CredentialList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The role's tokens in every work context, newest first: id, label, created, expires, last used (at most once a minute), revoked and state; never the token or its hash. The sponsor and site administrators; a role you cannot see is not_found, one you see as a project member is forbidden_op not_sponsor.",
+        "x-access": "session"
+      },
       "post": {
         "operationId": "post_ai_team_id_credentials",
         "parameters": [
@@ -18538,7 +18757,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "A proposal: state, its current version, the last execution (owner only).",
+        "summary": "A proposal: state, its current version, the last execution (owner only). diff: every changed field with display values as in the queue list (before = now, after = proposed, original = when the agent proposed it when has_original).",
         "x-access": "session"
       }
     },

@@ -268,6 +268,11 @@ pub struct ChangesetView {
     /// Contract 05 §3.6.3: the form rules of the targets changed since this
     /// version was stored (review it in full; it cannot be queue-ticked).
     pub rules_changed: bool,
+    /// G12: every changed field of this version with display values, as the
+    /// queue shows it (`before` = the issue now, `after` = proposed,
+    /// `original` = when the agent proposed it, G13). Empty with
+    /// `content_unavailable`.
+    pub diff: Vec<crate::review_queue::DiffRow>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -427,6 +432,9 @@ struct VerRow {
     content_state: String,
     /// Contract 05 §3.6.3 (0024): the form rules version at storing.
     rules_version: Option<String>,
+    /// G13 (0031): the targets' values at proposal time; `None` for an
+    /// owner's version, an older row, or redacted content.
+    baseline: Option<Json>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -476,7 +484,7 @@ async fn load_version(conn: &mut PgConnection, cs: Uuid, version: i32) -> Result
     Ok(sqlx::query_as(
         "SELECT v.proposal_hash, v.authority_ceiling, v.editor_id, v.edit_method,
                 v.based_on_version, v.validation, v.created_at, c.body, c.state AS content_state,
-                v.rules_version
+                v.rules_version, c.baseline
          FROM changeset_versions v JOIN proposal_contents c ON c.id = v.content_id
          WHERE v.changeset_id = $1 AND v.version = $2",
     )
@@ -1666,6 +1674,8 @@ async fn agent_write_tx(
         (_, Some((cs, _))) => cs.group_id,
         (None, None) => None,
     };
+    // G13: what the changed fields held now, as the agent reads them.
+    let baseline = crate::review_queue::baseline(&mut *conn, caller, &parsed.norm).await?;
     let stored = StoreVersion {
         origin: who.origin(),
         group_id,
@@ -1685,6 +1695,7 @@ async fn agent_write_tx(
         based_on,
         validation: &validation,
         rules_version: pre_rules,
+        baseline: Some(&baseline),
     };
     let hash = store_version(&mut *conn, &parsed, &stored).await?;
     let details = chain.map(chain_details);
@@ -2031,6 +2042,8 @@ struct StoreVersion<'a> {
     /// The effective rules version of the targets, read before the
     /// validation (§3.6.3).
     rules_version: Option<String>,
+    /// G13: [`crate::review_queue::baseline`], stored with the body.
+    baseline: Option<&'a Json>,
 }
 
 /// Step 10: normalizes, hashes and stores a version (and the ChangeSet for
@@ -2087,10 +2100,11 @@ async fn store_version(
         .await?;
     }
     let content: Uuid = sqlx::query_scalar(
-        "INSERT INTO proposal_contents (body, body_sha256) VALUES ($1, $2) RETURNING id",
+        "INSERT INTO proposal_contents (body, body_sha256, baseline) VALUES ($1, $2, $3) RETURNING id",
     )
     .bind(&body)
     .bind(&body_sha[..])
+    .bind(s.baseline)
     .fetch_one(&mut *conn)
     .await?;
     // Contract 05 §3.6.3: the form rules the version was checked under
@@ -2995,7 +3009,14 @@ pub async fn list(
                     if cs.state == "proposed" {
                         let keys: BTreeMap<Uuid, String> =
                             t.iter().map(|x| (x.id, x.key.clone())).collect();
-                        diff = crate::review_queue::diff(&mut tx, caller, &b, &keys).await?;
+                        diff = crate::review_queue::diff_with_baseline(
+                            &mut tx,
+                            caller,
+                            &b,
+                            &keys,
+                            v.as_ref().and_then(|v| v.baseline.as_ref()),
+                        )
+                        .await?;
                         let status = v
                             .as_ref()
                             .and_then(|v| v.validation.as_ref())
@@ -3093,7 +3114,24 @@ pub async fn get(
         Some(b) => crate::forms::rules_changed(&mut tx, b, ver.rules_version.as_deref()).await?,
         None => false,
     };
+    // G12: the queue's diff (same function), with this version's baseline.
+    let diff = match &proposal {
+        Some(b) => {
+            let keys: BTreeMap<Uuid, String> =
+                targets.iter().map(|x| (x.id, x.key.clone())).collect();
+            crate::review_queue::diff_with_baseline(
+                &mut tx,
+                caller,
+                b,
+                &keys,
+                ver.baseline.as_ref(),
+            )
+            .await?
+        }
+        None => Vec::new(),
+    };
     Ok(ChangesetView {
+        diff,
         changeset_id: id,
         state: cs.state,
         current_version: cs.current_version,
@@ -3762,6 +3800,8 @@ async fn owner_version_in(
             based_on: Some(cs.current_version),
             validation: &validation,
             rules_version: pre_rules,
+            // G13: only the proposing agent's own versions record one.
+            baseline: None,
         },
     )
     .await?;

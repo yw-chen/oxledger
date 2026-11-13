@@ -820,8 +820,9 @@ pub async fn authenticate_bearer(pool: &PgPool, raw: &str) -> Result<Option<Auth
         let Some(token) = decode32(rest) else {
             return Ok(None);
         };
-        let row: Option<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
-            "SELECT c.id, w.id, ap.agent_principal_id, ap.delegator_user_id
+        let row: Option<(Uuid, Uuid, Uuid, Uuid, bool)> = sqlx::query_as(
+            "SELECT c.id, w.id, ap.agent_principal_id, ap.delegator_user_id,
+                    c.last_used_at IS NULL OR c.last_used_at < now() - interval '1 minute'
              FROM agent_credentials c
              JOIN agent_work_contexts w ON w.id = c.context_id
              JOIN agent_principals ap ON ap.agent_principal_id = c.agent_principal_id
@@ -848,7 +849,25 @@ pub async fn authenticate_bearer(pool: &PgPool, raw: &str) -> Result<Option<Auth
                 return Err(crate::agents::context_closed());
             }
         }
-        return Ok(row.map(|(cred, ctx, agent, delegator)| {
+        if let Some((cred, .., true)) = row {
+            // G14: "last used", written at most once a minute per token.
+            // Best effort: a locked row is skipped (never waited for) and a
+            // failed write is logged; neither fails the authentication.
+            if let Err(e) = sqlx::query(
+                "UPDATE agent_credentials SET last_used_at = now()
+                 WHERE id = (SELECT id FROM agent_credentials
+                             WHERE id = $1
+                               AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')
+                             FOR UPDATE SKIP LOCKED)",
+            )
+            .bind(cred)
+            .execute(pool)
+            .await
+            {
+                tracing::warn!("recording agent token {cred} last use: {e}");
+            }
+        }
+        return Ok(row.map(|(cred, ctx, agent, delegator, _)| {
             AuthContext::agent_token(agent, cred, ctx, delegator)
         }));
     }
