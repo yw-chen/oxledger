@@ -34,3 +34,8 @@
 | G28 | 未修 | `GET /time-activities` 沒帶 `project` 時回 `Activity[]`，但 openapi 寫的是 `ProjectActivities` | 管理頁把回應轉型成 `Activity[]` | 拆成 `GET /admin/time-activities`，或 openapi 用 oneOf |
 | G29 | 未修 | 工時報表在「模組沒開」與「沒有 view_time_entries」都回 `forbidden_op`（`time_entries_not_visible`） | 前端另讀 `GET /projects/{id}/time-activities` 的 `module_enabled` 分辨 | reason 分成 `time_module_disabled` 與 `time_entries_not_visible` |
 | G30 | 未修 | 議題 view 的 `triage` 只有狀態字串；can_decide、snoozed_until 要另讀 `GET /issues/{key}`，拒絕預設狀態要另讀專案收件匣的 settings | 議題頁在待分流時多讀兩次 | view 的 `triage` 用和 `GET /issues/{key}` 相同的物件，並帶 decline_status |
+| G31 | 未修 | 沒有列出角色的端點；自訂欄位受限可見的 `role_ids` 無法顯示名稱或挑選 | 用角色 id 指定，顯示末 6 碼 | `GET /admin/roles`（含內建 Non member、Anonymous） |
+| G32 | 未修 | `GET /issues/{key}/view` 不帶 `form_rule_marks`（`GET /issues/{key}` 有） | 議題頁另讀一次 `GET /issues/{key}` | view 也帶 `form_rule_marks` |
+| G33 | 未修 | 換型別預檢（`POST …/conversions`）就建立新欄位，且沒有取消預檢的端點；重新預檢會再建一個欄位 | 精靈提示「先不轉換就到新欄位頁刪除」 | 預檢不建欄位，或提供 `DELETE /admin/conversions/{id}` 連同新欄位一起移除 |
+| G34 | 未修 | `POST /commands/validate` 遇到文件層的錯（例如建單缺 subject）回頂層 422，而不是放在 `items`（§3.6.4 說錯誤碼放 items，只有權限與可見性類照一般錯誤回） | 試填把 4xx 驗證類錯誤當成該按鈕的「會被擋下」 | 驗證類錯誤一律放進 items，outcome=invalid |
+| G35 | 未修（偶發） | E2E 偶發：建清單自訂欄位時 `CREATE INDEX CONCURRENTLY cannot run inside a transaction block`，之後通知派送、索引同步都回 `current transaction is aborted`。看起來是連線池裡有一條連線帶著未結束（且已失敗）的交易被還回，`run_ddl` 與背景工作拿到它（F10 整套 E2E 跑 3 次出現 1 次，在自訂欄位那條） | 無；重跑會過 | 找出把交易留在連線上的路徑（或在 `run_ddl` 前用專用連線、`after_release` 檢查 transaction status 並丟棄） |

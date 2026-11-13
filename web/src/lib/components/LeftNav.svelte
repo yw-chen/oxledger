@@ -51,6 +51,9 @@
 	{#if session.user?.is_admin}
 		{#if mini}<div class="sep"></div>{:else}<div class="sec">管理</div>{/if}
 		<a href="/admin/timelog" class:on={path.startsWith('/admin/timelog')} title="工時設定"><span class="ic">◷</span>{#if !mini}<span class="lb">工時設定</span>{/if}</a>
+		<a href="/admin/custom-fields" class:on={path.startsWith('/admin/custom-fields')} title="自訂欄位"><span class="ic">▤</span>{#if !mini}<span class="lb">自訂欄位</span>{/if}</a>
+		<a href="/admin/forms" class:on={path.startsWith('/admin/forms')} title="表單"><span class="ic">▦</span>{#if !mini}<span class="lb">表單</span>{/if}</a>
+		<a href="/admin/concepts" class:on={path.startsWith('/admin/concepts')} title="概念與別名"><span class="ic">≈</span>{#if !mini}<span class="lb">概念與別名</span>{/if}</a>
 		<a href="/admin/github" class:on={path.startsWith('/admin/github')} title="GitHub 連動"><span class="ic">⚒</span>{#if !mini}<span class="lb">GitHub 連動</span>{/if}</a>
 	{/if}
 	<span style="flex:1"></span>

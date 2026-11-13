@@ -14,7 +14,6 @@
 	import { toast } from '$lib/toast.svelte';
 	import { FLAG } from '$lib/health';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import FieldInput from '$lib/components/FieldInput.svelte';
 	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
 	import { issueValues, labelOf, show } from '$lib/render';
 	import type { InboxSettings, IssueTriage, TimeEntryView, TriageDecision } from '$api/types';
@@ -23,6 +22,10 @@
 	import TriageDecide from '$lib/components/TriageDecide.svelte';
 	import TimeCard from '$lib/components/TimeCard.svelte';
 	import LogTime from '$lib/components/LogTime.svelte';
+	import FormSections from '$lib/components/FormSections.svelte';
+	import type { FormDescription } from '$api/types';
+	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
+	import { RULE_KIND } from '$lib/formdesign';
 
 	const key = $derived(decodeURIComponent(page.params.key ?? '').toUpperCase());
 	let issue = $state<SpaIssue | null>(null);
@@ -53,6 +56,7 @@
 				query: { include: 'actions,recent_notes,recent_events,dev', note_limit: 10, event_limit: 20 }
 			});
 			issue = v;
+			loadDescribe(v);
 			if (!schema || schema.project_id !== v.project_id || schema.tracker_id !== v.tracker_id) {
 				const [s, a, vl] = await Promise.all([
 					api('GET /projects/{id}/trackers/{tracker_id}/schema', { path: { id: v.project_id, tracker_id: v.tracker_id } }),
@@ -121,6 +125,46 @@
 			.map((x) => ({ f: x.f, required: !!x.act?.required }));
 	});
 
+	// ---- form (contract 05 §6.14): layout, show_if, required_if, rule marks ----
+	let describe = $state<FormDescription | null>(null);
+	/** The view does not carry `form_rule_marks` (gap G32): read the issue itself. */
+	let fetchedMarks = $state<string[]>([]);
+	function loadDescribe(v: SpaIssue) {
+		if (v.form_rule_marks) fetchedMarks = v.form_rule_marks;
+		else
+			api('GET /issues/{key}', { path: { key: v.key } })
+				.then((d) => {
+					if (issue?.key === v.key) fetchedMarks = d.form_rule_marks ?? [];
+				})
+				.catch(() => (fetchedMarks = []));
+		api('GET /projects/{id}/trackers/{t}/form', { path: { id: v.project_id, t: v.tracker_id }, query: { op: 'update', issue: v.key } })
+			.then((d) => {
+				if (issue?.key === v.key) describe = d;
+			})
+			.catch(() => (describe = null));
+	}
+	/** Rule id → 「根本原因 必填」 (from the rules the reader may see). */
+	const ruleText = $derived.by(() => {
+		const m = new Map<string, { key: string; text: string }>();
+		for (const f of describe?.fields ?? []) {
+			const name = f.name ?? fieldLabel(f.key);
+			for (const [list, kind] of [[f.required_if, 'required_if'], [f.allowed_values_if, 'allowed_values_if'], [f.readonly_if, 'readonly_if']] as const)
+				for (const r of list ?? []) m.set(r.rule_id, { key: f.key, text: `${name} ${kind === 'allowed_values_if' ? '的值不在允許清單' : RULE_KIND[kind]}` });
+		}
+		return m;
+	});
+	const marks = $derived(fetchedMarks);
+	const markedKeys = $derived(new Set(marks.map((id) => ruleText.get(id)?.key).filter((k): k is string => !!k)));
+	const editValues = $derived(issue ? condValues(form, schema?.fields ?? [], { tracker: issue.tracker_id, status: issue.status_id, status_category: issue.status_category ?? null, is_private: issue.is_private ?? null }) : {});
+	const editHidden = $derived(hiddenKeys(describe?.layout, editValues));
+	const editEntries = $derived(
+		editable.map((e) => {
+			const d = describe?.fields.find((f) => f.key === e.f.key);
+			return { f: e.f, required: e.required || (d ? requiredNow({ required: false, required_if: d.required_if }, editValues) : false) };
+		})
+	);
+	const editMissing = $derived(editEntries.filter((e) => e.required && !editHidden.has(e.f.key) && (form[e.f.key] === undefined || form[e.f.key] === null || String(form[e.f.key]).trim() === '')));
+
 	function openEdit() {
 		if (!issue) return;
 		start = currentValues(issue);
@@ -182,7 +226,10 @@
 
 	function saveEdit() {
 		if (!issue) return;
-		const set = wireFields(changedFields(start, form), schema?.fields ?? []);
+		// A field the layout hides right now is not sent (show_if, §6.14).
+		const changed = changedFields(start, form);
+		for (const k of editHidden) delete changed[k];
+		const set = wireFields(changed, schema?.fields ?? []);
 		// 「同時記工時」 (§6.6): the entry rides in the same document (§3.10.2).
 		if (logWith && !logEntry) {
 			// Opened but not valid: never save silently without the time.
@@ -335,6 +382,7 @@
 			<div class="pc"><span class="k">里程碑</span>
 				{#if v.fixed_version}<a href="/project/{v.project_key}/milestones">{v.fixed_version.name}{v.fixed_version.deleted ? '（已刪除）' : ''}</a>{:else}—{/if}
 			</div>
+			<div class="pc"><span class="k">預估工時</span><span data-testid="estimated">{v.estimated_hours != null ? `${showHours(v.estimated_hours)} 小時` : '—'}</span></div>
 			<div class="pc"><span class="k">開始 → 到期</span><span class="mono">{v.start_date ?? '—'} → {v.due_date ?? '—'}</span></div>
 			<div class="pc"><span class="k">作者</span>{v.author}</div>
 			<div class="pc"><span class="k">更新</span>{fmtTime(v.updated_at)}</div>
@@ -344,6 +392,12 @@
 			<dl class="field card" style="margin-bottom:10px">
 				{#each v.custom_fields as cf (cf.name)}<dt>{cf.name}</dt><dd>{fmtValue(cf.value)}</dd>{/each}
 			</dl>
+		{/if}
+
+		{#if marks.length}
+			<div class="banner w" data-testid="rule-marks">
+				這張單不符合目前的表單規則（{marks.map((id) => ruleText.get(id)?.text ?? '一條你看不到的規則').join('、')}），下次修改時要補齊。
+			</div>
 		{/if}
 
 		<div class="actbar" data-testid="actbar">
@@ -399,9 +453,8 @@
 				{#if kept.length}
 					<div class="hint" data-testid="kept">已載入最新內容；只保留你改過的欄位：{kept.map((k) => labelOf(k, lookups)).join('、')}。其他欄位是別人剛改的最新值。</div>
 				{/if}
-				{#each editable as e (e.f.key)}
-					<FieldInput field={e.f} bind:value={form[e.f.key]} {assignees} {versions} required={e.required} />
-				{/each}
+				<FormSections fields={editEntries} layout={describe?.layout} bind:form values={editValues} {assignees} {versions} marks={markedKeys} />
+				{#if editMissing.length}<div class="hint" data-testid="edit-missing">還要填：{editMissing.map((e) => e.f.name ?? fieldLabel(e.f.key)).join('、')}</div>{/if}
 				{#if v.spent_hours != null}
 					<details class="withtime" bind:open={logWith} data-testid="edit-with-time">
 						<summary>同時記工時</summary>

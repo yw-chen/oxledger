@@ -274,7 +274,9 @@ export function describeError(e: unknown): Shown {
 		case 'form_publish_blocked':
 			return { title: '有既有的單不符合新規則，選了「有違規就不發布」所以沒有發布', changed: NOTHING };
 		case 'concept_label_taken':
-			return { title: '這個標籤已經屬於另一個概念，請換一個或到那個概念修改', changed: NOTHING };
+			return typeof d.label === 'string' && typeof d.pref_label === 'string'
+				? { title: `「${d.label}」已經是「${d.pref_label}」的標籤`, changed: NOTHING }
+				: { title: '這個標籤已經屬於另一個概念，請換一個或到那個概念修改', changed: NOTHING };
 		case 'runtime_context_closed':
 			return { title: '這個執行環境的工作脈絡已關閉，請建立新的工作脈絡', changed: NOTHING, next: '管理委派', action: 'delegations' };
 		case 'runtime_client_taken': {

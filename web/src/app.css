@@ -43,6 +43,7 @@ header.top{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;padding:8px
 .me{display:flex;align-items:center;gap:8px;margin-left:auto;font-size:13px;white-space:nowrap}
 .av{width:24px;height:24px;border-radius:50%;display:inline-grid;place-items:center;font-weight:700;font-size:11px;color:#0B1220;flex:none}
 .page{max-width:1180px;margin:0 auto;padding:18px 20px 80px}
+.page.wide{max-width:1500px}
 h1{font-size:20px;margin:0 0 4px}
 h2{font-size:15px;margin:22px 0 8px}
 .sub{color:var(--muted);margin:0 0 14px}

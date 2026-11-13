@@ -10,6 +10,7 @@
 	import LeftNav from '$lib/components/LeftNav.svelte';
 	import Collab from '$lib/components/Collab.svelte';
 	import Palette from '$lib/components/Palette.svelte';
+	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
 	import LoginForm from '$lib/components/LoginForm.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 
@@ -87,6 +88,7 @@
 			</div>
 		</div>
 		<Palette bind:open={palette} />
+		<StepUpDialog />
 	{/if}
 	{#if session.expired}
 		<div class="modal-bg">

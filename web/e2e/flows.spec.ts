@@ -818,3 +818,211 @@ test('工時：管理員設每日上限，超過時就地說明還能記多少�
 	await page.getByTestId('tm-toggle').click();
 	await expect(page.getByTestId('tm-state')).toHaveText('已開啟');
 });
+
+// ---- F10: custom fields, forms, concepts (contract 05 §6.10, §6.11, §6.13) ----
+async function adminPage(browser: Browser, next: string) {
+	const ctx = await browser.newContext();
+	contexts.push(ctx);
+	const page = await ctx.newPage();
+	await login(page, 'admin', next);
+	page.on('dialog', (d) => d.accept());
+	return page;
+}
+async function trackerId(page: Page, name: string): Promise<string> {
+	const ff = (await papi(page, 'GET', '/filter-fields')).json.data;
+	return ff.fields.find((x: { field: string }) => x.field === 'tracker').options.find((o: { label: string }) => o.label === name).id;
+}
+async function setCf(page: Page, key: string, set: Record<string, unknown>) {
+	const r = await papi(page, 'POST', '/commands', { command_schema_version: 1, ops: [{ kind: 'update_fields', op_id: uuid(), target: ref(key), set }], preconditions: [{ target: ref(key), lock_version: (await issueView(page, key)).lock_version }] });
+	expect(r.status, JSON.stringify(r.json)).toBe(200);
+}
+
+test('自訂欄位：新增清單欄位、選項排序與停用、改必填前看影響、改可見性；非管理員進不去', async ({ browser }) => {
+	const admin = await adminPage(browser, '/admin/custom-fields');
+	await admin.getByTestId('cf-new').click();
+	await admin.getByTestId('cf-add-name').fill('E2E 平台');
+	await admin.getByTestId('cf-add-type').selectOption('list');
+	await admin.getByTestId('cf-add-tracker').first().check();
+	await admin.getByTestId('cf-add-options').fill('Web\niOS');
+	await admin.getByTestId('cf-add-submit').click();
+	await expect(admin.getByTestId('cf-title')).toHaveText('E2E 平台');
+	await expect(admin.getByTestId('cf-option-label')).toHaveText(['Web', 'iOS']);
+	await admin.getByTestId('cf-option-new').fill('Android');
+	await admin.getByTestId('cf-option-add').click();
+	await expect(admin.getByTestId('cf-option-label')).toHaveText(['Web', 'iOS', 'Android']);
+	await admin.getByTestId('cf-option').nth(2).getByLabel('上移').click();
+	await expect(admin.getByTestId('cf-option-label')).toHaveText(['Web', 'Android', 'iOS']);
+	await admin.getByTestId('cf-option').nth(2).getByTestId('cf-option-toggle').click();
+	await expect(admin.getByTestId('cf-option').nth(2)).toContainText('已停用');
+	// Required: the impact shows before saving (B-11).
+	await admin.getByTestId('cf-required').check();
+	await expect(admin.getByTestId('cf-required-impact')).toBeVisible();
+	await admin.getByTestId('cf-save').click();
+	const mine = async () => (await papi(admin, 'GET', '/admin/custom-fields')).json.data.find((f: { name: string }) => f.name === 'E2E 平台');
+	await expect.poll(async () => (await mine()).is_required).toBe(true);
+	// Visibility asks first (the dialog is accepted) and is saved.
+	await admin.getByTestId('cf-restricted').check();
+	await admin.getByTestId('cf-save').click();
+	await expect.poll(async () => (await mine()).visible).toBe(false);
+	await admin.goto('/admin/custom-fields');
+	await expect(admin.getByTestId('cf-row').filter({ hasText: 'E2E 平台' })).toContainText('受限');
+	// Leave nothing that affects later tests.
+	const f = await mine();
+	await papi(admin, 'PATCH', `/admin/custom-fields/${f.id}`, { lock_version: f.lock_version, set: { is_required: false, visible: true, deactivated: true } });
+
+	const page = await alice(browser, '/');
+	await page.goto('/admin/custom-fields');
+	await expect(page.getByTestId('cf-denied')).toBeVisible();
+	await page.goto('/admin/forms');
+	await expect(page.getByTestId('fd-denied')).toBeVisible();
+	await page.goto('/admin/concepts');
+	await expect(page.getByTestId('cc-denied')).toBeVisible();
+});
+
+test('換型別：文字欄位轉整數，預檢列出失敗，開始後完成並停用舊欄位', async ({ browser }) => {
+	const admin = await adminPage(browser, '/');
+	const made = (await papi(admin, 'POST', '/admin/custom-fields', { name: 'E2E 件數', ftype: 'string', is_for_all: true, tracker_ids: [await trackerId(admin, 'Bug')] })).json.data;
+	const key = await newIssue(admin, 'E2E 換型別');
+	await setCf(admin, key, { [made.key]: { string: '12' } });
+	const key2 = await newIssue(admin, 'E2E 換型別失敗');
+	await setCf(admin, key2, { [made.key]: { string: '十二' } });
+
+	await admin.goto(`/admin/custom-fields/${made.id}/convert`);
+	await admin.getByTestId('cv-type').selectOption('int');
+	await admin.getByTestId('cv-name').fill('E2E 件數（整數）');
+	await admin.getByTestId('cv-next1').click();
+	await expect(admin.getByTestId('cv-parse')).toContainText('整數');
+	await admin.getByTestId('cv-preview').click();
+	await expect(admin.getByTestId('cv-ok')).toHaveText('1');
+	await expect(admin.getByTestId('cv-fail')).toHaveText('1');
+	await expect(admin.getByTestId('cv-step3')).toContainText(key2);
+	await admin.getByTestId('cv-start').click();
+	await expect(admin.getByTestId('cv-done')).toContainText('1 張已轉換', { timeout: 20_000 });
+	await admin.getByTestId('cv-deactivate').click();
+	await expect(admin.getByTestId('cv-step5')).toContainText('已停用');
+	expect((await papi(admin, 'GET', `/admin/custom-fields/${made.id}`)).json.data.field.deactivated).toBe(true);
+});
+
+test('表單設計器：規則草稿→影響→擋下或發布並標記；版面區塊與顯示條件；試填兩邊一致；回報問題依版面即時顯示與必填', async ({ browser }) => {
+	const admin = await adminPage(browser, '/admin/forms');
+	await admin.getByTestId('form-row').filter({ hasText: 'Bug' }).getByTestId('form-design').click();
+	await expect(admin.getByTestId('fd-title')).toContainText('Bug');
+	// Rule: Root cause is required when Severity is High.
+	await admin.getByTestId('fd-rule-add').click();
+	await admin.getByTestId('fd-rule-field').selectOption({ label: 'Root cause' });
+	await admin.getByTestId('fd-rule-kind').selectOption('required_if');
+	await admin.getByTestId('cond-field').selectOption({ label: 'Severity' });
+	await admin.getByTestId('cond-value').selectOption({ label: 'High' });
+	await expect(admin.getByTestId('fd-rule-text')).toHaveText('當 Severity 是 High 時，Root cause 必填');
+	await admin.getByTestId('fd-save').click();
+	await expect(admin.getByTestId('fd-versions')).toContainText('規則 v0・有草稿');
+	// An existing High issue without a root cause breaks the rule.
+	const key = await newIssue(admin, 'E2E 高嚴重度沒有原因');
+	const sev = (await papi(admin, 'GET', '/admin/custom-fields')).json.data.find((f: { name: string }) => f.name === 'Severity');
+	await setCf(admin, key, { [sev.key]: { list: sev.options.find((o: { label: string }) => o.label === 'High').id } });
+	await admin.getByTestId('fd-publish').click();
+	await expect(admin.getByTestId('fd-impact')).toContainText('張現有議題不符合新規則');
+	await admin.getByTestId('fd-mode-block').check();
+	await admin.getByTestId('fd-publish-confirm').click();
+	await expect(admin.getByTestId('fd-blocked')).toBeVisible();
+	await admin.getByTestId('fd-publish').click();
+	await admin.getByTestId('fd-mode-mark').check();
+	await admin.getByTestId('fd-publish-confirm').click();
+	await expect(admin.getByTestId('fd-versions')).toContainText('規則 v1');
+	await expect(admin.getByTestId('fd-version').first()).toContainText('發布並標記不符的議題');
+
+	// Layout: Severity in the first section; a section shown only when Severity is High holds Root cause.
+	await admin.getByTestId('fd-tab-layout').click();
+	await admin.getByTestId('fd-section').first().click();
+	await admin.getByTestId('fd-lib-field').filter({ hasText: 'Severity' }).getByTestId('fd-lib-add').click();
+	await admin.getByTestId('fd-section-add').click();
+	const sec = admin.getByTestId('fd-section').last();
+	await sec.getByTestId('fd-section-title').fill('原因分析');
+	await admin.getByTestId('fd-lib-field').filter({ hasText: 'Root cause' }).getByTestId('fd-lib-add').click();
+	await expect(sec.getByTestId('fd-field')).toHaveCount(1);
+	await sec.getByTestId('fd-section-showif').click();
+	await sec.getByTestId('cond-field').selectOption({ label: 'Severity' });
+	await sec.getByTestId('cond-value').selectOption({ label: 'High' });
+	await admin.getByTestId('fd-publish').click();
+	await expect(admin.getByTestId('fd-publish-dialog')).toContainText('只改呈現，不影響任何寫入');
+	await admin.getByTestId('fd-publish-confirm').click();
+	await expect(admin.getByTestId('fd-versions')).toContainText('版面 v1');
+
+	// Try-fill: both doors give the same answer (an empty subject is refused).
+	await admin.getByTestId('fd-try').locator('summary').click();
+	await admin.getByTestId('fd-try-ui').click();
+	await admin.getByTestId('fd-try-mcp').click();
+	await expect(admin.getByTestId('fd-try-result').nth(0)).toContainText('會被擋下');
+	await expect(admin.getByTestId('fd-try-result').nth(1)).toContainText('會被擋下');
+
+	// The marked issue says so; the report form follows the layout.
+	const page = await alice(browser, `/issue/${key}`);
+	await expect(page.getByTestId('rule-marks')).toContainText('Root cause 必填');
+	await page.goto('/new?project=AUTH');
+	await page.getByTestId('new-tracker').selectOption({ label: 'Bug' });
+	await expect(page.locator('#f-cf_1')).toBeVisible();
+	await expect(page.locator('#f-cf_7')).toHaveCount(0);
+	await page.locator('#f-cf_1').selectOption({ label: 'High' });
+	await expect(page.getByTestId('form-section').filter({ hasText: '原因分析' }).locator('#f-cf_7')).toBeVisible();
+	await page.locator('#f-subject').fill('E2E 依版面建立');
+	await expect(page.getByTestId('new-submit')).toBeDisabled();
+	await expect(page.getByTestId('new-form')).toContainText('還要填：Root cause');
+	await page.locator('#f-cf_7').fill('設定錯誤');
+	await page.getByTestId('new-submit').click();
+	await page.waitForURL(/\/issue\/AUTH-\d+/);
+	await expect(page.getByTestId('issue-subject')).toHaveText('E2E 依版面建立');
+	await expect(page.getByTestId('rule-marks')).toHaveCount(0);
+	// A field the layout hides is neither required nor sent (/new and edit).
+	await page.goto('/new?project=AUTH');
+	await page.getByTestId('new-tracker').selectOption({ label: 'Bug' });
+	await page.locator('#f-cf_1').selectOption({ label: 'High' });
+	await page.locator('#f-cf_7').fill('藏起來的值');
+	await page.locator('#f-cf_1').selectOption({ label: 'Low' });
+	await expect(page.locator('#f-cf_7')).toHaveCount(0);
+	await page.locator('#f-subject').fill('E2E 藏起來不送');
+	await expect(page.getByTestId('new-form')).not.toContainText('還要填');
+	await page.getByTestId('new-submit').click();
+	await page.waitForURL(/\/issue\/AUTH-\d+/);
+	const hiddenKey = page.url().split('/').pop()!;
+	const rootCause = async (k: string) => ((await papi(page, 'GET', `/issues/${k}`)).json.data.custom_fields as { name: string; value: unknown }[]).find((c) => c.name === 'Root cause')?.value ?? null;
+	expect(await rootCause(hiddenKey)).toBeNull();
+	await page.getByTestId('edit').click();
+	await page.locator('#f-cf_1').selectOption({ label: 'High' });
+	await expect(page.getByTestId('edit-missing')).toContainText('Root cause');
+	await page.locator('#f-cf_7').fill('也藏起來');
+	await page.locator('#f-cf_1').selectOption({ label: 'Normal' });
+	await expect(page.getByTestId('edit-missing')).toHaveCount(0);
+	await page.getByTestId('save').click();
+	await expect.poll(async () => ((await issueView(page, hiddenKey)).custom_fields as { name: string; value: unknown }[]).find((c) => c.name === 'Severity')?.value).toMatchObject({ label: 'Normal' });
+	expect(await rootCause(hiddenKey)).toBeNull();
+});
+
+test('概念與別名：建立概念、標籤被占用時說明並可前往、隱藏與暫存、試查', async ({ browser }) => {
+	const admin = await adminPage(browser, '/admin/concepts');
+	await admin.getByTestId('cc-new-pref').fill('Authentication');
+	await admin.getByTestId('cc-new-alts').fill('登入, 認證');
+	await admin.getByTestId('cc-new-submit').click();
+	await expect(admin.getByTestId('cc-pref')).toHaveText('Authentication');
+	await expect(admin.getByTestId('cc-label')).toHaveCount(3);
+	await admin.getByTestId('cc-new-pref').fill('Session');
+	await admin.getByTestId('cc-new-submit').click();
+	await expect(admin.getByTestId('cc-pref')).toHaveText('Session');
+	await admin.getByTestId('cc-label-new').fill('登入');
+	await admin.getByTestId('cc-label-add').click();
+	await expect(admin.getByTestId('cc-taken')).toContainText('「登入」已經是「Authentication」的標籤');
+	await admin.getByTestId('cc-taken-go').click();
+	await expect(admin.getByTestId('cc-pref')).toHaveText('Authentication');
+	await admin.getByTestId('cc-label-new').fill('登錄');
+	await admin.getByTestId('cc-label-add').click();
+	const typo = admin.getByTestId('cc-label').filter({ hasText: '登錄' });
+	await typo.getByTestId('cc-label-hidden').click();
+	await expect(typo).toContainText('隱藏（錯字）');
+	const alt = admin.getByTestId('cc-label').filter({ hasText: '認證' });
+	await alt.getByTestId('cc-label-status').click();
+	await expect(alt).toContainText('暫存（不展開）');
+	await admin.getByTestId('cc-probe-q').fill('登入');
+	await expect(admin.getByTestId('cc-probe-config')).toContainText('Authentication');
+	await expect(admin.getByTestId('cc-probe-config')).not.toContainText('認證');
+	await admin.getByTestId('cc-probe-run').click();
+	await expect(admin.getByTestId('cc-probe-result')).toBeVisible();
+});
