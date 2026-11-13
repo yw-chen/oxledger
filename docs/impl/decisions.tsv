@@ -649,3 +649,6 @@ date	stage	decision	why	alternatives	source
 2026-11-13	P3	F12 精靈的「全部需要核准」也把範本裡 off 的項目改成需要核准	自訂範本全是 off，只改已允許的項目等於沒動作	只改 direct 項目	web/src/lib/aiteam.ts
 2026-11-13	P3	F12 視窗寬度小於 1280 時的 AI 抽屜與頂列「AI」按鈕（§6.19）這階段沒做，右欄照原本的收合行為	先完成桌面寬度的完整流程；抽屜屬版面工作，另排	這階段一起做	web/src/lib/components/Collab.svelte
 2026-11-13	P3	F12 AI 對話 E2E 用 e2e/fakeai.mjs（本機 OpenAI 相容假模型，端點 FAKE、OXLEDGER_AI_ALLOW_HTTP=1），E2E 後端以 --features test-support,ai 建置	不連真實服務、可重現串流、工具呼叫與寫入	只做單元測試；用真實模型	web/e2e/fakeai.mjs
+2026-11-13	P3	D1(b) E2E reset 不再 DROP DATABASE：DB 已存在時結束殘留連線、DROP SCHEMA public CASCADE、CREATE SCHEMA public，再 seed-demo（會跑 migration）與 fixture；只有第一次 DB 不存在才 CREATE DATABASE	DROP DATABASE 讓整台 PG checkpoint 18–70 秒並壓住所有 DB 的 outbox（G21）；migration 沒有 public 以外的物件，重建 schema 等於全新 DB。改後整套 35 個 3.9 分鐘全過（之前 6.1 分鐘且有逾時）	TRUNCATE 全部表（要維護表清單）；保留 DROP DATABASE	web/e2e/backend.mjs
+2026-11-13	P3	D1(c) 刪掉 oxledger_fe_verify、oxledger_fe_verify2（先前驗證子代理留下、無連線）；保留 oxledger_fe_dev、oxledger_fe_e2e、oxledger_fe_e2e_verify（驗證子代理固定用這組）	減少 checkpoint 要 sync 的檔案；驗證子代理改用固定的一組，不再每次新建	全部保留	—
+2026-11-13	P3	D11 E2E 後端 log 存到 web/test-results/backend-<db>.log（RUST_LOG 預設 info，NO_COLOR），Playwright 產出移到 test-results/artifacts（開跑時會被清空）；失敗的測試附上該測試期間的 log 與 /metrics（OXLEDGER_METRICS_TOKEN 用本機測試值）	G21 與 E2E 除錯需要後端當時的狀態；目前 info 只有啟動訊息，後端加 request id 後自動有內容	log 放 outputDir（開跑時被清掉）；只在 CI 存	web/playwright.config.ts

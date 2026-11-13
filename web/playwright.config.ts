@@ -7,16 +7,23 @@
 // Build the backend first:
 //   cargo build -p oxledger --features test-support,ai
 import { defineConfig } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
 
 const DB = process.env.OX_E2E_DB ?? 'oxledger_fe_e2e';
 const BACKEND_PORT = Number(process.env.OX_E2E_BACKEND_PORT ?? 18082);
 const WEB_PORT = Number(process.env.OX_E2E_WEB_PORT ?? 5176);
 const FAKE_AI_PORT = process.env.OX_FAKE_AI_PORT ?? '18091';
 const WEB = `http://localhost:${WEB_PORT}`;
+// D11: the backend log (RUST_LOG=info) for the whole run; a failing test gets
+// its own part of it and a /metrics snapshot attached (e2e/flows.spec.ts).
+// Outside outputDir, which Playwright empties at the start of a run.
+export const BACKEND_LOG = fileURLToPath(new URL(`./test-results/backend-${DB}.log`, import.meta.url));
+export const METRICS_TOKEN = `e2e-metrics-${DB}`; // test value, local backend only
 
 export default defineConfig({
 	testDir: 'e2e',
 	testMatch: '*.spec.ts',
+	outputDir: 'test-results/artifacts',
 	fullyParallel: false,
 	workers: 1,
 	timeout: 60_000,
@@ -27,7 +34,7 @@ export default defineConfig({
 		{
 			command: `node e2e/backend.mjs reset-serve ${DB}`,
 			url: `http://127.0.0.1:${BACKEND_PORT}/healthz`,
-			env: { OX_BACKEND_PORT: String(BACKEND_PORT), OX_SPA_ORIGIN: WEB, OX_FAKE_AI_PORT: FAKE_AI_PORT },
+			env: { OX_BACKEND_PORT: String(BACKEND_PORT), OX_SPA_ORIGIN: WEB, OX_FAKE_AI_PORT: FAKE_AI_PORT, OX_BACKEND_LOG: BACKEND_LOG, OXLEDGER_METRICS_TOKEN: METRICS_TOKEN, RUST_LOG: process.env.RUST_LOG ?? 'info' },
 			timeout: 120_000,
 			reuseExistingServer: false,
 			stdout: 'ignore'
@@ -42,4 +49,5 @@ export default defineConfig({
 	]
 });
 
+export const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 export const MCP_URL = `http://127.0.0.1:${BACKEND_PORT}/mcp`;

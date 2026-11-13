@@ -7,8 +7,9 @@
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 // @ts-expect-error plain ESM helper without types
 import { Agent } from './agent.mjs';
-import { MCP_URL } from '../playwright.config';
+import { BACKEND_LOG, BACKEND_URL, MCP_URL, METRICS_TOKEN } from '../playwright.config';
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 
 const PASSWORD = 'oxledger-demo-pass'; // test value for the oxledger_fe_* databases only
 test.describe.configure({ mode: 'serial' });
@@ -77,8 +78,23 @@ async function propose(title: string, ops: unknown[], keys: string[], extra: Rec
 }
 
 const contexts: BrowserContext[] = [];
-test.afterEach(async () => {
+// D11: a failing test carries what the backend logged while it ran, and /metrics.
+let logFrom = 0;
+test.beforeEach(() => {
+	logFrom = existsSync(BACKEND_LOG) ? statSync(BACKEND_LOG).size : 0;
+});
+test.afterEach(async ({}, testInfo) => {
 	for (const c of contexts.splice(0)) await c.close();
+	if (testInfo.status === testInfo.expectedStatus) return;
+	if (existsSync(BACKEND_LOG)) {
+		const all = readFileSync(BACKEND_LOG);
+		const part = all.subarray(Math.max(logFrom, all.length - 512 * 1024)).toString('utf8');
+		await testInfo.attach('backend-log', { body: part, contentType: 'text/plain' });
+	}
+	const m = await fetch(`${BACKEND_URL}/metrics`, { headers: { Authorization: `Bearer ${METRICS_TOKEN}` } })
+		.then((r) => r.text())
+		.catch((e) => `metrics unavailable: ${e}`);
+	await testInfo.attach('metrics', { body: m, contentType: 'text/plain' });
 });
 async function alice(browser: Browser, next = '/') {
 	const ctx = await browser.newContext();

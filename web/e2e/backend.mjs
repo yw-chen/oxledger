@@ -2,7 +2,7 @@
 // Local backend for the SPA (dev and E2E). Only ever touches databases named
 // oxledger_fe_* on the docker PostgreSQL (playbook).
 //
-//   node e2e/backend.mjs reset [db]     drop + create db, seed-demo, fixture.sql,
+//   node e2e/backend.mjs reset [db]     fresh schema (never DROP DATABASE), seed-demo, fixture.sql,
 //                                       passwords, the "Claude Code" agent client
 //   node e2e/backend.mjs serve [db]     oxledger serve on 127.0.0.1:18080
 //   node e2e/backend.mjs reset-serve db both (Playwright's webServer)
@@ -11,7 +11,7 @@
 // Demo password for admin/alice/bob/carol: see PASSWORD below (test value).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeAi } from './fakeai.mjs';
@@ -42,7 +42,17 @@ const psql = (db, sql) => run('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-
 export function reset(db = 'oxledger_fe_dev') {
 	check(db);
 	if (!existsSync(bin)) throw new Error(`build the backend first: cargo build --features test-support (${bin})`);
-	psql('postgres', `DROP DATABASE IF EXISTS ${db} WITH (FORCE);\nCREATE DATABASE ${db};\n`);
+	// Never DROP DATABASE (decision D1(b), gap G21): it makes the whole
+	// PostgreSQL checkpoint (18–70 s here) while holding an xid, which stalls
+	// every database's outbox. Rebuilding the schema is the same fresh start
+	// (the migrations create nothing outside `public`) without the checkpoint.
+	const exists = run('docker', ['exec', 'oxledger-pg', 'psql', '-At', '-U', 'oxledger', '-d', 'postgres', '-c', `SELECT 1 FROM pg_database WHERE datname = '${db}'`]).trim() === '1';
+	if (!exists) psql('postgres', `CREATE DATABASE ${db};\n`);
+	else {
+		// A backend left over from an aborted run still holds connections.
+		psql('postgres', `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${db}' AND pid <> pg_backend_pid();\n`);
+		psql(db, 'DROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\n');
+	}
 	// The search index belongs to the dropped database; start it afresh too.
 	rmSync(join(here, '.state', `index-${db}`), { recursive: true, force: true });
 	const env = { ...process.env, DATABASE_URL: `${PG}/${db}` };
@@ -63,10 +73,19 @@ export function serve(db = 'oxledger_fe_dev', { inherit = true } = {}) {
 	check(db);
 	const index = join(here, '.state', `index-${db}`);
 	const fake = startFakeAi(FAKE_AI_PORT);
+	// D11: with OX_BACKEND_LOG the backend's output goes to that file (the
+	// E2E attaches what a failing test caused); otherwise as before.
+	const logPath = process.env.OX_BACKEND_LOG;
+	let log = null;
+	if (logPath) {
+		mkdirSync(dirname(logPath), { recursive: true });
+		log = createWriteStream(logPath, { flags: 'w' });
+	}
 	const child = spawn(bin, ['serve'], {
 		cwd: root,
-		stdio: inherit ? 'inherit' : 'ignore',
+		stdio: log ? ['ignore', 'pipe', 'pipe'] : inherit ? 'inherit' : 'ignore',
 		env: {
+			...(log ? { NO_COLOR: '1' } : {}),
 			...process.env,
 			DATABASE_URL: `${PG}/${db}`,
 			OXLEDGER_BIND: `127.0.0.1:${PORT}`,
@@ -77,7 +96,14 @@ export function serve(db = 'oxledger_fe_dev', { inherit = true } = {}) {
 			RUST_LOG: process.env.RUST_LOG ?? 'warn'
 		}
 	});
-	child.on('exit', () => fake.close());
+	if (log) {
+		child.stdout.pipe(log, { end: false });
+		child.stderr.pipe(log, { end: false });
+	}
+	child.on('exit', () => {
+		fake.close();
+		log?.end();
+	});
 	return child;
 }
 
