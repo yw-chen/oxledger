@@ -356,6 +356,83 @@ test('人直接回報與編輯：/new 建單、議題頁改欄位、加 note', a
 	await expect(page.getByTestId('note').last()).toContainText('人自己補的 note');
 });
 
+test('M2.0 Markdown 編輯器：/new 的說明、純文字說明改寫後轉 Markdown、note 的提及清單／預覽／字數上限／草稿', async ({ browser }) => {
+	const fmt = (k: string) => sqlValue(`SELECT i.description_format FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current WHERE k.key = '${k}';`);
+	const page = await alice(browser, '/new');
+	await page.getByTestId('new-project').selectOption('AUTH');
+	const subject = `Markdown 單 ${Date.now()}`;
+	await page.getByTestId('new-form').getByLabel(/^標題/).fill(subject);
+	// The toolbar wraps the selection (06 §6.2).
+	const desc = page.getByTestId('md-description-input');
+	await desc.fill('重現步驟');
+	await desc.selectText();
+	await page.getByTestId('md-description').getByRole('button', { name: '粗體（Ctrl+B）' }).click();
+	await expect(desc).toHaveValue('**重現步驟**');
+	await page.getByTestId('md-description-help').click();
+	await expect(page.getByTestId('md-description-cheat')).toContainText('語法小抄');
+	await page.getByTestId('new-submit').click();
+	await page.waitForURL(/\/issue\/AUTH-\d+/);
+	const k = page.url().split('/issue/')[1];
+	// A new description is Markdown (R-M9: create omits `format`).
+	expect(fmt(k)).toBe('markdown');
+	await expect(page.getByTestId('description')).toContainText('重現步驟');
+
+	// A description written before M2 stays plain until a person rewrites it.
+	sql(`UPDATE issues SET description_format = 'plain' WHERE id = (SELECT issue_id FROM issue_keys WHERE key = '${k}' AND is_current);`);
+	await page.reload();
+	await page.getByTestId('edit').click();
+	await expect(page.getByTestId('md-description-plain')).toContainText('原本是純文字');
+	await page.getByLabel(/^標題/).fill(`${subject} 改`);
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('issue-subject')).toHaveText(`${subject} 改`);
+	expect(fmt(k)).toBe('plain');
+	await page.getByTestId('edit').click();
+	await page.getByTestId('md-description-input').fill('改寫成 **Markdown**');
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('description')).toContainText('改寫成');
+	await expect.poll(() => fmt(k)).toBe('markdown');
+
+	// Note: the mention list comes from the project's assignable people. Until the
+	// server sends logins (G48) they show but cannot be picked.
+	await page.getByTestId('add-note').click();
+	const body = page.getByTestId('note-body');
+	await body.fill('請 @Bo');
+	await body.press('End');
+	await body.pressSequentially('b');
+	const ac = page.getByTestId('note-md-ac');
+	await expect(ac).toBeVisible();
+	await expect(ac.getByTestId('note-md-ac-item').first()).toContainText('Bob');
+	await body.press('Escape');
+	await expect(ac).toHaveCount(0);
+	// The preview needs the server's /markdown/preview (M2.1); without it the text is kept.
+	await body.fill('預覽 **這段**');
+	await page.getByTestId('note-md-tab-preview').click();
+	await expect(page.getByTestId('note-md-preview')).toBeVisible();
+	await expect(page.getByTestId('note-md-preview-failed').or(page.getByTestId('note-md-preview').locator('strong'))).toBeVisible({ timeout: 10_000 });
+	await page.getByTestId('note-md-tab-write').click();
+	await expect(body).toHaveValue('預覽 **這段**');
+	// Over 64 KiB: the count turns red and the button is disabled.
+	await body.fill('中'.repeat(22_000));
+	await expect(page.getByTestId('note-md-count')).toContainText('超過上限');
+	await expect(page.getByTestId('note-submit')).toBeDisabled();
+	// A draft survives a reload and comes back on request.
+	await body.fill('還沒送出的 note');
+	await page.waitForTimeout(600);
+	page.once('dialog', (d) => d.accept());
+	await page.reload();
+	await page.getByTestId('add-note').click();
+	await expect(page.getByTestId('note-md-draft')).toBeVisible();
+	await page.getByTestId('note-md-draft-restore').click();
+	await expect(page.getByTestId('note-body')).toHaveValue('還沒送出的 note');
+	await page.getByTestId('note-submit').click();
+	await expect(page.getByTestId('note').last()).toContainText('還沒送出的 note');
+	// Sent: no draft left.
+	await page.reload();
+	await page.getByTestId('add-note').click();
+	await expect(page.getByTestId('note-md-input').or(page.getByTestId('note-body'))).toBeVisible();
+	await expect(page.getByTestId('note-md-draft')).toHaveCount(0);
+});
+
 test('帳號：另一個瀏覽器被登出後要重新登入', async ({ browser }) => {
 	const a = await alice(browser);
 	const b = await alice(browser, '/account');

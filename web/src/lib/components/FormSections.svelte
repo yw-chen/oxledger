@@ -5,7 +5,7 @@
 	// place go last under 「其他」.
 	import type { Assignee, FieldSchema, VersionView } from '$api/types';
 	import { evalWhen, type LayoutLike } from '$lib/formcond';
-	import FieldInput from './FieldInput.svelte';
+	import FieldInput, { type MdOpts } from './FieldInput.svelte';
 
 	let {
 		fields,
@@ -15,7 +15,8 @@
 		assignees = [],
 		versions = [],
 		disabled = false,
-		marks = new Set<string>()
+		marks = new Set<string>(),
+		md = null
 	}: {
 		fields: { f: FieldSchema; required: boolean }[];
 		layout: LayoutLike | null | undefined;
@@ -27,6 +28,8 @@
 		disabled?: boolean;
 		/** Keys to flag (a form rule the issue breaks). */
 		marks?: Set<string>;
+		/** The description's Markdown editor options (FieldInput `md`). */
+		md?: MdOpts | null;
 	} = $props();
 
 	type Placed = { e: { f: FieldSchema; required: boolean }; span: number; help: string | null };
@@ -66,7 +69,7 @@
 		<div class="fgrid" style="grid-template-columns:repeat({s.columns},minmax(0,1fr))">
 			{#each s.fields as p (p.e.f.key)}
 				<div class="fcell" class:marked={marks.has(p.e.f.key)} style="grid-column:span {p.span}" data-testid="form-field" data-key={p.e.f.key}>
-					<FieldInput field={p.e.f} bind:value={form[p.e.f.key]} {assignees} {versions} required={p.e.required} {disabled} />
+					<FieldInput field={p.e.f} bind:value={form[p.e.f.key]} {assignees} {versions} required={p.e.required} {disabled} {md} />
 					{#if p.help}<div class="hint">{p.help}</div>{/if}
 				</div>
 			{/each}

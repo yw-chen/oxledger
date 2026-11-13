@@ -743,3 +743,6 @@ date	stage	decision	why	alternatives	source
 2026-11-13	M2.0	提及的「@ 前一個字元」跨行內節點邊界判斷：同一個區塊內，前一段文字（含被跳過的連結、程式碼、行內 HTML 的最後一個字元）算數；新區塊（段落、清單項目等）從頭開始。所以 **x**@bob、[x](u)@bob、`x`@bob 不是提及	R-MN1 是對渲染後看到的文字定義；節點只是解析細節	每個節點各自當行首（會把 **x**@bob 誤判成提及）	crates/oxledger/src/mentions.rs
 2026-11-13	M2.0	plain 格式掃提及時跳過 http(s):// 網址片段（到下一個空白為止），https://x.test/@bob 不是提及；Markdown 的網址已由 autolink 變成連結而跳過	R-M8（plain 只做自動連結）與 R-MN1（連結內不解析）	plain 不處理網址	crates/oxledger/src/mentions.rs
 2026-11-13	M2.0	06 §7.9 升級測試的起點維持 0030，加註「M1 發布版；改號後經過 0031_p2_api_gaps」，不改成 0031	原意是從 M1 發布版升級；0031 只加欄位、不動權限與 epoch		docs/design/06-m2-integration-contract.md §7.9
+2026-11-14	P4	06 §6.1 <RichText> 在伺服器沒有給 *_html（M2.1 之前）時照 M1 的純文字顯示；只有 RichText 與 AiChat（自己的 markdown 子集，一律 escape）可以用 {@html}，用 vitest 掃原始碼代替 lint 規則（不加 ESLint）	契約 R-M10 要 lint；使用者決定不加 ESLint	加 ESLint 外掛	web/src/lib/components/RichText.svelte
+2026-11-14	P4	06 §6.2 編輯器的預覽在 POST /markdown/preview 不存在（M2.1 之前）時顯示「無法預覽，內容沒有遺失」；不在前端自己渲染 Markdown	B-1：渲染只在伺服端，前端不另做一份消毒器	前端先用自己的子集渲染預覽	web/src/lib/components/MarkdownEditor.svelte
+2026-11-14	P4	06 §6.2 提及 chip 在編輯器下方列「會提及：@名稱」，用和伺服器相同的規則（R-MN1：code 裡不算、agent handle 不算、先精確再唯一的大小寫不敏感比對）在本機算；顯示的 chip 只是提示，實際提及與通知以伺服器為準	讓人送出前知道會通知誰	不顯示，只靠送出後的渲染	web/src/lib/markdown.ts

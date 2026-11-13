@@ -80,6 +80,11 @@
 			{#each NOTIFY as [k, l] (k)}
 				<label class="row" style="gap:6px"><input type="checkbox" bind:checked={form[k]} data-testid="np-{k}" />{l}</label>
 			{/each}
+			<!-- Design 06 §6.13: the server adds `on_mentioned` with M2.1; shown once it is there. -->
+			{#if 'on_mentioned' in form}
+				{@const f = form as typeof form & { on_mentioned: boolean }}
+				<label class="row" style="gap:6px"><input type="checkbox" bind:checked={f.on_mentioned} data-testid="np-on_mentioned" />有人提及我</label>
+			{/if}
 		</div>
 		<div class="card" data-testid="np-auto">
 			<div class="k">自動關注：</div>
