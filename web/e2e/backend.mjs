@@ -14,6 +14,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startFakeAi } from './fakeai.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..');
@@ -21,6 +22,8 @@ export const PASSWORD = 'oxledger-demo-pass';
 export const PORT = Number(process.env.OX_BACKEND_PORT ?? 18080);
 export const SPA_ORIGIN = process.env.OX_SPA_ORIGIN ?? 'http://localhost:5174';
 const PG = 'postgres://oxledger:oxledger_dev@127.0.0.1:55432';
+// The stand-in model (e2e/fakeai.mjs) the built-in AI talks to; loopback only.
+export const FAKE_AI_PORT = Number(process.env.OX_FAKE_AI_PORT ?? 18091);
 const bin = join(root, 'target', 'debug', process.platform === 'win32' ? 'oxledger.exe' : 'oxledger');
 
 function check(db) {
@@ -59,6 +62,7 @@ export function reset(db = 'oxledger_fe_dev') {
 export function serve(db = 'oxledger_fe_dev', { inherit = true } = {}) {
 	check(db);
 	const index = join(here, '.state', `index-${db}`);
+	const fake = startFakeAi(FAKE_AI_PORT);
 	const child = spawn(bin, ['serve'], {
 		cwd: root,
 		stdio: inherit ? 'inherit' : 'ignore',
@@ -68,9 +72,12 @@ export function serve(db = 'oxledger_fe_dev', { inherit = true } = {}) {
 			OXLEDGER_BIND: `127.0.0.1:${PORT}`,
 			OXLEDGER_SPA_ORIGIN: SPA_ORIGIN,
 			OXLEDGER_INDEX_DIR: index,
+			OXLEDGER_AI_ENDPOINT_FAKE: `http://127.0.0.1:${FAKE_AI_PORT}/v1`,
+			OXLEDGER_AI_ALLOW_HTTP: '1',
 			RUST_LOG: process.env.RUST_LOG ?? 'warn'
 		}
 	});
+	child.on('exit', () => fake.close());
 	return child;
 }
 

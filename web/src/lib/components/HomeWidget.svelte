@@ -3,7 +3,7 @@
 	// with the signed-in person's own permissions, also in a role preview.
 	import type { AgentSummary, RunItem, Timesheet, TriageCount, VersionView, Widget } from '$api/types';
 	import { api } from '$lib/api';
-	import { counts, refreshCounts } from '$lib/counts.svelte';
+	import { counts, myRoles, refreshCounts } from '$lib/counts.svelte';
 	import { session, projectById } from '$lib/session.svelte';
 	import { HEALTH, HEALTH_REASON } from '$lib/health';
 	import { fmtValue } from '$lib/format';
@@ -76,15 +76,8 @@
 	});
 
 	const failed = $derived(counts.awaiting.filter((c) => c.last_execution_status === 'failed'));
-	const paused = $derived(counts.contexts.filter((c) => c.state === 'active' && c.suspended_at));
-	const broken = $derived(counts.contexts.filter((c) => c.state === 'active' && c.changed_projects.length > 0));
-	const projName = (id: string) => projectById(id)?.key ?? '某個專案';
-	const SUSPEND: Record<string, string> = {
-		manual: '你手動暫停',
-		audience_blocked: '1 小時內多次被受眾規則擋下，已自動暫停',
-		issue_write_burst: '同一張單短時間內寫入太多次，已自動暫停',
-		version_write_burst: '里程碑短時間內寫入太多次，已自動暫停'
-	};
+	const paused = $derived(myRoles().filter((m) => m.status === 'paused'));
+	const broken = $derived(myRoles().filter((m) => m.status === 'quarantined'));
 	const DAY = ['一', '二', '三', '四', '五', '六', '日'];
 	const v = (r: RunItem, k: string) => fmtValue((r.values ?? {})[k] ?? null);
 </script>
@@ -93,10 +86,10 @@
 {#if w.type === 'need_decision'}
 	{@const n = counts.awaiting.length}
 	{#each paused as c (c.id)}
-		<div class="banner w"><span class="agname">{c.agent_label}</span> 寫入已暫停：{SUSPEND[c.suspension_reason ?? ''] ?? c.suspension_reason}<span class="sp"></span><a class="btn sm" href="/agents">處理</a></div>
+		<div class="banner w"><span class="agname">{c.handle}</span> 寫入已暫停<span class="sp"></span><a class="btn sm" href="/ai-team/{encodeURIComponent(c.handle)}">處理</a></div>
 	{/each}
 	{#each broken as c (c.id)}
-		<div class="banner b"><span class="agname">{c.agent_label}</span> 的工作脈絡因 {c.changed_projects.map(projName).join('、')} 的權限設定變更而停用<span class="sp"></span><a class="btn sm" href="/agents">建立新工作脈絡</a></div>
+		<div class="banner b"><span class="agname">{c.handle}</span> 所在的執行環境有專案權限改變，已隔離<span class="sp"></span><a class="btn sm" href="/ai-team/{encodeURIComponent(c.handle)}">建新工作脈絡</a></div>
 	{/each}
 	{#each failed as c (c.changeset_id)}
 		<div class="banner b">提案「{c.title ?? c.targets.map((t) => t.key).join('、')}」已核准但套用失敗<span class="sp"></span><a class="btn sm" href="/cs/{c.changeset_id}">查看</a></div>

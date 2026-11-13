@@ -642,3 +642,10 @@ date	stage	decision	why	alternatives	source
 2026-11-13	P2	G14 last_used_at 在 HTTP bearer 驗證成功時寫，每個 token 每分鐘最多一次（先讀再條件式 UPDATE，子查詢 FOR UPDATE SKIP LOCKED 不等鎖）；寫入失敗只記 log，不讓驗證失敗	每個 MCP 請求都寫會放大寫入；stdio MCP 只在啟動時驗證一次，所以只反映啟動時間	每次寫；寫進 db::effective（那裡是唯讀交易）	crates/oxledger/src/auth.rs
 2026-11-13	P2	G24 沿用既有參數名 from、to、issue（S6b 就有），只加 cursor、limit（預設 50、上限 200）與 next_cursor；/ai-team/{id}/activity 用同一組	改名會破壞既有呼叫者；契約 02 §16.10 沒有指定參數名	改成 since、until、key	crates/oxledger/src/undo.rs
 2026-11-13	P2	G24 活動分頁：先判斷可讀與單號篩選，再算頁數；next_cursor 取最後一筆回傳項目的 (at, id)；下一頁只在後面還有可讀項目時才給	看不到＝不存在：不可讀的事件不能影響筆數、cursor 或「還有下一頁」	SQL 先分頁再過濾（頁數會變少、cursor 會指向看不到的事件）	crates/oxledger/src/undo.rs
+2026-11-13	P3	F12 舊的 /agents 與 /agents/new 改成 307 轉到 /ai-team、/ai-team/new；導覽、徽章、活動頁都改讀 GET /ai-team	後端 M2.0 會移除 /agent-contexts*，前端要先改好；舊連結（書籤、通知）仍可用	保留舊頁面並行；直接 404	web/src/routes/agents/+page.ts
+2026-11-13	P3	F12 活動頁的單號篩選只在輸入是完整單號（KEY-123）時送給伺服器，其他輸入不篩	伺服器的 issue 參數只接受完整單號；部分字串送出去會 400	前端對已載入項目做子字串過濾（分頁後結果不完整）	web/src/routes/agents/[id]/activity/+page.svelte
+2026-11-13	P3	F12 角色頁「加入專案」用該角色範本的政策、7 天期限，送出後再在政策表調整	和精靈預設一致，少一步；範本政策是完整的允許清單	每次都走完整精靈	web/src/routes/ai-team/[handle]/+page.svelte
+2026-11-13	P3	F12 內建 AI 助理設定用 personal 範本、30 天、每個勾選的專案一筆委派，讀自己的工時預設開（契約 §3.12，要勾 A1 確認），全部在同一次身分確認內	§6.19 的設定流程只問專案與工時；到期前橫幅提供延長	讓使用者逐專案選政策	web/src/lib/components/AiChat.svelte
+2026-11-13	P3	F12 精靈的「全部需要核准」也把範本裡 off 的項目改成需要核准	自訂範本全是 off，只改已允許的項目等於沒動作	只改 direct 項目	web/src/lib/aiteam.ts
+2026-11-13	P3	F12 視窗寬度小於 1280 時的 AI 抽屜與頂列「AI」按鈕（§6.19）這階段沒做，右欄照原本的收合行為	先完成桌面寬度的完整流程；抽屜屬版面工作，另排	這階段一起做	web/src/lib/components/Collab.svelte
+2026-11-13	P3	F12 AI 對話 E2E 用 e2e/fakeai.mjs（本機 OpenAI 相容假模型，端點 FAKE、OXLEDGER_AI_ALLOW_HTTP=1），E2E 後端以 --features test-support,ai 建置	不連真實服務、可重現串流、工具呼叫與寫入	只做單元測試；用真實模型	web/e2e/fakeai.mjs

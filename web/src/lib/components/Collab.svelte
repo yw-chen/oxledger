@@ -1,11 +1,13 @@
 <script lang="ts">
-	// Layout B, right: the collaboration column. "AI 對話" shows the closed
-	// state (frontend Q2 off); "動態" shows what agents wrote and what waits
-	// for you, scoped to the issue open in the middle (or everything).
+	// Layout B, right: the collaboration column. 「AI 助理」 (contract 05
+	// §6.19) only when the organisation turned the built-in AI on; "動態"
+	// shows what agents wrote and what waits for you, scoped to the issue
+	// open in the middle (or everything).
 	import { page } from '$app/state';
-	import type { ActivityItem } from '$api/types';
+	import type { ActivityItem, AiStatus } from '$api/types';
+	import AiChat from './AiChat.svelte';
 	import { api } from '$lib/api';
-	import { counts } from '$lib/counts.svelte';
+	import { counts, myRoles } from '$lib/counts.svelte';
 	import { prefs, savePrefs } from '$lib/prefs.svelte';
 	import { fmtShort } from '$lib/format';
 	import { session } from '$lib/session.svelte';
@@ -22,11 +24,13 @@
 
 	const agents = $derived.by(() => {
 		const m = new Map<string, string>();
-		for (const c of counts.contexts) m.set(c.agent_principal_id, c.agent_label);
+		// My own roles only (as before /ai-team): one request each, and the
+		// whole organisation's roles would grow with the team.
+		for (const c of myRoles()) if (c.status !== 'retired') m.set(c.id, c.handle);
 		return [...m.entries()];
 	});
 	const pending = $derived(counts.awaiting.filter((c) => !issueKey || c.targets.some((t) => t.key === issueKey)));
-	const paused = $derived(issueKey ? [] : counts.contexts.filter((c) => c.state === 'active' && c.suspended_at));
+	const paused = $derived(issueKey ? [] : myRoles().filter((m) => m.status === 'paused'));
 
 	let seq = 0;
 	$effect(() => {
@@ -41,7 +45,7 @@
 		loading = true;
 		Promise.all(
 			list.map(([id, label]) =>
-				api('GET /agents/{id}/activity', { path: { id }, query: { issue: key ?? undefined } })
+				api('GET /ai-team/{id}/activity', { path: { id }, query: { issue: key ?? undefined } })
 					.then((a) => a.items.map((it) => ({ ...it, agent: label, agentId: id })))
 					.catch(() => [] as Row[])
 			)
@@ -67,6 +71,21 @@
 	const hasContent = $derived(rows.length + pending.length + paused.length > 0);
 	const KIND: Record<string, string> = { direct: '直接寫入', proposal: '核准後套用', blocked: '被擋', undo: '回復' };
 
+	// §6.19: `enabled = false` shows no AI tab at all.
+	let ai = $state<AiStatus | null>(null);
+	async function loadAi() {
+		try {
+			ai = await api('GET /ai/status');
+		} catch {
+			ai = null;
+		}
+	}
+	$effect(() => {
+		if (session.user?.user_id) loadAi();
+	});
+	const aiOn = $derived(!!ai?.enabled);
+	const showAi = $derived(aiOn && prefs.collabTab === 'ai');
+
 	function tab(t: 'ai' | 'activity') {
 		prefs.collabTab = t;
 		savePrefs();
@@ -77,30 +96,26 @@
 	}
 </script>
 
-{#if prefs.collabHidden || (!hasContent && prefs.collabTab === 'activity' && !loading)}
+{#if prefs.collabHidden || (!hasContent && !aiOn && !loading)}
 	<aside class="collab rail" aria-label="協作欄（已收合）">
-		<button class="btn sm ghost" title="展開協作欄" onclick={() => { hide(false); tab(hasContent ? 'activity' : 'ai'); }} data-testid="collab-open">«</button>
-		<span class="vlabel">{hasContent ? '動態' : '沒有 agent 動態'}</span>
+		<button class="btn sm ghost" title="展開協作欄" onclick={() => { hide(false); tab(hasContent || !aiOn ? 'activity' : 'ai'); }} data-testid="collab-open">«</button>
+		<span class="vlabel">{hasContent ? '動態' : aiOn ? 'AI 助理' : '沒有 agent 動態'}</span>
 	</aside>
 {:else}
 	<aside class="collab" aria-label="協作欄" data-testid="collab">
 		<div class="ch">
-			<button class="ctab" class:on={prefs.collabTab === 'ai'} onclick={() => tab('ai')}>AI 對話</button>
-			<button class="ctab" class:on={prefs.collabTab === 'activity'} onclick={() => tab('activity')}>動態</button>
+			{#if aiOn}<button class="ctab" class:on={showAi} onclick={() => tab('ai')} data-testid="tab-ai">AI 助理</button>{/if}
+			<button class="ctab" class:on={!showAi} onclick={() => tab('activity')} data-testid="tab-activity">動態</button>
 			<span class="dim" style="font-size:12px">{issueKey ?? '全部'}</span>
 			<span style="flex:1"></span>
 			<button class="btn sm ghost" title="收合" onclick={() => hide(true)}>»</button>
 		</div>
-		{#if prefs.collabTab === 'ai'}
-			<div class="csec" data-testid="ai-off">
-				<b>內建 AI 未啟用</b>
-				<p class="muted" style="font-size:13px">組織目前關閉內建 AI 與對外的模型資料出口（前端 Q2）。外部 agent（例如 Claude Code）透過 MCP 做的事，在「動態」分頁看得到。</p>
-				<p class="hint">⌘K 輸入自然語言時會改用文字搜尋。</p>
-			</div>
+		{#if showAi && ai}
+			<AiChat status={ai} onstatus={loadAi} />
 		{:else}
 			<div class="csec">
 				{#each paused as c (c.id)}
-					<div class="banner w" style="margin:0 0 8px"><span class="agname">{c.agent_label}</span> 寫入已暫停<span class="sp"></span><a class="btn sm" href="/agents">處理</a></div>
+					<div class="banner w" style="margin:0 0 8px"><span class="agname">{c.handle}</span> 寫入已暫停<span class="sp"></span><a class="btn sm" href="/ai-team/{encodeURIComponent(c.handle)}">處理</a></div>
 				{/each}
 				{#if pending.length}
 					<div class="k" style="margin:2px 0 4px">待你核准</div>
@@ -126,7 +141,7 @@
 							</div>
 						</div>
 					{/each}
-					<a class="dim" style="font-size:12.5px" href="/agents">完整活動與回復 →</a>
+					<a class="dim" style="font-size:12.5px" href="/ai-team">AI 團隊與完整活動 →</a>
 				{:else if loading}
 					<div class="sync"><span class="spin"></span>讀取中</div>
 				{/if}

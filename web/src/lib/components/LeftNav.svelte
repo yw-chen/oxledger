@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { session } from '$lib/session.svelte';
 	import { prefs, savePrefs } from '$lib/prefs.svelte';
-	import { counts, awaitingLabel, attentionContexts, triageLabel } from '$lib/counts.svelte';
+	import { counts, awaitingLabel, attentionRoles, triageLabel } from '$lib/counts.svelte';
 	import { current } from '$lib/current.svelte';
 	import { me, shortcutHref, SHORTCUT_ICON, SHORTCUT_LABEL } from '$lib/me.svelte';
 
@@ -12,7 +12,7 @@
 	const mini = $derived(prefs.navMini);
 	// The project the middle column is showing (a project tab or an issue in it).
 	const projectKey = $derived(current.projectKey);
-	const attention = $derived(attentionContexts().length);
+	const attention = $derived(attentionRoles().length);
 
 	function toggle() {
 		prefs.navMini = !prefs.navMini;
@@ -59,9 +59,9 @@
 		</a>
 	{/each}
 	{#if mini}<div class="sep"></div>{:else}<div class="sec">agent</div>{/if}
-	<a href="/agents" class:on={path.startsWith('/agents')} title="我的 agent 委派">
-		<span class="ic">⚙</span>{#if !mini}<span class="lb">我的 agent 委派</span>{/if}
-		{#if attention}<span class="badge w" title="有 agent 需要處理">!</span>{/if}
+	<a href="/ai-team" class:on={path.startsWith('/ai-team') || path.startsWith('/agents')} title="AI 團隊" data-testid="nav-ai-team">
+		<span class="ic">⚙</span>{#if !mini}<span class="lb">AI 團隊</span>{/if}
+		{#if attention}<span class="badge w" title="有 AI 角色需要處理" data-testid="ai-attention">!</span>{/if}
 	</a>
 	{#if session.user?.is_admin}
 		{#if mini}<div class="sep"></div>{:else}<div class="sec">管理</div>{/if}
@@ -70,6 +70,7 @@
 		<a href="/admin/forms" class:on={path.startsWith('/admin/forms')} title="表單"><span class="ic">▦</span>{#if !mini}<span class="lb">表單</span>{/if}</a>
 		<a href="/admin/concepts" class:on={path.startsWith('/admin/concepts')} title="概念與別名"><span class="ic">≈</span>{#if !mini}<span class="lb">概念與別名</span>{/if}</a>
 		<a href="/admin/github" class:on={path.startsWith('/admin/github')} title="GitHub 連動"><span class="ic">⚒</span>{#if !mini}<span class="lb">GitHub 連動</span>{/if}</a>
+		<a href="/admin/ai" class:on={path.startsWith('/admin/ai')} title="AI 設定" data-testid="nav-admin-ai"><span class="ic">✦</span>{#if !mini}<span class="lb">AI 設定</span>{/if}</a>
 	{/if}
 	<span style="flex:1"></span>
 	<button class="btn sm ghost" onclick={toggle} title={mini ? '展開導覽' : '收合成圖示'}>{mini ? '»' : '« 收合'}</button>

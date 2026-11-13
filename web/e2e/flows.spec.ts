@@ -88,32 +88,61 @@ async function alice(browser: Browser, next = '/') {
 	return page;
 }
 
-test('委派：精靈建立 AUTH 委派，token 只顯示一次', async ({ browser }) => {
-	const page = await alice(browser, '/agents/new');
-	await page.locator('input[name=client]').first().check();
+test('AI 團隊：精靈建立自訂角色（新執行環境、AUTH 全部需要核准），token 只顯示一次', async ({ browser }) => {
+	// The old 02 pages now lead here (`/agent-contexts*` goes away in M2.0).
+	const page = await alice(browser, '/ai-team');
+	await expect(page.getByTestId('team-empty')).toContainText('還沒有 AI 團隊成員。');
+	await page.goto('/agents/new');
+	await page.waitForURL('**/ai-team/new');
+	await page.getByTestId('tpl-custom').click();
 	await page.getByTestId('next').click();
-	await page.locator('input[name=project]', { hasText: '' }).first().waitFor();
-	await page.getByLabel(/AUTH・/).check();
+	await page.getByTestId('role-key').fill('e2e');
+	await page.getByTestId('role-duties').fill('E2E 測試用的角色');
+	await page.getByTestId('client').first().check();
 	await page.getByTestId('next').click();
+	await page.getByTestId('rt-new').check();
+	await page.getByTestId('rt-label').fill('E2E 執行環境');
+	await expect(page.getByTestId('next')).toBeDisabled();
+	await page.getByTestId('rt-ack').check();
+	await page.getByTestId('next').click();
+	await page.getByTestId('project-AUTH').check();
+	// The custom template allows nothing: next stays off until something is allowed.
+	await expect(page.getByTestId('next')).toBeDisabled();
 	await page.getByTestId('all-review').click();
 	await page.getByTestId('next').click();
-	await expect(page.getByTestId('confirm')).toContainText('AUTH');
-	await page.getByTestId('create-delegation').click();
+	await page.getByTestId('read-time').check();
+	await expect(page.getByTestId('time-warning')).toContainText('這個 agent 可以讀你自己的工時紀錄');
+	await expect(page.getByTestId('next')).toBeDisabled();
+	await page.getByTestId('read-time').uncheck();
+	await page.getByTestId('next').click();
+	await expect(page.getByTestId('confirm-project')).toContainText('AUTH');
+	await expect(page.getByTestId('confirm-project')).toContainText(/直接寫入 —；需要核准 .*建立 issue/);
+	await page.getByTestId('create-role').click();
 	if (await page.getByTestId('step-up').isVisible().catch(() => false)) {
 		await page.getByTestId('step-up-password').fill(PASSWORD);
-		await page.getByTestId('create-delegation').click();
+		await page.getByTestId('step-up-confirm').click();
 	}
 	await expect(page.getByTestId('wizard-done')).toBeVisible();
+	await expect(page.getByTestId('wizard-done')).toContainText('e2e@alice');
 	token = (await page.getByTestId('token-value').textContent())!.trim();
 	expect(token).toMatch(/^oxa_/);
 	agent = new Agent(token, MCP_URL);
 	// The token works for MCP right away.
 	const got = await agent.call('get', { key: 'AUTH-1', fields: ['subject'] });
 	expect(got.subject).toBeTruthy();
-	// Leaving and coming back never shows it again.
-	await page.goto('/agents');
-	await expect(page.getByTestId('context').first()).toBeVisible();
+	// Leaving and coming back never shows it again; the role page lists the token (G14), never its value.
+	await page.goto('/ai-team');
+	await expect(page.getByTestId('team-row').filter({ hasText: 'e2e@alice' })).toBeVisible();
+	await page.getByRole('link', { name: 'e2e@alice' }).click();
+	await expect(page.getByTestId('role-handle')).toHaveText('e2e@alice');
 	await expect(page.getByTestId('token-value')).toHaveCount(0);
+	await expect(page.getByTestId('cred')).toHaveCount(1);
+	await expect(page.getByTestId('cred')).toContainText('有效');
+	await expect(page.getByTestId('safety-row')).toContainText('AUTH');
+	await expect(page.getByTestId('runtime')).toContainText('E2E 執行環境');
+	// The project frame lists the roles delegated there.
+	await page.goto('/project/AUTH/ai-team');
+	await expect(page.getByTestId('team-row').filter({ hasText: 'e2e@alice' })).toBeVisible();
 });
 
 test('用法 1：agent 提案建單，人開連結核准並套用', async ({ browser }) => {
@@ -196,6 +225,10 @@ test('用法 7：人先改了同一個欄位，提案頁三欄選擇後修訂並
 	await expect(page.getByTestId('issue-subject')).toHaveText('人改的標題');
 	await page.goto(`/cs/${p.changeset_id}`);
 	await expect(page.getByTestId('conflict-panel')).toBeVisible();
+	// G13: the server recorded the value when the agent proposed; the row is marked changed.
+	await expect(page.getByTestId('original').first()).not.toHaveText('（提案時沒有記錄）');
+	await expect(page.getByTestId('original').first()).not.toHaveText('人改的標題');
+	await expect(page.locator('[data-testid=conflict-panel] tr.changed')).toHaveCount(1);
 	await page.getByTestId('use-proposed').first().check();
 	await expect(page.getByTestId('preview-status')).toContainText(/通過/);
 	await page.getByTestId('revise-apply').click();
@@ -205,20 +238,33 @@ test('用法 7：人先改了同一個欄位，提案頁三欄選擇後修訂並
 });
 
 test('暫停：人暫停後 agent 寫入被擋，恢復後可以再提案', async ({ browser }) => {
-	const page = await alice(browser, '/agents');
-	await page.getByTestId('suspend').first().click();
-	await expect(page.getByTestId('suspended').first()).toBeVisible();
-	await expect(propose('暫停中', [{ kind: 'add_note', op_id: uuid(), target: ref('AUTH-2'), body: 'x' }], ['AUTH-2'])).rejects.toThrow(/agent_suspended/);
-	await page.getByTestId('resume').first().click();
-	await expect(page.getByTestId('suspended')).toHaveCount(0);
+	const page = await alice(browser, '/ai-team/e2e%40alice');
+	await page.getByTestId('pause').click();
+	await expect(page.getByTestId('pause-dialog')).toContainText('暫停 e2e@alice？它在所有專案的寫入會被拒絕');
+	await page.getByTestId('pause-reason').fill('E2E 暫停');
+	await page.getByTestId('pause-confirm').click();
+	await expect(page.getByTestId('role-paused')).toContainText('E2E 暫停');
+	await expect(page.getByTestId('role-status')).toHaveText('已暫停');
+	// The nav says one of my roles needs me.
+	await expect(page.getByTestId('ai-attention')).toBeVisible();
+	await expect(propose('暫停中', [{ kind: 'add_note', op_id: uuid(), target: ref('AUTH-2'), body: 'x' }], ['AUTH-2'])).rejects.toThrow(/agent_paused|agent_suspended/);
+	await page.getByTestId('resume').click();
+	await expect(page.getByTestId('role-paused')).toHaveCount(0);
+	await expect(page.getByTestId('ai-attention')).toHaveCount(0);
 	const ok = await propose('恢復後', [{ kind: 'add_note', op_id: uuid(), target: ref('AUTH-2'), body: '恢復後的提案' }], ['AUTH-2']);
 	expect(ok.changeset_id).toBeTruthy();
 });
 
 test('回復：活動頁把 agent 套用的到期日改回去', async ({ browser }) => {
-	const page = await alice(browser, '/agents');
-	await page.getByRole('link', { name: '活動', exact: true }).first().click();
+	const page = await alice(browser, '/ai-team/e2e%40alice');
+	await expect(page.getByTestId('role-activity-list').getByTestId('activity').first()).toBeVisible();
+	await page.getByTestId('role-activity').click();
 	await expect(page.getByTestId('activity').first()).toBeVisible();
+	// A full key is filtered by the server (G24), so it finds rows past the first page too.
+	const asked = page.waitForRequest((r) => r.url().includes('/activity') && new URL(r.url()).searchParams.get('issue') === 'AUTH-6');
+	await page.getByLabel('篩選單號').fill('auth-6');
+	await asked;
+	await expect(page.getByTestId('activity').first()).toContainText('AUTH-6');
 	const row = page.getByTestId('activity').filter({ hasText: 'AUTH-6' }).first();
 	await row.getByTestId('undo').click();
 	await expect(page.getByTestId('undo-preview')).toBeVisible();
@@ -1278,4 +1324,119 @@ test('關注：議題頁關注與取消（人數、取消後不再自動關注�
 	await expect(page.locator('.toast', { hasText: '取消關注失敗' })).toBeVisible();
 	await expect(page.getByTestId('watch')).toContainText('關注中');
 	await expect(page.getByTestId('watch-count')).toHaveText('1 人關注');
+});
+
+/** Step-up shows only when the session has not confirmed recently. */
+async function maybeStepUp(page: Page) {
+	try {
+		await page.getByTestId('step-up').waitFor({ timeout: 2500 });
+	} catch {
+		return;
+	}
+	await page.getByTestId('step-up-password').fill(PASSWORD);
+	await page.getByTestId('step-up-confirm').click();
+	await expect(page.getByTestId('step-up')).toHaveCount(0);
+}
+
+test('AI 助理：管理員設定服務（測試、預算、啟用），使用者設定助理後對話、串流、外部連結確認、寫入卡片', async ({ browser }) => {
+	test.setTimeout(180_000);
+	// The model is e2e/fakeai.mjs on loopback, registered as endpoint FAKE.
+	const admin = await adminPage(browser, '/admin/ai');
+	await expect(admin.getByTestId('ai-endpoints')).toContainText('FAKE');
+	await expect(admin.getByTestId('ai-enabled')).toBeDisabled();
+	await expect(admin.getByTestId('ai-blockers')).toContainText('還沒有使用中的服務');
+	await admin.getByTestId('ai-provider-new').click();
+	await admin.getByTestId('pf-kind').selectOption('openai_compat');
+	await admin.getByTestId('pf-name').fill('本機假模型');
+	await admin.getByTestId('pf-endpoint').selectOption('FAKE');
+	await admin.getByTestId('pf-model').fill('fake-model');
+	await expect(admin.getByTestId('pf-save')).toBeDisabled();
+	await admin.getByTestId('pf-d17').check();
+	await admin.getByTestId('pf-save').click();
+	await maybeStepUp(admin);
+	const prov = admin.getByTestId('ai-provider').filter({ hasText: '本機假模型' });
+	await expect(prov).toBeVisible();
+	await prov.getByTestId('ai-test').click();
+	await maybeStepUp(admin);
+	await expect(prov.getByTestId('ai-provider-test')).toContainText('成功');
+	await expect(prov).toContainText('工具呼叫支援');
+	if (await prov.getByTestId('ai-activate').isVisible()) {
+		await prov.getByTestId('ai-activate').click();
+		await maybeStepUp(admin);
+	}
+	await expect(admin.getByTestId('ai-blockers')).toContainText('沒有月預算');
+	await admin.getByTestId('ai-budget-month').fill('50');
+	await admin.getByTestId('ai-budget-save').click();
+	await expect(admin.getByTestId('ai-blockers')).toHaveCount(0);
+	await admin.getByTestId('ai-enabled').check();
+	await maybeStepUp(admin);
+	await expect(admin.getByTestId('ai-enabled')).toBeChecked();
+
+	// alice: the right column shows 「AI 助理」, first the setup.
+	const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+	contexts.push(ctx);
+	const page = await ctx.newPage();
+	await login(page, 'alice', '/issue/AUTH-1');
+	await page.getByTestId('tab-ai').click();
+	await page.getByTestId('ai-setup-open').click();
+	await page.getByTestId('ai-setup-AUTH').check();
+	// 05 §3.12: read_own_time is on by default for the personal assistant, behind the A1 warning.
+	await expect(page.getByTestId('ai-setup-time')).toBeChecked();
+	await expect(page.getByTestId('ai-setup-save')).toBeDisabled();
+	await page.getByTestId('ai-setup-time-ack').check();
+	await page.getByTestId('ai-setup-save').click();
+	await maybeStepUp(page);
+	await expect(page.getByTestId('ai-setup')).toHaveCount(0);
+	// The page reference rides along, never the page's text.
+	await expect(page.getByTestId('ai-scope')).toContainText('AUTH-1');
+
+	await page.getByTestId('ai-input').fill('你好');
+	await page.getByTestId('ai-input').press('Enter');
+	const reply = page.getByTestId('ai-msg').filter({ has: page.getByTestId('ai-text') }).last();
+	await expect(reply).toContainText('你好，我是 AI 助理。相關的單：AUTH-1');
+	await expect(reply.getByRole('link', { name: 'AUTH-1' })).toHaveAttribute('href', '/issue/AUTH-1');
+	await expect(page.getByTestId('ai-send')).toBeVisible();
+
+	// A write: the model submits a note through command_submit.
+	await page.getByTestId('ai-input').fill('幫我在 AUTH-1 留言');
+	await page.getByTestId('ai-send').click();
+	await expect(page.getByTestId('ai-tool').last()).toBeVisible();
+	// The backend sends `changed` where §3.13.4 says `note_added` (backend gap G38).
+	await expect(page.getByTestId('ai-write').last()).toContainText(/已在 AUTH-1 (新增留言|修改)/);
+	const last = page.getByTestId('ai-text').last();
+	await expect(last).toContainText('說明文件');
+	await expect(last).toContainText('〔docs.example.com〕');
+	// External links ask first.
+	await last.getByRole('link', { name: '說明文件' }).click();
+	await expect(page.getByTestId('ai-leave')).toContainText('docs.example.com');
+	await page.getByTestId('ai-leave').getByRole('button', { name: '取消' }).click();
+	await expect(page.getByTestId('ai-leave')).toHaveCount(0);
+
+	// Reloading keeps the conversation (messages come from the server).
+	await page.reload();
+	await page.getByTestId('tab-ai').click();
+	await expect(page.getByTestId('ai-text').first()).toContainText('你好，我是 AI 助理。');
+
+	// A page the assistant cannot read (WEB is not delegated): the server's notice
+	// comes first, the reply streams below it.
+	await page.goto('/project/WEB');
+	await page.getByTestId('tab-ai').click();
+	await expect(page.getByTestId('ai-scope')).toContainText('WEB');
+	const before = await page.getByTestId('ai-text').count();
+	await page.getByTestId('ai-input').fill('這頁在講什麼');
+	await page.getByTestId('ai-input').press('Enter');
+	await expect(page.getByTestId('ai-notice').last()).toHaveText('AI 助理讀不到這個頁面（私有議題或沒委派的專案）');
+	await expect(page.getByTestId('ai-text')).toHaveCount(before + 1);
+	await expect(page.getByTestId('ai-text').last()).toContainText('你好，我是 AI 助理。相關的單：AUTH-1');
+	const order = await page.getByTestId('ai-messages').evaluate((el) => [...el.querySelectorAll('[data-testid=ai-notice],[data-testid=ai-text]')].slice(-2).map((x) => x.getAttribute('data-testid')));
+	expect(order).toEqual(['ai-notice', 'ai-text']);
+	await expect(page.getByTestId('ai-send')).toBeVisible();
+
+	// Turning the AI off hides the tab.
+	await admin.getByTestId('ai-enabled').uncheck();
+	await maybeStepUp(admin);
+	await expect(admin.getByTestId('ai-enabled')).not.toBeChecked();
+	await page.reload();
+	await expect(page.getByTestId('tab-activity')).toBeVisible();
+	await expect(page.getByTestId('tab-ai')).toHaveCount(0);
 });
