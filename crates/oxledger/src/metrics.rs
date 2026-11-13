@@ -353,6 +353,12 @@ pub struct XactHolder {
     pub state: Option<String>,
     pub xact_age_seconds: f64,
     pub query: Option<String>,
+    /// `xact_start` as PostgreSQL prints it (the prepare time for prepared
+    /// transactions).
+    pub xact_start: Option<String>,
+    /// `wait_event_type:wait_event`, e.g. `IPC:CheckpointDone` for a
+    /// `DROP DATABASE` waiting on its checkpoint.
+    pub wait_event: Option<String>,
 }
 
 /// The oldest xid holders, instance-wide (needs `pg_read_all_stats` to see
@@ -361,7 +367,9 @@ pub async fn xid_holders(pool: &PgPool) -> Result<Vec<XactHolder>> {
     let mut v: Vec<XactHolder> = sqlx::query_as(
         "SELECT datname::text, pid, usename::text, application_name, state,
                 extract(epoch FROM now() - xact_start)::float8 AS xact_age_seconds,
-                left(query, 120) AS query
+                left(query, 120) AS query,
+                xact_start::text AS xact_start,
+                wait_event_type || ':' || wait_event AS wait_event
          FROM pg_stat_activity
          WHERE backend_xid IS NOT NULL AND pid <> pg_backend_pid()
          ORDER BY xact_start LIMIT 5",
@@ -372,7 +380,8 @@ pub async fn xid_holders(pool: &PgPool) -> Result<Vec<XactHolder>> {
         "SELECT database::text AS datname, 0 AS pid, owner::text AS usename,
                 ('prepared ' || gid) AS application_name, 'prepared' AS state,
                 extract(epoch FROM now() - prepared)::float8 AS xact_age_seconds,
-                NULL::text AS query
+                NULL::text AS query, prepared::text AS xact_start,
+                NULL::text AS wait_event
          FROM pg_prepared_xacts ORDER BY prepared LIMIT 5",
     )
     .fetch_all(pool)
@@ -380,6 +389,44 @@ pub async fn xid_holders(pool: &PgPool) -> Result<Vec<XactHolder>> {
     v.extend(prepared);
     v.sort_by(|a, b| b.xact_age_seconds.total_cmp(&a.xact_age_seconds));
     Ok(v)
+}
+
+/// The xid holders as text for an error message: who holds the cluster-wide
+/// snapshot horizon back (G21). Never fails; a failed lookup says so.
+pub async fn describe_xid_holders(pool: &PgPool) -> String {
+    let holders = match xid_holders(pool).await {
+        Ok(h) => h,
+        Err(e) => return format!("xid holders: lookup failed: {e:#}"),
+    };
+    if holders.is_empty() {
+        return "xid holders: none right now".into();
+    }
+    let mut s = String::from("xid holders (oldest first):");
+    for h in &holders {
+        let _ = write!(
+            s,
+            "\n  datname={} pid={} xact_start={} age={:.1}s state={} wait_event={} application={} query={:?}",
+            h.datname.as_deref().unwrap_or("-"),
+            h.pid,
+            h.xact_start.as_deref().unwrap_or("-"),
+            h.xact_age_seconds,
+            h.state.as_deref().unwrap_or("-"),
+            h.wait_event.as_deref().unwrap_or("-"),
+            h.application_name.as_deref().unwrap_or("-"),
+            h.query.as_deref().unwrap_or(""),
+        );
+    }
+    s
+}
+
+/// The error of `SearchIndex::sync_all` and `notifications::dispatch_all`
+/// when the outbox did not catch up in time (D1(d)): what timed out, then
+/// [`describe_xid_holders`].
+pub async fn horizon_timeout_message(pool: &PgPool, what: &str) -> String {
+    format!(
+        "{what} did not catch up with the outbox within 20 s; {}",
+        describe_xid_holders(pool).await
+    )
 }
 
 /// Alert levels for long xid holders (03 §4.7 initial thresholds).

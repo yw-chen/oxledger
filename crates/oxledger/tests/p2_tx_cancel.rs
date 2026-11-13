@@ -22,18 +22,11 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-const DEFAULT_ADMIN_URL: &str = "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger";
 const ATTEMPTS_PER_BUDGET: usize = 2;
 const BUDGET_STEPS: u64 = 200;
 
 fn url() -> String {
-    match std::env::var("OXLEDGER_TEST_DATABASE_URL") {
-        Ok(u) if !u.is_empty() => u,
-        _ => {
-            let admin = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into());
-            format!("{}/oxledger_test", admin.rsplit_once('/').unwrap().0)
-        }
-    }
+    common::test_db().url()
 }
 
 /// Waits until every connection of `pool` is back and idle (sqlx returns

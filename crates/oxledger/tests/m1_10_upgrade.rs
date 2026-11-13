@@ -16,28 +16,16 @@ use oxledger::db;
 use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 
-const DEFAULT_ADMIN_URL: &str = "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger";
+mod common;
 
 /// `<test db>_<suffix>` (as in m1_9_upgrade.rs).
-fn target_named(suffix: &str) -> (String, String) {
-    let url = match std::env::var("OXLEDGER_TEST_DATABASE_URL") {
-        Ok(u) if !u.is_empty() => u,
-        _ => {
-            let admin = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into());
-            format!("{}/oxledger_test", admin.rsplit_once('/').unwrap().0)
-        }
-    };
-    let (base, rest) = url.rsplit_once('/').expect("database URL has a path");
-    let name = rest.split('?').next().unwrap();
-    assert!(
-        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
-        "unexpected test database name {name:?}"
-    );
-    (base.to_string(), format!("{name}_{suffix}"))
+fn target_named(suffix: &str) -> (common::TestDb, String) {
+    let db = common::test_db();
+    (db.clone(), db.scratch(suffix))
 }
 
-async fn recreate(base: &str, name: &str, create: bool) {
-    let mut admin = PgConnection::connect(&format!("{base}/postgres"))
+async fn recreate(base: &common::TestDb, name: &str, create: bool) {
+    let mut admin = PgConnection::connect(&base.admin_url())
         .await
         .expect("PostgreSQL 18 not reachable");
     admin
@@ -73,7 +61,7 @@ async fn int(pool: &PgPool, sql: &str) -> i64 {
 async fn upgrade_0030_moves_no_epoch() {
     let (base, name) = target_named("upg110");
     recreate(&base, &name, true).await;
-    let pool = PgPool::connect(&format!("{base}/{name}")).await.unwrap();
+    let pool = PgPool::connect(&base.url_for(&name)).await.unwrap();
     db::MIGRATOR.run_to(29, &pool).await.unwrap();
     let user = one(
         &pool,
@@ -141,7 +129,7 @@ async fn upgrade_0030_moves_no_epoch() {
 async fn upgrade_0030_refuses_an_ordinary_client_named_oxledger_ai() {
     let (base, name) = target_named("upg110c");
     recreate(&base, &name, true).await;
-    let pool = PgPool::connect(&format!("{base}/{name}")).await.unwrap();
+    let pool = PgPool::connect(&base.url_for(&name)).await.unwrap();
     db::MIGRATOR.run_to(29, &pool).await.unwrap();
     pool.execute(
         "DELETE FROM agent_clients WHERE name = 'oxledger-ai';
@@ -154,7 +142,7 @@ async fn upgrade_0030_refuses_an_ordinary_client_named_oxledger_ai() {
     // A failed run can leave the migrator's advisory lock on a pooled
     // connection until it idles out; a server would exit here. Reconnect.
     pool.close().await;
-    let pool = PgPool::connect(&format!("{base}/{name}")).await.unwrap();
+    let pool = PgPool::connect(&base.url_for(&name)).await.unwrap();
     assert_eq!(
         int(
             &pool,

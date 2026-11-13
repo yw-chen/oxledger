@@ -1134,6 +1134,14 @@ pub async fn create(
     );
 
     let mut tx = app.pool.begin().await?;
+    fault("ai_team.create.begun").await?;
+    // The sponsor lock comes first, before any row lock (T1b). The
+    // operation request's FK takes FOR KEY SHARE on the sponsor's
+    // `principals` row, and `agent_principals_runtime_guard` later takes
+    // FOR UPDATE on that row: with the request inserted first, a second
+    // create holding its KEY SHARE and waiting here for the advisory lock
+    // deadlocked with the first one waiting in the trigger for its UPDATE.
+    agents::serialize_sponsor(&mut tx, user).await?;
     let Some(request) =
         commands::open_request(&mut tx, user, operation_id, ACTION_CREATE, &fp).await?
     else {
@@ -1142,7 +1150,6 @@ pub async fn create(
         tx.commit().await?;
         return Ok(out);
     };
-    agents::serialize_sponsor(&mut tx, user).await?;
     check_role_limit(&mut tx, user, "role_key").await?;
     agents::external_client(&mut tx, input.client_id).await?;
 

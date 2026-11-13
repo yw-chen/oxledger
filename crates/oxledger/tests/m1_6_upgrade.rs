@@ -18,27 +18,15 @@ use serde_json::{Value, json};
 use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 
-const DEFAULT_ADMIN_URL: &str = "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger";
+mod common;
 
-fn target() -> (String, String) {
-    let url = match std::env::var("OXLEDGER_TEST_DATABASE_URL") {
-        Ok(u) if !u.is_empty() => u,
-        _ => {
-            let admin = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into());
-            format!("{}/oxledger_test", admin.rsplit_once('/').unwrap().0)
-        }
-    };
-    let (base, rest) = url.rsplit_once('/').expect("database URL has a path");
-    let name = rest.split('?').next().unwrap();
-    assert!(
-        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
-        "unexpected test database name {name:?}"
-    );
-    (base.to_string(), format!("{name}_upg16"))
+fn target() -> (common::TestDb, String) {
+    let db = common::test_db();
+    (db.clone(), db.scratch("upg16"))
 }
 
-async fn recreate(base: &str, name: &str, create: bool) {
-    let mut admin = PgConnection::connect(&format!("{base}/postgres"))
+async fn recreate(base: &common::TestDb, name: &str, create: bool) {
+    let mut admin = PgConnection::connect(&base.admin_url())
         .await
         .expect("PostgreSQL 18 not reachable");
     admin
@@ -81,7 +69,7 @@ async fn exec(pool: &PgPool, sql: &str) {
 async fn m1_6_upgrade_preferences() {
     let (base, name) = target();
     recreate(&base, &name, true).await;
-    let pool = PgPool::connect(&format!("{base}/{name}")).await.unwrap();
+    let pool = PgPool::connect(&base.url_for(&name)).await.unwrap();
 
     db::MIGRATOR.run_to(25, &pool).await.unwrap();
     let user = one(

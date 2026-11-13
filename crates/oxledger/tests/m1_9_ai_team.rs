@@ -1196,6 +1196,57 @@ async fn t_m1_99_templates() {
 
 // ---------------------------------------------------------------- T-M1-121
 
+/// T1b regression (T-M1-121 under contention): two creates of the same new
+/// client's role in two new runtimes, held at the start of their
+/// transactions and released together, 20 times. One wins and the other
+/// gets `runtime_client_taken`, never a deadlock (the sponsor lock used to
+/// come after the operation request's FOR KEY SHARE on the sponsor row).
+#[tokio::test]
+async fn t1b_concurrent_creates_never_deadlock() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    faults::clear();
+    for n in 0..20 {
+        let client = new_client(&w, &format!("Race {n}")).await;
+        let a = role(new_rt(&format!("RA{n}")), client, "c", "personal", &[w.web]);
+        let b = role(new_rt(&format!("RB{n}")), client, "c", "personal", &[w.web]);
+        let (ga, gb) = (Arc::new(Gate::default()), Arc::new(Gate::default()));
+        faults::arm("ai_team.create.begun", Action::Block(ga.clone()));
+        faults::arm("ai_team.create.begun", Action::Block(gb.clone()));
+        // The barrier: both requests are inside their transactions before
+        // either goes on.
+        let barrier = async {
+            ga.reached.notified().await;
+            gb.reached.notified().await;
+            ga.release.notify_one();
+            gb.release.notify_one();
+        };
+        let (x, y, ()) = tokio::join!(
+            create(&w, w.alice_ctx, &a),
+            create(&w, w.alice_ctx, &b),
+            barrier
+        );
+        let (won, lost) = match (x, y) {
+            (Ok(r), Err(e)) | (Err(e), Ok(r)) => (r, e),
+            (x, y) => panic!(
+                "round {n}: exactly one create wins: {:?} / {:?}",
+                x.map(|r| r.runtime.id),
+                y.map(|r| r.runtime.id)
+            ),
+        };
+        assert_eq!(
+            classify(&lost).map(|a| a.code),
+            Some(ErrorCode::RuntimeClientTaken),
+            "round {n}: {lost:#}"
+        );
+        // Free the role slot for the next round.
+        ai_team::retire_runtime(&w.app, &w.policy, w.alice_ctx, won.runtime.id)
+            .await
+            .unwrap();
+    }
+    faults::clear();
+}
+
 #[tokio::test]
 async fn t_m1_121_one_runtime_per_client() {
     let pool = test_pool().await;
@@ -1894,9 +1945,7 @@ async fn v_q2_trigger_concurrent_sql() {
             .await,
         );
     }
-    let url = std::env::var("OXLEDGER_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger_test".into()
-    });
+    let url = common::test_db().url();
     let insert = |n: usize, rt: Uuid| {
         format!(
             "WITH p AS (INSERT INTO principals (kind, name) VALUES ('agent', 'r{n}') RETURNING id)

@@ -15,7 +15,12 @@ pub const VIEW_ISSUES: &str = "view_issues";
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn connect(url: &str) -> Result<PgPool> {
-    let pool = pool_options()
+    connect_with(pool_options(), url).await
+}
+
+/// [`connect`] with explicit pool options (tests size their pools).
+pub async fn connect_with(options: sqlx::postgres::PgPoolOptions, url: &str) -> Result<PgPool> {
+    let pool = options
         .connect(url)
         .await
         .context("connect to PostgreSQL")?;
@@ -23,12 +28,32 @@ pub async fn connect(url: &str) -> Result<PgPool> {
     Ok(pool)
 }
 
+/// `OXLEDGER_DB_MAX_CONNECTIONS`: the pool's connection cap. Unset or empty
+/// keeps sqlx's default (10), the value every process used before (D10).
+pub const MAX_CONNECTIONS_ENV: &str = "OXLEDGER_DB_MAX_CONNECTIONS";
+
+/// Parses [`MAX_CONNECTIONS_ENV`]: `None` = keep the sqlx default.
+pub fn parse_max_connections(value: Option<&str>) -> Result<Option<u32>> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(v) => match v.parse::<u32>() {
+            Ok(n) if n > 0 => Ok(Some(n)),
+            _ => bail!("{MAX_CONNECTIONS_ENV} must be a positive integer, got {v:?}"),
+        },
+    }
+}
+
 /// How many connections [`pool_options`]'s release check found inside a
 /// transaction and closed, since the process started (G20).
 pub static RELEASED_IN_TRANSACTION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// The pool every process uses (sqlx defaults plus one release check).
+/// The pool every process uses (sqlx defaults plus one release check; the
+/// connection cap from [`MAX_CONNECTIONS_ENV`] when set).
+///
+/// Panics when [`MAX_CONNECTIONS_ENV`] is set to something that is not a
+/// positive integer: a misconfigured cap should stop the process at start,
+/// not be ignored.
 ///
 /// G20: sqlx 0.9's `begin()` is not cancel-safe. `PgTransactionManager::begin`
 /// sends `BEGIN` and then awaits its `ReadyForQuery`; its rollback guard only
@@ -49,7 +74,19 @@ pub static RELEASED_IN_TRANSACTION: std::sync::atomic::AtomicU64 =
 /// start time). Such a connection is closed instead of reused. Cost: one
 /// round trip per release, off the request path (sqlx releases in a task).
 pub fn pool_options() -> sqlx::postgres::PgPoolOptions {
-    sqlx::postgres::PgPoolOptions::new().after_release(|conn, _meta| {
+    pool_options_from(std::env::var(MAX_CONNECTIONS_ENV).ok().as_deref())
+}
+
+/// [`pool_options`] with [`MAX_CONNECTIONS_ENV`]'s value passed in, so the
+/// cap is tested without touching the process environment (G3).
+fn pool_options_from(max_connections: Option<&str>) -> sqlx::postgres::PgPoolOptions {
+    let options = sqlx::postgres::PgPoolOptions::new();
+    let options = match parse_max_connections(max_connections) {
+        Ok(Some(n)) => options.max_connections(n),
+        Ok(None) => options,
+        Err(e) => panic!("{e}"),
+    };
+    options.after_release(|conn, _meta| {
         Box::pin(async move {
             use sqlx::Row;
             // Simple query protocol on purpose: with Parse/Bind/Execute each
@@ -710,4 +747,37 @@ pub use crate::auth::hash_api_key;
 /// [`effective`], so a locked admin is `unauthenticated`, not "not admin".
 pub async fn is_admin(conn: &mut PgConnection, ctx: AuthContext) -> Result<bool> {
     Ok(effective(conn, ctx).await?.is_admin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D10: without the variable the pool keeps the cap every process had
+    /// before (sqlx's default, 10); the variable only ever lowers or raises it
+    /// when set to a positive integer.
+    #[test]
+    fn max_connections_default_is_unchanged() {
+        assert_eq!(parse_max_connections(None).unwrap(), None);
+        assert_eq!(parse_max_connections(Some("")).unwrap(), None);
+        assert_eq!(
+            sqlx::postgres::PgPoolOptions::new().get_max_connections(),
+            10
+        );
+        assert_eq!(parse_max_connections(Some(" 4 ")).unwrap(), Some(4));
+        for bad in ["0", "-1", "four", "4.5"] {
+            assert!(parse_max_connections(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    /// G3: the parsed value is what the pool gets.
+    #[test]
+    fn pool_options_apply_max_connections() {
+        assert_eq!(pool_options_from(None).get_max_connections(), 10);
+        assert_eq!(pool_options_from(Some("")).get_max_connections(), 10);
+        assert_eq!(pool_options_from(Some("4")).get_max_connections(), 4);
+        assert_eq!(pool_options_from(Some(" 37 ")).get_max_connections(), 37);
+        let bad = std::panic::catch_unwind(|| pool_options_from(Some("0")));
+        assert!(bad.is_err(), "an invalid cap stops the process");
+    }
 }

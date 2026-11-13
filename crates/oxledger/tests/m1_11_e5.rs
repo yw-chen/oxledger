@@ -1096,9 +1096,15 @@ async fn e5_harness_self_check() {
 /// `<NAME>=<anthropic|openai_compat>:<model>[,...]`. Optional:
 /// `OXLEDGER_E5_RUNS` (default 3), `OXLEDGER_E5_SURFACES`
 /// (`builtin,external`). Fails when a core rate is below 90%.
-#[tokio::test]
+#[test]
 #[ignore = "calls real model providers; see docs/impl/m1-11-e5.md"]
-async fn e5_live() {
+fn e5_live() {
+    // D13: the live run was the reason for RUST_MIN_STACK=16777216; give
+    // it the big stack here instead of to every test.
+    common::run_with_big_stack(e5_live_body);
+}
+
+async fn e5_live_body() {
     if std::env::var("OXLEDGER_E5").as_deref() != Ok("1") {
         eprintln!("OXLEDGER_E5 is not 1: skipped");
         return;

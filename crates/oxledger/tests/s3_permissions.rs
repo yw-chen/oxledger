@@ -1201,15 +1201,8 @@ async fn s3_permissions() {
 async fn migration_0007_repairs_dates() {
     let base = test_pool().await;
     // Next to the test database, so parallel verifiers do not share it.
-    let test_db = std::env::var("OXLEDGER_TEST_DATABASE_URL")
-        .ok()
-        .and_then(|u| {
-            u.rsplit_once('/')
-                .map(|(_, n)| n.split('?').next().unwrap().to_string())
-        })
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "oxledger_test".into());
-    let name = &format!("{test_db}_mig0007");
+    let test_db = common::test_db();
+    let name = &test_db.scratch("mig0007");
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
     )))
@@ -1220,15 +1213,7 @@ async fn migration_0007_repairs_dates() {
         .execute(&base)
         .await
         .unwrap();
-    let url = std::env::var("OXLEDGER_TEST_DATABASE_URL")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-                "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger".into()
-            })
-        });
-    let url = format!("{}/{name}", url.rsplit_once('/').unwrap().0);
+    let url = test_db.url_for(name);
     let pool = PgPool::connect(&url).await.unwrap();
     let run = |version: i64| {
         let pool = pool.clone();

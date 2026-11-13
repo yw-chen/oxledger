@@ -1660,7 +1660,10 @@ impl SearchIndex {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        anyhow::bail!("search index did not catch up with the outbox within 20 s")
+        anyhow::bail!(
+            "{}",
+            crate::metrics::horizon_timeout_message(pool, "search index").await
+        )
     }
 
     /// Rounds of 03 §4.2 until the outbox below H is drained.

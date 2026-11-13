@@ -1045,7 +1045,10 @@ pub async fn dispatch_all(pool: &PgPool) -> Result<Round> {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    anyhow::bail!("notification dispatch did not catch up with the outbox within 20 s")
+    anyhow::bail!(
+        "{}",
+        crate::metrics::horizon_timeout_message(pool, "notification dispatch").await
+    )
 }
 
 /// Retention (B-25): read rows 30 days after reading, unread rows 90 days

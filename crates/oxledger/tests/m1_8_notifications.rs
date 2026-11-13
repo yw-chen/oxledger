@@ -1575,7 +1575,9 @@ async fn redact_event(w: &World, i: Uuid, kind: &str) -> Uuid {
 /// row is in, and `read-all {before}` marks exactly what the list showed.
 #[tokio::test]
 async fn v_read_all_before_marks_row_committed_after_list() {
-    let pool = test_pool().await;
+    // Holds two transactions open while the dispatcher works: more than
+    // the default 4 test connections (D10).
+    let pool = common::test_pool_sized(8).await;
     let f = setup(&pool).await;
     let w = &f.w;
     let (x, kx) = create(w, f.bob_ctx, w.web, json!({"subject": "x"})).await;

@@ -135,6 +135,31 @@ async fn notes(pool: &PgPool, issue: Uuid) -> i64 {
     .await
 }
 
+/// Waits until a backend in this database runs a statement starting with
+/// `query` and waits on a lock (T1b: an explicit condition, not a sleep).
+async fn wait_for_lock_wait(pool: &PgPool, query: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'
+                AND starts_with(ltrim(query), $1))",
+        )
+        .bind(query)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no lock wait for {query:?} within 10s"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 /// Moves a proposal's expiry (immutable for the application) for timing tests.
 async fn set_expiry(pool: &PgPool, cs: Uuid, secs: f64) {
     let mut c = pool.acquire().await.unwrap();
@@ -330,8 +355,15 @@ fn status(o: &ApplyOutcome) -> &str {
         .map_or("pending", |e| e.status.as_str())
 }
 
-#[tokio::test]
-async fn s5_changesets() {
+#[test]
+fn s5_changesets() {
+    // D13: this one future is too deep for the default 2 MiB test thread in
+    // debug builds; run it on a big stack instead of setting RUST_MIN_STACK
+    // for the whole suite.
+    common::run_with_big_stack(s5_changesets_body);
+}
+
+async fn s5_changesets_body() {
     let pool = test_pool().await;
     reset(&pool).await;
     faults::clear();
@@ -2100,14 +2132,32 @@ async fn s5_changesets() {
                 .unwrap()
         })
     };
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The revocation is seen waiting on a lock, not merely not done yet.
+    wait_for_lock_wait(&pool, "UPDATE browser_sessions SET revoked_at").await;
     assert!(
         !revoking.is_finished(),
         "the revocation waits for the session lock"
     );
+    // Once B commits the revocation goes through. Which of it and the
+    // response's read of the execution commits first used to be a race
+    // (T1b): hold the response after B's commit until the revocation is
+    // in, so the read runs as the now revoked caller every time.
+    let after_commit = Arc::new(Gate::default());
+    faults::arm("apply.after_commit", Action::Block(after_commit.clone()));
     g.release.notify_one();
-    assert_eq!(status(&applying.await.unwrap().unwrap()), "succeeded");
+    after_commit.reached.notified().await;
     revoking.await.unwrap();
+    after_commit.release.notify_one();
+    let o = applying.await.unwrap().unwrap();
+    // The write went through; the revoked caller cannot read it back, so
+    // the response is 202 with where to look (§8.6), and the record says
+    // succeeded.
+    assert!(o.pending, "the revoked caller gets 202");
+    assert_eq!(status(&o), "pending");
+    let v = changesets::get_execution(&app, alice, o.execution_id)
+        .await
+        .unwrap();
+    assert_eq!(v.status, "succeeded");
     assert_eq!(notes(&pool, w7).await, before + 1);
     let lv = lock_version(&pool, w7).await;
 
@@ -2399,13 +2449,9 @@ async fn s5_changesets() {
 /// T-S7: every migration from an empty database, the S5 FKs on issue_events included.
 #[tokio::test]
 async fn s5_migrations_from_empty() {
-    let url = match std::env::var("OXLEDGER_TEST_DATABASE_URL") {
-        Ok(u) if !u.is_empty() => u,
-        _ => "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger_test".into(),
-    };
-    let (base, rest) = url.rsplit_once('/').unwrap();
-    let name = format!("{}_s7", rest.split('?').next().unwrap());
-    let admin = PgPool::connect(&format!("{base}/postgres")).await.unwrap();
+    let test_db = common::test_db();
+    let name = test_db.scratch("s7");
+    let admin = PgPool::connect(&test_db.admin_url()).await.unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
     )))
@@ -2416,7 +2462,7 @@ async fn s5_migrations_from_empty() {
         .execute(&admin)
         .await
         .unwrap();
-    let pool = oxledger::db::connect(&format!("{base}/{name}"))
+    let pool = oxledger::db::connect(&test_db.url_for(&name))
         .await
         .unwrap();
     let fks: Vec<String> = sqlx::query_scalar(
