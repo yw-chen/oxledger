@@ -679,9 +679,9 @@ async fn metrics_are_served_and_long_xacts_alert() {
     }
 
     // Another database on the same instance, holding an assigned xid.
-    let url = std::env::var("OXLEDGER_TEST_DATABASE_URL").unwrap();
-    let other = format!("{}/postgres", &url[..url.rfind('/').unwrap()]);
-    let opool = sqlx::PgPool::connect(&other).await.unwrap();
+    // Same server and credentials as the test pool, whichever URL it came from.
+    let other = (*pool.connect_options()).clone().database("postgres");
+    let opool = sqlx::PgPool::connect_with(other).await.unwrap();
     let mut held = opool.begin().await.unwrap();
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *held)

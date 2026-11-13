@@ -586,7 +586,10 @@ async fn s3_permissions() {
     assert!(field(&s, &secret_k).is_some(), "Reporter reads Secret");
     assert!(field(&s, &budget_k).is_none());
     // The SPA's delegation wizard offers only fields an agent may be given.
-    assert!(!field(&s, &secret_k).unwrap().delegable, "visible = false is not delegable");
+    assert!(
+        !field(&s, &secret_k).unwrap().delegable,
+        "visible = false is not delegable"
+    );
     assert!(field(&s, "subject").unwrap().delegable);
     assert_eq!(s.creation.is_private.allowed_values, [false, true]);
 

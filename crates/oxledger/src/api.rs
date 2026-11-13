@@ -322,7 +322,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/agent-contexts/{id}/close", post(close_context))
         .route("/agent-contexts/{id}/suspend", post(suspend_context))
         .route("/agent-contexts/{id}/resume", post(resume_context))
-        .route("/agent-contexts/{id}/credentials", post(issue_credential))
+        .route(
+            "/agent-contexts/{id}/credentials",
+            get(list_context_credentials).post(issue_credential),
+        )
         .route("/agent-credentials/{id}/revoke", post(revoke_credential))
         .route("/ai-team", get(ai_team_list).post(ai_team_create))
         .route("/ai-team/templates", get(ai_team_templates))
@@ -331,7 +334,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/ai-team/{id}/pause", post(ai_team_pause))
         .route("/ai-team/{id}/resume", post(ai_team_resume))
         .route("/ai-team/{id}/retire", post(ai_team_retire))
-        .route("/ai-team/{id}/credentials", post(ai_team_credentials))
+        .route(
+            "/ai-team/{id}/credentials",
+            get(ai_team_list_credentials).post(ai_team_credentials),
+        )
         .route("/me/agent-runtimes", get(my_runtimes))
         .route("/me/agent-runtimes/{id}", patch(rename_runtime))
         .route(
@@ -1507,15 +1513,25 @@ async fn agent_activity(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    Ok(ok(crate::undo::activity(
+    Ok(ok(crate::undo::activity_page(
         &st.app,
         ctx,
         id_param(&id)?,
-        time_param(&q, "from")?,
-        time_param(&q, "to")?,
-        q.get("issue").map(String::as_str),
+        &activity_query(&q)?,
     )
     .await?))
+}
+
+/// G24: `from`, `to` (RFC 3339), `issue` (a key), `cursor`, `limit` (1–200).
+fn activity_query(q: &HashMap<String, String>) -> Result<crate::undo::ActivityQuery, ApiFailure> {
+    Ok(crate::undo::ActivityQuery {
+        from: time_param(q, "from")?,
+        to: time_param(q, "to")?,
+        issue: q.get("issue").cloned(),
+        cursor: q.get("cursor").cloned(),
+        limit: int_param(q, "limit")?
+            .map(|l| l.clamp(1, crate::undo::MAX_ACTIVITY_PAGE as i64) as u32),
+    })
 }
 
 async fn agent_summary(
@@ -2792,6 +2808,33 @@ async fn issue_credential(
     Ok(ok(c))
 }
 
+/// G14: `?agent_principal_id=` narrows to one role of the context's runtime.
+async fn list_context_credentials(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let principal = match q.get("agent_principal_id") {
+        None => None,
+        Some(p) => Some(p.parse::<Uuid>().map_err(|_| {
+            ApiError::new(
+                ErrorCode::InvalidArgument,
+                "agent_principal_id is a principal id",
+            )
+            .with_details(json!({"path": "agent_principal_id"}))
+        })?),
+    };
+    Ok(ok(agents::list_context_credentials(
+        &st.app.pool,
+        &ctx,
+        id_param(&id)?,
+        principal,
+    )
+    .await?))
+}
+
 // ---------------------------------------------------------------- AI team (design 05 §3.12)
 
 async fn ai_team_list(
@@ -2852,12 +2895,11 @@ async fn ai_team_activity(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    Ok(ok(crate::ai_team::activity(
+    Ok(ok(crate::ai_team::activity_page(
         &st.app,
         ctx,
         id_param(&id)?,
-        time_param(&q, "from")?,
-        time_param(&q, "to")?,
+        &activity_query(&q)?,
     )
     .await?))
 }
@@ -2905,6 +2947,20 @@ async fn ai_team_credentials(
     Ok(created(
         crate::ai_team::issue_credential(&st.app, &st.cfg.session, ctx, id_param(&id)?, &b).await?,
     ))
+}
+
+async fn ai_team_list_credentials(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::ai_team::list_credentials(
+        &st.app,
+        ctx,
+        id_param(&id)?,
+    )
+    .await?))
 }
 
 async fn my_runtimes(

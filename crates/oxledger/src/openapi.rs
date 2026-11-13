@@ -972,7 +972,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/changesets/{id}",
-            "A proposal: state, its current version, the last execution (owner only).",
+            "A proposal: state, its current version, the last execution (owner only). diff: every changed field with display values as in the queue list (before = now, after = proposed, original = when the agent proposed it when has_original).",
             Session,
             None,
             s::<crate::changesets::ChangesetView>,
@@ -1068,7 +1068,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/agents/{id}/activity",
-            "Your agent's direct writes, applied proposals, refusals and undos, newest first (§16.10). Query from, to (RFC 3339), issue (a key). Only issues you can read now.",
+            "Your agent's direct writes, applied proposals, refusals and undos, newest first by (at, id) (§16.10). Query from, to (RFC 3339, inclusive; default the last 30 days), issue (a key; refusals are left out), cursor (next_cursor of the previous page, same filters), limit (1-200, default 50). Only issues you can read now; what you cannot read counts toward neither the page nor the cursor.",
             Session,
             None,
             s::<crate::undo::Activity>,
@@ -1204,6 +1204,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
             s::<IssuedCredential>,
         ),
         r(
+            "GET",
+            "/agent-contexts/{id}/credentials",
+            "Tokens of one of your work contexts, newest first (compatibility alias of GET /ai-team/{id}/credentials). Query agent_principal_id narrows to one role of the context's runtime (not_found for another runtime's role). Never the token or its hash.",
+            Session,
+            None,
+            s::<crate::agents::CredentialList>,
+        ),
+        r(
             "POST",
             "/agent-credentials/{id}/revoke",
             "Revoke an agent token.",
@@ -1246,7 +1254,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/ai-team/{id}/activity",
-            "The role's writes, filtered to what the caller can read.",
+            "The role's writes, filtered to what the caller can read. Same query as GET /agents/{id}/activity: from, to, issue, cursor, limit.",
             Session,
             None,
             s::<crate::undo::Activity>,
@@ -1282,6 +1290,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
             StepUp,
             Some(s::<crate::ai_team::CredentialInput>),
             s::<IssuedCredential>,
+        ),
+        r(
+            "GET",
+            "/ai-team/{id}/credentials",
+            "The role's tokens in every work context, newest first: id, label, created, expires, last used (at most once a minute), revoked and state; never the token or its hash. The sponsor and site administrators; a role you cannot see is not_found, one you see as a project member is forbidden_op not_sponsor.",
+            Session,
+            None,
+            s::<crate::agents::CredentialList>,
         ),
         r(
             "GET",

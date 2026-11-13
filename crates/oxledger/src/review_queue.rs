@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 use sqlx::PgConnection;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 /// Fields too long to judge from a one-line diff (§15.3: "短欄位").
@@ -33,6 +34,14 @@ pub struct DiffRow {
     pub before: Json,
     /// Proposed value, rendered.
     pub after: Json,
+    /// G13: the value when the agent proposed this version, rendered like
+    /// `before` (null when unset). Meaningful only with `has_original`.
+    pub original: Json,
+    /// False when no value was recorded for this field: an owner's
+    /// revision, a proposal stored before 0031, redacted content, a field
+    /// the proposing agent could not read then or you cannot read now, or a
+    /// row that is not a field (note, triage, time).
+    pub has_original: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -318,13 +327,193 @@ async fn render(conn: &mut PgConnection, field: &str, v: &Json) -> Result<Json> 
     })
 }
 
+/// An existing issue's built-in fields, as the diff and the baseline read
+/// them.
+#[derive(sqlx::FromRow)]
+struct Cur {
+    subject: String,
+    description: String,
+    assigned_to_id: Option<Uuid>,
+    priority_id: Option<Uuid>,
+    fixed_version_id: Option<Uuid>,
+    start_date: Option<chrono::NaiveDate>,
+    due_date: Option<chrono::NaiveDate>,
+    is_private: bool,
+    status_id: Uuid,
+    tracker_id: Uuid,
+    project_id: Uuid,
+    author_id: Uuid,
+    estimated_hours: Option<String>,
+    lock_version: i32,
+}
+
+async fn current(conn: &mut PgConnection, id: Uuid) -> Result<Option<Cur>> {
+    Ok(sqlx::query_as(
+        "SELECT subject, description, assigned_to_id, priority_id, fixed_version_id,
+                start_date, due_date, is_private, status_id, tracker_id, project_id, author_id,
+                trim_scale(estimated_hours)::text AS estimated_hours, lock_version
+         FROM issues WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+impl Cur {
+    /// A built-in field's stored value (`status` = `status_id`); null for
+    /// anything else.
+    fn raw(&self, field: &str) -> Json {
+        match field {
+            "subject" => json!(self.subject),
+            "description" => json!(self.description),
+            "assigned_to_id" => json!(self.assigned_to_id),
+            "priority_id" => json!(self.priority_id),
+            "fixed_version_id" => json!(self.fixed_version_id),
+            "start_date" => json!(self.start_date),
+            "due_date" => json!(self.due_date),
+            "is_private" => json!(self.is_private),
+            "estimated_hours" => json!(self.estimated_hours),
+            "status" => json!(self.status_id),
+            _ => Json::Null,
+        }
+    }
+
+    fn cf_target(&self, issue_id: Uuid) -> crate::service::CfTarget {
+        crate::service::CfTarget {
+            issue_id,
+            tracker_id: self.tracker_id,
+            project_id: self.project_id,
+        }
+    }
+}
+
+/// The custom field `cf:<n>`'s name.
+async fn cf_name(conn: &mut PgConnection, key: &str) -> Result<Option<String>> {
+    let Some(n) = key.strip_prefix("cf:").and_then(|n| n.parse::<i32>().ok()) else {
+        return Ok(None);
+    };
+    Ok(
+        sqlx::query_scalar("SELECT name FROM field_defs WHERE id = $1")
+            .bind(n)
+            .fetch_optional(&mut *conn)
+            .await?,
+    )
+}
+
+/// The fields a document changes on each existing issue: the `set` keys of
+/// `update_fields` and `status` for a `transition`.
+fn changed_fields(body: &Json) -> BTreeMap<Uuid, BTreeSet<String>> {
+    let mut out: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
+    for op in body["ops"].as_array().into_iter().flatten() {
+        let Some(id) = op["target"]["id"]
+            .as_str()
+            .and_then(|s| s.parse::<Uuid>().ok())
+        else {
+            continue;
+        };
+        match op["kind"].as_str().unwrap_or_default() {
+            "update_fields" => out.entry(id).or_default().extend(
+                op["set"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, _)| k.clone()),
+            ),
+            "transition" => {
+                out.entry(id).or_default().insert("status".into());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// G13: the values the fields a proposal changes hold right now on each
+/// existing target, as `reader` (the proposing agent) can read them:
+/// `{"<issue id>": {"lock_version": n, "fields": {"<field>": value}}}`.
+/// Built-in fields hold their stored value (ids, dates, `status` = the
+/// status id), custom fields the value `get` shows. A target the reader
+/// cannot see, and a custom field it cannot read (agents: `visible` only),
+/// are left out (contract 02 §3.5: not readable = not there).
+pub async fn baseline(conn: &mut PgConnection, reader: AuthContext, body: &Json) -> Result<Json> {
+    let want = changed_fields(body);
+    let mut out = serde_json::Map::new();
+    if want.is_empty() {
+        return Ok(Json::Object(out));
+    }
+    let scope = crate::db::load_scope(&mut *conn, reader).await?;
+    for (id, fields) in want {
+        let Some(c) = current(&mut *conn, id).await? else {
+            continue;
+        };
+        if !scope.can_see(&ox_core::IssueFacts {
+            project_id: c.project_id,
+            tracker_id: c.tracker_id,
+            is_private: c.is_private,
+            author_id: c.author_id,
+            assigned_to_id: c.assigned_to_id,
+        }) {
+            continue;
+        }
+        let mut values = serde_json::Map::new();
+        let mut cf_keys: Vec<(String, String)> = Vec::new();
+        for f in fields {
+            if f.starts_with("cf:") {
+                if let Some(name) = cf_name(&mut *conn, &f).await? {
+                    cf_keys.push((f, name));
+                }
+            } else if label(&f).is_empty() {
+                continue;
+            } else {
+                values.insert(f.clone(), c.raw(&f));
+            }
+        }
+        if !cf_keys.is_empty() {
+            let names: Vec<String> = cf_keys.iter().map(|(_, n)| n.clone()).collect();
+            let roles = crate::db::role_ids_for(&mut *conn, reader, c.project_id).await?;
+            let vals = crate::service::custom_field_values(
+                &mut *conn,
+                reader,
+                &roles,
+                c.cf_target(id),
+                Some(&names),
+            )
+            .await?;
+            for v in vals {
+                if let Some((key, _)) = cf_keys.iter().find(|(_, n)| *n == v.name) {
+                    values.insert(key.clone(), v.value.unwrap_or(Json::Null));
+                }
+            }
+        }
+        out.insert(
+            id.to_string(),
+            json!({"lock_version": c.lock_version, "fields": values}),
+        );
+    }
+    Ok(Json::Object(out))
+}
+
 /// The diff of a proposal whose targets `viewer` can all read; `None`
 /// otherwise (the row then shows no content).
 pub async fn diff(
     conn: &mut PgConnection,
     viewer: AuthContext,
     body: &Json,
-    keys: &std::collections::BTreeMap<Uuid, String>,
+    keys: &BTreeMap<Uuid, String>,
+) -> Result<Vec<DiffRow>> {
+    diff_with_baseline(conn, viewer, body, keys, None).await
+}
+
+/// [`diff`] with the version's [`baseline`] as each row's `original`
+/// (the queue list and `GET /changesets/{id}` both use this, G12/G13).
+/// A recorded custom field value shows only while `viewer` can read that
+/// field on the issue now.
+pub async fn diff_with_baseline(
+    conn: &mut PgConnection,
+    viewer: AuthContext,
+    body: &Json,
+    keys: &BTreeMap<Uuid, String>,
+    baseline: Option<&Json>,
 ) -> Result<Vec<DiffRow>> {
     let mut rows = Vec::new();
     for op in body["ops"].as_array().into_iter().flatten() {
@@ -341,106 +530,89 @@ pub async fn diff(
             continue;
         };
         let Some(key) = keys.get(&id) else { continue };
-        type Cur = (
-            String,
-            String,
-            Option<Uuid>,
-            Option<Uuid>,
-            Option<Uuid>,
-            Option<chrono::NaiveDate>,
-            Option<chrono::NaiveDate>,
-            bool,
-            Uuid,
-            Uuid,
-            Uuid,
-            Uuid,
-            Option<String>,
-        );
-        let cur: Option<Cur> = sqlx::query_as(
-            "SELECT subject, description, assigned_to_id, priority_id, fixed_version_id,
-                    start_date, due_date, is_private, status_id, tracker_id, project_id, id,
-                    trim_scale(estimated_hours)::text
-             FROM issues WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?;
-        let Some(c) = cur else { continue };
+        let Some(c) = current(&mut *conn, id).await? else {
+            continue;
+        };
+        let recorded = baseline
+            .and_then(|b| b.get(id.to_string()))
+            .and_then(|t| t["fields"].as_object());
         let target = DiffTarget {
             id,
             key: key.clone(),
-            subject: c.0.clone(),
+            subject: c.subject.clone(),
         };
-        let mut push = |field: String, label: String, before: Json, after: Json| {
-            rows.push(DiffRow {
-                target: target.clone(),
-                field,
-                label,
-                before,
-                after,
-            });
-        };
+        let mut push =
+            |field: String, label: String, before: Json, after: Json, orig: Option<Json>| {
+                rows.push(DiffRow {
+                    target: target.clone(),
+                    field,
+                    label,
+                    before,
+                    after,
+                    has_original: orig.is_some(),
+                    original: orig.unwrap_or(Json::Null),
+                });
+            };
         match op["kind"].as_str().unwrap_or_default() {
             "update_fields" => {
                 for (k, v) in op["set"].as_object().into_iter().flatten() {
-                    let before_raw = match k.as_str() {
-                        "subject" => json!(c.0),
-                        "description" => json!(c.1),
-                        "assigned_to_id" => json!(c.2),
-                        "priority_id" => json!(c.3),
-                        "fixed_version_id" => json!(c.4),
-                        "start_date" => json!(c.5),
-                        "due_date" => json!(c.6),
-                        "is_private" => json!(c.7),
-                        "estimated_hours" => json!(c.12),
-                        _ => Json::Null,
-                    };
-                    let (lbl, before) = if let Some(n) = k.strip_prefix("cf:") {
-                        let name: Option<String> =
-                            sqlx::query_scalar("SELECT name FROM field_defs WHERE id = $1")
-                                .bind(n.parse::<i32>().unwrap_or_default())
-                                .fetch_optional(&mut *conn)
-                                .await?;
-                        let name = name.unwrap_or_else(|| k.clone());
-                        let roles = crate::db::role_ids_for(&mut *conn, viewer, c.10).await?;
+                    let was = recorded.and_then(|m| m.get(k));
+                    let (lbl, before, original) = if k.starts_with("cf:") {
+                        let name = cf_name(&mut *conn, k).await?.unwrap_or_else(|| k.clone());
+                        let roles =
+                            crate::db::role_ids_for(&mut *conn, viewer, c.project_id).await?;
                         let vals = crate::service::custom_field_values(
                             &mut *conn,
                             viewer,
                             &roles,
-                            crate::service::CfTarget {
-                                issue_id: id,
-                                tracker_id: c.9,
-                                project_id: c.10,
-                            },
+                            c.cf_target(id),
                             Some(std::slice::from_ref(&name)),
                         )
                         .await?;
+                        // Not readable by the viewer now: no original either.
+                        let readable = !vals.is_empty();
                         let before = vals
                             .into_iter()
                             .next()
                             .and_then(|v| v.value)
                             .unwrap_or(Json::Null);
-                        (name, before)
+                        (name, before, was.filter(|_| readable).cloned())
                     } else {
+                        let original = match was {
+                            Some(w) => Some(render(&mut *conn, k, w).await?),
+                            None => None,
+                        };
                         (
                             label(k).to_string(),
-                            render(&mut *conn, k, &before_raw).await?,
+                            render(&mut *conn, k, &c.raw(k)).await?,
+                            original,
                         )
                     };
                     let after = render(&mut *conn, k, v).await?;
-                    push(k.clone(), lbl, before, after);
+                    push(k.clone(), lbl, before, after, original);
                 }
             }
             "transition" => {
-                let before = render(&mut *conn, "status", &json!(c.8)).await?;
+                let before = render(&mut *conn, "status", &c.raw("status")).await?;
                 let after = render(&mut *conn, "status", &op["to_status_id"]).await?;
-                push("status".into(), label("status").into(), before, after);
+                let original = match recorded.and_then(|m| m.get("status")) {
+                    Some(w) => Some(render(&mut *conn, "status", w).await?),
+                    None => None,
+                };
+                push(
+                    "status".into(),
+                    label("status").into(),
+                    before,
+                    after,
+                    original,
+                );
             }
             "add_note" => push(
                 "note".into(),
                 "Note".into(),
                 Json::Null,
                 json!({"is_private": op["is_private"]}),
+                None,
             ),
             "triage_decide" => {
                 let state: Option<String> =
@@ -460,6 +632,7 @@ pub async fn diff(
                     "Triage".into(),
                     json!(state.unwrap_or_else(|| "none".into())),
                     after,
+                    None,
                 );
             }
             _ => {}
@@ -521,6 +694,8 @@ async fn time_row(
         before: Json::Null,
         after: json!({"hours": f["hours"], "spent_on": f["spent_on"], "activity": activity,
                       "comments": f["comments"], "user_id": f["user_id"]}),
+        original: Json::Null,
+        has_original: false,
     }))
 }
 

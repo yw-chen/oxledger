@@ -1342,7 +1342,10 @@ async fn s1_identity() {
         .to_string();
     // P1 gap G3: the label history shows, and the pause state.
     for c in ctxs.body["data"].as_array().unwrap() {
-        assert!(c["agent_label"].as_str().is_some_and(|l| !l.is_empty()), "{c}");
+        assert!(
+            c["agent_label"].as_str().is_some_and(|l| !l.is_empty()),
+            "{c}"
+        );
         assert!(c.get("suspended_at").is_some() && c.get("suspension_reason").is_some());
     }
     let t3 = as_browser(

@@ -310,6 +310,9 @@ async fn t_m1_84_upgrade_ai_team() {
     assert_eq!(d_rt, c_rt);
 
     // The old token still works, as the same principal, with the same scope.
+    // The code under test is today's: bring the schema to the latest
+    // migration first (0031 added agent_credentials.last_used_at).
+    db::MIGRATOR.run(&pool).await.unwrap();
     let a = auth::authenticate_bearer(&pool, &token)
         .await
         .unwrap()
@@ -452,6 +455,14 @@ async fn v_upgrade_with_suspension_and_lookalike_handle() {
         .await,
         1
     );
+    // Today's code needs today's schema (0031: last_used_at). 0030 refuses
+    // an ordinary client named oxledger-ai until it is renamed
+    // (upgrade-notes.md); the principal's handle is not touched.
+    sqlx::query("UPDATE agent_clients SET name = 'oxledger-ai (02)' WHERE name = 'oxledger-ai'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    db::MIGRATOR.run(&pool).await.unwrap();
     let a = auth::authenticate_bearer(&pool, &token)
         .await
         .unwrap()

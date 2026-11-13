@@ -1624,12 +1624,34 @@ pub struct ActivityItem {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub struct Activity {
+    /// Newest first (`at`, then id).
     pub items: Vec<ActivityItem>,
+    /// G24: the next page (same filters), signed and bound to the caller;
+    /// null on the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// Default and largest page of the activity lists (G24).
+pub const ACTIVITY_PAGE: u32 = 50;
+pub const MAX_ACTIVITY_PAGE: u32 = 200;
+
+/// The filters and page of an activity list (G24).
+#[derive(Debug, Clone, Default)]
+pub struct ActivityQuery {
+    /// Inclusive; default 30 days (the undo window) before now.
+    pub from: Option<DateTime<Utc>>,
+    /// Inclusive; default now.
+    pub to: Option<DateTime<Utc>>,
+    /// An issue key: only items that touched it (refusals have none).
+    pub issue: Option<String>,
+    pub cursor: Option<String>,
+    /// 1–200, default 50.
+    pub limit: Option<u32>,
 }
 
 /// `GET /agents/{id}/activity`: direct writes, applied proposals, refusals
 /// (B8: the audience blocks only) and undos, newest first, within the
-/// caller's current visibility.
+/// caller's current visibility. The first page; see [`activity_page`].
 pub async fn activity(
     app: &App,
     caller: AuthContext,
@@ -1638,18 +1660,24 @@ pub async fn activity(
     to: Option<DateTime<Utc>>,
     issue: Option<&str>,
 ) -> Result<Activity> {
-    let user = person(&caller)?;
-    activity_of(
-        app,
-        caller,
-        agent,
-        user,
+    let q = ActivityQuery {
         from,
         to,
-        issue,
-        ActivityView::Sponsor,
-    )
-    .await
+        issue: issue.map(String::from),
+        ..ActivityQuery::default()
+    };
+    activity_page(app, caller, agent, &q).await
+}
+
+/// [`activity`] with a cursor and a page size (G24).
+pub async fn activity_page(
+    app: &App,
+    caller: AuthContext,
+    agent: Uuid,
+    q: &ActivityQuery,
+) -> Result<Activity> {
+    let user = person(&caller)?;
+    activity_of(app, caller, agent, user, q, ActivityView::Sponsor).await
 }
 
 /// Design 05 §3.12.5 stats: `agent`'s executions on behalf of `sponsor` in
@@ -1831,18 +1859,36 @@ pub enum ActivityView {
 /// The executions of `agent` on behalf of `sponsor`, newest first, each
 /// kept only when the caller can read one of its issues now, and only the
 /// readable issues' keys and diffs (the same filter for every viewer).
-#[allow(clippy::too_many_arguments)]
+///
+/// G24: filtered by time and issue key, then paged newest first by
+/// `(at, id)`. Visibility is decided before an item counts toward the page,
+/// and the cursor is the last *returned* item's position (signed, bound to
+/// the caller and the filters), so items the caller cannot read change
+/// neither the page size nor the cursor.
 pub async fn activity_of(
     app: &App,
     caller: AuthContext,
     agent: Uuid,
     sponsor: Uuid,
-    from: Option<DateTime<Utc>>,
-    to: Option<DateTime<Utc>>,
-    issue: Option<&str>,
+    q: &ActivityQuery,
     view: ActivityView,
 ) -> Result<Activity> {
     let user = person(&caller)?;
+    let limit = q.limit.unwrap_or(ACTIVITY_PAGE).clamp(1, MAX_ACTIVITY_PAGE) as usize;
+    let qhash = crate::cursor::query_hash(&json!({
+        "agent_activity": agent, "sponsor": sponsor, "view": format!("{view:?}"),
+        "from": q.from, "to": q.to, "issue": q.issue,
+    }));
+    let after = match q.cursor.as_deref() {
+        None => None,
+        Some(c) => {
+            match crate::cursor::decode(&app.pool, c, caller.principal_id(), &qhash).await? {
+                crate::cursor::Position::Keyset { t, i } => Some((t, i)),
+                _ => return Err(api(ErrorCode::InvalidCursor, "invalid cursor")),
+            }
+        }
+    };
+    let (from, to, issue) = (q.from, q.to, q.issue.as_deref());
     let mut tx = app.pool.begin().await?;
     sqlx::query("SET TRANSACTION READ ONLY")
         .execute(&mut *tx)
@@ -1867,26 +1913,57 @@ pub async fn activity_of(
         .await?;
         rows.extend(undos);
     }
-    let blocked: Vec<DateTime<Utc>> = if view == ActivityView::Member {
-        Vec::new()
-    } else {
-        sqlx::query_scalar(
-        "SELECT l.at FROM agent_write_log l
-         JOIN agent_principals ap ON ap.agent_principal_id = l.agent_principal_id
-         WHERE l.agent_principal_id = $1 AND ap.delegator_user_id = $2 AND l.kind = 'audience_blocked'
-           AND l.at >= $3 AND l.at <= $4",
+    // Refusals touch no readable issue, so an issue filter leaves them out.
+    if view != ActivityView::Member && issue.is_none() {
+        let blocked: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
+            "SELECT l.id, l.at, 'blocked' FROM agent_write_log l
+             JOIN agent_principals ap ON ap.agent_principal_id = l.agent_principal_id
+             WHERE l.agent_principal_id = $1 AND ap.delegator_user_id = $2 AND l.kind = 'audience_blocked'
+               AND l.at >= $3 AND l.at <= $4",
         )
         .bind(agent)
         .bind(sponsor)
         .bind(from)
         .bind(to)
         .fetch_all(&mut *tx)
-        .await?
-    };
-    let mut items = Vec::new();
+        .await?;
+        rows.extend(blocked);
+    }
+    // Newest first by (at, id); a page starts after the cursor's item.
+    rows.sort_by_key(|r| std::cmp::Reverse((r.1, r.0)));
+    if let Some((t, i)) = after {
+        rows.retain(|r| (r.1, r.0) < (t, i));
+    }
+    let mut items: Vec<(Uuid, ActivityItem)> = Vec::new();
+    let mut more = false;
     let mut reader = crate::citations::Reader::new(&mut tx, caller).await?;
     let mut cf = HashMap::new();
     for (id, at, kind) in rows {
+        if items.len() == limit {
+            // Only an item the caller may see makes a next page.
+            more = kind == "blocked"
+                || readable_execution(&mut tx, &mut reader, caller, &mut cf, id)
+                    .await?
+                    .is_some_and(|(keys, _)| issue.is_none_or(|k| keys.iter().any(|x| x == k)));
+            if more {
+                break;
+            }
+            continue;
+        }
+        if kind == "blocked" {
+            items.push((
+                id,
+                ActivityItem {
+                    kind,
+                    at,
+                    execution_id: None,
+                    keys: Vec::new(),
+                    diff: Vec::new(),
+                    undoable: false,
+                },
+            ));
+            continue;
+        }
         let Some((keys, diff)) =
             readable_execution(&mut tx, &mut reader, caller, &mut cf, id).await?
         else {
@@ -1903,30 +1980,35 @@ pub async fn activity_of(
             }
             _ => false,
         };
-        items.push(ActivityItem {
-            kind,
-            at,
-            execution_id: Some(id),
-            keys,
-            diff,
-            undoable,
-        });
-    }
-    if issue.is_none() {
-        for at in blocked {
-            items.push(ActivityItem {
-                kind: "blocked".into(),
+        items.push((
+            id,
+            ActivityItem {
+                kind,
                 at,
-                execution_id: None,
-                keys: Vec::new(),
-                diff: Vec::new(),
-                undoable: false,
-            });
-        }
+                execution_id: Some(id),
+                keys,
+                diff,
+                undoable,
+            },
+        ));
     }
-    items.sort_by_key(|i| std::cmp::Reverse(i.at));
     tx.commit().await?;
-    Ok(Activity { items })
+    let next_cursor = match (more, items.last()) {
+        (true, Some((i, item))) => Some(
+            crate::cursor::encode(
+                &app.pool,
+                caller.principal_id(),
+                &qhash,
+                crate::cursor::Position::Keyset { t: item.at, i: *i },
+            )
+            .await?,
+        ),
+        _ => None,
+    };
+    Ok(Activity {
+        items: items.into_iter().map(|(_, item)| item).collect(),
+        next_cursor,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]

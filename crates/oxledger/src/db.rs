@@ -15,11 +15,60 @@ pub const VIEW_ISSUES: &str = "view_issues";
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn connect(url: &str) -> Result<PgPool> {
-    let pool = PgPool::connect(url)
+    let pool = pool_options()
+        .connect(url)
         .await
         .context("connect to PostgreSQL")?;
     MIGRATOR.run(&pool).await.context("run migrations")?;
     Ok(pool)
+}
+
+/// How many connections [`pool_options`]'s release check found inside a
+/// transaction and closed, since the process started (G20).
+pub static RELEASED_IN_TRANSACTION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The pool every process uses (sqlx defaults plus one release check).
+///
+/// G20: sqlx 0.9's `begin()` is not cancel-safe. `PgTransactionManager::begin`
+/// sends `BEGIN` and then awaits its `ReadyForQuery`; its rollback guard only
+/// queues a `ROLLBACK` when `transaction_depth > 0`, and the depth is raised
+/// after that await. A request dropped in between (the browser navigates
+/// away, a timeout) returns a connection whose server session is inside a
+/// transaction while sqlx thinks it is idle. The next borrower's statements
+/// then run in that transaction: `pool.begin()` gets "there is already a
+/// transaction in progress", `read_tx`'s `SET TRANSACTION` fails with "must
+/// be called before any query" once anything ran there, and autocommit
+/// statements are not committed until somebody's `COMMIT`.
+///
+/// On release (a dropped [`sqlx::Transaction`] has queued its `ROLLBACK`,
+/// which is flushed before this check runs) one simple-protocol query asks
+/// the server whether the session is inside a transaction block: its
+/// `statement_timestamp()` differs from `transaction_timestamp()` only then
+/// (outside a block the query starts its own transaction at the statement's
+/// start time). Such a connection is closed instead of reused. Cost: one
+/// round trip per release, off the request path (sqlx releases in a task).
+pub fn pool_options() -> sqlx::postgres::PgPoolOptions {
+    sqlx::postgres::PgPoolOptions::new().after_release(|conn, _meta| {
+        Box::pin(async move {
+            use sqlx::Row;
+            // Simple query protocol on purpose: with Parse/Bind/Execute each
+            // message restarts statement_timestamp() and they always differ.
+            let in_block: bool = sqlx::raw_sql(
+                "SELECT pg_catalog.statement_timestamp() <> pg_catalog.transaction_timestamp()",
+            )
+            .fetch_one(&mut *conn)
+            .await?
+            .try_get(0)?;
+            if in_block {
+                RELEASED_IN_TRANSACTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(
+                    "closing a pooled connection returned inside a transaction (cancelled begin)"
+                );
+            }
+            Ok(!in_block)
+        })
+    })
 }
 
 /// An [`AuthContext`] checked against the database right now (contract 02

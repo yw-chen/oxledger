@@ -2928,3 +2928,119 @@ async fn v_shared_warning_is_own() {
     assert!(!text.contains("bob"), "{text}");
     assert!(!text.contains("AUTH"), "{text}");
 }
+
+/// P2 G14 / G24 over HTTP: the token lists (sponsor and site admin; a
+/// member is told not_sponsor; an unrelated user sees the same 404 as for a
+/// missing id; the context alias is the sponsor's only) and the activity
+/// lists' cursor and limit query.
+#[tokio::test]
+async fn p2_http_credentials_and_activity_query() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let r = api::router(
+        w.app.clone(),
+        ApiConfig {
+            spa_origin: ORIGIN.into(),
+            session: SessionPolicy::default(),
+        },
+    );
+    let ctx = w.new_context().await;
+    w.delegate(w.web).await.unwrap();
+    let (token, agent) = w.token(ctx).await;
+    let aid = agent.principal_id().unwrap();
+    auth::create_user(&pool, "root", "root", PW, true)
+        .await
+        .unwrap();
+    auth::create_user(&pool, "dave", "dave", PW, false)
+        .await
+        .unwrap();
+    let alice = login(&r, "alice").await;
+    let bob = login(&r, "bob").await;
+    let root = login(&r, "root").await;
+    let dave = login(&r, "dave").await;
+    let hash: Vec<u8> = sqlx::query_scalar("SELECT token_sha256 FROM agent_credentials")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let hexh: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+
+    let p = format!("/ai-team/{aid}/credentials");
+    for who in [&alice, &root] {
+        let x = call(&r, "GET", &p, None, who).await;
+        assert_eq!(x.status, StatusCode::OK, "{}", x.body);
+        assert_eq!(x.body["data"]["items"].as_array().unwrap().len(), 1);
+        let text = x.body.to_string();
+        assert!(!text.contains(&token) && !text.to_lowercase().contains(&hexh));
+    }
+    let b = call(&r, "GET", &p, None, &bob).await;
+    assert_eq!(b.status, StatusCode::FORBIDDEN, "{}", b.body);
+    assert_eq!(b.body["error"]["code"], "forbidden_op");
+    assert_eq!(b.body["error"]["details"]["reason"], "not_sponsor");
+    let d = call(&r, "GET", &p, None, &dave).await;
+    let m = call(
+        &r,
+        "GET",
+        &format!("/ai-team/{}/credentials", Uuid::now_v7()),
+        None,
+        &dave,
+    )
+    .await;
+    assert_eq!(d.status, StatusCode::NOT_FOUND);
+    same("unrelated vs missing role", &d, &m);
+
+    let alias = format!("/agent-contexts/{ctx}/credentials");
+    let x = call(&r, "GET", &alias, None, &alice).await;
+    assert_eq!(x.status, StatusCode::OK, "{}", x.body);
+    let x = call(
+        &r,
+        "GET",
+        &format!("{alias}?agent_principal_id={aid}"),
+        None,
+        &alice,
+    )
+    .await;
+    assert_eq!(x.body["data"]["items"].as_array().unwrap().len(), 1);
+    let x = call(
+        &r,
+        "GET",
+        &format!("{alias}?agent_principal_id=nope"),
+        None,
+        &alice,
+    )
+    .await;
+    assert_eq!(x.status, StatusCode::BAD_REQUEST, "{}", x.body);
+    let missing = call(
+        &r,
+        "GET",
+        &format!("/agent-contexts/{}/credentials", Uuid::now_v7()),
+        None,
+        &dave,
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    for who in [&root, &bob, &dave] {
+        let x = call(&r, "GET", &alias, None, who).await;
+        same("someone else's context vs missing", &x, &missing);
+    }
+
+    for base in [
+        format!("/agents/{aid}/activity"),
+        format!("/ai-team/{aid}/activity"),
+    ] {
+        let x = call(&r, "GET", &format!("{base}?limit=1"), None, &alice).await;
+        assert_eq!(x.status, StatusCode::OK, "{}", x.body);
+        assert!(x.body["data"]["items"].as_array().unwrap().len() <= 1);
+        assert!(x.body["data"].get("next_cursor").is_some());
+        let x = call(&r, "GET", &format!("{base}?limit=abc"), None, &alice).await;
+        assert_eq!(x.status, StatusCode::BAD_REQUEST, "{base}: {}", x.body);
+        assert_eq!(x.body["error"]["code"], "invalid_argument");
+        let x = call(&r, "GET", &format!("{base}?cursor=garbage"), None, &alice).await;
+        assert_eq!(
+            x.body["error"]["code"], "invalid_cursor",
+            "{base}: {}",
+            x.body
+        );
+        let x = call(&r, "GET", &format!("{base}?from=bad"), None, &alice).await;
+        assert_eq!(x.status, StatusCode::BAD_REQUEST, "{base}: {}", x.body);
+    }
+}

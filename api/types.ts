@@ -22,7 +22,10 @@ export type Activity = {
 };
 
 export type Activity2 = {
+  /** Newest first (`at`, then id). */
   items: Array<ActivityItem>;
+  /** G24: the next page (same filters), signed and bound to the caller; null on the last page. */
+  next_cursor: string | null;
 };
 
 export type ActivityDiff = {
@@ -258,6 +261,8 @@ export type ChangesetView = {
   context_project_id: string;
   created_at: string;
   current_version: number;
+  /** G12: every changed field of this version with display values, as the queue shows it (`before` = the issue now, `after` = proposed, `original` = when the agent proposed it, G13). Empty with `content_unavailable`. */
+  diff: Array<DiffRow>;
   edit_method: string;
   editor_id: string;
   expires_at: string;
@@ -500,6 +505,28 @@ export type CredentialInput = {
   label?: string | null;
 };
 
+export type CredentialList = {
+  /** Newest first. */
+  items: Array<CredentialSummary>;
+};
+
+/** G14: one agent token as its sponsor (or a site admin) sees it; never the token or its hash. */
+export type CredentialSummary = {
+  /** The role the token acts as. */
+  agent_principal_id: string;
+  context_id: string;
+  created_at: string;
+  expires_at: string;
+  id: string;
+  label: string;
+  /** Last successful bearer authentication, written at most once a minute; null when never used since 0031. */
+  last_used_at: string | null;
+  revoked: boolean;
+  revoked_at: string | null;
+  /** `active`, `revoked`, `expired` or `context_closed` (the work context was closed: the token no longer works although it was not revoked). */
+  state: string;
+};
+
 /** A custom field as `resolve(kind: "custom_field")` describes it (design 03 §2.4): what a filter on it needs. */
 export type CustomFieldInfo = {
   /** Pass it in filter conditions to fail with `field_definition_changed` instead of silently filtering by a changed definition. */
@@ -634,8 +661,12 @@ export type DiffRow = {
   before: unknown;
   /** `assigned_to_id`, `status`, `cf:<id>`, … */
   field: string;
+  /** False when no value was recorded for this field: an owner's revision, a proposal stored before 0031, redacted content, a field the proposing agent could not read then or you cannot read now, or a row that is not a field (note, triage, time). */
+  has_original: boolean;
   /** Display name. */
   label: string;
+  /** G13: the value when the agent proposed this version, rendered like `before` (null when unset). Meaningful only with `has_original`. */
+  original: unknown;
   target: DiffTarget;
 };
 
@@ -3808,6 +3839,7 @@ export interface Endpoints {
   "GET /agent-contexts": { body: never; data: Array<ContextView> };
   "POST /agent-contexts": { body: NewContextBody; data: Created };
   "POST /agent-contexts/{id}/close": { body: Empty; data: Done };
+  "GET /agent-contexts/{id}/credentials": { body: never; data: CredentialList };
   "POST /agent-contexts/{id}/credentials": { body: CredentialBody; data: IssuedCredential };
   "POST /agent-contexts/{id}/resume": { body: Empty; data: Done };
   "POST /agent-contexts/{id}/suspend": { body: Empty; data: Done };
@@ -3819,6 +3851,7 @@ export interface Endpoints {
   "GET /ai-team/templates": { body: never; data: Array<TemplateSpec> };
   "GET /ai-team/{id}": { body: never; data: TeamDetail };
   "GET /ai-team/{id}/activity": { body: never; data: Activity2 };
+  "GET /ai-team/{id}/credentials": { body: never; data: CredentialList };
   "POST /ai-team/{id}/credentials": { body: CredentialInput; data: IssuedCredential };
   "POST /ai-team/{id}/pause": { body: PauseInput; data: Done };
   "POST /ai-team/{id}/resume": { body: ResumeInput; data: Done };

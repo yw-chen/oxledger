@@ -631,3 +631,14 @@ date	stage	decision	why	alternatives	source
 2026-11-13	F11	關注按鈕樂觀更新；取消關注後 tooltip 寫「你已取消關注，不會再自動關注這張單」；自動關注原因用 watch.auto_reason	契約	—	05 §6.16
 2026-11-13	F11	通知中心篩選專案時停用「全部標為已讀」（按鈕說明原因）	read-all 只收 before，不分專案；篩選時按下會標掉看不到的其他專案（F11 驗證發現）	逐列送 read	05 §6.15
 2026-11-13	F11	首次登入先套用範本、再標記 onboarded	先標記會讓對話框消失，套用失敗時錯誤沒地方顯示（F11 驗證發現）	—	05 §6.12
+2026-11-13	P2	G20：連線池 after_release 用 simple-protocol 的 statement_timestamp() <> transaction_timestamp() 檢查伺服器端是否還在交易區塊，是就關掉連線	sqlx 0.9 begin() 在 BEGIN 與 ReadyForQuery 之間被取消時不排 ROLLBACK（depth 還是 0），連線帶著交易回池；不能改 sqlx、也不能新增 crate；一處修好所有 begin()／acquire()。代價：每次歸還多一個來回。extended protocol 下兩個時間永遠不同，所以必須用 raw_sql	把 117 處 begin() 換成 tokio::spawn 包起來的版本；歸還時無條件 ROLLBACK（每次都會產生 no transaction 警告）；read_tx 改 BEGIN ISOLATION LEVEL 一條語句（在洩漏的連線上只會警告、靜默變成非 REPEATABLE READ）	crates/oxledger/src/db.rs
+2026-11-13	P2	G13 基準值只記提案改到的欄位（update_fields 的 set、transition 的 status）與 lock_version，不記目標單全部可讀欄位	三欄與「欄位都沒變」只需要這些；少存內容、少遮蔽面	記全部可讀欄位	crates/oxledger/src/review_queue.rs
+2026-11-13	P2	G13 基準值放在 proposal_contents.baseline（可遮蔽列），遮蔽時和 body 一起清掉；guard 擋任何修改，清成 NULL 也只能在 state 離開 available（遮蔽）時	changeset_versions 是 append-only，放那裡遮蔽清不掉原文（例如被遮蔽的 description）	放 changeset_versions	migrations/0031_p2_api_gaps.sql
+2026-11-13	P2	G13 擁有者修訂版（owner_revise）不記基準值，has_original=false	規則是只記提案者（agent）可讀的欄位；擁有者修訂時 agent 不在場，用擁有者的讀取範圍記會超出 agent 範圍	用擁有者範圍記、或沿用上一版	crates/oxledger/src/changesets.rs
+2026-11-13	P2	G13 原本值只在 owner 端點（changesets list／get）回；agent 端點（agent_get 等）不回	契約 02 §8.8 對 agent 的回應有獨立的來源規則（owner 版本內容不回），這次不改它	agent 端點也回	crates/oxledger/src/review_queue.rs
+2026-11-13	P2	G12 詳細頁任何狀態都回 diff（列表只在 proposed 回）；before 一律是目標單現在的值	詳細頁要看已套用／失敗的提案內容；列表維持原樣	只在 proposed 回	crates/oxledger/src/changesets.rs
+2026-11-13	P2	G14 GET /ai-team/{p}/credentials 允許 sponsor 與站台管理員；看得到角色的專案成員回 forbidden_op not_sponsor，看不到回 not_found	照任務指示；POST 只給 sponsor，列表是唯讀的中繼資料，管理員本來就能暫停／看詳情	只給 sponsor	crates/oxledger/src/ai_team.rs
+2026-11-13	P2	G14 保留 GET /agent-contexts/{id}/credentials 作相容別名，只給 sponsor，可用 agent_principal_id 篩一個角色	M1.9 後一個 runtime 的脈絡可能有多個角色；06 契約（M2）預定移除 /agent-contexts*，前端應改用 /ai-team	不加別名	crates/oxledger/src/agents.rs
+2026-11-13	P2	G14 last_used_at 在 HTTP bearer 驗證成功時寫，每個 token 每分鐘最多一次（先讀再條件式 UPDATE，子查詢 FOR UPDATE SKIP LOCKED 不等鎖）；寫入失敗只記 log，不讓驗證失敗	每個 MCP 請求都寫會放大寫入；stdio MCP 只在啟動時驗證一次，所以只反映啟動時間	每次寫；寫進 db::effective（那裡是唯讀交易）	crates/oxledger/src/auth.rs
+2026-11-13	P2	G24 沿用既有參數名 from、to、issue（S6b 就有），只加 cursor、limit（預設 50、上限 200）與 next_cursor；/ai-team/{id}/activity 用同一組	改名會破壞既有呼叫者；契約 02 §16.10 沒有指定參數名	改成 since、until、key	crates/oxledger/src/undo.rs
+2026-11-13	P2	G24 活動分頁：先判斷可讀與單號篩選，再算頁數；next_cursor 取最後一筆回傳項目的 (at, id)；下一頁只在後面還有可讀項目時才給	看不到＝不存在：不可讀的事件不能影響筆數、cursor 或「還有下一頁」	SQL 先分頁再過濾（頁數會變少、cursor 會指向看不到的事件）	crates/oxledger/src/undo.rs
