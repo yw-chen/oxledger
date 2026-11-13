@@ -149,6 +149,17 @@ impl OxServer {
             .collect()
     }
 
+    /// The output schema MCP lists for `tool` (design 06 R-M10 checks that
+    /// the web app's HTML fields stay out of it).
+    pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == tool)
+            .and_then(|t| t.output_schema)
+            .map(|s| serde_json::Value::Object((*s).clone()))
+    }
+
     pub fn new(app: Arc<App>, fixed_caller: Option<AuthContext>, spa_origin: String) -> Self {
         Self {
             app,

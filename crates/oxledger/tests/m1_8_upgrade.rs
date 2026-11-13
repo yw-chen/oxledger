@@ -6,8 +6,9 @@
 //! - no project's `security_epoch` moves (no permission change);
 //! - the `notify` cursor exists (active) and the issue's progress row is
 //!   its last event (30): T-M1-77, events before the upgrade are not sent;
-//! - after the upgrade a watcher gets the 31st event only, even when the
-//!   cursor is rewound to the start of the outbox.
+//! - after the upgrade (then the later migrations, which today's dispatcher
+//!   needs) a watcher gets the 31st event only, even when the cursor is
+//!   rewound to the start of the outbox.
 //!
 //! The temporary database is dropped. Needs PostgreSQL 18.
 
@@ -191,6 +192,9 @@ async fn m1_8_upgrade_notifications() {
     .await
     .unwrap();
     assert_eq!(progress, 30, "backfilled to the last event");
+    // The dispatcher below is this build's: it needs this build's schema
+    // (M2.1 reads issue_event_mentions and on_mentioned from 0032).
+    db::MIGRATOR.run(&pool).await.unwrap();
 
     // A watcher after the upgrade: the 31st event only.
     sqlx::query("INSERT INTO issue_watchers (issue_id, user_id, source) VALUES ($1, $2, 'manual')")

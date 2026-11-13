@@ -832,6 +832,21 @@ async fn s3_permissions() {
     )
     .await;
     let l = describe::assignees(&app, as_(alice), "WEB").await.unwrap();
+    // Gap G48 (design 06 §6.2): each user carries its own login, a group
+    // none; the list is the same people as without logins.
+    for a in &l.assignees {
+        let login: Option<String> =
+            sqlx::query_scalar("SELECT login FROM principals WHERE id = $1")
+                .bind(a.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        match a.kind.as_str() {
+            "user" => assert_eq!(a.login, login, "{a:?}"),
+            _ => assert_eq!(a.login, None, "{a:?}"),
+        }
+    }
+    assert!(l.assignees.iter().any(|a| a.kind == "group"));
     assert_eq!(
         names(l.assignees),
         ["alice", "carol", "gina", "lou", "Team"]
@@ -900,6 +915,15 @@ async fn s3_permissions() {
     .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert!(r.body["data"]["assignees"].as_array().unwrap().len() >= 3);
+    // G48 over REST: users have `login`; the Viewer (not assignable) and
+    // people outside the project are not listed, with or without it.
+    let logins: Vec<&str> = r.body["data"]["assignees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["login"].as_str())
+        .collect();
+    assert_eq!(logins, ["alice", "carol", "gina"], "{}", r.body);
     let r = call(&router, "GET", &format!("/issues/{p1}/actions"), None, &br).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     assert_eq!(r.body["error"]["code"], "not_found");

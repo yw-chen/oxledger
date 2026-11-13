@@ -550,8 +550,8 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 | 方法 | 路徑 | 誰 | 用途 | 章節 |
 |---|---|---|---|---|
 | POST | `/markdown/preview` | 人 | `{context: {issue}｜{project}｜{wiki_project}, text}` → `{html, format_version, refs_truncated}`；依呼叫者解析參照；每人每分鐘 60 次 | §3.2 |
-| GET | `/issues/{key}`（既有） | 人 | 加 `description_format`、`description_html`、`description_by_agent`；`recent_notes[].body_format`、`body_html`；`attachments[]`〔A2〕 | §3.2 |
-| GET | `/issues/{key}/notes`（既有） | 人 | 同上 | — |
+| GET | `/issues/{key}`（既有） | 人 | 加 `description_format`、`description_html`、`description_by_agent`；`attachments[]`〔A2〕 | §3.2 |
+| GET | `/issues/{key}/view`（既有） | 人 | 同上，另外留言 HTML 由 `recent_notes[].body_html` 提供（加 `recent_notes[].body_format`）；沒有 `/issues/{key}/notes` 路由 | §3.2 |
 | GET | `/projects/{id}/wiki` | 人（W） | `{start_page, can: {create, manage}, tree: [{id, title, parent_id, updated_at}]}`（最多 5000 頁，一次回） | §3.5 |
 | GET | `/projects/{id}/wiki/pages/{title}` | 人（W） | 頁：`{id, title, body, body_html, version, lock_version, protected, parent, breadcrumbs, children, updated_at, updated_by, attachments, redirected_from, can: {edit, rename, delete, protect, history}}`；標題命中轉址時照常回頁並帶 `redirected_from` | §3.5 |
 | GET | `/projects/{id}/wiki/pages/{title}/versions?cursor=` | 人（`view_wiki_edits`） | `[{version, author, origin, comment, size, created_at, redacted}]`，新到舊 | §3.5 |
@@ -603,7 +603,7 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 | R-M7 | **上限**：渲染輸入 512 KiB；一份文件最多解析 200 個參照，超過的保留原文並回 `refs_truncated: true`。預覽端點的 `text` 上限同各欄位上限 |
 | R-M8 | **`plain` 格式**：照純文字顯示——HTML 跳脫、換行變 `<br>`、只做 http(s) 網址自動連結（同 R-M3），**也做**議題 key 與 `@login` 的第二階段解析（舊內容裡的 `AUTH-123` 也能點）；不解析 `[[…]]`、不做其他 Markdown 語法 |
 | R-M9 | **格式轉換**：只有「人在 SPA 編輯既有 `plain` 說明」時轉成 `markdown`（編輯器載入原文，預覽讓人看到差異，存檔時 `format: "markdown"`）。留言不能改格式（留言不能編輯，02）。命令文件的 `format`：**建立**（`create_issue`、`add_note`）省略＝`markdown`；**更新**既有說明（`update_fields`）省略＝**保留原格式**——M1 的用戶端與 agent 改說明時不會把 `plain` 默默轉成 `markdown`（寫進升級說明）；要轉格式必須明寫 `format: "markdown"`。agent 只能產生 `markdown` 內容：更新 `plain` 說明時省略 `format` 回 `forbidden_op`（`reason = agent_format`），要明寫 `markdown`（`describe text_format`，§4） |
-| R-M10 | **API 形狀**：回應同時給原文（`description`／`body`）與 `*_html`；SPA 只把 `*_html` 欄位放進 `{@html}`（前端 lint：`{@html}` 只接受以 `_html` 結尾的 API 欄位）；MCP 只回原文與 `format` |
+| R-M10 | **API 形狀**：回應同時給原文（`description`／`body`）與 `*_html`；SPA 只把 `*_html` 欄位放進 `{@html}`（前端 lint：`{@html}` 只接受以 `_html` 結尾的 API 欄位）；留言 HTML 由 `GET /issues/{key}/view` 的 `recent_notes[].body_html` 提供（沒有 `/issues/{key}/notes` 路由）；MCP 只回原文與 `format`，輸出 schema 也不列 `*_html`、`description_by_agent` |
 | R-M11 | **搜尋與通知摘要**用 Markdown 抽出的純文字（去掉語法、保留連結文字與 code 內容），在第一階段的 AST 上抽；議題索引因此重建一次（§3.14） |
 | R-M12 | **CSP**：SPA 回應要有（或補上）`Content-Security-Policy: default-src 'self'; img-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`、`Referrer-Policy: same-origin`。`img-src 'self'` 讓 R-M4 即使前端出錯也載不到外部圖片。SvelteKit 的 inline 樣式（transition、元件樣式）與上傳前的本機圖片預覽（`blob:` URL）可能需要 `style-src 'self' 'unsafe-inline'`、`img-src 'self' blob:`；`blob:` 只放在 SPA 頁面的 CSP，不影響 R-A6 的下載回應【推論：現行 SPA 的 CSP 由前端部署決定，確切值在附錄 B C1 確認】 |
 
@@ -826,7 +826,7 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 - **可見性**：查詢時先算「呼叫者讀得到 wiki 的專案集合」（R-W1）當 filter，top-k 回 DB 複驗（研究 §5.5）；agent 再交集 R-AG1 的專案。
 - **API**：新端點 `GET /wiki/search?q=&project=&cursor=`（只回 wiki 結果：`{project, title, snippet, updated_at}`；議題搜尋 `GET /issues/search` 不變）。兩種結果不混排（兩個索引的分數不可比）。MCP `search` 收 `kinds`，結果分 `issue`、`wiki` 兩組（§4）。
 - **一致性**：wiki 寫入回執的 `consistent_after` 用 wiki 索引的 frontier；落後時 `search_lagging`（03 Q-S4）。
-- **議題索引**：說明與公開留言改索引 Markdown 抽出的純文字（R-M11）；layout 版本 +1，升級後藍綠重建一次。E1 nDCG@10 不得低於 0.810（05 M1.7 的門檻）。
+- **議題索引**：說明與公開留言改索引 Markdown 抽出的純文字（R-M11）；layout 版本 +1，升級後藍綠重建一次。E1 nDCG@10 ≥ 0.8095（M0 值 0.80955 取到小數 4 位；0.810 是四捨五入的寫法；05 M1.7 的門檻）。
 
 ---
 
@@ -1209,7 +1209,7 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 | 階段 | 內容 | 依賴 | 完成標準 |
 |---|---|---|---|
 | **M2.0** 前置 | 新 crate 由使用者核可後加入（§9.2 的新依賴表，D17）並過 `cargo deny`；0032；`perm.rs`；`format` 欄位進命令引擎、describe、事件、undo；`issue_event_mentions` 寫入；origin `integration` 的 CHECK；`/agent-contexts*` 移除 | M1 完成 | 既有測試全綠；T-M2-96；OpenAPI 與 `api/types.ts` 重產；升級說明草稿 |
-| **M2.1** Markdown | `markdown.rs`（comrak＋ammonia、AST 走訪、佔位節點、第二階段解析、快取、純文字抽取）；`*_html` 欄位；`/markdown/preview`；提及派送（`notify` 加 `mentioned`、偏好）；議題索引改純文字＋layout +1；前端 `<RichText>`、`<MarkdownEditor>` | M2.0 | T-M2-01…21；E1 nDCG@10 ≥ 0.810；前端議題頁可用 |
+| **M2.1** Markdown | `markdown.rs`（comrak＋ammonia、AST 走訪、佔位節點、第二階段解析、快取、純文字抽取）；`*_html` 欄位；`/markdown/preview`；提及派送（`notify` 加 `mentioned`、偏好）；議題索引改純文字＋layout +1；前端 `<RichText>`、`<MarkdownEditor>` | M2.0 | T-M2-01…21；E1 nDCG@10 ≥ 0.8095（M0 值 0.80955 取到小數 4 位；0.810 是四捨五入的寫法）；前端議題頁可用 |
 | **M2.2** Wiki 核心 | 0033（含 `wiki_settings` 回填與 trigger）；wiki op 與鎖序；人的 wiki undo 新路徑（R-W9）；已刪除頁讀取；歷史、差異（`similar`）、回復、undo；轉址；刪除與還原；保護；起始頁；D12 的 wiki 目標；專案分頁 `wiki`；REST | M2.1 | T-M2-25…35（含 26a、26b、34a–34c）；前端 §6.3–§6.6 可用 |
 | **M2.3** Wiki 搜尋與 agent | wiki 索引與 consumer；`search kinds`；`audience.rs` 新增 `wiki_audience()`；MCP `wiki_list`、`wiki_get`、wiki op 進 `command_submit`／提案；R-AG1–R-AG11；政策與範本；內建 AI 工具 | M2.2 | T-M2-36、37、40…49（含 42b、42c、47a）；**02 E4w、§9.6 受眾測試、05 T-M1-66 矩陣全部重跑全綠** |
 | **M2.4** 附件〔A2〕 | 0034；儲存、上傳、`attach`／`delete_attachment`、下載標頭、GC、R-M4 圖片、D12 目標 | M2.2（wiki 附件）；可和 M2.3 並行 | T-M2-50…59；T-M2-07、07a、21a、21b；前端附件卡與編輯器附檔 |

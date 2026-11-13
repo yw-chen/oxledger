@@ -169,6 +169,8 @@ export type Assignee = {
   id: string;
   /** user | group */
   kind: string;
+  /** A user's login (what `@login` mentions write, design 06 §6.2, gap G48); absent for groups. */
+  login?: string | null;
   name: string;
 };
 
@@ -211,6 +213,8 @@ export type CancelInput = Record<string, never>;
 export type Candidate = {
   id: string;
   kind: string;
+  /** A user's login (what `@login` mentions write, design 06 §6.2, gap G48); absent for groups and everything else. */
+  login?: string | null;
   /** The label that matched (name, login, key or alias). */
   matched: string;
   name: string;
@@ -723,7 +727,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -1158,8 +1162,12 @@ export type IssueDetail = {
   /** Custom fields that apply to this issue (tracker and project) and that the caller may read, in display order; `value` is null when empty. */
   custom_fields: Array<CustomFieldValue>;
   description: string;
+  /** `GET /issues/{key}`: the description is an agent's (R-M3); the editor warns before a person rewrites it (design 06 §6.2). */
+  description_by_agent?: boolean | null;
   /** `markdown`, or `plain` for a description written before M2 and not rewritten since (design 06 R-M9). An editor that rewrites a plain description sends `format: "markdown"` to convert it. */
   description_format: string;
+  /** `GET /issues/{key}` (design 06 R-M10): the description as sanitized HTML, references resolved for the caller. The only description field to put in the page as HTML. */
+  description_html?: string | null;
   due_date: string | null;
   /** Decimal string such as "1.5" (design 05 §3.10.3); null when not set. */
   estimated_hours: string | null;
@@ -1321,6 +1329,33 @@ export type LoginData = {
   expires_at: string;
   session_id: string;
   user_id: string;
+};
+
+export type MarkdownPreviewContext = {
+  /** An issue key. */
+  issue?: string | null;
+  /** A project id or key. */
+  project?: string | null;
+  /** A project id or key whose wiki the page is in. */
+  wiki_project?: string | null;
+};
+
+/** `POST /markdown/preview` (§3.1, R-RF6). */
+export type MarkdownPreviewInput = {
+  /** What the text belongs to: `{"issue": "AUTH-1"}` (a description or note of that issue) or `{"project": "AUTH"}` (a new issue). `{"wiki_project": …}` answers `not_found` until the wiki exists (M2.2). */
+  context: MarkdownPreviewContext;
+  /** `markdown` (default) or `plain`. */
+  format?: TextFormat | null;
+  text: string;
+};
+
+export type MarkdownPreviewResult = {
+  /** The rendering rules' version (1 in M2.1); it changes when the same text would render differently. */
+  format_version: number;
+  /** Sanitized HTML, references resolved for the caller; put it in the page as it is (the only `{@html}` source, R-M10). */
+  html: string;
+  /** More than 200 references: the rest are shown as text (R-M7). */
+  refs_truncated: boolean;
 };
 
 /** `POST /notifications/{id}/read|unread`. */
@@ -1500,6 +1535,8 @@ export type NoteView = {
   body: string;
   /** `markdown`, or `plain` for notes written before M2 (design 06 R-M9). */
   body_format: string;
+  /** Web app only (`GET /issues/{key}/view`; never over MCP, design 06 R-M10): the body as sanitized HTML, references resolved for the caller. The only note field to put in the page as HTML. */
+  body_html?: string | null;
   /** Cites the whole note (source kind issue_note). */
   citation_id?: string | null;
   created_at: string;
@@ -1553,7 +1590,7 @@ export type NotificationItem = {
   /** Readable events of this row not in `events`. */
   more_events: number;
   read: boolean;
-  /** watching, assigned, author, agent_on_behalf, triage_decided; `ai_budget`. */
+  /** watching, assigned, author, agent_on_behalf, triage_decided, mentioned (design 06 R-MN5); `ai_budget`. */
   reasons: Array<string>;
 };
 
@@ -1576,6 +1613,8 @@ export type NotificationPreferences = {
   on_assigned: boolean;
   /** issues I created, */
   on_author: boolean;
+  /** Someone @mentioned me in a description or note I can read (design 06 R-MN5; on by default). Mentions do not make me watch the issue. */
+  on_mentioned: boolean;
   /** what my agents did, */
   on_my_agents: boolean;
   /** and my own changes (off by default). */
@@ -1826,6 +1865,8 @@ export type PreferencesPut = {
   muted_projects?: Array<string> | null;
   on_assigned?: boolean | null;
   on_author?: boolean | null;
+  /** Left out of the request fingerprint when absent, so a request sent before M2.1 replays the same way. */
+  on_mentioned?: boolean | null;
   on_my_agents?: boolean | null;
   on_self?: boolean | null;
   on_triage_decided?: boolean | null;
@@ -2643,8 +2684,12 @@ export type SpaIssue = {
   created_at?: string | null;
   custom_fields?: Array<CustomFieldValue> | null;
   description?: string | null;
+  /** Web app only: the description is an agent's (its last writer was an agent, or a person applied an agent's proposal; R-M3). The editor warns before a person rewrites it (design 06 §6.2). */
+  description_by_agent?: boolean | null;
   /** With `description`: `markdown`, or `plain` for a description written before M2 and not rewritten since (design 06 R-M9). */
   description_format?: string | null;
+  /** Web app only (never over MCP, design 06 R-M10): the description as sanitized HTML, references resolved for the caller. The only description field to put in the page as HTML. */
+  description_html?: string | null;
   /** `include: ["dev"]`: pull requests that name this issue (§19.7), a read-only projection that may lag GitHub by minutes (`synced_at`). */
   dev?: IssueDev | null;
   due_date?: string | null;
@@ -3911,6 +3956,7 @@ export interface Endpoints {
   "GET /issues/{key}/view": { body: never; data: SpaIssue };
   "DELETE /issues/{key}/watch": { body: never; data: WatchState };
   "PUT /issues/{key}/watch": { body: Empty; data: WatchState };
+  "POST /markdown/preview": { body: MarkdownPreviewInput; data: MarkdownPreviewResult };
   "GET /me/agent-runtimes": { body: never; data: Array<RuntimeView> };
   "PATCH /me/agent-runtimes/{id}": { body: RenameRuntimeInput; data: RuntimeView };
   "POST /me/agent-runtimes/{id}/new-context": { body: RuntimeNewContextInput; data: ContextView };

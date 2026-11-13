@@ -275,6 +275,15 @@ pub struct IssueDetail {
     /// rewritten since (design 06 R-M9). An editor that rewrites a plain
     /// description sends `format: "markdown"` to convert it.
     pub description_format: String,
+    /// `GET /issues/{key}` (design 06 R-M10): the description as sanitized
+    /// HTML, references resolved for the caller. The only description field
+    /// to put in the page as HTML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_html: Option<String>,
+    /// `GET /issues/{key}`: the description is an agent's (R-M3); the editor
+    /// warns before a person rewrites it (design 06 §6.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_by_agent: Option<bool>,
     pub project: String,
     pub tracker: String,
     pub status: String,
@@ -333,6 +342,10 @@ pub struct Candidate {
     pub name: String,
     /// The label that matched (name, login, key or alias).
     pub matched: String,
+    /// A user's login (what `@login` mentions write, design 06 §6.2, gap
+    /// G48); absent for groups and everything else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 /// A custom field as `resolve(kind: "custom_field")` describes it (design
@@ -422,23 +435,26 @@ pub(crate) async fn resolve_in(
             "x.label ILIKE '%' || $1 || '%'"
         };
         let sql = format!(
-            "SELECT DISTINCT kind, id, name, label AS matched FROM (
-               SELECT 'project' AS kind, p.id, p.name, l.label FROM projects p
+            "SELECT DISTINCT kind, id, name, label AS matched, login FROM (
+               SELECT 'project' AS kind, p.id, p.name, l.label, NULL::text FROM projects p
                  CROSS JOIN LATERAL (VALUES (p.key), (p.name)) AS l(label)
                  WHERE p.id = ANY($2)
-               UNION ALL SELECT 'tracker', id, name, name FROM trackers
-               UNION ALL SELECT 'status', id, name, name FROM issue_statuses
-               UNION ALL SELECT 'principal', p.id, p.name, l.label FROM principals p
+               UNION ALL SELECT 'tracker', id, name, name, NULL FROM trackers
+               UNION ALL SELECT 'status', id, name, name, NULL FROM issue_statuses
+               UNION ALL SELECT 'principal', p.id, p.name, l.label,
+                                CASE WHEN p.kind = 'user' THEN p.login END
+                 FROM principals p
                  CROSS JOIN LATERAL (VALUES (p.name), (p.login)) AS l(label)
                  WHERE p.status = 'active' AND p.kind IN ('user', 'group') AND l.label IS NOT NULL
-               UNION ALL SELECT a.entity_kind, a.entity_id, COALESCE(pr.name, t.name, s.name, pp.name), a.label
+               UNION ALL SELECT a.entity_kind, a.entity_id, COALESCE(pr.name, t.name, s.name, pp.name), a.label,
+                                CASE WHEN pp.kind = 'user' THEN pp.login END
                  FROM aliases a
                  LEFT JOIN projects pr ON a.entity_kind = 'project' AND pr.id = a.entity_id AND pr.id = ANY($2)
                  LEFT JOIN trackers t ON a.entity_kind = 'tracker' AND t.id = a.entity_id
                  LEFT JOIN issue_statuses s ON a.entity_kind = 'status' AND s.id = a.entity_id
                  LEFT JOIN principals pp ON a.entity_kind = 'principal' AND pp.id = a.entity_id AND pp.kind IN ('user', 'group')
                  WHERE COALESCE(pr.name, t.name, s.name, pp.name) IS NOT NULL
-             ) AS x(kind, id, name, label)
+             ) AS x(kind, id, name, label, login)
              WHERE {cmp} AND ($3::text IS NULL OR x.kind = $3)
              ORDER BY kind, name LIMIT 20"
         );
@@ -567,7 +583,8 @@ pub async fn resolve_assignee(
         r"l.label ILIKE '%' || replace(replace(replace($1, '\', '\\'), '%', '\%'), '_', '\_') || '%'",
     ] {
         candidates = sqlx::query_as::<_, Candidate>(sqlx::AssertSqlSafe(format!(
-            "SELECT DISTINCT ON (p.name, p.id) 'principal' AS kind, p.id, p.name, l.label AS matched
+            "SELECT DISTINCT ON (p.name, p.id) 'principal' AS kind, p.id, p.name, l.label AS matched,
+                    CASE WHEN p.kind = 'user' THEN p.login END AS login
                FROM principals p
                CROSS JOIN LATERAL (VALUES (p.name), (p.login)) AS l(label)
               WHERE p.id = ANY($2) AND l.label IS NOT NULL AND {cmp}
@@ -911,21 +928,21 @@ type FieldText = (Src, String, CpText, Option<FieldMatch>);
 
 /// The current text of one candidate.
 struct Texts {
+    /// The stored texts (evidence and citations quote them).
     fields: Vec<FieldText>,
     /// The index document's `search_rev` equals the current text's (03 §3.4
     /// step 4): the index matched exactly this text.
     current: bool,
+    /// The query matches the current text as the layout indexes it (the
+    /// plain text of Markdown in a Current generation, design 06 R-M11).
+    rematched: bool,
 }
 
 impl Texts {
-    fn matched(&self) -> bool {
-        self.fields.iter().any(|f| f.3.is_some())
-    }
-
     /// Still a hit: the index saw this very text (`search_rev` equal, the
     /// re-match can be skipped), or the current text matches again.
     fn survives(&self) -> bool {
-        self.current || self.matched()
+        self.current || self.rematched
     }
 }
 
@@ -1584,7 +1601,7 @@ pub(crate) async fn search_with(
             // subject and description only, no expansion (03 §4.8).
             let layout = view.layout();
             let (eterms, keys) = match layout {
-                Layout::Current => {
+                Layout::RawText | Layout::Current => {
                     expansions = crate::concepts::expansions(&mut *conn, q).await?;
                     let labels: Vec<String> = expansions.iter().map(|e| e.added.clone()).collect();
                     (
@@ -1631,8 +1648,13 @@ pub(crate) async fn search_with(
                         .filter(|id| !checked.contains_key(id))
                         .collect();
                     if !todo.is_empty() {
-                        let texts: Vec<(Uuid, String, String)> = sqlx::query_as(
-                            "SELECT id, subject, description FROM issues WHERE id = ANY($1)",
+                        // A Current generation indexes the plain text of
+                        // Markdown (design 06 R-M11): the rev and the
+                        // re-match use that text; evidence and citations
+                        // quote the stored text as it is (03 §3.5).
+                        let texts: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+                            "SELECT id, subject, description, description_format
+                             FROM issues WHERE id = ANY($1)",
                         )
                         .bind(&todo)
                         .fetch_all(&mut *conn)
@@ -1642,21 +1664,50 @@ pub(crate) async fn search_with(
                         // text fields that apply): a retracted or redacted
                         // note, a hidden field drop out here even before
                         // the index sees the change (T-M1-62, 63).
-                        let mut extras = match layout {
-                            Layout::Current => {
-                                crate::search::load_extras(&mut *conn, &todo).await?
-                            }
-                            Layout::Legacy => HashMap::new(),
+                        let mut extras = if layout.extended() {
+                            crate::search::load_extras(&mut *conn, &todo, Layout::RawText).await?
+                        } else {
+                            HashMap::new()
                         };
-                        for (id, subject, description) in texts {
+                        let mut indexed = if layout.plain_text() {
+                            crate::search::load_extras(&mut *conn, &todo, layout).await?
+                        } else {
+                            HashMap::new()
+                        };
+                        for (id, subject, description, format) in texts {
                             let x = extras.remove(&id).unwrap_or_default();
-                            let current = rev_of.get(&id).copied().flatten()
-                                == Some(crate::search::doc_rev(layout, &subject, &description, &x));
+                            let (fields, current, rematched) = if layout.plain_text() {
+                                let plain = layout.text(description.clone(), &format);
+                                let px = indexed.remove(&id).unwrap_or_default();
+                                let current = rev_of.get(&id).copied().flatten()
+                                    == Some(crate::search::doc_rev(layout, &subject, &plain, &px));
+                                let rematched =
+                                    candidate_texts(terms, &keys, subject.clone(), plain, px)
+                                        .iter()
+                                        .any(|f| f.3.is_some());
+                                (
+                                    candidate_texts(terms, &keys, subject, description, x),
+                                    current,
+                                    rematched,
+                                )
+                            } else {
+                                let current = rev_of.get(&id).copied().flatten()
+                                    == Some(crate::search::doc_rev(
+                                        layout,
+                                        &subject,
+                                        &description,
+                                        &x,
+                                    ));
+                                let fields = candidate_texts(terms, &keys, subject, description, x);
+                                let rematched = fields.iter().any(|f| f.3.is_some());
+                                (fields, current, rematched)
+                            };
                             checked.insert(
                                 id,
                                 Texts {
-                                    fields: candidate_texts(terms, &keys, subject, description, x),
+                                    fields,
                                     current,
+                                    rematched,
                                 },
                             );
                         }
@@ -2222,7 +2273,29 @@ struct DetailRow {
 
 pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetail> {
     let mut tx = read_tx(app).await?;
-    let (_, r) = get_in(&mut tx, caller, key).await?;
+    let (id, mut r) = get_in(&mut tx, caller, key).await?;
+    // Design 06 R-M10: the web app's HTML (this route is for people only).
+    let project: Uuid = sqlx::query_scalar("SELECT project_id FROM issues WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let by_agent = crate::markdown::description_by_agent(&mut tx, id).await?;
+    let html = crate::markdown::render_for(
+        &mut tx,
+        caller,
+        project,
+        &[crate::markdown::Text {
+            text: &r.description,
+            src: crate::markdown::Source {
+                format: crate::commands::TextFormat::from_db(&r.description_format),
+                agent: by_agent,
+                container: id,
+            },
+        }],
+    )
+    .await?;
+    r.description_html = html.into_iter().next();
+    r.description_by_agent = Some(by_agent);
     tx.commit().await?;
     Ok(r)
 }
@@ -2365,6 +2438,8 @@ pub(crate) async fn get_in(
             subject: row.subject,
             description: row.description,
             description_format: row.description_format,
+            description_html: None,
+            description_by_agent: None,
             project: row.project,
             tracker: row.tracker,
             status: row.status,

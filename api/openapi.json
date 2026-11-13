@@ -576,6 +576,13 @@
             "description": "user | group",
             "type": "string"
           },
+          "login": {
+            "description": "A user's login (what `@login` mentions write, design 06 §6.2, gap\nG48); absent for groups.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
           }
@@ -721,6 +728,13 @@
           },
           "kind": {
             "type": "string"
+          },
+          "login": {
+            "description": "A user's login (what `@login` mentions write, design 06 §6.2, gap\nG48); absent for groups and everything else.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "matched": {
             "description": "The label that matched (name, login, key or alias).",
@@ -2919,6 +2933,11 @@
             "const": "ai_run_in_progress",
             "description": "The caller already has a run queued or running.",
             "type": "string"
+          },
+          {
+            "const": "payload_too_large",
+            "description": "Design 06 §5: the body is over a size limit (`POST /markdown/preview`\ntext, later uploads, imports and wiki pages); `details.limit` in bytes.",
+            "type": "string"
           }
         ]
       },
@@ -4590,9 +4609,23 @@
           "description": {
             "type": "string"
           },
+          "description_by_agent": {
+            "description": "`GET /issues/{key}`: the description is an agent's (R-M3); the editor\nwarns before a person rewrites it (design 06 §6.2).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "description_format": {
             "description": "`markdown`, or `plain` for a description written before M2 and not\nrewritten since (design 06 R-M9). An editor that rewrites a plain\ndescription sends `format: \"markdown\"` to convert it.",
             "type": "string"
+          },
+          "description_html": {
+            "description": "`GET /issues/{key}` (design 06 R-M10): the description as sanitized\nHTML, references resolved for the caller. The only description field\nto put in the page as HTML.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "due_date": {
             "format": "date",
@@ -5180,6 +5213,86 @@
           "session_id",
           "csrf_token",
           "expires_at"
+        ],
+        "type": "object"
+      },
+      "MarkdownPreviewContext": {
+        "additionalProperties": false,
+        "properties": {
+          "issue": {
+            "description": "An issue key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "A project id or key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wiki_project": {
+            "description": "A project id or key whose wiki the page is in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "MarkdownPreviewInput": {
+        "additionalProperties": false,
+        "description": "`POST /markdown/preview` (§3.1, R-RF6).",
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/MarkdownPreviewContext",
+            "description": "What the text belongs to: `{\"issue\": \"AUTH-1\"}` (a description or\nnote of that issue) or `{\"project\": \"AUTH\"}` (a new issue).\n`{\"wiki_project\": …}` answers `not_found` until the wiki exists (M2.2)."
+          },
+          "format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`markdown` (default) or `plain`."
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "context",
+          "text"
+        ],
+        "type": "object"
+      },
+      "MarkdownPreviewResult": {
+        "properties": {
+          "format_version": {
+            "description": "The rendering rules' version (1 in M2.1); it changes when the same\ntext would render differently.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "html": {
+            "description": "Sanitized HTML, references resolved for the caller; put it in the\npage as it is (the only `{@html}` source, R-M10).",
+            "type": "string"
+          },
+          "refs_truncated": {
+            "description": "More than 200 references: the rest are shown as text (R-M7).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "html",
+          "format_version",
+          "refs_truncated"
         ],
         "type": "object"
       },
@@ -5791,6 +5904,13 @@
             "description": "`markdown`, or `plain` for notes written before M2 (design 06 R-M9).",
             "type": "string"
           },
+          "body_html": {
+            "description": "Web app only (`GET /issues/{key}/view`; never over MCP, design 06\nR-M10): the body as sanitized HTML, references resolved for the\ncaller. The only note field to put in the page as HTML.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "citation_id": {
             "description": "Cites the whole note (source kind issue_note).",
             "type": [
@@ -5974,7 +6094,7 @@
             "type": "boolean"
           },
           "reasons": {
-            "description": "watching, assigned, author, agent_on_behalf, triage_decided; `ai_budget`.",
+            "description": "watching, assigned, author, agent_on_behalf, triage_decided,\nmentioned (design 06 R-MN5); `ai_budget`.",
             "items": {
               "type": "string"
             },
@@ -6049,6 +6169,10 @@
             "description": "issues I created,",
             "type": "boolean"
           },
+          "on_mentioned": {
+            "description": "Someone @mentioned me in a description or note I can read (design 06\nR-MN5; on by default). Mentions do not make me watch the issue.",
+            "type": "boolean"
+          },
           "on_my_agents": {
             "description": "what my agents did,",
             "type": "boolean"
@@ -6074,6 +6198,7 @@
           "on_triage_decided",
           "on_my_agents",
           "on_self",
+          "on_mentioned",
           "auto_watch_author",
           "auto_watch_assignee",
           "auto_watch_note",
@@ -7095,6 +7220,13 @@
           },
           "on_author": {
             "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "on_mentioned": {
+            "description": "Left out of the request fingerprint when absent, so a request sent\nbefore M2.1 replays the same way.",
             "type": [
               "boolean",
               "null"
@@ -10094,8 +10226,22 @@
               "null"
             ]
           },
+          "description_by_agent": {
+            "description": "Web app only: the description is an agent's (its last writer was an\nagent, or a person applied an agent's proposal; R-M3). The editor\nwarns before a person rewrites it (design 06 §6.2).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "description_format": {
             "description": "With `description`: `markdown`, or `plain` for a description written\nbefore M2 and not rewritten since (design 06 R-M9).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description_html": {
+            "description": "Web app only (never over MCP, design 06 R-M10): the description as\nsanitized HTML, references resolved for the caller. The only\ndescription field to put in the page as HTML.",
             "type": [
               "string",
               "null"
@@ -20662,7 +20808,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). not_found for invisible and missing issues alike.",
+        "summary": "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). Design 06 R-M10: description_html and each recent note's body_html are sanitized HTML with references resolved for the caller (the only fields to put in the page as HTML); description_by_agent marks an agent's description (stricter link rules). not_found for invisible and missing issues alike.",
         "x-access": "session"
       }
     },
@@ -20790,6 +20936,66 @@
           }
         },
         "summary": "Watch the issue yourself (design 05 §3.11.1); it also clears an earlier unwatch, so automatic watching applies again. Only issues you can see (not_found otherwise, exactly as for a missing key). Body {}; naturally idempotent: no Idempotency-Key. watcher_count counts active users who can see the issue now (at most 100; watcher_count_capped). There is no watcher list (B-24).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/markdown/preview": {
+      "post": {
+        "operationId": "post_markdown_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkdownPreviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/MarkdownPreviewResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 §3.2, R-RF6: render text the way stored descriptions and notes render, references resolved for you; writes nothing, notifies nobody, no Idempotency-Key. context: exactly one of {issue: key}, {project: id or key}, {wiki_project} (not_found until the wiki exists, M2.2); a context you cannot see is not_found exactly like a missing one. format: markdown (default) or plain. text over the description limit (262144 bytes) is payload_too_large (details.limit). At most 60 previews a minute per person (rate_limited).",
         "x-access": "session",
         "x-csrf": true
       }
@@ -21408,7 +21614,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
+        "summary": "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self, on_mentioned — design 06 R-MN5) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
         "x-access": "session"
       },
       "put": {

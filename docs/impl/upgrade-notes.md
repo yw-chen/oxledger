@@ -224,3 +224,17 @@
 - **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）已建好，**派送從 M2.1 開始**；升級前的內容不回溯。
 - `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0037）。目前不會寫出這些值。
 
+## M2.1（Markdown，沒有 migration）
+
+- **搜尋索引會自動重建一次**：索引 schema 從 3 升到 4（說明與公開留言改成索引 Markdown 的純文字：去掉語法與連結網址，保留連結文字與程式碼；`plain` 內容照原樣）。升級後第一次啟動，舊索引（schema 3）照舊服務，背景藍綠重建完才切換，搜尋不中斷。重建期間搜尋得到 Markdown 語法或網址裡的字（例如網域名稱），切換後就不會。
+- **新欄位（只給網頁）**：
+  - `GET /issues/{key}` 與 `GET /issues/{key}/view`：`description_html`（消毒過的 HTML，參照依呼叫者權限解析）與 `description_by_agent`（說明是 agent 寫的，或人核准了 agent 的提案）。
+  - `GET /issues/{key}/view` 的 `recent_notes.items[].body_html`。
+  - MCP 的 `get`、`get_many` 沒有這些欄位，輸出 schema 也不列（契約 06 R-M10）。
+  - `GET /projects/{id}/assignees` 的 `assignees[]` 與 `resolve` 的 `candidates[]`：user 項目多了 `login`（群組沒有；名單不變，G48）。
+- **渲染有時間與大小上限**：一段內容的渲染超過 800 ms，或輸出超過輸入 8 倍＋64 KiB 時，改顯示跳脫過的純文字（不做連結與參照）；註腳參照超過 500 個時改用 plain 渲染；標題超過 200 個時不產生標題 id。正常內容不受影響。
+- **undo 還原說明**時沿用被還原版本的作者：還原到 agent 寫的內容，`description_by_agent` 仍為 true。
+- **`POST /markdown/preview`**：編輯器預覽，不寫入、不通知；每人每分鐘 60 次（`rate_limited`，`details.kind = "markdown_preview"`）；文字超過 262144 bytes 回新錯誤碼 `payload_too_large`（HTTP 413，`details.limit`）。看不到的議題或專案與不存在的回同一個 `not_found`。
+- **@提及開始派送**：被提及的人收到通知（原因 `mentioned`），前提是他用自己的權限讀得到那個事件；被提及不會自動關注。通知讀取時再驗一次：留言被遮蔽或撤回、或說明的那次修改被遮蔽後，只因提及而來的通知不再顯示。偏好 `on_mentioned`（預設開）可以關；`PUT /me/notification-preferences` 沒帶 `on_mentioned` 時維持原值，舊用戶端的重送仍會比對成同一個請求。升級前寫的提及不補發（派送從升級後的新事件開始）。
+- **通知摘錄**：`note_excerpt` 改成留言的純文字（Markdown 語法去掉）。
+

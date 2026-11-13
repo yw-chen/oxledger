@@ -97,6 +97,31 @@ fn registry_matches_mcp() {
     }
 }
 
+/// Design 06 R-M10: the web app's HTML fields are never in MCP's output
+/// schemas; the web app's OpenAPI document has them.
+#[test]
+fn mcp_schemas_have_no_html_fields() {
+    let hidden = ["description_html", "description_by_agent", "body_html"];
+    for tool in ["get", "get_many"] {
+        let s = OxServer::output_schema(tool).unwrap_or_else(|| panic!("{tool} has a schema"));
+        let text = s.to_string();
+        assert!(text.contains("\"description_format\""), "{tool}: {text}");
+        assert!(text.contains("\"body_format\""), "{tool}: {text}");
+        for f in hidden {
+            assert!(!text.contains(&format!("\"{f}\"")), "{tool} lists {f}");
+        }
+    }
+    let doc = openapi::document();
+    let schemas = &doc["components"]["schemas"];
+    for f in ["description_html", "description_by_agent"] {
+        assert!(
+            schemas["SpaIssue"]["properties"].get(f).is_some(),
+            "SpaIssue.{f}"
+        );
+    }
+    assert!(schemas["NoteView"]["properties"].get("body_html").is_some());
+}
+
 // ---------------------------------------------------------------- DB
 
 struct Resp {

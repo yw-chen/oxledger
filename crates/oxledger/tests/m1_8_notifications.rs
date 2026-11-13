@@ -996,6 +996,7 @@ async fn t_m1_79_self_mute_locked() {
         on_triage_decided: None,
         on_my_agents: None,
         on_self: None,
+        on_mentioned: None,
         auto_watch_author: None,
         auto_watch_assignee: None,
         auto_watch_note: None,

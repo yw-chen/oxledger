@@ -23,6 +23,7 @@ pub mod forms;
 pub mod github;
 pub mod home;
 pub mod issue_view;
+pub mod markdown;
 pub mod mcp;
 pub mod mentions;
 pub mod metrics;

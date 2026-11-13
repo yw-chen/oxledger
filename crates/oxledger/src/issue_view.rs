@@ -95,6 +95,9 @@ pub struct GetManyParams {
     pub event_limit: Option<u32>,
 }
 
+/// The web app's description of [`NoteView::body_html`] (its OpenAPI).
+pub const NOTE_BODY_HTML_DOC: &str = "Web app only (`GET /issues/{key}/view`; never over MCP, design 06\nR-M10): the body as sanitized HTML, references resolved for the\ncaller. The only note field to put in the page as HTML.";
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct NoteView {
     pub note_id: Uuid,
@@ -104,6 +107,16 @@ pub struct NoteView {
     pub body: String,
     /// `markdown`, or `plain` for notes written before M2 (design 06 R-M9).
     pub body_format: String,
+    /// Web app only (`GET /issues/{key}/view`; never over MCP, design 06
+    /// R-M10): the body as sanitized HTML, references resolved for the
+    /// caller. The only note field to put in the page as HTML. Not in the
+    /// type's schema (MCP's); the web app's OpenAPI document adds it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub body_html: Option<String>,
+    /// An agent wrote the note (R-M3: stricter links); rendering only.
+    #[serde(skip)]
+    pub(crate) by_agent: bool,
     /// The body was redacted (D12); there is no citation for it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
@@ -462,6 +475,16 @@ pub async fn get(app: &App, caller: AuthContext, p: GetParams) -> Result<IssueVi
 pub struct SpaIssue {
     #[serde(flatten)]
     pub view: IssueView,
+    /// Web app only (never over MCP, design 06 R-M10): the description as
+    /// sanitized HTML, references resolved for the caller. The only
+    /// description field to put in the page as HTML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_html: Option<String>,
+    /// Web app only: the description is an agent's (its last writer was an
+    /// agent, or a person applied an agent's proposal; R-M3). The editor
+    /// warns before a person rewrites it (design 06 §6.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_by_agent: Option<bool>,
     /// The current project key (the key prefix).
     pub project_key: String,
     pub project_id: Uuid,
@@ -497,6 +520,11 @@ pub async fn spa_view(
     )
     .await?;
     let mut v = get_one(&mut tx, &mut reader, caller, &d.key, &plan).await?;
+    let project_id: Uuid = sqlx::query_scalar("SELECT project_id FROM issues WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let (description_html, by_agent) = render_html(&mut tx, caller, id, project_id, &mut v).await?;
     v.author = Some(d.author);
     v.parent = Some(d.parent);
     v.children = Some(d.children);
@@ -514,6 +542,8 @@ pub async fn spa_view(
     tx.commit().await?;
     Ok(SpaIssue {
         view: v,
+        description_html,
+        description_by_agent: Some(by_agent),
         project_key: ids.0,
         project_id: ids.1,
         tracker_id: ids.2,
@@ -521,6 +551,54 @@ pub async fn spa_view(
         assigned_to_id: ids.4,
         priority_id: ids.5,
     })
+}
+
+/// Design 06 R-M10: the `*_html` fields of the web app's issue page (the
+/// description and the notes read), one reference lookup for all of them.
+/// Fills the notes' `body_html`; returns the description's HTML and
+/// whether it is an agent's.
+async fn render_html(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    issue: Uuid,
+    project: Uuid,
+    v: &mut IssueView,
+) -> Result<(Option<String>, bool)> {
+    use crate::commands::TextFormat;
+    use crate::markdown::{Source, Text};
+    let by_agent = crate::markdown::description_by_agent(&mut *conn, issue).await?;
+    let desc = v.description.clone().unwrap_or_default();
+    let desc_format = TextFormat::from_db(v.description_format.as_deref().unwrap_or("plain"));
+    let mut texts = vec![Text {
+        text: &desc,
+        src: Source {
+            format: desc_format,
+            agent: by_agent,
+            container: issue,
+        },
+    }];
+    if let Some(notes) = &v.recent_notes {
+        for n in &notes.items {
+            texts.push(Text {
+                text: &n.body,
+                src: Source {
+                    format: TextFormat::from_db(&n.body_format),
+                    agent: n.by_agent,
+                    container: n.note_id,
+                },
+            });
+        }
+    }
+    let mut html = crate::markdown::render_for(&mut *conn, caller, project, &texts)
+        .await?
+        .into_iter();
+    let description_html = html.next();
+    if let Some(notes) = &mut v.recent_notes {
+        for n in &mut notes.items {
+            n.body_html = html.next();
+        }
+    }
+    Ok((description_html, by_agent))
 }
 
 /// One `get_many` result: the issue, or the error for that key alone.
@@ -940,6 +1018,7 @@ struct NoteRow {
     redacted: bool,
     retracted_by: Option<String>,
     retracted: bool,
+    by_agent: bool,
 }
 
 /// Readable notes, newest first: the private-note rule is applied before the
@@ -956,7 +1035,11 @@ async fn recent_notes(
         let rows: Vec<NoteRow> = sqlx::query_as(
             "SELECT n.id, p.name AS author, n.author_id, n.created_on_behalf_of_id, n.created_at,
                     n.is_private, n.body, n.body_format, n.redacted_at IS NOT NULL AS redacted,
-                    rp.name AS retracted_by, n.retracted_at IS NOT NULL AS retracted
+                    rp.name AS retracted_by, n.retracted_at IS NOT NULL AS retracted,
+                    (p.kind = 'agent' OR EXISTS (
+                        SELECT 1 FROM issue_events e JOIN principals pp ON pp.id = e.proposer_id
+                        WHERE e.issue_id = n.issue_id AND e.note_id = n.id
+                          AND e.kind = 'note_added' AND pp.kind = 'agent')) AS by_agent
              FROM issue_notes n JOIN principals p ON p.id = n.author_id
              LEFT JOIN command_executions rx ON rx.id = n.retracted_by_execution_id
              LEFT JOIN principals rp ON rp.id = rx.actor_id
@@ -1012,6 +1095,8 @@ async fn recent_notes(
                 }),
                 body: if r.retracted { String::new() } else { r.body },
                 body_format: r.body_format,
+                body_html: None,
+                by_agent: r.by_agent,
                 redacted: r.redacted,
                 retracted: r.retracted,
                 retracted_by: r.retracted_by,

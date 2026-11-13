@@ -420,7 +420,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/me/notification-preferences",
-            "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
+            "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self, on_mentioned — design 06 R-MN5) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
             Session,
             None,
             s::<crate::notifications::NotificationPreferences>,
@@ -667,6 +667,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "POST",
+            "/markdown/preview",
+            "Design 06 §3.2, R-RF6: render text the way stored descriptions and notes render, references resolved for you; writes nothing, notifies nobody, no Idempotency-Key. context: exactly one of {issue: key}, {project: id or key}, {wiki_project} (not_found until the wiki exists, M2.2); a context you cannot see is not_found exactly like a missing one. format: markdown (default) or plain. text over the description limit (262144 bytes) is payload_too_large (details.limit). At most 60 previews a minute per person (rate_limited).",
+            Session,
+            Some(s::<crate::markdown::MarkdownPreviewInput>),
+            s::<crate::markdown::MarkdownPreviewResult>,
+        ),
+        r(
+            "POST",
             "/views/preview",
             "Run an unsaved definition with the checks of saving it as scope (personal or project) in project_id. Same result as run; not saved, no Idempotency-Key.",
             Session,
@@ -844,7 +852,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/issues/{key}/view",
-            "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). not_found for invisible and missing issues alike.",
+            "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). Design 06 R-M10: description_html and each recent note's body_html are sanitized HTML with references resolved for the caller (the only fields to put in the page as HTML); description_by_agent marks an agent's description (stricter link rules). not_found for invisible and missing issues alike.",
             Session,
             None,
             s::<crate::issue_view::SpaIssue>,
@@ -1576,6 +1584,19 @@ pub fn document() -> Value {
                 schemas.insert(name, schema);
             }
         }
+    }
+    // Design 06 R-M10: a note's `body_html` is the web app's alone. The field
+    // is `#[schemars(skip)]` so MCP's output schemas (`get`, `get_many`)
+    // never list it; this document, the web app's, does.
+    if let Some(p) = schemas
+        .get_mut("NoteView")
+        .and_then(|s| s.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    {
+        p.insert(
+            "body_html".into(),
+            json!({"description": crate::issue_view::NOTE_BODY_HTML_DOC, "type": ["string", "null"]}),
+        );
     }
     schemas.insert(
         "Meta".into(),

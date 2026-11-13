@@ -307,7 +307,7 @@ pub struct UpdateFieldsOp {
 /// The format of a description or note (design 06 R-M9, K2): `markdown`
 /// (CommonMark with GFM, the default for new text) or `plain` (text written
 /// before M2, shown as it is).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFormat {
     Plain,

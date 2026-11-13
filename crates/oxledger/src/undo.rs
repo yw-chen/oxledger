@@ -1385,6 +1385,32 @@ pub async fn apply(
     )
     .await?;
 
+    // Design 06 R-M3: a description put back is the version it was, so it
+    // keeps the author of that version. The origin's execution stays this
+    // undo (so the undo can itself be undone); its event becomes the one that
+    // wrote the restored text, the latest description write before the
+    // undone execution's.
+    for (issue, _) in restored.iter().filter(|(_, f)| f == "description") {
+        sqlx::query(
+            "UPDATE issue_field_origins o SET origin_event_id = p.id
+             FROM (SELECT e.id FROM issue_events e
+                   WHERE e.issue_id = $1
+                     AND (e.kind = 'created'
+                          OR (e.kind = 'fields_changed' AND e.payload->'changes' ? 'description'))
+                     AND e.seq < (SELECT min(u.seq) FROM issue_events u
+                                  WHERE u.issue_id = $1
+                                    AND (u.command_execution_id = $2 OR u.execution_id = $2)
+                                    AND u.kind = 'fields_changed'
+                                    AND u.payload->'changes' ? 'description')
+                   ORDER BY e.seq DESC LIMIT 1) p
+             WHERE o.issue_id = $1 AND o.field_key = 'description'",
+        )
+        .bind(issue)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     // What was reverted, and the transitive source snapshot.
     for (issue, field) in restored.iter().chain(&restored_triage) {
         sqlx::query(

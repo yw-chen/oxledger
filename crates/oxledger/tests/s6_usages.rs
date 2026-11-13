@@ -129,7 +129,7 @@ async fn s6_usages() {
     let ctx = w.new_context().await;
     delegate(&w, w.web).await;
     let d_auth = delegate(&w, w.auth_p).await;
-    let (token, _agent) = w.token(ctx).await;
+    let (token, agent) = w.token(ctx).await;
     let router = api::router(
         w.app.clone(),
         ApiConfig {
@@ -389,6 +389,22 @@ async fn s6_usages() {
         .await
         .unwrap();
     assert_eq!(one["candidates"][0]["id"], json!(bob_lin), "{one}");
+    // Gap G48 (design 06 §6.2): a user candidate carries its login.
+    assert_eq!(one["candidates"][0]["login"], "bob.lin", "{one}");
+    // An agent is never assignable, so never a candidate (and no login).
+    let agent_name: String = sqlx::query_scalar("SELECT name FROM principals WHERE id = $1")
+        .bind(agent.principal_id().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    for args in [
+        json!({"text": agent_name, "project": "AUTH", "purpose": "assignee"}),
+        json!({"text": agent_name, "kind": "principal"}),
+    ] {
+        let r = m.call("resolve", args.clone()).await.unwrap();
+        assert_eq!(r["candidates"], json!([]), "{args}: {r}");
+        assert!(!r.to_string().contains(&agent_name), "{args}: {r}");
+    }
     let none = m
         .call(
             "resolve",

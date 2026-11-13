@@ -199,6 +199,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/triage/counts", get(triage_counts))
         .route("/views", get(views_list).post(views_create))
         .route("/views/preview", post(views_preview))
+        .route("/markdown/preview", post(markdown_preview))
         .route(
             "/views/{id}",
             get(views_get).patch(views_update).delete(views_delete),
@@ -2101,6 +2102,16 @@ async fn views_preview(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(crate::views::preview(&st.app, ctx, &body).await?))
+}
+
+/// `POST /markdown/preview` (design 06 §3.1, R-RF6).
+async fn markdown_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::markdown::MarkdownPreviewInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::markdown::preview(&st.app, ctx, &body).await?))
 }
 
 async fn views_events(
