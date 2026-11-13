@@ -1670,6 +1670,9 @@ consumer `notify` 讀 outbox `topic = 'issue'`（只讀這個 topic），每批�
    | `author` | issue 作者（作者是 agent 時＝`created_on_behalf_of_id`） | `on_author` |
    | `triage_decided` | `triage_changed` 且 new ∈ {accepted, declined, duplicate} 時的 issue 作者（同上換算） | `on_triage_decided` |
    | `agent_on_behalf` | 事件的 actor 是 agent 時，它的委派者（「我的 agent 做了什麼」） | `on_my_agents` |
+   | `mentioned`（M2，06 §3.4） | 事件的 `issue_event_mentions` 列（人寫的 `@login`，只限該專案可指派的 active user；agent 寫的提及不記錄、不通知，R-MN4） | `on_mentioned`（預設 true） |
+
+   M2.0 已加 CHECK 值、偏好欄與提及列的寫入（0032）；派送與偏好 API 的 `on_mentioned` 在 M2.1。
 
    去掉：事件的 actor 本人（人；`on_self = false` 時）、`notification_project_mutes` 有該專案的人、停權或刪除的 user、agent principal（永遠不是收件人）。
 3. **逐收件人重驗**（每個候選人各自用自己的權限，和 02 §7.4 對外讀取 issue 歷史是同一個函式）：

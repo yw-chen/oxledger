@@ -271,6 +271,10 @@ pub struct IssueDetail {
     pub requested_key: Option<String>,
     pub subject: String,
     pub description: String,
+    /// `markdown`, or `plain` for a description written before M2 and not
+    /// rewritten since (design 06 R-M9). An editor that rewrites a plain
+    /// description sends `format: "markdown"` to convert it.
+    pub description_format: String,
     pub project: String,
     pub tracker: String,
     pub status: String,
@@ -2200,6 +2204,7 @@ struct DetailRow {
     is_private: bool,
     subject: String,
     description: String,
+    description_format: String,
     project: String,
     tracker: String,
     status: String,
@@ -2242,7 +2247,7 @@ pub(crate) async fn get_in(
     let row: Option<DetailRow> = sqlx::query_as(
         "SELECT i.id, ck.key AS current_key, i.project_id, i.tracker_id, i.status_id, i.author_id,
                 i.created_on_behalf_of_id,
-                i.assigned_to_id, i.is_private, i.subject, i.description,
+                i.assigned_to_id, i.is_private, i.subject, i.description, i.description_format,
                 p.name AS project, t.name AS tracker, s.name AS status, s.category AS status_category,
                 au.name AS author, a.name AS assignee, pk.key AS parent,
                 i.start_date, i.due_date, trim_scale(i.estimated_hours)::text AS estimated_hours,
@@ -2359,6 +2364,7 @@ pub(crate) async fn get_in(
             key: row.current_key,
             subject: row.subject,
             description: row.description,
+            description_format: row.description_format,
             project: row.project,
             tracker: row.tracker,
             status: row.status,

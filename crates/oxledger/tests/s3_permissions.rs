@@ -961,16 +961,19 @@ async fn s3_permissions() {
     )
     .await;
     assert_eq!(d.status, StatusCode::OK, "{}", d.body);
-    let context = d.body["data"]["context_id"].as_str().unwrap().to_string();
+    let principal = d.body["data"]["agent_principal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let t = call(
         &router,
         "POST",
-        &format!("/agent-contexts/{context}/credentials"),
+        &format!("/ai-team/{principal}/credentials"),
         Some(json!({"label": "s3"})),
         &br,
     )
     .await;
-    assert_eq!(t.status, StatusCode::OK, "{}", t.body);
+    assert_eq!(t.status, StatusCode::CREATED, "{}", t.body);
     let token = t.body["data"]["token"].as_str().unwrap();
     let agent = auth::authenticate_bearer(&pool, token)
         .await
@@ -1036,15 +1039,19 @@ async fn s3_permissions() {
     )
     .await;
     assert_eq!(d.status, StatusCode::OK, "{}", d.body);
-    let context = d.body["data"]["context_id"].as_str().unwrap().to_string();
+    let principal = d.body["data"]["agent_principal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let t = call(
         &router,
         "POST",
-        &format!("/agent-contexts/{context}/credentials"),
+        &format!("/ai-team/{principal}/credentials"),
         Some(json!({"label": "s3c"})),
         &bc,
     )
     .await;
+    assert_eq!(t.status, StatusCode::CREATED, "{}", t.body);
     let carols_agent = auth::authenticate_bearer(&pool, t.body["data"]["token"].as_str().unwrap())
         .await
         .unwrap()

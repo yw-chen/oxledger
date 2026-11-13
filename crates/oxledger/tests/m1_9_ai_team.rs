@@ -2988,39 +2988,14 @@ async fn p2_http_credentials_and_activity_query() {
     assert_eq!(d.status, StatusCode::NOT_FOUND);
     same("unrelated vs missing role", &d, &m);
 
+    // M2.0 (design 06 §3.1): the 02 alias /agent-contexts/{id}/credentials
+    // is gone; the context's owner gets the router's 404 like anyone else.
     let alias = format!("/agent-contexts/{ctx}/credentials");
-    let x = call(&r, "GET", &alias, None, &alice).await;
-    assert_eq!(x.status, StatusCode::OK, "{}", x.body);
-    let x = call(
-        &r,
-        "GET",
-        &format!("{alias}?agent_principal_id={aid}"),
-        None,
-        &alice,
-    )
-    .await;
-    assert_eq!(x.body["data"]["items"].as_array().unwrap().len(), 1);
-    let x = call(
-        &r,
-        "GET",
-        &format!("{alias}?agent_principal_id=nope"),
-        None,
-        &alice,
-    )
-    .await;
-    assert_eq!(x.status, StatusCode::BAD_REQUEST, "{}", x.body);
-    let missing = call(
-        &r,
-        "GET",
-        &format!("/agent-contexts/{}/credentials", Uuid::now_v7()),
-        None,
-        &dave,
-    )
-    .await;
-    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    let gone = call(&r, "GET", &alias, None, &alice).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.body);
     for who in [&root, &bob, &dave] {
         let x = call(&r, "GET", &alias, None, who).await;
-        same("someone else's context vs missing", &x, &missing);
+        same("removed alias, owner vs others", &x, &gone);
     }
 
     for base in [

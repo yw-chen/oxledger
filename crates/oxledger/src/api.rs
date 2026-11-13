@@ -318,14 +318,6 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             "/delegations/{id}/policies",
             get(delegation_policies).put(set_delegation_policies),
         )
-        .route("/agent-contexts", get(list_contexts).post(new_context))
-        .route("/agent-contexts/{id}/close", post(close_context))
-        .route("/agent-contexts/{id}/suspend", post(suspend_context))
-        .route("/agent-contexts/{id}/resume", post(resume_context))
-        .route(
-            "/agent-contexts/{id}/credentials",
-            get(list_context_credentials).post(issue_credential),
-        )
         .route("/agent-credentials/{id}/revoke", post(revoke_credential))
         .route("/ai-team", get(ai_team_list).post(ai_team_create))
         .route("/ai-team/templates", get(ai_team_templates))
@@ -345,6 +337,8 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(runtime_new_context),
         )
         .route("/me/agent-runtimes/{id}/retire", post(retire_runtime))
+        .route("/me/agent-runtimes/{id}/suspend", post(suspend_runtime))
+        .route("/me/agent-runtimes/{id}/resume", post(resume_runtime))
         .route("/ai/status", get(ai_status))
         .route("/ai/assistant", post(ai_assistant_setup))
         .route("/ai/assistant/extend", post(ai_assistant_extend))
@@ -2711,128 +2705,29 @@ async fn set_delegation_policies(
     .await?))
 }
 
-async fn suspend_context(
+// `/agent-contexts*` (02's compatibility aliases, 05 B-43) were removed in
+// M2.0 (design 06 §3.1): /me/agent-runtimes* and /ai-team* replace them.
+
+async fn suspend_runtime(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
     Path(id): Path<String>,
     ApiJson(_): ApiJson<Empty>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    agents::suspend_context(&st.app.pool, &ctx, id_param(&id)?).await?;
+    crate::ai_team::suspend_runtime(&st.app, ctx, id_param(&id)?).await?;
     Ok(ok(Done::default()))
 }
 
-async fn resume_context(
+async fn resume_runtime(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
     Path(id): Path<String>,
     ApiJson(_): ApiJson<Empty>,
 ) -> ApiResult {
     let ctx = human(&ra)?;
-    agents::resume_context(&st.app.pool, &st.cfg.session, &ctx, id_param(&id)?).await?;
+    crate::ai_team::resume_runtime(&st.app, &st.cfg.session, ctx, id_param(&id)?).await?;
     Ok(ok(Done::default()))
-}
-
-async fn list_contexts(
-    State(st): State<Arc<ApiState>>,
-    Extension(ra): Extension<RequestAuth>,
-) -> ApiResult {
-    let ctx = human(&ra)?;
-    Ok(ok(agents::list_contexts(&st.app.pool, &ctx).await?))
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct NewContextBody {
-    pub agent_client_id: Uuid,
-    pub fresh_context_ack: bool,
-}
-
-async fn new_context(
-    State(st): State<Arc<ApiState>>,
-    Extension(ra): Extension<RequestAuth>,
-    ApiJson(b): ApiJson<NewContextBody>,
-) -> ApiResult {
-    let ctx = human(&ra)?;
-    let id = agents::new_context(
-        &st.app.pool,
-        &st.cfg.session,
-        &ctx,
-        b.agent_client_id,
-        b.fresh_context_ack,
-    )
-    .await?;
-    Ok(ok(Created { id }))
-}
-
-async fn close_context(
-    State(st): State<Arc<ApiState>>,
-    Extension(ra): Extension<RequestAuth>,
-    Path(id): Path<String>,
-    ApiJson(_): ApiJson<Empty>,
-) -> ApiResult {
-    let ctx = human(&ra)?;
-    agents::close_context(&st.app.pool, &ctx, id_param(&id)?).await?;
-    Ok(ok(Done::default()))
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialBody {
-    #[serde(default)]
-    pub label: String,
-    pub expires_in_days: Option<i64>,
-    /// Design 05 §3.1 (compatibility alias): the role the token is for;
-    /// may be left out only when the runtime has one active role.
-    #[serde(default)]
-    pub agent_principal_id: Option<Uuid>,
-}
-
-async fn issue_credential(
-    State(st): State<Arc<ApiState>>,
-    Extension(ra): Extension<RequestAuth>,
-    Path(id): Path<String>,
-    ApiJson(b): ApiJson<CredentialBody>,
-) -> ApiResult {
-    let ctx = human(&ra)?;
-    let c = agents::issue_credential_for(
-        &st.app.pool,
-        &st.cfg.session,
-        &ctx,
-        id_param(&id)?,
-        b.agent_principal_id,
-        &b.label,
-        b.expires_in_days,
-    )
-    .await?;
-    Ok(ok(c))
-}
-
-/// G14: `?agent_principal_id=` narrows to one role of the context's runtime.
-async fn list_context_credentials(
-    State(st): State<Arc<ApiState>>,
-    Extension(ra): Extension<RequestAuth>,
-    Path(id): Path<String>,
-    Query(q): Query<HashMap<String, String>>,
-) -> ApiResult {
-    let ctx = human(&ra)?;
-    let principal = match q.get("agent_principal_id") {
-        None => None,
-        Some(p) => Some(p.parse::<Uuid>().map_err(|_| {
-            ApiError::new(
-                ErrorCode::InvalidArgument,
-                "agent_principal_id is a principal id",
-            )
-            .with_details(json!({"path": "agent_principal_id"}))
-        })?),
-    };
-    Ok(ok(agents::list_context_credentials(
-        &st.app.pool,
-        &ctx,
-        id_param(&id)?,
-        principal,
-    )
-    .await?))
 }
 
 // ---------------------------------------------------------------- AI team (design 05 §3.12)

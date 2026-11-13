@@ -40,9 +40,20 @@ pub const EDIT_OWN_TIME_ENTRIES: &str = "edit_own_time_entries";
 pub const LOG_TIME_FOR_OTHER_USERS: &str = "log_time_for_other_users";
 pub const TRIAGE_ISSUES: &str = "triage_issues";
 pub const MANAGE_PUBLIC_VIEWS: &str = "manage_public_views";
+/// Design 06 §2.2 (M2): wiki and CSV import. Not tracker-scoped. There is no
+/// export permission (A4 (a): who reads may export).
+pub const VIEW_WIKI_PAGES: &str = "view_wiki_pages";
+pub const VIEW_WIKI_EDITS: &str = "view_wiki_edits";
+pub const EDIT_WIKI_PAGES: &str = "edit_wiki_pages";
+pub const RENAME_WIKI_PAGES: &str = "rename_wiki_pages";
+pub const DELETE_WIKI_PAGES: &str = "delete_wiki_pages";
+pub const PROTECT_WIKI_PAGES: &str = "protect_wiki_pages";
+pub const MANAGE_WIKI: &str = "manage_wiki";
+pub const IMPORT_ISSUES: &str = "import_issues";
+pub const IMPORT_TIME_ENTRIES: &str = "import_time_entries";
 
 /// Every permission a role may hold; the `role_permissions_known` CHECK
-/// (migration 0019) lists the same names (a test compares them).
+/// (migrations 0019, 0032) lists the same names (a test compares them).
 pub const PERMISSIONS: &[&str] = &[
     VIEW_ISSUES,
     ADD_ISSUES,
@@ -63,6 +74,15 @@ pub const PERMISSIONS: &[&str] = &[
     LOG_TIME_FOR_OTHER_USERS,
     TRIAGE_ISSUES,
     MANAGE_PUBLIC_VIEWS,
+    VIEW_WIKI_PAGES,
+    VIEW_WIKI_EDITS,
+    EDIT_WIKI_PAGES,
+    RENAME_WIKI_PAGES,
+    DELETE_WIKI_PAGES,
+    PROTECT_WIKI_PAGES,
+    MANAGE_WIKI,
+    IMPORT_ISSUES,
+    IMPORT_TIME_ENTRIES,
 ];
 
 /// The only permissions a role may limit to some trackers (Redmine: the issue

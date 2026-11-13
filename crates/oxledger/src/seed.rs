@@ -102,6 +102,30 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         WHERE r.name = p.role ON CONFLICT DO NOTHING")
     .execute(&mut *tx)
     .await?;
+    // Design 06 §2.2 (M2): the rule migration 0032 applies to existing
+    // roles. Wiki readers: view_issues with visibility all/default (not
+    // Reporter's own, B-50); the managing permissions with manage_project.
+    q("INSERT INTO role_permissions (role_id, permission)
+        SELECT r.id, p.perm FROM roles r
+        CROSS JOIN (VALUES ('view_wiki_pages'), ('view_wiki_edits')) AS p(perm)
+        WHERE r.issues_visibility IN ('all', 'default')
+          AND EXISTS (SELECT 1 FROM role_permissions v WHERE v.role_id = r.id AND v.permission = 'view_issues')
+        ON CONFLICT DO NOTHING")
+    .execute(&mut *tx)
+    .await?;
+    q("INSERT INTO role_permissions (role_id, permission)
+        SELECT e.role_id, 'edit_wiki_pages' FROM role_permissions e WHERE e.permission = 'edit_issues'
+        ON CONFLICT DO NOTHING")
+    .execute(&mut *tx)
+    .await?;
+    q("INSERT INTO role_permissions (role_id, permission)
+        SELECT m.role_id, p.perm FROM role_permissions m
+        CROSS JOIN (VALUES ('rename_wiki_pages'), ('delete_wiki_pages'), ('protect_wiki_pages'),
+                           ('manage_wiki'), ('import_issues'), ('import_time_entries')) AS p(perm)
+        WHERE m.permission = 'manage_project'
+        ON CONFLICT DO NOTHING")
+    .execute(&mut *tx)
+    .await?;
     // Every role may move New → In Progress → Resolved; only Manager may close.
     q("INSERT INTO workflow_transitions (tracker_id, role_id, old_status_id, new_status_id)
         SELECT t.id, r.id, o.id, n.id FROM trackers t, roles r, issue_statuses o, issue_statuses n
