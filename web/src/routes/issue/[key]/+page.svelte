@@ -26,6 +26,9 @@
 	import type { FormDescription } from '$api/types';
 	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
 	import { RULE_KIND } from '$lib/formdesign';
+	import type { WatchInfo } from '$api/types';
+	import WatchButton from '$lib/components/WatchButton.svelte';
+	import { markIssueRead } from '$lib/notifs.svelte';
 
 	const key = $derived(decodeURIComponent(page.params.key ?? '').toUpperCase());
 	let issue = $state<SpaIssue | null>(null);
@@ -129,14 +132,25 @@
 	let describe = $state<FormDescription | null>(null);
 	/** The view does not carry `form_rule_marks` (gap G32): read the issue itself. */
 	let fetchedMarks = $state<string[]>([]);
+	/** §6.16: the caller's watch state, also only on `GET /issues/{key}`. */
+	let watch = $state<WatchInfo | null>(null);
+	let readFor = '';
 	function loadDescribe(v: SpaIssue) {
-		if (v.form_rule_marks) fetchedMarks = v.form_rule_marks;
-		else
-			api('GET /issues/{key}', { path: { key: v.key } })
-				.then((d) => {
-					if (issue?.key === v.key) fetchedMarks = d.form_rule_marks ?? [];
-				})
-				.catch(() => (fetchedMarks = []));
+		api('GET /issues/{key}', { path: { key: v.key } })
+			.then((d) => {
+				if (issue?.key !== v.key) return;
+				fetchedMarks = v.form_rule_marks ?? d.form_rule_marks ?? [];
+				watch = d.watch ?? null;
+			})
+			.catch(() => {
+				fetchedMarks = v.form_rule_marks ?? [];
+				watch = null;
+			});
+		// §3.11.3: opening the issue reads its notification.
+		if (readFor !== v.key) {
+			readFor = v.key;
+			markIssueRead(v.key);
+		}
 		api('GET /projects/{id}/trackers/{t}/form', { path: { id: v.project_id, t: v.tracker_id }, query: { op: 'update', issue: v.key } })
 			.then((d) => {
 				if (issue?.key === v.key) describe = d;
@@ -373,6 +387,8 @@
 			<span class="key" style="font-size:15px">{v.key}</span>
 			<h1 style="margin:0" data-testid="issue-subject">{v.subject}</h1>
 			{#if v.is_private}<span class="chip c-warn">私有</span>{/if}
+			<span style="flex:1"></span>
+			{#if watch}<WatchButton issueKey={v.key} {watch} />{/if}
 		</div>
 		<div class="propstrip" data-testid="props">
 			<div class="pc"><span class="k">狀態</span><span data-testid="status">{v.status}</span></div>

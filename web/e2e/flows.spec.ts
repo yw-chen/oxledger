@@ -27,6 +27,15 @@ async function login(page: Page, user: string, next = '/') {
 	// …and stays there (a reactive read of `next` once sent people on to "/").
 	await page.waitForTimeout(300);
 	expect(new URL(page.url()).pathname).toBe(next.split('?')[0]);
+	// §6.12 first sign-in asks for interface roles on the home page; carol's own test answers it.
+	if (user !== 'carol') await skipOnboarding(page);
+}
+async function skipOnboarding(page: Page) {
+	const ob = page.getByTestId('onboarding');
+	if (await ob.isVisible()) {
+		await ob.getByTestId('ob-skip').click();
+		await expect(ob).toHaveCount(0);
+	}
 }
 
 /** A REST call inside the page with the session's CSRF token. */
@@ -1025,4 +1034,248 @@ test('概念與別名：建立概念、標籤被占用時說明並可前往、�
 	await expect(admin.getByTestId('cc-probe-config')).not.toContainText('認證');
 	await admin.getByTestId('cc-probe-run').click();
 	await expect(admin.getByTestId('cc-probe-result')).toBeVisible();
+});
+
+// ---------------------------------------------------------------- F11: home, preferences, notifications, watch (contract 05 §6.12, §6.15–§6.17)
+
+test('首次登入選角色、首頁編輯儲存、偏好（主題、預覽、改角色、捷徑）', async ({ browser }) => {
+	const ctx = await browser.newContext();
+	contexts.push(ctx);
+	const page = await ctx.newPage();
+	await login(page, 'carol', '/');
+	const ob = page.getByTestId('onboarding');
+	await expect(ob).toContainText('你主要做什麼？');
+	await expect(ob.getByTestId('ob-submit')).toBeDisabled();
+	await ob.getByTestId('ob-role-engineer').check();
+	await ob.getByTestId('ob-submit').click();
+	await expect(ob).toHaveCount(0);
+	// The engineer template: 本週工時 and Agent 摘要; shortcuts 看板 and 指派給我.
+	const types = () => page.getByTestId('widget').evaluateAll((es) => es.map((e) => (e as HTMLElement).dataset.type));
+	await expect.poll(types).toEqual(['need_decision', 'view', 'my_time_week', 'agent_summary']);
+	await expect(page.getByTestId('nav-shortcut')).toHaveText([/看板$/, /指派給我$/]);
+	// The engineer default view opens a project on its board.
+	await page.goto('/project/AUTH');
+	await expect(page).toHaveTitle(/看板/);
+
+	// Edit: 需要你決定 has no remove button; add Triage 計數, widen, remove Agent 摘要, move.
+	await page.goto('/');
+	await page.getByTestId('edit-home').click();
+	const decide = page.locator('[data-testid=widget][data-type=need_decision]');
+	await expect(decide.getByTestId('w-remove')).toHaveCount(0);
+	await expect(decide.getByTestId('w-protected')).toHaveAttribute('title', '這個區塊不能移除');
+	await page.getByTestId('home-add-type').selectOption('triage_count');
+	await page.getByTestId('home-add').click();
+	await page.locator('[data-testid=widget][data-type=agent_summary]').getByTestId('w-remove').click();
+	await page.locator('[data-testid=widget][data-type=my_time_week]').getByTestId('w-width').selectOption('2');
+	await page.locator('[data-testid=widget][data-type=triage_count]').getByTestId('w-up').click();
+	await page.getByTestId('home-save').click();
+	await expect.poll(types).toEqual(['need_decision', 'view', 'triage_count', 'my_time_week']);
+	const saved = (await papi(page, 'GET', '/me/home')).json.data;
+	expect(saved.widgets.map((w: { type: string }) => w.type)).toEqual(['need_decision', 'view', 'triage_count', 'my_time_week']);
+	expect(saved.widgets.find((w: { type: string }) => w.type === 'my_time_week').width).toBe(2);
+	// Saved from another tab meanwhile: the latest version is loaded, not overwritten.
+	await page.getByTestId('edit-home').click();
+	await page.locator('[data-testid=widget][data-type=triage_count]').getByTestId('w-remove').click();
+	await papi(page, 'PUT', '/me/home', { lock_version: saved.lock_version, widgets: saved.widgets.map((w: { id: string; type: string; width: number; view_id?: string; limit?: number }) => ({ id: w.id, type: w.type, width: w.width, ...(w.type === 'view' ? { view_id: w.view_id, limit: w.limit } : {}) })).filter((w: { type: string }) => w.type !== 'my_time_week') });
+	await page.getByTestId('home-save').click();
+	await expect(page.locator('.toast', { hasText: '首頁在別處被修改過，已載入最新版本' })).toBeVisible();
+	await expect.poll(types).toEqual(['need_decision', 'view', 'triage_count']);
+
+	// Preferences: theme on the server and on the page; role preview; role change asks.
+	await page.goto('/me/preferences');
+	await page.getByTestId('pf-theme-high_contrast').check();
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'hc');
+	await expect.poll(async () => (await papi(page, 'GET', '/me/preferences')).json.data.theme).toBe('high_contrast');
+	await page.reload();
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'hc');
+	await page.getByTestId('pf-theme-dark').check();
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+	await page.getByTestId('pf-density-compact').check();
+	await expect(page.locator('html')).toHaveAttribute('data-density', 'compact');
+	await page.getByTestId('pf-density-comfortable').check();
+	await page.getByTestId('pf-preview-role').selectOption('pm');
+	await expect(page.getByTestId('pf-preview-banner')).toHaveText('預覽：PM的預設首頁（用你自己的權限顯示）');
+	await expect(page.getByTestId('pf-preview-widget')).toHaveCount(4);
+	await page.getByTestId('pf-role-pm').check();
+	await expect(page.getByTestId('pf-apply-ask')).toBeVisible();
+	await page.getByTestId('pf-keep').click();
+	expect((await papi(page, 'GET', '/me/preferences')).json.data.interface_roles).toEqual(['pm', 'engineer']);
+	expect((await papi(page, 'GET', '/me/home')).json.data.widgets.map((w: { type: string }) => w.type)).toEqual(['need_decision', 'view', 'triage_count']);
+	// Shortcuts: drop 看板, add 我的工時 first.
+	const sc = page.getByTestId('pf-shortcut');
+	await expect(sc).toHaveCount(2);
+	await sc.first().getByTestId('pf-shortcut-remove').click();
+	await page.getByTestId('pf-shortcut-kind').selectOption('timesheet');
+	await page.getByTestId('pf-shortcut-add').click();
+	await sc.last().getByLabel('上移').click();
+	await page.getByTestId('pf-shortcut-save').click();
+	await expect(page.getByTestId('nav-shortcut')).toHaveText([/我的工時$/, /指派給我$/]);
+	await expect(page.getByTestId('nav-shortcut').first()).toHaveAttribute('href', '/time');
+});
+
+const DISPATCH_MS = 60_000;
+test('通知：作者收到別人的留言與欄位變更，鈴鐺、通知中心、開單即已讀、全部標為已讀；偏好靜音專案', async ({ browser }) => {
+	// Dispatch waits for older transactions anywhere on the server (other test databases too).
+	test.setTimeout(300_000);
+	const ctx = await browser.newContext();
+	contexts.push(ctx);
+	const page = await ctx.newPage();
+	await login(page, 'carol', '/');
+	// carol wrote the seed issues, so earlier tests already notified her: start clean.
+	await papi(page, 'POST', '/notifications/read-all', { before: new Date(Date.now() + 1000).toISOString() });
+	await page.goto('/notifications');
+	await expect(page.getByTestId('nt-empty')).toHaveText(/沒有未讀通知。/);
+	await expect(page.getByTestId('bell-count')).toHaveCount(0);
+	await expect(page.getByTestId('bell')).toHaveAttribute('aria-label', '通知');
+
+	// carol wrote AUTH-4 (seed); admin comments and changes a field.
+	const admin = await adminPage(browser, '/search');
+	const lv = (await issueView(admin, 'AUTH-4')).lock_version;
+	const r = await papi(admin, 'POST', '/commands', {
+		command_schema_version: 1,
+		ops: [
+			{ kind: 'add_note', op_id: uuid(), target: ref('AUTH-4'), body: 'E2E：已在 Safari 17 重現' },
+			{ kind: 'update_fields', op_id: uuid(), target: ref('AUTH-4'), set: { estimated_hours: '2.5' } }
+		],
+		preconditions: [{ target: ref('AUTH-4'), lock_version: lv }]
+	});
+	expect(r.status, JSON.stringify(r.json)).toBe(200);
+
+	// The bell asks again when the tab gains focus (no push channel, B-26).
+	await expect
+		.poll(
+			async () => {
+				await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+				return (await page.getByTestId('bell-count').textContent({ timeout: 500 }).catch(() => null)) ?? '';
+			},
+			{ timeout: DISPATCH_MS }
+		)
+		.not.toBe('');
+	await expect(page.getByTestId('bell')).toHaveAttribute('aria-label', /^通知，\d+ 則未讀$/);
+	await page.getByTestId('bell').click();
+	const row = page.getByTestId('bell-row').filter({ hasText: 'AUTH-4' });
+	await expect(row).toHaveCount(1);
+	await expect(row).toContainText('你建立的');
+	await expect(row).toContainText(/Admin 把預估工時從 .+ 改成 2\.5/);
+	await expect(row).toContainText('還有 1 則更新');
+	await page.getByTestId('bell-all').click();
+	await page.waitForURL('**/notifications');
+	const nrow = page.getByTestId('nt-row').filter({ hasText: 'AUTH-4' });
+	await expect(nrow).toHaveCount(1);
+	await expect(nrow).toHaveClass(/unread/);
+	await expect(nrow).toContainText('你建立的');
+	// Marked read here, unread again, then opened: the issue page reads it.
+	await nrow.getByTestId('nt-toggle').click();
+	await expect(nrow).toHaveCount(0);
+	await page.getByTestId('nt-all').click();
+	// Earlier tests may have left older (read) AUTH-4 rows; this one is the newest.
+	const latest = nrow.first();
+	await expect(latest).toContainText('2.5');
+	await expect(latest).not.toHaveClass(/unread/);
+	// J moves the selection.
+	if ((await page.getByTestId('nt-row').count()) > 1) {
+		await page.keyboard.press('j');
+		await expect(page.getByTestId('nt-row').nth(1)).toHaveClass(/sel/);
+		await page.keyboard.press('k');
+		await expect(page.getByTestId('nt-row').nth(0)).toHaveClass(/sel/);
+	}
+	await latest.getByTestId('nt-toggle').click();
+	await expect(latest.getByTestId('nt-toggle')).toHaveText('標為已讀');
+	await page.getByTestId('nt-unread').click();
+	await expect(nrow).toHaveCount(1);
+	await nrow.locator('.nmain').click();
+	await page.waitForURL('**/issue/AUTH-4');
+	const unreadAuth4 = async () => ((await papi(page, 'GET', '/notifications?filter=unread')).json.data.items as { issue: { key: string } | null }[]).filter((n) => n.issue?.key === 'AUTH-4').length;
+	await expect.poll(unreadAuth4).toBe(0);
+
+	const note = async (body: string) => {
+		const lv = (await issueView(admin, 'AUTH-4')).lock_version;
+		const r = await papi(admin, 'POST', '/commands', { command_schema_version: 1, ops: [{ kind: 'add_note', op_id: uuid(), target: ref('AUTH-4'), body }], preconditions: [{ target: ref('AUTH-4'), lock_version: lv }] });
+		expect(r.status, JSON.stringify(r.json)).toBe(200);
+	};
+	// Opening the issue page itself reads its notification (§3.11.3).
+	await note('E2E：第二則');
+	await expect.poll(unreadAuth4, { timeout: DISPATCH_MS }).toBe(1);
+	await page.goto('/issue/AUTH-4');
+	await expect.poll(unreadAuth4).toBe(0);
+
+	// 全部標為已讀 marks only what the list showed: a later update stays unread.
+	await note('E2E：第三則');
+	await expect.poll(unreadAuth4, { timeout: DISPATCH_MS }).toBe(1);
+	await page.goto('/notifications');
+	const r3 = page.getByTestId('nt-row').filter({ hasText: 'AUTH-4' });
+	await expect(r3.getByTestId('nt-event')).toHaveText('Admin 留言：E2E：第三則');
+	const lastAt = async () => ((await papi(page, 'GET', '/notifications?filter=unread')).json.data.items as { issue: { key: string } | null; last_at: string }[]).find((n) => n.issue?.key === 'AUTH-4')?.last_at;
+	const shownAt = await lastAt();
+	await note('E2E：第四則');
+	await expect.poll(lastAt, { timeout: DISPATCH_MS }).not.toBe(shownAt);
+	// Filtered to one project the button would still mark every project: it is off.
+	await page.getByTestId('nt-project').selectOption('AUTH');
+	await expect(page.getByTestId('nt-read-all')).toBeDisabled();
+	await page.getByTestId('nt-project').selectOption('');
+	await expect(r3.getByTestId('nt-event')).toHaveText('Admin 留言：E2E：第四則');
+	// Reload happened with the filter change; take the list as now shown, then one more arrives.
+	const shownAt2 = await lastAt();
+	await note('E2E：第五則');
+	await expect.poll(lastAt, { timeout: DISPATCH_MS }).not.toBe(shownAt2);
+	await page.getByTestId('nt-read-all').click();
+	await expect(page.locator('.toast', { hasText: '已標為已讀' })).toBeVisible();
+	await expect(r3.getByTestId('nt-event')).toHaveText('Admin 留言：E2E：第五則');
+	expect(await unreadAuth4()).toBe(1);
+	await papi(page, 'POST', '/notifications/read-all', { before: new Date(Date.now() + 1000).toISOString() });
+
+	// Preferences: mute AUTH (saved; nothing comes from it), then undo.
+	await page.getByTestId('nt-prefs').click();
+	await page.waitForURL('**/me/notifications');
+	await expect(page.getByTestId('np-on_self')).not.toBeChecked();
+	await page.getByTestId('np-mute-AUTH').check();
+	await page.getByTestId('np-save').click();
+	await expect(page.locator('.toast', { hasText: '通知偏好已儲存' })).toBeVisible();
+	const authId = (await papi(page, 'GET', '/projects')).json.data.find((p: { key: string }) => p.key === 'AUTH').id;
+	expect((await papi(page, 'GET', '/me/notification-preferences')).json.data.muted_projects).toEqual([authId]);
+	// Saved elsewhere meanwhile: the latest settings come back.
+	const cur = (await papi(page, 'GET', '/me/notification-preferences')).json.data;
+	await papi(page, 'PUT', '/me/notification-preferences', { lock_version: cur.lock_version, muted_projects: [] });
+	await page.getByTestId('np-on_self').check();
+	await page.getByTestId('np-save').click();
+	await expect(page.locator('.toast', { hasText: '設定在別處被修改過，已載入最新版本' })).toBeVisible();
+	await expect(page.getByTestId('np-mute-AUTH')).not.toBeChecked();
+	await expect(page.getByTestId('np-on_self')).not.toBeChecked();
+});
+
+test('關注：議題頁關注與取消（人數、取消後不再自動關注），失敗時回原狀', async ({ browser }) => {
+	const page = await alice(browser, '/');
+	const key = await newIssue(page, 'E2E 關注');
+	// Auto-watch is written by the background dispatcher (B-26: within 10 s).
+	await expect.poll(async () => (await papi(page, 'GET', `/issues/${key}`)).json.data.watch?.watching, { timeout: DISPATCH_MS }).toBe(true);
+	await page.goto(`/issue/${key}`);
+	const w = page.getByTestId('watch');
+	// alice wrote it: watching automatically, and says why.
+	await expect(w).toContainText('關注中 ✓');
+	await expect(w).toHaveAttribute('title', '你是這張單的作者，所以自動關注');
+	await expect(page.getByTestId('watch-count')).toHaveText('1 人關注');
+	await w.hover();
+	await expect(w).toContainText('取消關注');
+	await w.click();
+	await page.mouse.move(0, 0);
+	await expect(w).toContainText('關注');
+	await expect(w).not.toContainText('關注中');
+	await expect(page.getByTestId('watch-count')).toHaveText('0 人關注');
+	await expect(w).toHaveAttribute('title', '你已取消關注，不會再自動關注這張單');
+	await expect(w).toBeEnabled();
+	expect((await papi(page, 'GET', `/issues/${key}`)).json.data.watch).toMatchObject({ watching: false, opted_out: true, watcher_count: 0 });
+	await page.reload();
+	await expect(page.getByTestId('watch')).toHaveAttribute('title', '你已取消關注，不會再自動關注這張單');
+	await page.getByTestId('watch').click();
+	await page.mouse.move(0, 0);
+	await expect(page.getByTestId('watch-count')).toHaveText('1 人關注');
+	await expect(page.getByTestId('watch')).toBeEnabled();
+	expect((await papi(page, 'GET', `/issues/${key}`)).json.data.watch).toMatchObject({ watching: true, opted_out: false });
+	// The server refuses: the button goes back and says so.
+	await page.route(`**/api/v1/issues/${key}/watch`, (r) => r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'temporarily_unavailable', message: 'x', retryable: true, next_actions: [] } }) }));
+	await page.getByTestId('watch').click();
+	await page.mouse.move(0, 0);
+	await expect(page.locator('.toast', { hasText: '取消關注失敗' })).toBeVisible();
+	await expect(page.getByTestId('watch')).toContainText('關注中');
+	await expect(page.getByTestId('watch-count')).toHaveText('1 人關注');
 });

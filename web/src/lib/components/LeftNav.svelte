@@ -5,6 +5,7 @@
 	import { prefs, savePrefs } from '$lib/prefs.svelte';
 	import { counts, awaitingLabel, attentionContexts, triageLabel } from '$lib/counts.svelte';
 	import { current } from '$lib/current.svelte';
+	import { me, shortcutHref, SHORTCUT_ICON, SHORTCUT_LABEL } from '$lib/me.svelte';
 
 	const path = $derived(page.url.pathname as string);
 	const search = $derived(page.url.search);
@@ -26,6 +27,13 @@
 		...(counts.triage.length ? [{ href: '/triage', ic: '⇥', label: '分流', on: path.startsWith('/triage'), badge: triageLabel(), testid: 'triage-badge' }] : []),
 		{ href: '/time', ic: '◷', label: '工時', on: path.startsWith('/time') }
 	]);
+	/** §6.12 左欄捷徑 (saved per person); board and timeline open the current project. */
+	const shortcuts = $derived(
+		(me.prefs?.nav_shortcuts ?? [])
+			.filter((s) => s.available)
+			.map((s) => ({ s, href: shortcutHref(s, projectKey ?? session.projects[0]?.key ?? null) }))
+			.filter((x): x is { s: typeof x.s; href: string } => !!x.href)
+	);
 </script>
 
 <nav class="lnav" class:mini aria-label="主要導覽">
@@ -37,6 +45,13 @@
 			{#if it.badge}<span class="badge" data-testid={it.testid ?? 'awaiting-badge'} title="{it.label} {it.badge}">{it.badge}</span>{/if}
 		</a>
 	{/each}
+	{#if shortcuts.length}
+		{#if mini}<div class="sep"></div>{:else}<div class="sec">捷徑</div>{/if}
+		{#each shortcuts as { s, href }, i (i)}
+			{@const label = s.kind === 'view' ? (s.name ?? '視圖') : (SHORTCUT_LABEL[s.kind] ?? s.kind)}
+			<a {href} class:on={path + search === href || path === href} title={label} data-testid="nav-shortcut"><span class="ic">{SHORTCUT_ICON[s.kind] ?? '★'}</span>{#if !mini}<span class="lb">{label}</span>{/if}</a>
+		{/each}
+	{/if}
 	{#if mini}<div class="sep"></div>{:else}<div class="sec">專案</div>{/if}
 	{#each session.projects as p (p.id)}
 		<a href="/project/{p.key}" class:on={projectKey === p.key} title="{p.key} {p.name}">

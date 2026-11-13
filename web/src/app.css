@@ -16,6 +16,20 @@
   --term:#0E1726;--hl:rgba(14,116,144,.20);--hlf:rgba(109,40,217,.14);
   --proto:#B45309;
 }
+/* 高對比 (contract 05 §6.12): black and white with strong accents and lines. */
+:root[data-theme="hc"]{
+  --bg:#000000;--bg2:#000000;--card:#0A0A0A;--card2:#1A1A1A;--line:#FFFFFF;--line2:#FFFFFF;
+  --fg:#FFFFFF;--muted:#F0F0F0;--dim:#D8D8D8;
+  --act:#5CE1FF;--prop:#E2D4FF;--ok:#7CFFB2;--warn:#FFE066;--bad:#FF8FA3;
+  --act-a:rgba(92,225,255,.22);--prop-a:rgba(226,212,255,.2);--ok-a:rgba(124,255,178,.2);--warn-a:rgba(255,224,102,.2);--bad-a:rgba(255,143,163,.2);
+  --term:#000000;--hl:rgba(92,225,255,.4);--hlf:rgba(226,212,255,.35);
+  --proto:#FFB020;
+}
+:root[data-theme="hc"] a{text-decoration:underline}
+/* 緊湊 density: tighter rows and cards. */
+:root[data-density="compact"] body{font-size:13px;line-height:1.45}
+:root[data-density="compact"] .t td,:root[data-density="compact"] .t th{padding-top:3px;padding-bottom:3px}
+:root[data-density="compact"] .card,:root[data-density="compact"] .widget{padding:7px 9px}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif;display:flex;flex-direction:column}

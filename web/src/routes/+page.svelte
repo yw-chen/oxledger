@@ -1,206 +1,203 @@
 <script lang="ts">
-	// Home (layout B, U22): widgets each person can add, remove, order and
-	// widen; "需要你決定" is always there (only movable).
-	import type { AgentSummary, SearchItem, VersionView } from '$api/types';
-	import { api } from '$lib/api';
-	import { counts, refreshCounts } from '$lib/counts.svelte';
-	import { prefs, savePrefs, WIDGET_TITLES, type Widget, type WidgetKind } from '$lib/prefs.svelte';
-	import { session, projectById } from '$lib/session.svelte';
-	import { parse, toParams } from '$lib/query';
-	import { HEALTH, HEALTH_REASON } from '$lib/health';
-	import IssueList from '$lib/components/IssueList.svelte';
+	// 首頁 (contract 05 §6.12): the widgets saved on the server (`/me/home`),
+	// a 3-column grid; 「編輯首頁」 reorders (drag or ↑↓), widens 1–3, removes
+	// and adds. 「需要你決定」 cannot be removed (U22).
+	import type { HomeView, ViewSummary, Widget } from '$api/types';
+	import { api, ApiError, newOperationId } from '$lib/api';
+	import { ADDABLE, homeProblem, MAX_WIDGETS, moveTo, newWidget, PROTECTED, toInput, WIDGET_LABEL, widgetTitle } from '$lib/home';
+	import { me } from '$lib/me.svelte';
+	import { session } from '$lib/session.svelte';
+	import { toast } from '$lib/toast.svelte';
+	import HomeWidget from '$lib/components/HomeWidget.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 
+	let home = $state<HomeView | null>(null);
+	let error = $state<unknown>(null);
 	let editing = $state(false);
-	let summary = $state<AgentSummary | null>(null);
-	let mine = $state<SearchItem[] | null>(null);
-	let recent = $state<SearchItem[] | null>(null);
-	let milestones = $state<{ project: string; v: VersionView }[] | null>(null);
-	let queries = $state<Record<string, { items?: SearchItem[]; error?: unknown }>>({});
-	let errors = $state<Record<string, unknown>>({});
-	let newQuery = $state({ title: '', query: '' });
+	let draft = $state<Widget[]>([]);
+	let saveError = $state<unknown>(null);
+	let busy = $state(false);
 
-	const kinds = $derived(new Set(prefs.widgets.map((w) => w.kind)));
-
-	async function load(kind: WidgetKind, w?: Widget) {
+	async function load() {
+		error = null;
 		try {
-			if (kind === 'agents') summary = await api('GET /home/agent-summary');
-			if (kind === 'mine') mine = (await api('POST /issues/search', { body: { assignee: 'me', status_category: 'open', limit: 10 } })).items;
-			if (kind === 'recent') recent = (await api('POST /issues/search', { body: { limit: 10 } })).items;
-			if (kind === 'milestones') {
-				const out: { project: string; v: VersionView }[] = [];
-				for (const p of session.projects.slice(0, 8)) {
-					const l = await api('GET /projects/{id}/versions', { path: { id: p.key }, query: { include: 'stats' } });
-					for (const v of l.versions) if (v.status !== 'closed') out.push({ project: p.key, v });
-				}
-				milestones = out;
-			}
-			if (kind === 'query' && w?.query) {
-				try {
-					const r = await api('POST /issues/search', { body: { ...toParams(parse(w.query)), limit: 10 } });
-					queries[w.id] = { items: r.items };
-				} catch (e) {
-					queries[w.id] = { error: e };
-				}
-			}
+			home = await api('GET /me/home');
 		} catch (e) {
-			errors[kind] = e;
+			error = e;
 		}
 	}
-
 	$effect(() => {
-		for (const w of prefs.widgets) if (w.kind !== 'decide') load(w.kind, w);
+		void me.homeRev;
+		load();
 	});
 
-	function move(i: number, d: number) {
-		const j = i + d;
-		if (j < 0 || j >= prefs.widgets.length) return;
-		const ws = [...prefs.widgets];
-		[ws[i], ws[j]] = [ws[j], ws[i]];
-		prefs.widgets = ws;
-		savePrefs();
+	function edit() {
+		draft = JSON.parse(JSON.stringify(home?.widgets ?? []));
+		saveError = null;
+		editing = true;
+		loadViews();
 	}
-	function remove(i: number) {
-		if (prefs.widgets[i].kind === 'decide') return;
-		prefs.widgets = prefs.widgets.filter((_, k) => k !== i);
-		savePrefs();
-	}
-	function widen(i: number) {
-		prefs.widgets[i].wide = !prefs.widgets[i].wide;
-		savePrefs();
-	}
-	function add(kind: WidgetKind) {
-		const w: Widget = { id: kind === 'query' ? `q${Date.now()}` : kind, kind, wide: false };
-		if (kind === 'query') {
-			w.title = newQuery.title.trim() || newQuery.query.trim();
-			w.query = newQuery.query.trim();
-			try {
-				parse(w.query);
-			} catch {
-				errors.query = new Error('查詢語法有誤');
-				return;
-			}
-			newQuery = { title: '', query: '' };
+	async function save() {
+		if (!home) return;
+		busy = true;
+		saveError = null;
+		try {
+			home = await api('PUT /me/home', { operationId: newOperationId(), body: { lock_version: home.lock_version, widgets: draft.map(toInput) } });
+			editing = false;
+			toast('首頁已儲存', 'ok');
+		} catch (e) {
+			if (e instanceof ApiError && e.code === 'conflict') {
+				await load();
+				editing = false;
+				toast('首頁在別處被修改過，已載入最新版本', 'w');
+			} else saveError = e;
+		} finally {
+			busy = false;
 		}
-		prefs.widgets = [...prefs.widgets, w];
-		savePrefs();
 	}
 
-	const failed = $derived(counts.awaiting.filter((c) => c.last_execution_status === 'failed'));
-	const paused = $derived(counts.contexts.filter((c) => c.state === 'active' && c.suspended_at));
-	const broken = $derived(counts.contexts.filter((c) => c.state === 'active' && c.changed_projects.length > 0));
-	const projName = (id: string) => projectById(id)?.key ?? '某個專案';
-	const SUSPEND: Record<string, string> = {
-		manual: '你手動暫停',
-		audience_blocked: '1 小時內多次被受眾規則擋下，已自動暫停',
-		issue_write_burst: '同一張單短時間內寫入太多次，已自動暫停',
-		version_write_burst: '里程碑短時間內寫入太多次，已自動暫停'
-	};
+	// ---- editing ----
+	let dragFrom = $state<number | null>(null);
+	let dragOver = $state<number | null>(null);
+	function drop(i: number) {
+		if (dragFrom !== null) draft = moveTo(draft, dragFrom, i);
+		dragFrom = dragOver = null;
+	}
+	const remove = (i: number) => (draft = draft.filter((_, k) => k !== i));
+
+	let adding = $state('');
+	let addView = $state('');
+	let addProject = $state('');
+	let views = $state<ViewSummary[]>([]);
+	async function loadViews() {
+		try {
+			views = (await api('GET /views', { query: { limit: 100 } })).items;
+		} catch {
+			views = [];
+		}
+	}
+	function add() {
+		if (!adding) return;
+		const extra: Partial<Widget> = {};
+		if (adding === 'view') {
+			const v = views.find((x) => x.id === addView);
+			if (!v) return;
+			Object.assign(extra, { view_id: v.id, view_name: v.name, view_kind: v.kind });
+		}
+		if (adding === 'milestones' && addProject) {
+			const p = session.projects.find((x) => x.id === addProject);
+			Object.assign(extra, { project_id: addProject, project_key: p?.key, project_name: p?.name });
+		}
+		draft = [...draft, newWidget(adding, extra)];
+		adding = addView = addProject = '';
+	}
+	const problem = $derived(editing ? homeProblem(draft) : '');
+	const shown = $derived(editing ? draft : (home?.widgets ?? []));
 </script>
 
 <svelte:head><title>首頁・oxledger</title></svelte:head>
-<div class="page">
+<div class="page wide">
 	<div class="row" style="margin-bottom:12px">
 		<h1>{session.user?.name}，你好</h1>
 		<span class="sp" style="flex:1"></span>
-		<button class="btn sm" class:on={editing} onclick={() => (editing = !editing)} data-testid="edit-home">{editing ? '完成' : '自訂首頁'}</button>
+		{#if editing}
+			<button class="btn sm" onclick={() => (editing = false)} disabled={busy} data-testid="home-cancel">取消</button>
+			<button class="btn sm pri" onclick={save} disabled={busy || !!problem} data-testid="home-save">儲存</button>
+		{:else}
+			<button class="btn sm" onclick={edit} disabled={!home} data-testid="edit-home">編輯首頁</button>
+		{/if}
 	</div>
+	<ErrorBox {error} onaction={load} />
 	{#if editing}
 		<div class="card" data-testid="home-editor">
-			<div class="k">新增小工具</div>
-			<div class="row" style="margin:6px 0">
-				{#each Object.entries(WIDGET_TITLES) as [k, t] (k)}
-					{#if k !== 'decide' && k !== 'query' && !kinds.has(k as WidgetKind)}
-						<button class="btn sm" onclick={() => add(k as WidgetKind)}>＋ {t}</button>
-					{/if}
-				{/each}
+			<div class="row" style="gap:6px;flex-wrap:wrap">
+				<b>＋ 小工具</b>
+				<select bind:value={adding} disabled={draft.length >= MAX_WIDGETS} aria-label="小工具類型" data-testid="home-add-type">
+					<option value="">選類型…</option>
+					{#each ADDABLE as t (t)}<option value={t}>{WIDGET_LABEL[t]}</option>{/each}
+				</select>
+				{#if adding === 'view'}
+					<select bind:value={addView} aria-label="視圖" data-testid="home-add-view">
+						<option value="">選視圖…</option>
+						{#each views as v (v.id)}<option value={v.id}>{v.name}{v.project ? `（${v.project.key}）` : ''}</option>{/each}
+					</select>
+				{:else if adding === 'milestones'}
+					<select bind:value={addProject} aria-label="專案" data-testid="home-add-project">
+						<option value="">所有專案</option>
+						{#each session.projects as p (p.id)}<option value={p.id}>{p.key} {p.name}</option>{/each}
+					</select>
+				{/if}
+				<button class="btn sm" onclick={add} disabled={!adding || (adding === 'view' && !addView) || draft.length >= MAX_WIDGETS} data-testid="home-add">加入</button>
+				<span class="hint">{draft.length}／{MAX_WIDGETS}・拖拉或用 ↑↓ 排序</span>
 			</div>
-			<div class="inline-form">
-				<input type="text" placeholder="名稱（例如：AUTH 處理中）" bind:value={newQuery.title} style="max-width:200px" />
-				<input type="text" placeholder="project:AUTH status:open 登入" bind:value={newQuery.query} style="max-width:320px" />
-				<button class="btn sm" disabled={!newQuery.query.trim()} onclick={() => add('query')}>＋ 存起來的篩選</button>
-			</div>
-			<ErrorBox error={errors.query} />
-			<p class="hint">「需要你決定」不能移除，只能移動。設定存在這個瀏覽器（伺服器還沒有個人設定的端點）。</p>
+			{#if problem}<div class="banner w" data-testid="home-problem">{problem}</div>{/if}
+			<ErrorBox error={saveError} />
 		</div>
 	{/if}
-	<div class="wgrid">
-		{#each prefs.widgets as w, i (w.id)}
-			<section class="widget" class:wide={w.wide} class:editing data-testid="widget-{w.kind}">
-				<div class="wh">
-					<b>{w.title ?? WIDGET_TITLES[w.kind]}</b>
-					<span style="flex:1"></span>
+	{#if home}
+		<div class="hgrid" data-testid="home-grid">
+			{#each shown as w, i (w.id)}
+				<section
+					class="widget"
+					class:editing
+					class:over={editing && dragOver === i && dragFrom !== i}
+					style="grid-column: span {Math.min(3, Math.max(1, w.width))}"
+					draggable={editing}
+					ondragstart={() => (dragFrom = i)}
+					ondragover={(e) => {
+						if (!editing) return;
+						e.preventDefault();
+						dragOver = i;
+					}}
+					ondragend={() => (dragFrom = dragOver = null)}
+					ondrop={(e) => {
+						e.preventDefault();
+						drop(i);
+					}}
+					aria-label={widgetTitle(w)}
+					data-testid="widget"
+					data-type={w.type}
+				>
+					<div class="wh">
+						<b>{widgetTitle(w)}</b>
+						<span style="flex:1"></span>
+						{#if editing}
+							<button class="btn sm" title="往前" aria-label="往前" onclick={() => (draft = moveTo(draft, i, i - 1))} disabled={i === 0} data-testid="w-up">↑</button>
+							<button class="btn sm" title="往後" aria-label="往後" onclick={() => (draft = moveTo(draft, i, i + 1))} disabled={i === draft.length - 1} data-testid="w-down">↓</button>
+							<select bind:value={draft[i].width} aria-label="寬度" data-testid="w-width">
+								<option value={1}>1 欄</option><option value={2}>2 欄</option><option value={3}>3 欄</option>
+							</select>
+							{#if w.type === 'view'}
+								<input type="number" min="3" max="20" bind:value={draft[i].limit} aria-label="列數" title="列幾筆（3–20）" style="width:56px" data-testid="w-limit" />
+							{/if}
+							{#if w.type === PROTECTED}
+								<span class="hint" title="這個區塊不能移除" data-testid="w-protected">🔒</span>
+							{:else}
+								<button class="btn sm bad" onclick={() => remove(i)} data-testid="w-remove">移除</button>
+							{/if}
+						{/if}
+					</div>
 					{#if editing}
-						<button class="btn sm" title="往前" onclick={() => move(i, -1)} disabled={i === 0}>↑</button>
-						<button class="btn sm" title="往後" onclick={() => move(i, 1)} disabled={i === prefs.widgets.length - 1}>↓</button>
-						<button class="btn sm" onclick={() => widen(i)}>{w.wide ? '變窄' : '變寬'}</button>
-						{#if w.kind !== 'decide'}<button class="btn sm bad" onclick={() => remove(i)} data-testid="remove-{w.kind}">移除</button>{/if}
+						<div class="hint">{WIDGET_LABEL[w.type] ?? w.type}{w.type === 'view' ? `・${w.limit ?? 8} 筆` : ''}</div>
+					{:else}
+						<HomeWidget {w} />
 					{/if}
-				</div>
-				{#if w.kind === 'decide'}
-					{@const n = counts.awaiting.length}
-					{#each paused as c (c.id)}
-						<div class="banner w"><span class="agname">{c.agent_label}</span> 寫入已暫停：{SUSPEND[c.suspension_reason ?? ''] ?? c.suspension_reason}<span class="sp"></span><a class="btn sm" href="/agents">處理</a></div>
-					{/each}
-					{#each broken as c (c.id)}
-						<div class="banner b"><span class="agname">{c.agent_label}</span> 的工作脈絡因 {c.changed_projects.map(projName).join('、')} 的權限設定變更而停用<span class="sp"></span><a class="btn sm" href="/agents">建立新工作脈絡</a></div>
-					{/each}
-					{#each failed as c (c.changeset_id)}
-						<div class="banner b">提案「{c.title ?? c.targets.map((t) => t.key).join('、')}」已核准但套用失敗<span class="sp"></span><a class="btn sm" href="/cs/{c.changeset_id}">查看</a></div>
-					{/each}
-					{#if n}
-						<div class="row"><span class="badge">{counts.awaitingMore ? `${n}+` : n}</span> 份提案等你審<span style="flex:1"></span><a class="btn sm pri" href="/review">開啟待審</a></div>
-						<ul style="margin:6px 0 0;padding-left:18px;font-size:13px">
-							{#each counts.awaiting.slice(0, 10) as c (c.changeset_id)}
-								<li><a href="/cs/{c.changeset_id}">{c.title ?? '提案'}</a> <span class="dim">{c.targets.map((t) => t.key).join('、')}</span></li>
-							{/each}
-						</ul>
-					{:else if !paused.length && !broken.length && !failed.length}
-						<div class="empty">目前沒有要你決定的事。</div>
-					{/if}
-					<button class="btn sm ghost" onclick={() => refreshCounts()}>重新整理</button>
-				{:else if w.kind === 'agents'}
-					<ErrorBox error={errors.agents} />
-					{#if summary}
-						{#each summary.today as t (t.agent_principal_id)}
-							<div class="row"><span class="agname">{t.label}</span><span class="agent-label">agent</span> 今天改了 <b>{t.issues_changed}</b> 張<span style="flex:1"></span><a class="btn sm" href="/agents/{t.agent_principal_id}/activity">活動</a></div>
-						{:else}
-							<div class="empty">今天沒有 agent 寫入你看得到的單。</div>
-						{/each}
-					{/if}
-				{:else if w.kind === 'mine'}
-					<ErrorBox error={errors.mine} />
-					{#if mine}<IssueList items={mine} compact />{/if}
-				{:else if w.kind === 'recent'}
-					<ErrorBox error={errors.recent} />
-					{#if recent}<IssueList items={recent} compact />{/if}
-				{:else if w.kind === 'milestones'}
-					<ErrorBox error={errors.milestones} />
-					{#if milestones}
-						{#each milestones as m (m.v.id)}
-							{@const h = HEALTH[m.v.health ?? ''] ?? { label: m.v.health, cls: 'c-dim' }}
-							<div class="msw">
-								<div class="row" style="gap:6px">
-									<a href="/project/{m.project}/milestones"><span class="mono">{m.project}</span> {m.v.name}</a>
-									<span class="chip {h.cls}" title={(m.v.health_reasons ?? []).map((r) => HEALTH_REASON[r] ?? r).join('；')}>{h.label}</span>
-									<span class="dim mono" style="font-size:12px">{m.v.effective_date ?? '未定'}</span>
-								</div>
-								{#if m.v.stats && m.v.stats.total}
-									<div class="prog"><i style="width:{Math.round((m.v.stats.closed / m.v.stats.total) * 100)}%"></i></div>
-									<div class="hint">完成 {m.v.stats.closed}／{m.v.stats.total}{m.v.stats.overdue ? `・逾期 ${m.v.stats.overdue}` : ''}</div>
-								{/if}
-							</div>
-						{:else}
-							<div class="empty">沒有進行中的里程碑。</div>
-						{/each}
-					{/if}
-				{:else if w.kind === 'query'}
-					<div class="hint mono">{w.query}</div>
-					<ErrorBox error={queries[w.id]?.error} />
-					{#if queries[w.id]?.items}<IssueList items={queries[w.id].items!} compact />{/if}
-					<a class="hint" href="/search?q={encodeURIComponent(w.query ?? '')}">全部結果 →</a>
-				{/if}
-			</section>
-		{/each}
-	</div>
+				</section>
+			{/each}
+		</div>
+	{:else if !error}
+		<div class="sync"><span class="spin"></span>載入中</div>
+	{/if}
 </div>
+
+<style>
+	.hgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+	@media (max-width: 1024px) { .hgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+	@media (max-width: 700px) { .hgrid { grid-template-columns: minmax(0, 1fr); } .hgrid > :global(*) { grid-column: auto !important; } }
+	.widget.editing { cursor: grab; }
+	.wh b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+	.widget select, .widget input, .card select { width: auto; }
+	.widget input[type=number] { background: var(--bg2); border: 1px solid var(--line2); border-radius: 7px; padding: 4px 6px; }
+	.widget .wh { flex-wrap: wrap; }
+	.widget.over { outline: 2px dashed var(--act); }
+</style>

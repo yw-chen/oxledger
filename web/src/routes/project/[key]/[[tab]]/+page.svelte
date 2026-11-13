@@ -5,6 +5,8 @@
 	import type { TabSettings } from '$api/types';
 	import { api } from '$lib/api';
 	import { projectByKey } from '$lib/session.svelte';
+	import { me } from '$lib/me.svelte';
+	import { myDefaults, personalTab } from '$lib/home';
 	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
 	import Timeline from '$lib/components/Timeline.svelte';
 	import Milestones from '$lib/components/Milestones.svelte';
@@ -26,7 +28,10 @@
 			.then((t) => (tabs = t))
 			.catch((e) => (error = e));
 	});
-	const tabId = $derived(page.params.tab ?? tabs?.default_tab ?? null);
+	// The generic `*` (no interface role chosen) would hide the project's own default tab; only role templates and per-project choices count.
+	const mine = $derived(myDefaults(me.prefs));
+	// §3.8 default_views: the person's own default for this project (or for all) wins over the project's.
+	const tabId = $derived(page.params.tab ?? (tabs ? personalTab(mine, project?.id ?? '', tabs.tabs) : null) ?? tabs?.default_tab ?? null);
 	const tab = $derived(tabs?.tabs.find((t) => t.id === tabId) ?? null);
 	// §6.4 / §6.8: the Triage inbox and the time report open at their own
 	// path even when no tab shows them.

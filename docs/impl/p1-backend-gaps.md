@@ -39,3 +39,5 @@
 | G33 | 未修 | 換型別預檢（`POST …/conversions`）就建立新欄位，且沒有取消預檢的端點；重新預檢會再建一個欄位 | 精靈提示「先不轉換就到新欄位頁刪除」 | 預檢不建欄位，或提供 `DELETE /admin/conversions/{id}` 連同新欄位一起移除 |
 | G34 | 未修 | `POST /commands/validate` 遇到文件層的錯（例如建單缺 subject）回頂層 422，而不是放在 `items`（§3.6.4 說錯誤碼放 items，只有權限與可見性類照一般錯誤回） | 試填把 4xx 驗證類錯誤當成該按鈕的「會被擋下」 | 驗證類錯誤一律放進 items，outcome=invalid |
 | G35 | 未修（偶發） | E2E 偶發：建清單自訂欄位時 `CREATE INDEX CONCURRENTLY cannot run inside a transaction block`，之後通知派送、索引同步都回 `current transaction is aborted`。看起來是連線池裡有一條連線帶著未結束（且已失敗）的交易被還回，`run_ddl` 與背景工作拿到它（F10 整套 E2E 跑 3 次出現 1 次，在自訂欄位那條） | 無；重跑會過 | 找出把交易留在連線上的路徑（或在 `run_ddl` 前用專用連線、`after_release` 檢查 transaction status 並丟棄） |
+| G36 | 未修 | `POST /notifications/read-all` 只收 `before`，不能限定專案；通知中心依專案篩選時無法「只把這個專案的標為已讀」 | 篩選專案時停用「全部標為已讀」 | read-all 接受 `project` |
+| G37 | 未修 | 沒有「依議題查我的未讀通知」的端點；議題頁開啟時要標已讀，只能讀未讀清單第一頁（50 則）去找 | 讀第一頁 50 則比對 issue key | `POST /notifications/read-issue {key}` 或 `GET /notifications?issue=` |
