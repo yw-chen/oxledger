@@ -470,10 +470,6 @@ export type CreateRoleInput = {
   token_label?: string | null;
 };
 
-export type Created = {
-  id: string;
-};
-
 export type CreatedRole = {
   credential_id: string;
   delegations: Array<DelegationView>;
@@ -491,13 +487,6 @@ export type Creation = {
   enters_triage: boolean;
   initial_status_id: string | null;
   is_private: PrivateChoice;
-};
-
-export type CredentialBody = {
-  /** Design 05 §3.1 (compatibility alias): the role the token is for; may be left out only when the runtime has one active role. */
-  agent_principal_id?: string | null;
-  expires_in_days?: number | null;
-  label?: string;
 };
 
 export type CredentialInput = {
@@ -1169,6 +1158,8 @@ export type IssueDetail = {
   /** Custom fields that apply to this issue (tracker and project) and that the caller may read, in display order; `value` is null when empty. */
   custom_fields: Array<CustomFieldValue>;
   description: string;
+  /** `markdown`, or `plain` for a description written before M2 and not rewritten since (design 06 R-M9). An editor that rewrites a plain description sends `format: "markdown"` to convert it. */
+  description_format: string;
   due_date: string | null;
   /** Decimal string such as "1.5" (design 05 §3.10.3); null when not set. */
   estimated_hours: string | null;
@@ -1396,11 +1387,6 @@ export type NewConcept = {
   pref_label: string;
 };
 
-export type NewContextBody = {
-  agent_client_id: string;
-  fresh_context_ack: boolean;
-};
-
 export type NewConversation = {
   /** Up to 120 characters, typed by the user (never made up by the model). */
   title?: string | null;
@@ -1512,6 +1498,8 @@ export type NoteActions = {
 export type NoteView = {
   author: string;
   body: string;
+  /** `markdown`, or `plain` for notes written before M2 (design 06 R-M9). */
+  body_format: string;
   /** Cites the whole note (source kind issue_note). */
   citation_id?: string | null;
   created_at: string;
@@ -1618,11 +1606,15 @@ export type OpInput = {
   bind?: string | null;
   /** `subject` (required), `description`, `is_private`, `assigned_to_id`, `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`. */
   fields: Record<string, unknown>;
+  /** Design 06 R-M9: the description's format; omitted = `markdown`. Agents may write only `markdown`. */
+  format?: TextFormat | null;
   kind: "create_issue";
   op_id: string;
   project_id: string;
   tracker_id: string;
 } | {
+  /** Design 06 R-M9: the description's format, only with `description` in `set`; omitted = the current format is kept. Agents may write only `markdown`, and must say so when the current description is `plain`. */
+  format?: TextFormat | null;
   kind: "update_fields";
   op_id: string;
   /** Field key → new value; `null` clears. */
@@ -1635,6 +1627,8 @@ export type OpInput = {
   to_status_id: string;
 } | {
   body: string;
+  /** Design 06 R-M9: omitted = `markdown`; agents may write only `markdown`. A note's format never changes (notes are not edited). */
+  format?: TextFormat | null;
   is_private?: boolean;
   kind: "add_note";
   op_id: string;
@@ -2354,6 +2348,8 @@ export type RuntimeRole = {
 export type RuntimeView = {
   /** Created by the 0029 upgrade from a 02 agent. */
   backfilled: boolean;
+  /** Source projects of the active context whose `security_epoch` changed since they were read (the context is quarantined; start a new one). What `ContextView.changed_projects` gave before `/agent-contexts` was removed (M2.0); empty without an active context. */
+  changed_projects: Array<string>;
   /** The active work context, if any. */
   context_id: string | null;
   created_at: string;
@@ -2366,6 +2362,9 @@ export type RuntimeView = {
   roles: Array<RuntimeRole>;
   /** Keys of R in the active context. */
   sources: Array<string>;
+  /** Writes of the active context are paused (02 §16.6): by the sponsor (`manual`) or by the incident breaker (`audience_blocked`, …). Lift with `POST /me/agent-runtimes/{id}/resume`. */
+  suspended_at: string | null;
+  suspension_reason: string | null;
   time_readers: Array<string>;
 };
 
@@ -2644,6 +2643,8 @@ export type SpaIssue = {
   created_at?: string | null;
   custom_fields?: Array<CustomFieldValue> | null;
   description?: string | null;
+  /** With `description`: `markdown`, or `plain` for a description written before M2 and not rewritten since (design 06 R-M9). */
+  description_format?: string | null;
   /** `include: ["dev"]`: pull requests that name this issue (§19.7), a read-only projection that may lag GitHub by minutes (`synced_at`). */
   dev?: IssueDev | null;
   due_date?: string | null;
@@ -2907,6 +2908,9 @@ export type TestResult = {
   status?: number | null;
   supports_tools: boolean;
 };
+
+/** The format of a description or note (design 06 R-M9, K2): `markdown` (CommonMark with GFM, the default for new text) or `plain` (text written before M2, shown as it is). */
+export type TextFormat = "plain" | "markdown";
 
 /** The thresholds in use (org default or the project override); a null value turns `deadline_near_incomplete` off. */
 export type Thresholds = {
@@ -3836,13 +3840,6 @@ export interface Endpoints {
   "PUT /admin/github": { body: AdminGithubPut; data: AdminGithub };
   "PUT /admin/time-activities": { body: ActivitiesPut; data: Array<Activity> };
   "GET /agent-clients": { body: never; data: Array<AgentClientView> };
-  "GET /agent-contexts": { body: never; data: Array<ContextView> };
-  "POST /agent-contexts": { body: NewContextBody; data: Created };
-  "POST /agent-contexts/{id}/close": { body: Empty; data: Done };
-  "GET /agent-contexts/{id}/credentials": { body: never; data: CredentialList };
-  "POST /agent-contexts/{id}/credentials": { body: CredentialBody; data: IssuedCredential };
-  "POST /agent-contexts/{id}/resume": { body: Empty; data: Done };
-  "POST /agent-contexts/{id}/suspend": { body: Empty; data: Done };
   "POST /agent-credentials/{id}/revoke": { body: Empty; data: Done };
   "GET /agents/{id}/activity": { body: never; data: Activity2 };
   "POST /agents/{id}/incident-recovery/preview": { body: IncidentInput; data: IncidentPreview };
@@ -3917,7 +3914,9 @@ export interface Endpoints {
   "GET /me/agent-runtimes": { body: never; data: Array<RuntimeView> };
   "PATCH /me/agent-runtimes/{id}": { body: RenameRuntimeInput; data: RuntimeView };
   "POST /me/agent-runtimes/{id}/new-context": { body: RuntimeNewContextInput; data: ContextView };
+  "POST /me/agent-runtimes/{id}/resume": { body: Empty; data: Done };
   "POST /me/agent-runtimes/{id}/retire": { body: Empty; data: Done };
+  "POST /me/agent-runtimes/{id}/suspend": { body: Empty; data: Done };
   "GET /me/home": { body: never; data: HomeView };
   "PUT /me/home": { body: HomePut; data: HomeView };
   "POST /me/home/apply-template": { body: ApplyTemplate; data: Applied };

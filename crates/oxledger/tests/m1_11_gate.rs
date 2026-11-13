@@ -1941,14 +1941,6 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
     .unwrap();
     let entry = logged.time_entries[0].id;
     let exec_id = logged.execution_id;
-    let ctx_id = id(
-        &pool,
-        &format!(
-            "SELECT context_id FROM delegations WHERE id = '{}'",
-            r.delegations[0].id
-        ),
-    )
-    .await;
     // A proposal of alice's (an agent of hers with review on WEB).
     let cr = new_client(w, "client-review").await;
     let rv = create_role(w, &role(new_rt("review-rt"), cr, "rv", &[w.web], Review)).await;
@@ -2357,31 +2349,19 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
             json!({}),
             nf,
         ),
+        // M2.0: the context pause moved from /agent-contexts/{id} (removed)
+        // to the runtime.
         (
             "POST",
-            format!("/agent-contexts/{ctx_id}/credentials"),
-            format!("/agent-contexts/{missing_uuid}/credentials"),
-            json!({"agent_principal_id": r.principal.id}),
-            nf,
-        ),
-        (
-            "POST",
-            format!("/agent-contexts/{ctx_id}/close"),
-            format!("/agent-contexts/{missing_uuid}/close"),
+            format!("/me/agent-runtimes/{}/suspend", r.runtime.id),
+            format!("/me/agent-runtimes/{missing_uuid}/suspend"),
             json!({}),
             nf,
         ),
         (
             "POST",
-            format!("/agent-contexts/{ctx_id}/suspend"),
-            format!("/agent-contexts/{missing_uuid}/suspend"),
-            json!({}),
-            nf,
-        ),
-        (
-            "POST",
-            format!("/agent-contexts/{ctx_id}/resume"),
-            format!("/agent-contexts/{missing_uuid}/resume"),
+            format!("/me/agent-runtimes/{}/resume", r.runtime.id),
+            format!("/me/agent-runtimes/{missing_uuid}/resume"),
             json!({}),
             nf,
         ),
@@ -2574,7 +2554,6 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         "POST /projects/{id}/dev/revoke",
         "POST /projects/{id}/dev/prs/{pr_id}/hide",
         "DELETE /projects/{id}/dev/prs/{pr_id}/hide",
-        "POST /agent-contexts",
         "POST /agent-credentials/{id}/revoke",
         "POST /agents/{id}/incident-recovery/preview",
     ];

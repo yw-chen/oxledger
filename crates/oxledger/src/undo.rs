@@ -525,6 +525,9 @@ async fn build_preview(
     let mut choices = Vec::new();
     let mut triage = Vec::new();
     for (issue, field, before, after) in changes {
+        if field == commands::DESCRIPTION_FORMAT_KEY {
+            continue; // restored with the description (design 06 R-M9)
+        }
         let Some(key) = keys.get(&issue).cloned() else {
             continue; // not readable now: not even listed
         };
@@ -1080,11 +1083,37 @@ pub async fn apply(
             .insert(f.field.clone(), f.before.clone());
         restored.push((f.issue_id, f.field.clone()));
     }
+    // Design 06 R-M9: a description goes back with the format it had.
+    let formats: BTreeMap<Uuid, Json> = sqlx::query_as::<_, (Uuid, Option<Json>)>(
+        "SELECT issue_id, before_value FROM execution_field_changes
+         WHERE execution_id = $1 AND field_key = $2",
+    )
+    .bind(id)
+    .bind(commands::DESCRIPTION_FORMAT_KEY)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    // A redacted copy holds the D12 marker instead: not a format.
+    .filter_map(|(i, b)| {
+        b.filter(|b| {
+            b.as_str()
+                .is_some_and(|s| commands::TEXT_FORMATS.contains(&s))
+        })
+        .map(|b| (i, b))
+    })
+    .collect();
     let mut ops: Vec<Json> = sets
         .iter()
         .map(|(i, set)| {
-            json!({"op_id": Uuid::now_v7(), "kind": "update_fields",
-                   "target": {"type": "issue", "id": i}, "set": set})
+            let mut op = json!({"op_id": Uuid::now_v7(), "kind": "update_fields",
+                                "target": {"type": "issue", "id": i}, "set": set});
+            if set.contains_key("description")
+                && let Some(f) = formats.get(i)
+            {
+                op["format"] = f.clone();
+                restored.push((*i, commands::DESCRIPTION_FORMAT_KEY.to_string()));
+            }
+            op
         })
         .collect();
     let mut n_transitions = 0usize;
@@ -1383,7 +1412,11 @@ pub async fn apply(
     let out = UndoResult {
         execution_id: exec_id,
         reverts_execution_id: id,
-        fields_restored: restored.len(),
+        // The description's format goes with the description (not a field).
+        fields_restored: restored
+            .iter()
+            .filter(|(_, f)| f != commands::DESCRIPTION_FORMAT_KEY)
+            .count(),
         notes_retracted: notes.len(),
         relations_removed: rels.len(),
         transitions: n_transitions,

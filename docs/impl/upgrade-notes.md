@@ -187,3 +187,40 @@
   - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
   - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 
+## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0033–0037）
+
+- **不會讓 agent 工作脈絡失效**：授予新權限時暫停了 `role_permissions_epoch` trigger（契約 06 B-37），每個專案的 `security_epoch` 不變。理由：新權限不改既有議題內容的讀者集合，升級前也沒有任何 wiki 內容。
+- **新權限與自動授予**（之後管理者可以自己調整；調整會照常讓 epoch 加一）：
+  - `view_wiki_pages`、`view_wiki_edits`：有 `view_issues`、而且議題可見範圍是「全部」或「預設」的角色（含 Non member、Anonymous）。可見範圍是「自己的」的角色不授予（契約 06 B-50）。
+  - `edit_wiki_pages`：有 `edit_issues` 的角色。
+  - `rename_wiki_pages`、`delete_wiki_pages`、`protect_wiki_pages`、`manage_wiki`、`import_issues`、`import_time_entries`：有 `manage_project` 的角色。
+  - 沒有匯出權限（契約 06 A4 選 (a)：匯出跟著 `view_issues`，在 M2.7）。
+  - wiki 模組本身要到 M2.2 才有；既有專案預設不開。
+- **既有內容保留純文字**：議題說明（`issues.description_format`）與留言（`issue_notes.body_format`）既有的列都是 `plain`，顯示方式不變；之後新建的說明與留言預設是 `markdown`。
+- **命令的 `format`**（`create_issue`、`update_fields`、`add_note` 的 op 層欄位，值 `plain`／`markdown`）：
+  - **建立**（`create_issue`、`add_note`）省略＝`markdown`。舊用戶端新建的內容會從純文字變成 Markdown 顯示（M2.1 起才有渲染）。
+  - **更新**既有說明（`update_fields` 的 `set.description`）省略＝**保留原格式**：舊用戶端與 agent 改說明時不會把 `plain` 默默轉成 `markdown`。要轉格式必須明寫 `"format": "markdown"`。
+  - `format` 只能和 `set.description` 一起出現，否則 `invalid_request`。
+  - **agent 只能寫 `markdown`**：帶 `"format": "plain"`，或更新 `plain` 說明時省略 `format`，回 `forbidden_op`（`details.reason = "agent_format"`）。用舊版 MCP 用戶端改舊單說明的 agent 要改成明寫 `format`；`describe` 的 `text_format` 主題有說明。
+  - API 的議題詳情與清單多了 `description_format`，留言多了 `body_format`。
+- **`/agent-contexts*` 移除**（契約 05 B-43、06 B-33），包括 `GET /agent-contexts/{id}/credentials` 相容別名。替代：
+  - token：`POST`／`GET /ai-team/{agent_principal_id}/credentials`（新 token 回 201）。
+  - 新工作脈絡：`POST /me/agent-runtimes/{id}/new-context`（`fresh_context_ack: true`）。
+  - 暫停與恢復寫入（含解除熔斷暫停）：`POST /me/agent-runtimes/{id}/suspend`、`/resume`（resume 要 step-up）；`GET /me/agent-runtimes` 多了 `suspended_at`、`suspension_reason`。
+  - 沒有「關閉脈絡但不退役」的端點：改用 new-context 或 retire。
+  - 舊路由與新路由的對應：
+
+    | 舊（已移除） | 新 |
+    |---|---|
+    | `GET /agent-contexts` | `GET /me/agent-runtimes`（每個 runtime 的 `context_id` 是目前的工作脈絡；脈絡歷史不再列出） |
+    | `POST /agent-contexts`（`agent_client_id`、`fresh_context_ack`） | `POST /me/agent-runtimes/{runtime_id}/new-context`（`fresh_context_ack`）；第一次委派會自動建 runtime 與脈絡 |
+    | `POST /agent-contexts/{id}/credentials` | `POST /ai-team/{agent_principal_id}/credentials`（回 201；token 綁角色） |
+    | `GET /agent-contexts/{id}/credentials` | `GET /ai-team/{agent_principal_id}/credentials` |
+    | `POST /agent-contexts/{id}/suspend`、`/resume` | `POST /me/agent-runtimes/{runtime_id}/suspend`、`/resume` |
+    | `POST /agent-contexts/{id}/close` | 沒有直接對應：new-context（換新脈絡）或 `POST /me/agent-runtimes/{id}/retire`（永久） |
+
+  - `ContextView.changed_projects`（來源專案的權限已變更、脈絡已不能用）改由 `RuntimeView.changed_projects` 提供：目前脈絡中 epoch 已變的來源專案 id，沒有目前脈絡時是空陣列。前端的「需要注意」徽章可以用它；以角色為單位的狀態仍可用 `/ai-team` 的 `state = quarantined`。
+  - **這個分支上的 `web/` 與 `scripts/e2e_s1.py` 暫時不能用**：它們還呼叫 `/agent-contexts*`（`web/src/lib/counts.svelte.ts`、`web/src/routes/agents/` 三個頁面、`e2e_s1.py` 第 68–79 行），要等前端 F12 改成上表的新路由；M2.0 後端沒有改它們，以免和前端 session 衝突。
+- **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）已建好，**派送從 M2.1 開始**；升級前的內容不回溯。
+- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0037）。目前不會寫出這些值。
+

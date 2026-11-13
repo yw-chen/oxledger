@@ -341,6 +341,8 @@ AND 該角色的 view_issues 權限 all_trackers = true
 
 注意這只證明讀取受眾；`edit_issues` 等寫入權限的 tracker 限制不影響證明，只影響能不能提案。另外 `get`、`search` 回應裡的 parent、children、關係、片段、計數仍各自做可見性過濾。
 
+**M2 補註（06 §3.12）**：agent 讀 wiki 只在 **W(P) ⊇ A(P)**（讀得到 P 的 wiki 的人包含所有讀得到 P 非私有議題的人）時開放，這時 wiki 內容的受眾不比議題窄，上面的保證不變；寫進 wiki 時，目的地讀者是 **W(P)**（不是 A(P)），一樣要 ⊆ 工作脈絡每個來源專案的受眾。
+
 **跨時間的反例**（GPT 第 3 輪提出）：agent 讀到自訂欄位 7 的值 → 管理員把欄位 7 改成 `visible = false`（專案仍是受眾一致）→ agent 把值寫進一般 note → 套用時重算「是否一致」仍通過。只重算布林值擋不住。
 
 **做法**：`projects.security_epoch`。下列變更由 trigger 讓受影響專案的 epoch 加一：
@@ -2328,6 +2330,8 @@ CREATE TABLE agent_context_write_controls (
 | `transition` | 不是逆運算：若目前有合法轉移回原狀態，提供「轉回 X」；沒有唯一目標就讓人選；走一般 workflow 與必填檢查 |
 | `create_issue` | 不刪除；若有合法轉移，提供「關閉為誤建」 |
 
+**M2 延伸**（06）：`update_fields` 改說明時，說明的 `format`（`plain`／`markdown`）跟著說明一起還原，不算一個獨立欄位（M2.0 已實作）；`wiki_put`、`wiki_move`、`wiki_delete` 的 undo 見 06 R-W9（人自己的 wiki 寫入需要 `undo.rs` 的新路徑，M2.2）；附件見 06 R-A7；整合寫入（`fixed_by`）與 CSV 匯入**不走** undo 路由（06 R-F10、R-I12），由有權限的人用一般命令處理。
+
 **欄位還原條件**（每欄）：目前值 ＝ 該次 agent 寫入值 **且** 該欄位目前的有效來源仍是那次 execution **且** 人目前有權修改 **且** 舊值現在仍合法。只比對值不夠：agent 改高 → Bob 改中 → Carol 改回高，此時「高」是 Carol 的決定，不能被 undo 改掉。
 
 ```sql
@@ -3130,12 +3134,12 @@ CREATE INDEX project_setting_events_idx ON project_setting_events (project_id, a
 | 一個專案連多個 GitHub repo；一個 repo 可以連多個專案 | GitHub Enterprise Server、GitLab、Bitbucket（U45c 已決定：不做） |
 | 從 PR 標題、head 分支名、PR 的 commit 訊息比對卡號，對到 issue | 從 PR 內文、留言比對（雜訊太多：「related to AUTH-1」不代表在做） |
 | 顯示 PR 狀態（open／draft／merged／closed）、review 狀態、CI 彙總與各 check | 寫回 GitHub（留言、改 PR、建分支）；從 oxledger 觸發 CI |
-| 專案「開發」分頁：依卡號列 PR，可篩 CI 失敗、等 review、PR 已合併但單未推進 | 依 PR 狀態**自動**改 issue 狀態（U45b 已決定：第一切片不做，只提示） |
+| 專案「開發」分頁：依卡號列 PR，可篩 CI 失敗、等 review、PR 已合併但單未推進 | 依 PR 狀態**自動**改 issue 狀態（U45b 已決定：第一切片不做，只提示）。**M2 起例外**：專案管理者設定的 `fixed_by` 規則（06 §3.8，A3 決定 (a)＋(i)：只認 PR 合併進預設分支，以規則 sponsor 的權限執行）；沒有規則時照舊只提示 |
 | 議題頁「開發」卡；MCP `get` 可選擇帶開發狀態 | 搜尋語法 `pr:`、`ci:`（之後再加，要先想索引一致性）；通知 |
 
 ### 19.2 連動方式（U45 已決定：照建議，2026-11-07）
 
-- **GitHub App**（不是個人 token）：組織的系統管理員在 GitHub 安裝 oxledger 的 App，選擇授權哪些 repo。權限只要讀：`Pull requests: read`、`Checks: read`、`Commit statuses: read`、`Contents: read`（讀 PR 的 commit 訊息）、`Metadata: read`。訂閱事件：`pull_request`、`pull_request_review`、`check_run`、`check_suite`、`status`、`installation`、`installation_repositories`、`repository`。
+- **GitHub App**（不是個人 token）：組織的系統管理員在 GitHub 安裝 oxledger 的 App，選擇授權哪些 repo。權限只要讀：`Pull requests: read`、`Checks: read`、`Commit statuses: read`、`Contents: read`（讀 PR 的 commit 訊息）、`Metadata: read`。訂閱事件：`pull_request`、`pull_request_review`、`check_run`、`check_suite`、`status`、`installation`、`installation_repositories`、`repository`。**M2 加訂 `push`**（06 §3.7，commit 與預設分支；權限不變，`Contents: read` 已有；升級說明要提醒安裝者在 GitHub 上加訂）。
 - **兩層把關**：系統管理員在 oxledger 的「GitHub 設定」把 App 安裝到的 repo 標成「可連動」（預設全部不可）；專案管理者（`manage_project`）只能從「可連動」清單挑 repo 連到自己的專案。理由：PR 標題、分支名、check 名稱會顯示給**看得到該 issue 的所有人**，私有 repo 的這些內容等於被分享出去，由系統管理員決定哪些 repo 可以這樣分享（U45d）。
 - 機密：App 私鑰與 webhook secret 放在設定檔／環境變數（和 DB 連線字串同一層），**不進 DB**、不進日誌；installation token 只放記憶體，到期前更新。
 
@@ -3261,7 +3265,7 @@ CREATE TABLE github_event_jobs (              -- 待處理事件；和 delivery 
 | R-G1 | **卡號比對**：正則 `\b([A-Z][A-Z0-9_]{1,9})-([1-9][0-9]{0,8})\b`（大小寫敏感，和 issue key 格式一致）掃 PR 標題、head 分支名（`/`、`_` 視為分隔）、PR 的 commit 訊息（最多前 250 個 commit）。對到的 key 要：issue 存在、issue 的專案**目前有連動**這個 repo。其他 key 忽略、不存 |
 | R-G2 | **只認連動的 repo**：同一張單的 key 出現在沒連動的 repo，不建 ref。解除連動後，那個連動的 refs 立即刪除（§19.5 的鎖）。**讀取端再擋一次**：所有讀開發資訊的查詢都 join `project_repo_links`（`id = ref.link_id AND unlinked_at IS NULL`），殘留的 ref 也不會顯示 |
 | R-G3 | **讀取可見性**：開發資訊附屬於 issue，能看 issue 才看得到它的 PR；看不到的 issue 不出現在「開發」分頁，也不透露「有 N 張你看不到的單有 PR」。PR 標題裡若寫了別的卡號，照原文顯示（那是 GitHub 上的文字，不是 oxledger 的資料）。`project_pr_hidden` 依 **issue 所屬專案**套用：AUTH 隱藏的 PR，WEB 的單照常顯示；人與 MCP 讀取都套用 |
-| R-G4 | **不寫 issue**：PR、CI 的變化**不**改 issue、不寫 `issue_events`、不 bump `lock_version`、不觸發搜尋重建（第一切片）。開發資訊是讀取時 join 的投影 |
+| R-G4 | **不寫 issue**：PR、CI 的變化**不**改 issue、不寫 `issue_events`、不 bump `lock_version`、不觸發搜尋重建（第一切片）。開發資訊是讀取時 join 的投影。**M2 起例外**：`fixed_by` 規則（06 §3.8）經命令引擎做 `transition`，origin `integration`，照一般寫入寫事件、bump `lock_version`、進搜尋；其他 PR、CI、commit 的變化仍不寫 issue |
 | R-G5 | **狀態不一致提示**：PR 已合併且 issue 狀態 `is_closed = false` 且在「新建」「處理中」這類起始狀態（以 workflow 設定的「開發中」狀態集合為準，第一版取非 closed 的全部）→ 顯示提示與「轉換狀態」入口；**不自動轉換**（U45b） |
 | R-G6 | **review 彙總**：每位 reviewer 取最新一筆；有任何 `CHANGES_REQUESTED` → `changes_requested`；否則有 `APPROVED` → `approved`；否則有待回覆的 review request → `pending`；否則 `none` |
 | R-G7 | **CI 彙總**（只看目前 `head_sha`）：**oxledger 不自己推定「哪個 run 是哪個的重跑」**（名稱、App、suite 都不足以證明）。彙總單位：有 `check_suite_id` 的 run，用它所屬 **suite 的 status／conclusion**（GitHub 依 suite 內各 job 的最新結果計算，重跑後 GitHub 會更新 suite 結論）；沒有 suite 的 run 每個各自算一個；status API 每個 context 一筆。各個 run 只用來顯示明細。status 每個 context 一筆。對這些單位：任何結論為 `failure`／`timed_out`／`cancelled`／`action_required`／`startup_failure`、status `failure`／`error` → `failure`；否則任何 suite 或 run 為 `pending`（含 waiting、requested 等）或 status `pending` → `pending`；否則至少一個 success → `success`；沒有任何結果 → NULL。`neutral`、`skipped` 不影響 |

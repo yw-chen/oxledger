@@ -209,6 +209,35 @@ pub enum DescribeScope {
     /// you may read the delegator's time, and the agent chain limits
     /// (design 05 §4.1).
     AgentContext,
+    /// How descriptions and notes are written: the Markdown dialect, the
+    /// `format` parameter and what mentions do (design 06 §4.1).
+    TextFormat,
+}
+
+/// `describe scope=text_format` (design 06 §4.1, R-M1, R-M9, R-MN4).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TextFormatGuide {
+    /// What you write: always `markdown`.
+    pub write_format: &'static str,
+    /// `markdown` and `plain` (older text, shown as it is).
+    pub formats: Vec<&'static str>,
+    pub dialect: &'static str,
+    pub format_parameter: &'static str,
+    pub references: &'static str,
+    pub mentions: &'static str,
+    pub links_and_images: &'static str,
+}
+
+fn text_format_guide() -> TextFormatGuide {
+    TextFormatGuide {
+        write_format: "markdown",
+        formats: crate::commands::TEXT_FORMATS.to_vec(),
+        dialect: "CommonMark with GitHub tables, strikethrough, autolinks, task lists (read-only) and footnotes. Raw HTML is shown as text, never rendered. No math, front matter, macros or emoji shortcodes.",
+        format_parameter: "create_issue and add_note take format (omitted = markdown). update_fields takes format only with description in set; omitted keeps the current format. You may write only markdown: when the current description is plain, send format \"markdown\" with the new text, or the op fails with forbidden_op (reason agent_format).",
+        references: "Issue keys such as AUTH-123 link to the issue for readers who can see it (no #123). [[Page]] and [[KEY:Page]] link to wiki pages. In code spans, code blocks and link text nothing is linked.",
+        mentions: "@login names a person in the project's assignable list. Mentions you write render, but they never notify anyone.",
+        links_and_images: "Links in text an agent wrote: URLs longer than 200 characters or with a query longer than 100 are shown as plain text; other external links ask the reader before opening. Only attachments of the same issue, note or page are shown as images; other images are shown as links.",
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -244,8 +273,10 @@ pub struct ProjectPath {
     pub id: String,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct DescribeResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_format: Option<TextFormatGuide>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_tracker: Option<TrackerSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -982,6 +1013,17 @@ pub async fn assignees(app: &App, caller: AuthContext, project: &str) -> Result<
 
 pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Result<DescribeResult> {
     match p.scope {
+        DescribeScope::TextFormat => {
+            let (None, None, None) = (&p.project, &p.tracker, &p.issue_key) else {
+                return Err(user_err(
+                    "scope text_format takes no `project`, `tracker` or `issue_key`",
+                ));
+            };
+            Ok(DescribeResult {
+                text_format: Some(text_format_guide()),
+                ..Default::default()
+            })
+        }
         DescribeScope::ProjectTracker => {
             let (Some(project), Some(tracker), None) = (p.project, p.tracker, &p.issue_key) else {
                 return Err(user_err(
@@ -989,6 +1031,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 ));
             };
             Ok(DescribeResult {
+                text_format: None,
                 project_tracker: Some(tracker_schema(app, caller, &project, &tracker).await?),
                 issue_actions: None,
                 context: None,
@@ -1003,6 +1046,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 ));
             };
             Ok(DescribeResult {
+                text_format: None,
                 project_tracker: None,
                 issue_actions: Some(issue_actions(app, caller, &key).await?),
                 context: None,
@@ -1017,6 +1061,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 ));
             };
             Ok(DescribeResult {
+                text_format: None,
                 project_tracker: None,
                 issue_actions: None,
                 context: Some(crate::agents::describe_context(app, caller).await?),
@@ -1031,6 +1076,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 ));
             };
             Ok(DescribeResult {
+                text_format: None,
                 project_tracker: None,
                 issue_actions: None,
                 context: None,
@@ -1045,6 +1091,7 @@ pub async fn describe(app: &App, caller: AuthContext, p: DescribeParams) -> Resu
                 ));
             };
             Ok(DescribeResult {
+                text_format: None,
                 project_tracker: None,
                 issue_actions: None,
                 context: None,

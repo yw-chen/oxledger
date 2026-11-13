@@ -574,3 +574,89 @@ date	stage	decision	why	alternatives	source
 2026-11-13	P2	G14 last_used_at 在 HTTP bearer 驗證成功時寫，每個 token 每分鐘最多一次（先讀再條件式 UPDATE，子查詢 FOR UPDATE SKIP LOCKED 不等鎖）；寫入失敗只記 log，不讓驗證失敗	每個 MCP 請求都寫會放大寫入；stdio MCP 只在啟動時驗證一次，所以只反映啟動時間	每次寫；寫進 db::effective（那裡是唯讀交易）	crates/oxledger/src/auth.rs
 2026-11-13	P2	G24 沿用既有參數名 from、to、issue（S6b 就有），只加 cursor、limit（預設 50、上限 200）與 next_cursor；/ai-team/{id}/activity 用同一組	改名會破壞既有呼叫者；契約 02 §16.10 沒有指定參數名	改成 since、until、key	crates/oxledger/src/undo.rs
 2026-11-13	P2	G24 活動分頁：先判斷可讀與單號篩選，再算頁數；next_cursor 取最後一筆回傳項目的 (at, id)；下一頁只在後面還有可讀項目時才給	看不到＝不存在：不可讀的事件不能影響筆數、cursor 或「還有下一頁」	SQL 先分頁再過濾（頁數會變少、cursor 會指向看不到的事件）	crates/oxledger/src/undo.rs
+2026-11-13	M2.0	B-1 Markdown 渲染在哪裡：伺服端（comrak＋ammonia），前端只插 `*_html`	一份消毒器；參照解析需要權限，只有伺服端做得到；MCP 不需要 HTML		契約 06 §9.2 B-1（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-2 HTML 透傳：不透傳，原文標籤跳脫成文字顯示	安全；作者看得到自己寫了什麼		契約 06 §9.2 B-2（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-3 `#123` 語法：不支援，只認 `KEY-123`	D9；和 Markdown 標題、GitHub `#PR` 衝突		契約 06 §9.2 B-3（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-4 工時說明、版本說明、自訂欄位的 Markdown：維持純文字	短欄位；少一個渲染面		契約 06 §9.2 B-4（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-5 舊內容格式：保留 `plain`，改寫時才轉	不突然改變舊資料外觀		契約 06 §9.2 B-5（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-6 外部圖片：不載入，顯示成文字連結；不做圖片代理	隱私與資料外送；代理會引入 SSRF		契約 06 §9.2 B-6（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-7 agent 內容的外部連結：套 05 §6.19 規則（長網址不成連結、點擊確認）	05 附錄 D V23		契約 06 §9.2 B-7（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-8 提及外觀與通知的判斷：「是不是本專案可指派清單裡的人」（和自動完成同一個集合），不看「對方讀不讀得到」	後者是權限 oracle；和自動完成一致，使用者看得懂（審查 M5）		契約 06 §9.2 B-8（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-9 既有專案的 wiki 模組：不自動開；新專案預設開	不讓舊專案突然多出一個可寫的地方；不用動 epoch		契約 06 §9.2 B-9（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-10 wiki 逐頁讀取權限：不做	Redmine 也沒有；逐頁 ACL 會讓 W(P) 每頁不同，agent 規則變複雜		契約 06 §9.2 B-10（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-11 wiki 上限：5000 頁／專案、10,000 版／頁、512 KiB／版	防濫用；超過的很少見		契約 06 §9.2 B-11（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-12 wiki 關注與通知：不做（P5 和 email 一起）	通知列目前只綁議題（`notifications.issue_id`）		契約 06 §9.2 B-12（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-13 wiki 搜尋：獨立索引、結果分開回	不動 issue 的 layout；兩種分數不可比		契約 06 §9.2 B-13（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-14 wiki 跨專案搬頁：不做	受眾會改變，需要另一套檢查		契約 06 §9.2 B-14（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-15 附件上傳格式：原始 body，不用 multipart	不需新 crate（axum multipart 會帶進 `multer`）		契約 06 §9.2 B-15（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-16 附件下載網域：同源；可選 `OXLEDGER_FILES_ORIGIN`	同源加 `CSP: sandbox`、`nosniff`、非圖片一律 `attachment` 已足夠；需要更嚴時再設		契約 06 §9.2 B-16（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-17 掃毒：不做，留掛點	沒有選定的掃毒元件；選 ClamAV 之類要另外問		契約 06 §9.2 B-17（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-18 附件內容判斷：只看檔頭；只有 4 種圖片 inline	不信任副檔名與 Content-Type		契約 06 §9.2 B-18（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-19 agent 與附件：只讀中繼資料	內容可能是任意格式，抽文字要新元件；上傳是新的寫入通道		契約 06 §9.2 B-19（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-20 commit 作者資訊：只存 GitHub username（標「未驗證」）與推送者 `sender.login`，不存 email、姓名；網址讀取時組，不存 payload 的 URL	個資最小化；commit 作者欄可任意填		契約 06 §9.2 B-20（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-21 push 對帳：不做，只靠補送	GitHub 沒有權威的「最近 push」清單【推論】		契約 06 §9.2 B-21（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-22 commit 記工時（Redmine `@2h`）：不做	commit 作者身分不可驗證		契約 06 §9.2 B-22（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-23 `fixed_by` 掃 PR 內文：掃（只找修正關鍵字，不存）	GitHub 自己的關鍵字慣例就寫在內文		契約 06 §9.2 B-23（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-24 `fixed_by` 目標狀態的建議：非終態（已解決）	誤關的代價較低		契約 06 §9.2 B-24（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-25 匯出留言：不匯出	私有留言與可見性規則太複雜；需要時另案		契約 06 §9.2 B-25（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-26 匯出編碼：只有 UTF-8 BOM	Excel（含繁中 Windows）開得了；少一個選項		契約 06 §9.2 B-26（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-27 匯入更新既有議題：不做，只建新單	批次覆寫風險高；需要時另案（要 precondition 設計）		契約 06 §9.2 B-27（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-28 匯入失敗處理：逐列成敗，不做全有全無	5,000 列一個交易會長時間鎖、擋 outbox frontier（D11）；有試跑與撤銷		契約 06 §9.2 B-28（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-29 匯入的通知：預設不通知	避免一次灌爆通知中心		契約 06 §9.2 B-29（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-30 介面角色捷徑（U24）：PM、設計師加「Wiki」；工程師加「開發」	研究 04 §1.1 的常看畫面		契約 06 §9.2 B-30（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-31 匯出上限：10,000 列，站台可調	Redmine 預設 500【推論：Redmine `issues_export_limit` 預設 500】；我們用串流與單一快照，可以放寬		契約 06 §9.2 B-31（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-32 webhook 並行上限：16，滿了立刻 503（load shed，不排隊）	未驗證端點的資源保護；排隊一樣會耗盡連線；補送會找回		契約 06 §9.2 B-32（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-33 `/agent-contexts*`：M2.0 移除	05 B-43 已排定		契約 06 §9.2 B-33（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-34 Markdown 渲染快取：記憶體 LRU、只快取第一階段	第二階段依觀看者，不能共用		契約 06 §9.2 B-34（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-35 agent 寫的提及：渲染但不通知	R-MN4		契約 06 §9.2 B-35（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-36 新角色範本「文件維護」：預設 review	範本給團隊共用的 bot，比個人委派保守（05 B-22 的精神）		契約 06 §9.2 B-36（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-37 0032 授予 wiki 權限時要不要 bump epoch：**不 bump**（暫停 `role_permissions_epoch`；和 0023 刻意 bump 一次不同）	新權限不改既有內容的讀者集合、升級前沒有 wiki 內容、R-AG1 在讀取當下計算（§2.1）；bump 的代價是所有 agent 脈絡升級後都要重開。前提由升級測試斷言（§7.9）		契約 06 §9.2 B-37（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-38 agent 內容被人改寫或複製後：改寫後算人的內容（編輯器提示「含 agent 寫入的連結」）；複製到別處不追蹤	追蹤複製要做內容指紋，成本高、誤判多；剩下的風險是「人把 agent 的連結原樣貼到別處」（審查 M13 的已知限制）		契約 06 §9.2 B-38（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-39 提及的 login 比對：先精確；不分大小寫只在命中一人時才算	0001 的 login 是區分大小寫唯一（審查 M6；附錄 B C2 結案）		契約 06 §9.2 B-39（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-40 匯出的資源上限：逐列串流、10,000 列、50 MB、30 秒、每人同時一個、每分鐘 5 次	防止匯出拖垮伺服器（審查 M11）		契約 06 §9.2 B-40（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-41 上傳的資源上限：單檔 20 MB、每人每日 1 GB、同時 3 個、未用暫存 200 MB、磁碟剩餘 < 5 GB 拒收；匿名不能上傳；邊收邊寫、不進記憶體	防止上傳耗盡磁碟或記憶體（審查 M12）		契約 06 §9.2 B-41（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-42 commit 撤除後再出現：持久墓碑 `project_commit_revocations`；`redacted_at` 的 message 不被覆寫；遮蔽過的 commit 列不清除	不然再 push 同 sha 就會讓撤除失效（審查 H2）		契約 06 §9.2 B-42（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-43 `fixed_by` 的 GitHub API 用量：每個 PR 或每次 push 只確認一次；每次最多建 200 列 fix link	避免單一 push 打爆 API 配額（審查）		契約 06 §9.2 B-43（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-44 匯出稽核的條件：存 HMAC（server secret），不存 sha256	條件值空間小，純 hash 可被字典還原		契約 06 §9.2 B-44（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-45 遮蔽說明時的議題層附件：對話框讓管理者勾選，預設不勾；遮蔽留言則連帶遮蔽它的附件	附件和說明不一定相關；留言的附件屬於那則留言（審查 M2）		契約 06 §9.2 B-45（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-46 遮蔽附件後有人重新上傳同內容：照常成功、建新的 blob 世代、回應和平常相同	擋或提示都會變成「這內容被遮蔽過」的 oracle（審查 M3）		契約 06 §9.2 B-46（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-47 sponsor 看不到要轉換的單：`suggested`，原因碼和文案同 `workflow_disallowed`	不透露 sponsor 的可見範圍		契約 06 §9.2 B-47（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-48 有連動但沒有符合的啟用規則：直接記 `suggested`（`no_rule`），不呼叫 API	只是提示，不需要確認；也修正第一版 R-F3 與 R-F6 的矛盾		契約 06 §9.2 B-48（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-49 wiki 索引的 outbox consumer：照 0018 的世代命名 `wiki@<uuid>`、state 與藍綠；消費全部 outbox 列	不卡住 outbox GC；和議題索引同一套維運		契約 06 §9.2 B-49（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-50 own 可見範圍角色的 wiki 權限：升級時不自動授予	授了會讓 W(P) ⊋ A(P)，agent 寫不進 wiki；要的話管理者自己加		契約 06 §9.2 B-50（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-51 wiki 標題比對：NFKC_Casefold；標題與附件檔名禁 Cc、Cf	全形／半形、大小寫視為同名；擋雙向控制字元的偽裝		契約 06 §9.2 B-51（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-52 系統管理員關閉 repo 的 `linkable`：只擋新連動，既有連動照收	和既有行為一致；要停止接收用解除連動（審查更正 R-C11）		契約 06 §9.2 B-52（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-53 更新說明時 `format` 省略：保留原格式	舊用戶端不會把 `plain` 默默轉成 Markdown		契約 06 §9.2 B-53（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-54 Markdown 的 id：標題錨點與註腳 id 加容器前綴	同一頁多個容器時不撞名		契約 06 §9.2 B-54（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-55 已刪除的 wiki 頁：一般讀者 `not_found`；只有 `manage_wiki` 能讀（還原前檢視）；agent 讀不到	刪除的內容不該繼續流通，但管理者要能判斷要不要還原		契約 06 §9.2 B-55（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-56 undo 建頁：軟刪除（30 天可還原）	不硬刪，和 D-M2-9 一致		契約 06 §9.2 B-56（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	B-57 工時匯入的使用者候選：本專案能記工時的人	可指派的人不一定能記工時		契約 06 §9.2 B-57（使用者 2026-11-13 決定照預設）
+2026-11-13	M2.0	A1–A6 全照契約 06 §9.1 的建議；正文標「待確認」的段落一律視為已決定	使用者 2026-11-13 決定		使用者 2026-11-13；契約 06 §9.1
+2026-11-13	M2.0	D17 新依賴（使用者核可的版本，全部用 `=` 釘住）：comrak 0.59.0（default-features 關）、ammonia 4.2.4、csv 1.4.0、encoding_rs 0.8.44、similar 3.2.1、unicode-normalization 0.1.26；tower 0.5 從 dev-deps 移到正式依賴（features util、limit、load-shed）	契約 06 §9.2 新依賴表；釘版本避免 cargo 自動升到未核可的版本	用 ^ 版本範圍	crates/oxledger/Cargo.toml；scratchpad m20_Cargo.lock.before 是加依賴前的 lockfile
+2026-11-13	M2.0	D17 unicode-normalization 維護者查證：crates.io owners 為 huonw（Huon Wilson，Sydney, Australia）、SimonSapin（Servo／Mozilla／W3C CSS WG、WeasyPrint）、Manishearth（Manish Goregaokar，@google，Berkeley CA；0.1.26 由他發布）、kwantam（Riad S. Wahby，CMU ECE 助理教授）、sujayakar（Sujay Jayakar，Convex，New York）；授權 (MIT OR Apache-2.0) AND Unicode-3.0。結論：沒有中國背景	使用者要求查證（Aura：不用中國產品）		https://crates.io/api/v1/crates/unicode-normalization/owners ；https://crates.io/api/v1/crates/unicode-normalization/0.1.26 ；https://api.github.com/users/huonw ；https://exyr.org/ ；https://api.github.com/users/Manishearth ；https://www.ece.cmu.edu/directory/bios/wahby-riad.html ；https://api.github.com/users/sujayakar
+2026-11-13	M2.0	D17 新增的傳遞依賴：bstr、caseless、core_detect、typed-arena、cssparser、dtoa、dtoa-short、fearless_simd(_macros)、finl_unicode、memchr-n、multiversion_no_op、html5ever、markup5ever、string_cache(_codegen)、tendril、web_atoms、new_debug_unreachable、precomputed-hash、maplit、phf 系列 0.14、simdutf8、siphasher、entities、csv-core。維護者多為 Servo／Mozilla、rust-lang 生態與個人開發者（見 crates.io owners），沒有看到明顯的中國背景；直接依賴只有核可清單內的	使用者要求列出傳遞依賴的背景	cargo deny（本機沒安裝，不能裝，沒跑）	Cargo.lock 差異；crates.io owners API
+2026-11-13	M2.0	契約 06 §8 要求 M2.0「過 cargo deny」：沒做	本機沒有 cargo-deny，而安裝不在核可清單	請使用者核可安裝 cargo-deny 或在 CI 跑	契約 06 §8 M2.0
+2026-11-13	M2.0	migration 編號：06 規劃的 0031–0036 全部順延成 0032–0037；06 正文、附錄同步改號並在開頭加修訂註記	0031 已被 0031_p2_api_gaps.sql 用掉	改用子編號（0031a）	migrations/0032_m2_prereq.sql；契約 06 開頭
+2026-11-13	M2.0	C13（wiki title_key 的大小寫比對）屬 M2.2，這階段不做。已查證：PG 18.6、資料庫 collation provider 是 c，預設 collation 下 casefold('ß') 不做完整 folding；`casefold(normalize(x, NFKC) COLLATE pg_unicode_fast)` 對 'ＡＢＣ ß Ǆ ﬁ' 得 'abc ss dž fi'，M2.2 實作 NFKC_Casefold 時用這個寫法	B-51 要求 NFKC_Casefold；預設 collation 的 casefold 不完整	在 Rust 端用 unicode-normalization 算好存欄位	docker exec oxledger-pg psql（oxledger_test_be）
+2026-11-13	M2.0	0032 的 wiki 權限授予：view_wiki_pages、view_wiki_edits ← 有 view_issues 且 issues_visibility 是 all／default 的角色；edit_wiki_pages ← 有 edit_issues 的角色（照 06 §2.2 原文，不看 visibility；own 角色因此可能有 edit 沒有 view；M2.2 實作 wiki 寫入時要決定 edit 是否以 view 為前提）；rename／delete／protect_wiki_pages、manage_wiki、import_issues、import_time_entries ← 有 manage_project 的角色；授予時停用 role_permissions_epoch（B-37）	照 06 §2.1 授權規則與 B-50（own 角色不授）	view_issues 有 tracker 限制的角色不授（W(P) 會比某些讀者寬）	migrations/0032_m2_prereq.sql
+2026-11-13	M2.0	view_issues 只限部分 tracker 的角色（all_trackers = false）照樣授 wiki 讀寫權限	06 沒有規定；R-AG1 在讀取當下用集合包含判斷 W(P) ⊇ A(P)，授了只影響人的 wiki 讀寫，不會讓 agent 越權	不授（這些角色的人升級後看不到 wiki）	migrations/0032_m2_prereq.sql
+2026-11-13	M2.0	seed_demo 也照 0032 的規則授 wiki 與匯入權限	新的示範資料庫和升級後的資料庫一致		crates/oxledger/src/seed.rs
+2026-11-13	M2.0	命令文件的 format：放在 op 層（create_issue、update_fields、add_note 的 `format`），值 plain／markdown；update_fields 帶 format 但 set 沒有 description → invalid_request（path format）	format 是說明的屬性，單獨帶沒有對象；契約 06 §3.11 例子把 format 放 op 層	format 單獨出現時當成只改格式	crates/oxledger/src/commands.rs
+2026-11-13	M2.0	只改格式（文字相同、format 不同）也算有效變更：fields_changed 事件的 payload 是 {"changes":{},"description_format":{"old","new"}}（changes 沒有 description，因為文字沒變）；issue_field_origins 仍記 description（格式屬於說明，來源跟著它走）	人在 SPA 把 plain 轉 markdown 而文字不變時，要留下紀錄並 bump lock_version	算 no_effect	crates/oxledger/src/commands.rs
+2026-11-13	M2.0	note_added 事件 payload 不放格式；格式只存在 issue_notes.body_format，API 的 notes 回 body_format	留言不能改格式，格式跟著留言列走；事件 payload 保持原樣	payload 也放 format	crates/oxledger/src/commands.rs；issue_view.rs
+2026-11-13	M2.0	agent 違反格式規則（寫 plain、或更新 plain 說明時省略 format）在模擬階段就回 forbidden_op（reason agent_format），提案與直接寫入都一樣	R-M9；越早擋越不會留下半套提案		crates/oxledger/src/commands.rs
+2026-11-13	M2.0	undo：說明的格式存在 execution_field_changes 的 description_format 列，跟著說明一起還原；預覽不列它、fields_restored 不算它。已知限制：agent 只改格式、文字沒變的寫入，undo 不會還原格式	格式不是獨立欄位（06 R-M9）；只改格式的 agent 寫入實際上只有「plain 轉 markdown」，影響很小		crates/oxledger/src/undo.rs
+2026-11-13	M2.0	提及（R-MN1）：login 結尾的句點視為句子標點，不算 login；`@a@b`（agent handle、email）整段跳過	「謝謝 @bob.」是常見寫法；login 結尾是句點的使用者極少	句點算進 login（這種寫法就不會命中）	crates/oxledger/src/mentions.rs
+2026-11-13	M2.0	提及的不分大小寫比對只在「本專案可指派的 active user」集合內判斷是否唯一	和 B-8 同一個集合；用全站判斷會讓看不到的使用者影響結果（存在性 oracle）	全站 login 判斷	crates/oxledger/src/mentions.rs
+2026-11-13	M2.0	Markdown 內的提及：跳過行內程式碼、程式碼區塊、連結（含文字）、圖片、wiki 連結，以及原始 HTML 節點本身（行內標籤的內容、整個 HTML 區塊）；行內標籤之間的文字照常掃；plain 整段掃	R-M5、R-M8；連結文字常是貼上的網址或名稱，不是要叫人	連結文字也掃	crates/oxledger/src/mentions.rs
+2026-11-13	M2.0	M2.0 只寫 issue_event_mentions（建立、留言、說明變更的事件；說明變更只記新增的人；排除作者；最多 20 人）；`mentioned` 通知派送與 /me/notification-preferences 的 on_mentioned 在 M2.1	契約 06 §8 把派送排在 M2.1；先有資料，派送時不用回填		crates/oxledger/src/commands.rs；mentions.rs
+2026-11-13	M2.0	遮蔽留言或事件時，同交易刪除那個事件的 issue_event_mentions 列	提及列是內容的衍生資料（D12）		crates/oxledger/src/redaction.rs
+2026-11-13	M2.0	API 在 M2.0 就回 description_format（議題詳情、清單的 description 欄、事件 detail）與 notes 的 body_format；*_html 在 M2.1	前端要知道舊內容是 plain 才能決定怎麼顯示與編輯		crates/oxledger/src/issue_view.rs；service.rs
+2026-11-13	M2.0	MCP describe 加 scope text_format（方言、提及不會通知任何人、format 規則）；描述的渲染規則在 M2.1 才實作	06 §4 要求 agent 能查到格式規則；agent 現在就要知道只能寫 markdown		crates/oxledger/src/describe.rs；mcp.rs
+2026-11-13	M2.0	移除 /agent-contexts*（含 GET /agent-contexts/{id}/credentials 別名）；新增 POST /me/agent-runtimes/{id}/suspend（session）與 /resume（step-up），RuntimeView 加 suspended_at、suspension_reason	移除後沒有別的 API 能解除熔斷暫停（ai_team 的 resume 只解除專案層暫停），手動暫停也沒有入口；以 runtime 為單位和 05 的模型一致（工作脈絡＝runtime 的目前脈絡）	保留 /agent-contexts/{id}/suspend｜resume；放在 /ai-team/{principal}（但暫停的對象是整個脈絡，不是單一角色）	crates/oxledger/src/api.rs；ai_team.rs
+2026-11-13	M2.0	不提供「停用 agent（關閉脈絡但不退役）」的新端點：要停就用 new-context（換新脈絡、舊 token 失效）或 retire（永久）；agents::close_context 函式保留給內部與測試	05 沒有規劃 runtime 的 close；加端點屬產品決定	新增 POST /me/agent-runtimes/{id}/close	crates/oxledger/src/api.rs；tests/s1_identity.rs
+2026-11-13	M2.0	這個分支上的 web/ 與 scripts/e2e_s1.py 暫時不能用（還呼叫已移除的 /agent-contexts*），等前端 F12 改；M2.0 後端不改它們。舊→新路由：GET /agent-contexts → GET /me/agent-runtimes；POST /agent-contexts → POST /me/agent-runtimes/{id}/new-context；POST｜GET /agent-contexts/{id}/credentials → POST｜GET /ai-team/{principal}/credentials；/agent-contexts/{id}/suspend｜resume → /me/agent-runtimes/{id}/suspend｜resume；/agent-contexts/{id}/close → 無直接對應（new-context 或 retire）	前端由另一個 session 在 F12 改，後端改了會衝突（上層 session 2026-11-13 指示）	後端順手改 web/	docs/impl/upgrade-notes.md 0032 節
+2026-11-13	M2.0	RuntimeView 加 changed_projects（目前脈絡中 security_epoch 已變的來源專案 id；沒有目前脈絡時是空陣列），取代 ContextView.changed_projects，讓前端的「需要注意」徽章有資料	成本低（沿用 agents::changed_sources，一個查詢）；06 沒有禁止；資料和移除前的 ContextView 給同一個 sponsor 的相同，不新增存在性資訊	不補，請前端改看 /ai-team 的 state = quarantined（以角色為單位，要逐一讀）	crates/oxledger/src/ai_team.rs；tests/m2_0_prereq.rs
+2026-11-13	M2.0	提及的「@ 前一個字元」跨行內節點邊界判斷：同一個區塊內，前一段文字（含被跳過的連結、程式碼、行內 HTML 的最後一個字元）算數；新區塊（段落、清單項目等）從頭開始。所以 **x**@bob、[x](u)@bob、`x`@bob 不是提及	R-MN1 是對渲染後看到的文字定義；節點只是解析細節	每個節點各自當行首（會把 **x**@bob 誤判成提及）	crates/oxledger/src/mentions.rs
+2026-11-13	M2.0	plain 格式掃提及時跳過 http(s):// 網址片段（到下一個空白為止），https://x.test/@bob 不是提及；Markdown 的網址已由 autolink 變成連結而跳過	R-M8（plain 只做自動連結）與 R-MN1（連結內不解析）	plain 不處理網址	crates/oxledger/src/mentions.rs
+2026-11-13	M2.0	06 §7.9 升級測試的起點維持 0030，加註「M1 發布版；改號後經過 0031_p2_api_gaps」，不改成 0031	原意是從 M1 發布版升級；0031 只加欄位、不動權限與 epoch		docs/design/06-m2-integration-contract.md §7.9

@@ -754,6 +754,13 @@ async fn s1_identity() {
         .unwrap()
         .parse()
         .unwrap();
+    // M2.0 (06 §8): tokens are issued per role on `/ai-team`, work contexts
+    // are managed per runtime on `/me/agent-runtimes` (`/agent-contexts*` is gone).
+    let principal = d.body["data"]["agent_principal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let runtime = d.body["data"]["runtime_id"].as_str().unwrap().to_string();
     let dup = as_browser(r, &a, Req::post("/delegations", deleg(w.auth_p))).await;
     assert_eq!(dup.body["error"]["details"]["kind"], "already_delegated");
 
@@ -766,7 +773,7 @@ async fn s1_identity() {
         r,
         &a,
         Req::post(
-            &format!("/agent-contexts/{context}/credentials"),
+            &format!("/ai-team/{principal}/credentials"),
             json!({"label": "laptop"}),
         ),
     )
@@ -782,12 +789,13 @@ async fn s1_identity() {
         r,
         &a,
         Req::post(
-            &format!("/agent-contexts/{context}/credentials"),
+            &format!("/ai-team/{principal}/credentials"),
             json!({"label": "laptop"}),
         ),
     )
     .await;
-    assert_eq!(tok.status, StatusCode::OK, "{}", tok.body);
+    assert_eq!(tok.status, StatusCode::CREATED, "{}", tok.body);
+    assert_eq!(tok.body["data"]["context_id"], json!(context.to_string()));
     let token = tok.body["data"]["token"].as_str().unwrap().to_string();
     assert!(token.starts_with("oxa_"));
 
@@ -1008,9 +1016,10 @@ async fn s1_identity() {
     let tok2 = as_browser(
         r,
         &a,
-        Req::post(&format!("/agent-contexts/{context}/credentials"), json!({})),
+        Req::post(&format!("/ai-team/{principal}/credentials"), json!({})),
     )
     .await;
+    assert_eq!(tok2.status, StatusCode::CREATED, "{}", tok2.body);
     let token2 = tok2.body["data"]["token"].as_str().unwrap().to_string();
     let first_id: Uuid = tok.body["data"]["id"].as_str().unwrap().parse().unwrap();
     let rv = as_browser(
@@ -1098,14 +1107,17 @@ async fn s1_identity() {
         ErrorCode::Unauthenticated
     );
 
-    // Close the context ("stop this agent"): tokens and delegations go with it.
-    let close = as_browser(
-        r,
-        &a,
-        Req::post(&format!("/agent-contexts/{context}/close"), json!({})),
-    )
-    .await;
-    assert_eq!(close.status, StatusCode::OK, "{}", close.body);
+    // Close the context ("stop this agent"): tokens and delegations go with
+    // it. M2.0 removed the HTTP route (`/agent-contexts/{id}/close`); the
+    // library function is what new-context and retire build on.
+    let alice_ctx = auth::session_from_cookie(&pool, &SessionPolicy::default(), &a.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .ctx;
+    agents::close_context(&pool, &alice_ctx, context)
+        .await
+        .unwrap();
     // T-X20: a token of a closed context says so (kind closed).
     let e = service::search(&w.app, agent2, SearchParams::default())
         .await
@@ -1136,12 +1148,23 @@ async fn s1_identity() {
         r,
         &a,
         Req::post(
-            "/agent-contexts",
-            json!({"agent_client_id": w.client, "fresh_context_ack": false}),
+            &format!("/me/agent-runtimes/{runtime}/new-context"),
+            json!({"fresh_context_ack": false}),
         ),
     )
     .await;
-    assert_eq!(no_ack.code(), "invalid_value");
+    assert_eq!(no_ack.code(), "invalid_value", "{}", no_ack.body);
+    let nc = as_browser(
+        r,
+        &a,
+        Req::post(
+            &format!("/me/agent-runtimes/{runtime}/new-context"),
+            json!({"fresh_context_ack": true}),
+        ),
+    )
+    .await;
+    assert_eq!(nc.status, StatusCode::OK, "{}", nc.body);
+    assert_ne!(nc.body["data"]["id"], json!(context.to_string()));
     // PUB: a public project whose Non member role reads a restricted field.
     let tracker: Uuid = sqlx::query_scalar("SELECT id FROM trackers LIMIT 1")
         .fetch_one(&pool)
@@ -1208,16 +1231,6 @@ async fn s1_identity() {
         .await
         .unwrap();
     w.app.index.sync_all(&pool).await.unwrap();
-    let nc = as_browser(
-        r,
-        &a,
-        Req::post(
-            "/agent-contexts",
-            json!({"agent_client_id": w.client, "fresh_context_ack": true}),
-        ),
-    )
-    .await;
-    assert_eq!(nc.status, StatusCode::OK, "{}", nc.body);
     let again = as_browser(r, &a, Req::post("/delegations", deleg(w.auth_p))).await;
     assert_eq!(again.status, StatusCode::OK, "{}", again.body);
     // Another user cannot see or touch alice's delegations.
@@ -1330,33 +1343,25 @@ async fn s1_identity() {
     assert_eq!(hidden.code(), "invalid_value", "{}", hidden.body);
 
     // A fresh token for the new context.
-    let ctxs = as_browser(r, &a, Req::get("/agent-contexts")).await;
-    let live_ctx = ctxs.body["data"]
+    let rts = as_browser(r, &a, Req::get("/me/agent-runtimes")).await;
+    let rt = rts.body["data"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["state"] == "active")
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // P1 gap G3: the label history shows, and the pause state.
-    for c in ctxs.body["data"].as_array().unwrap() {
-        assert!(
-            c["agent_label"].as_str().is_some_and(|l| !l.is_empty()),
-            "{c}"
-        );
-        assert!(c.get("suspended_at").is_some() && c.get("suspension_reason").is_some());
-    }
+        .find(|x| x["id"] == json!(runtime))
+        .unwrap();
+    // The runtime shows its label, its active context and the pause state.
+    assert!(rt["label"].as_str().is_some_and(|l| !l.is_empty()), "{rt}");
+    assert_eq!(rt["context_id"], nc.body["data"]["id"], "{rt}");
+    assert!(rt.get("suspended_at").is_some() && rt.get("suspension_reason").is_some());
+    let principal3 = again.body["data"]["agent_principal_id"].as_str().unwrap();
     let t3 = as_browser(
         r,
         &a,
-        Req::post(
-            &format!("/agent-contexts/{live_ctx}/credentials"),
-            json!({}),
-        ),
+        Req::post(&format!("/ai-team/{principal3}/credentials"), json!({})),
     )
     .await;
+    assert_eq!(t3.status, StatusCode::CREATED, "{}", t3.body);
     let token3 = t3.body["data"]["token"].as_str().unwrap().to_string();
     let agent3 = auth::authenticate_bearer(&pool, &token3)
         .await

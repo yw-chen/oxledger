@@ -19,12 +19,17 @@ github = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:
 ai = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:webpki-roots", "dep:http-body-util"]
 
 [dependencies]
+ammonia = "=4.2.4"
 anyhow = "1.0.104"
 argon2 = "0.5"
 axum = "0.8.9"
 base64 = "0.22"
 chacha20poly1305 = "0.10"
 chrono = "0.4.45"
+# Markdown (design 06 §3.2; D17 approved 2026-11-13). No CLI, no syntax highlighting.
+comrak = { version = "=0.59.0", default-features = false }
+csv = "=1.4.0"
+encoding_rs = "=0.8.44"
 hex = "0.4.3"
 hmac = "0.13"
 http-body-util = { version = "0.1", optional = true }
@@ -39,13 +44,17 @@ rmcp = { version = "3.9.0", features = ["server", "macros", "transport-io", "tra
 schemars = { version = "1", features = ["uuid1"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+similar = "=3.2.1"
 sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
 subtle = "2"
 tantivy = "0.27.0"
 tokio = { version = "1.54.1", features = ["full"] }
+# Request limits and webhook load shedding (design 06 §3.7, B-32); was a dev-dependency.
+tower = { version = "0.5", features = ["util", "limit", "load-shed"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-normalization = "=0.1.26"
 url = "2"
 uuid = { version = "1.29.0", features = ["serde", "v7"] }
 webpki-roots = { version = "1", optional = true }
@@ -54,4 +63,3 @@ webpki-roots = { version = "1", optional = true }
 http-body-util = "0.1"
 # Integration tests need the test-support helpers.
 oxledger = { path = ".", features = ["test-support"] }
-tower = { version = "0.5", features = ["util"] }

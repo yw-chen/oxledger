@@ -517,6 +517,14 @@ async fn redact_locked(
                 .bind(REDACTED)
                 .execute(&mut *tx)
                 .await?;
+            // Design 06 §3.13: who the note mentioned goes with it.
+            sqlx::query(
+                "DELETE FROM issue_event_mentions
+                 WHERE event_id IN (SELECT id FROM issue_events WHERE note_id = $1)",
+            )
+            .bind(at.row)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query_scalar(
                 "INSERT INTO issue_event_redactions (note_id, redacted_by, reason_code, reason)
                  VALUES ($1, $2, $3, $4) RETURNING id",
@@ -547,6 +555,11 @@ async fn redact_locked(
                 .await?;
             // Design 05 §2.2: a redacted change cannot be filtered on (ever_in).
             sqlx::query("DELETE FROM issue_field_changes WHERE event_id = $1")
+                .bind(at.row)
+                .execute(&mut *tx)
+                .await?;
+            // Design 06 §3.13: and who the event mentioned.
+            sqlx::query("DELETE FROM issue_event_mentions WHERE event_id = $1")
                 .bind(at.row)
                 .execute(&mut *tx)
                 .await?;
