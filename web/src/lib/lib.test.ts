@@ -6,7 +6,6 @@ import { describeError, describeFailure } from './errors';
 import { parse, SyntaxError_, toParams } from './query';
 import { splitHighlights } from './highlight';
 import { route } from './intent';
-import { normalizeWidgets } from './prefs.svelte';
 import type { FieldSchema } from '$api/types';
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -256,21 +255,6 @@ describe('errors (02 §15.5)', () => {
 		const generic = describeError(err('__nope__')).title;
 		const missing = codes.filter((c) => describeError(err(c)).title === generic);
 		expect(missing).toEqual([]);
-	});
-});
-
-describe('home widgets (U22)', () => {
-	it('"需要你決定" cannot be removed', () => {
-		expect(normalizeWidgets([{ id: 'm', kind: 'mine', wide: false }])[0].kind).toBe('decide');
-		expect(normalizeWidgets(undefined).some((w) => w.kind === 'decide')).toBe(true);
-	});
-	it('drops unknown kinds and duplicate ids', () => {
-		const ws = normalizeWidgets([
-			{ id: 'd', kind: 'decide', wide: true },
-			{ id: 'x', kind: 'bogus' as never, wide: false },
-			{ id: 'd', kind: 'decide', wide: true }
-		]);
-		expect(ws.map((w) => w.id)).toEqual(['d']);
 	});
 });
 

@@ -11,8 +11,8 @@
 	import { api, ApiError, newOperationId } from '$lib/api';
 	import { describeError, describeFailure } from '$lib/errors';
 	import { goto } from '$app/navigation';
-	import { fmtShort, fmtTime } from '$lib/format';
-	import { refreshCounts, counts } from '$lib/counts.svelte';
+	import { fmtShort, fmtTime, fmtValue } from '$lib/format';
+	import { refreshCounts, handleOf } from '$lib/counts.svelte';
 	import { session } from '$lib/session.svelte';
 	import { issueValues, labelOf, sameValue, show, type Lookups } from '$lib/render';
 	import { toast } from '$lib/toast.svelte';
@@ -109,7 +109,8 @@
 		load();
 	});
 
-	const agentName = $derived(counts.contexts.find((c) => c.agent_principal_id === cs?.proposer_id)?.agent_label ?? 'agent');
+	const agentName = $derived(handleOf(cs?.proposer_id) ?? 'agent');
+	const diffOf = (tid: string | undefined, field: string) => shown?.diff?.find((x) => x.target.id === tid && x.field === field);
 	const projectName = (pid: unknown) => session.projects.find((p) => p.id === pid)?.key ?? '（專案）';
 	function statusName(t: Target | undefined, sid: unknown): string {
 		if (!t) return String(sid);
@@ -196,7 +197,8 @@
 	}
 
 	// ------------------------------------------------------------ conflict (§15.4)
-	type Row = { choice: string; key: string; field: string; label: string; original: unknown; hasOriginal: boolean; now: unknown; proposed: unknown; look: Lookups };
+	/** `orig`: the value when the agent proposed it, for display (null: not recorded); `changed`: it differs from now. */
+	type Row = { choice: string; key: string; field: string; label: string; orig: string | null; changed: boolean; now: unknown; proposed: unknown; look: Lookups };
 	const rows = $derived.by(() => {
 		const out: Row[] = [];
 		for (const op of doc?.ops ?? []) {
@@ -206,16 +208,21 @@
 			const pre = doc?.preconditions?.find((p) => p.target.id === tid);
 			const now = t ? issueValues(t.issue, t.look.fields) : {};
 			for (const [k, v] of Object.entries((op.set ?? {}) as Record<string, unknown>)) {
+				const look = t?.look ?? NO_LOOK;
+				// G13: the server records the value when the agent proposed (rendered;
+				// `before` is now). A precondition's field_values is the older fallback.
+				const d = shown?.diff?.find((x) => x.target.id === tid && x.field === k && x.has_original);
+				const hasPre = !!pre?.field_values && k in pre.field_values;
 				out.push({
 					choice: `${op.op_id}/${k}`,
 					key: keyOf(tid),
 					field: k,
-					label: labelOf(k, t?.look ?? NO_LOOK),
-					original: pre?.field_values?.[k],
-					hasOriginal: !!pre?.field_values && k in pre.field_values,
+					label: labelOf(k, look),
+					orig: d ? fmtValue(d.original) : hasPre ? show(k, pre!.field_values![k], look) : null,
+					changed: d ? JSON.stringify(d.original) !== JSON.stringify(d.before) : hasPre && !sameValue(pre!.field_values![k], now[k]),
 					now: now[k],
 					proposed: v,
-					look: t?.look ?? NO_LOOK
+					look
 				});
 			}
 		}
@@ -226,8 +233,7 @@
 	let previewError = $state<unknown>(null);
 	let previewing = $state(false);
 	let outdated = $state(false);
-	const knownOriginals = $derived(rows.filter((r) => r.hasOriginal));
-	const nothingOfMineChanged = $derived(knownOriginals.length === rows.length && rows.length > 0 && rows.every((r) => sameValue(r.original, r.now)));
+	const nothingOfMineChanged = $derived(rows.length > 0 && rows.every((r) => r.orig !== null && !r.changed));
 
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	$effect(() => {
@@ -296,7 +302,7 @@
 		if (a === 'latest') location.href = `/cs/${id}`;
 		else if (a === 'conflict') conflictOpen = true;
 		else if (a === 'retry') last?.kind === 'revise' ? reviseAndApply(true) : approve(true);
-		else if (a === 'delegations') goto('/agents');
+		else if (a === 'delegations') goto('/ai-team');
 		else if (a === 'queue') goto('/review');
 		else if (a === 'login') session.expired = true;
 		else load();
@@ -345,13 +351,20 @@
 						<thead><tr><th>欄位</th><th>現在</th><th>提案</th></tr></thead>
 						<tbody>
 							{#each Object.entries((op.set ?? {}) as Record<string, unknown>) as [k, v] (k)}
-								{@const now = t ? issueValues(t.issue, t.look.fields)[k] : undefined}
-								<tr><td>{labelOf(k, t?.look ?? NO_LOOK)}</td><td class="muted">{t ? show(k, now, t.look) : '—'}</td><td><b>{show(k, v, t?.look ?? NO_LOOK)}</b></td></tr>
+								{@const d = diffOf(tid, k)}
+								{#if d}
+									<!-- G12: the server's display values (also for a target this page cannot look up) -->
+									<tr data-testid="diff-row"><td>{d.label}</td><td class="muted">{fmtValue(d.before)}</td><td><b>{fmtValue(d.after)}</b></td></tr>
+								{:else}
+									{@const now = t ? issueValues(t.issue, t.look.fields)[k] : undefined}
+									<tr><td>{labelOf(k, t?.look ?? NO_LOOK)}</td><td class="muted">{t ? show(k, now, t.look) : '—'}</td><td><b>{show(k, v, t?.look ?? NO_LOOK)}</b></td></tr>
+								{/if}
 							{/each}
 						</tbody>
 					</table>
 				{:else if op.kind === 'transition'}
-					<div><b>轉狀態</b>・<a class="key" href="/issue/{keyOf(tid)}">{keyOf(tid)}</a>：{t?.issue.status ?? '—'} → <b>{statusName(t, op.to_status_id)}</b></div>
+					{@const d = diffOf(tid, 'status')}
+					<div><b>轉狀態</b>・<a class="key" href="/issue/{keyOf(tid)}">{keyOf(tid)}</a>：{d ? fmtValue(d.before) : (t?.issue.status ?? '—')} → <b>{d ? fmtValue(d.after) : statusName(t, op.to_status_id)}</b></div>
 				{:else if op.kind === 'add_note'}
 					<div><b>新增{op.is_private ? '私有 ' : ' '}note</b>・<a class="key" href="/issue/{keyOf(tid)}">{keyOf(tid)}</a></div>
 					{#if op.is_private}<div class="hint">私有 note：只有能看私有 note 的成員看得到。</div>{/if}
@@ -391,10 +404,10 @@
 					<thead><tr><th>單</th><th>欄位</th><th>原本</th><th>現在</th><th>提案</th></tr></thead>
 					<tbody>
 						{#each rows as r (r.choice)}
-							<tr class:changed={r.hasOriginal && !sameValue(r.original, r.now)}>
+							<tr class:changed={r.changed}>
 								<td class="mono">{r.key}</td>
 								<td>{r.label}</td>
-								<td class="muted">{r.hasOriginal ? show(r.field, r.original, r.look) : '（提案時沒有記錄）'}</td>
+								<td class="muted" data-testid="original">{r.orig ?? '（提案時沒有記錄）'}</td>
 								<td><label><input type="radio" name={r.choice} checked={choices[r.choice] === 'current'} onchange={() => (choices[r.choice] = 'current')} data-testid="use-current" /> {show(r.field, r.now, r.look)}</label></td>
 								<td><label><input type="radio" name={r.choice} checked={(choices[r.choice] ?? 'proposed') === 'proposed'} onchange={() => (choices[r.choice] = 'proposed')} data-testid="use-proposed" /> <b>{show(r.field, r.proposed, r.look)}</b></label></td>
 							</tr>

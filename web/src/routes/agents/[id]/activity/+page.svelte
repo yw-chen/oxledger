@@ -7,6 +7,7 @@
 	import { page } from '$app/state';
 	import type { ActivityItem, IncidentPreview, UndoPreview, UndoResult } from '$api/types';
 	import { api, ApiError, newOperationId } from '$lib/api';
+	import { fullIssueKey } from '$lib/aiteam';
 	import { describeError } from '$lib/errors';
 	import { fmtTime, fmtValue, fieldLabel } from '$lib/format';
 	import { counts, refreshCounts } from '$lib/counts.svelte';
@@ -17,10 +18,15 @@
 	import { session } from '$lib/session.svelte';
 
 	const agentId = $derived(page.params.id ?? '');
-	const ctx = $derived(counts.contexts.find((c) => c.agent_principal_id === agentId) ?? null);
-	const label = $derived(ctx?.agent_label ?? 'agent');
+	const role = $derived(counts.team.find((m) => m.id === agentId) ?? null);
+	const label = $derived(role?.handle ?? 'agent');
+	const isPaused = $derived(role?.status === 'paused');
+	const mine = $derived(!!role && role.sponsor.id === session.user?.user_id);
 
 	let items = $state<ActivityItem[]>([]);
+	/** G24: the server filters by time and issue and pages with a cursor. */
+	let next = $state<string | null>(null);
+	let more = $state(false);
 	let loadError = $state<unknown>(null);
 	let issueFilter = $state('');
 	let kindFilter = $state('');
@@ -36,10 +42,22 @@
 	let busy = $state(false);
 	let look = $state<Lookups>({ fields: [], assignees: [], versions: [] });
 
+	/** A full issue key goes to the server (`issue`); a partial one only filters what is loaded. */
+	const serverIssue = $derived(fullIssueKey(issueFilter));
+	function query(cursor?: string) {
+		return {
+			from: sinceHours ? new Date(Date.now() - sinceHours * 3600_000).toISOString() : undefined,
+			issue: serverIssue || undefined,
+			limit: 50,
+			cursor
+		};
+	}
 	async function load() {
 		loadError = null;
 		try {
-			items = (await api('GET /agents/{id}/activity', { path: { id: agentId } })).items;
+			const a = await api('GET /agents/{id}/activity', { path: { id: agentId }, query: query() });
+			items = a.items;
+			next = a.next_cursor;
 			const prefixes = new Set(items.flatMap((i) => i.keys.map((k) => k.split('-')[0])));
 			const pids = session.projects.filter((p) => prefixes.has(p.key)).map((p) => p.id);
 			look = await projectLookups(pids);
@@ -47,15 +65,29 @@
 			loadError = e;
 		}
 	}
+	async function loadMore() {
+		if (!next) return;
+		more = true;
+		try {
+			const a = await api('GET /agents/{id}/activity', { path: { id: agentId }, query: query(next) });
+			items = [...items, ...a.items];
+			next = a.next_cursor;
+		} catch (e) {
+			loadError = e;
+		} finally {
+			more = false;
+		}
+	}
 	$effect(() => {
 		void agentId;
+		void sinceHours;
+		void serverIssue;
 		load();
 	});
 	const shown = $derived(
 		items.filter(
 			(i) =>
 				(!kindFilter || i.kind === kindFilter) &&
-				(!sinceHours || Date.parse(i.at) >= Date.now() - sinceHours * 3600_000) &&
 				(!issueFilter.trim() || i.keys.some((k) => k.toUpperCase().includes(issueFilter.trim().toUpperCase())))
 		)
 	);
@@ -136,9 +168,9 @@
 		}
 	}
 	async function pauseFirst() {
-		if (!ctx) return;
+		if (!role) return;
 		try {
-			await api('POST /agent-contexts/{id}/suspend', { path: { id: ctx.id }, body: {} });
+			await api('POST /ai-team/{id}/pause', { path: { id: role.id }, body: { scope: 'principal', reason: '事故回復' } });
 			toast(`已暫停 ${label} 的寫入`, 'ok');
 			refreshCounts();
 		} catch (e) {
@@ -203,17 +235,17 @@
 
 <svelte:head><title>{label} 的活動・oxledger</title></svelte:head>
 <div class="page">
-	<a href="/agents" class="hint">← 我的 agent 委派</a>
+	<a href={role ? `/ai-team/${encodeURIComponent(role.handle)}` : '/ai-team'} class="hint">← {role ? role.handle : 'AI 團隊'}</a>
 	<div class="row" style="gap:8px">
 		<h1 style="margin:0"><span class="agname">{label}</span> 的活動</h1>
 		<span class="agent-label">agent</span>
-		{#if ctx?.suspended_at}<span class="chip c-warn">寫入已暫停</span>{/if}
+		{#if isPaused}<span class="chip c-warn">寫入已暫停</span>{/if}
 	</div>
 
 	<div class="row" style="gap:8px;margin:8px 0">
 		<input type="search" bind:value={issueFilter} placeholder="篩選單號，例如 AUTH-12" aria-label="篩選單號" style="width:200px" />
 		<select bind:value={sinceHours} aria-label="篩選時間" data-testid="act-since">
-			<option value={0}>全部時間</option>
+			<option value={0}>最近 30 天</option>
 			<option value={1}>最近 1 小時</option>
 			<option value={24}>最近 24 小時</option>
 			<option value={168}>最近 7 天</option>
@@ -252,6 +284,7 @@
 	{:else}
 		{#if !loadError}<div class="empty">沒有活動。</div>{/if}
 	{/each}
+	{#if next}<button class="btn" onclick={loadMore} disabled={more} data-testid="act-more">{more ? '載入中…' : '載入更多'}</button>{/if}
 
 	<div class="card" style="margin-top:16px" data-testid="incident">
 		<b>事故回復</b>
@@ -262,7 +295,7 @@
 		</div>
 		<ErrorBox error={incidentError} />
 		{#if incident}
-			{#if ctx && !ctx.suspended_at}
+			{#if mine && !isPaused}
 				<div class="banner w">建議先暫停 {label} 的寫入，避免回復時它又寫入。<button class="btn sm" onclick={pauseFirst}>暫停寫入</button></div>
 			{/if}
 			<div class="hint">從 {fmtTime(incident.since)} 起，共 {incident.items.length} 筆（清單在 {fmtTime(incident.frozen_at)} 凍結）</div>

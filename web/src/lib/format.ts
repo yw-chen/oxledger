@@ -43,7 +43,8 @@ export const FIELD_LABELS: Record<string, string> = {
 	note: 'note',
 	name: '名稱',
 	effective_date: '日期',
-	description_version: '說明'
+	description_version: '說明',
+	estimated_hours: '預估工時'
 };
 
 export function fieldLabel(k: string): string {

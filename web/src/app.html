@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>oxledger</title>
 		<script>
-			try { const t = localStorage.getItem('ox.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+			try { let t = localStorage.getItem('ox.theme'); if (t === 'system') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; if (t === 'high_contrast') t = 'hc'; if (t === 'light' || t === 'dark' || t === 'hc') document.documentElement.dataset.theme = t; } catch {}
 		</script>
 		%sveltekit.head%
 	</head>

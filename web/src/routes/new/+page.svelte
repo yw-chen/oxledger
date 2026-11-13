@@ -14,7 +14,10 @@
 	import { rememberCreated } from '$lib/created.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import FieldInput from '$lib/components/FieldInput.svelte';
+	import FormSections from '$lib/components/FormSections.svelte';
+	import type { FormDescription } from '$api/types';
+	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
+	import { statusCategories } from '$lib/triage';
 	import { listTrackers } from '$lib/trackers';
 
 	const initialProject = (page.url.searchParams.get('project') ?? '').toUpperCase();
@@ -22,6 +25,8 @@
 	let trackers = $state<Candidate[]>([]);
 	let trackerId = $state('');
 	let schema = $state<TrackerSchema | null>(null);
+	/** Layout and conditional rules (contract 05 §6.14); the schema still decides what may be set. */
+	let describe = $state<FormDescription | null>(null);
 	let assignees = $state<Assignee[]>([]);
 	let versions = $state<VersionView[]>([]);
 	let form = $state<Record<string, unknown>>({ subject: '', description: page.url.searchParams.get('description') ?? '' });
@@ -52,7 +57,13 @@
 		const t = trackerId;
 		if (!p || !t) return;
 		schema = null;
+		describe = null;
 		loadError = null;
+		api('GET /projects/{id}/trackers/{t}/form', { path: { id: p.id, t }, query: { op: 'create' } })
+			.then((d) => {
+				if (p === project && t === trackerId) describe = d;
+			})
+			.catch(() => {});
 		Promise.all([
 			api('GET /projects/{id}/trackers/{tracker_id}/schema', { path: { id: p.id, tracker_id: t } }),
 			api('GET /projects/{id}/assignees', { path: { id: p.id } }).catch(() => ({ assignees: [] as Assignee[], project_id: '' })),
@@ -70,11 +81,29 @@
 
 	const fields = $derived((schema?.fields ?? []).filter((f) => f.ops.includes('create') && f.key !== 'is_private'));
 	const privateChoice = $derived(schema?.creation.is_private.allowed_values ?? []);
-	const missing = $derived(fields.filter((f) => f.required && (form[f.key] === undefined || form[f.key] === null || String(form[f.key]).trim() === '')));
+	/** Status → category, so rules on status_category see what the server will (the initial status). */
+	let cats = $state<Map<string, { label: string; category: string }>>(new Map());
+	$effect(() => {
+		statusCategories()
+			.then((m) => (cats = m))
+			.catch(() => {});
+	});
+	const initialStatus = $derived(describe?.creation?.initial_status_id ?? null);
+	const values = $derived(condValues(form, fields, { tracker: trackerId, status: initialStatus, status_category: initialStatus ? (cats.get(initialStatus)?.category ?? null) : null, is_private: isPrivate }));
+	const hidden = $derived(hiddenKeys(describe?.layout, values));
+	const entries = $derived(
+		fields.map((f) => {
+			const d = describe?.fields.find((x) => x.key === f.key);
+			return { f, required: f.required || (d ? requiredNow({ required: false, required_if: d.required_if }, values) : false) };
+		})
+	);
+	const missing = $derived(entries.filter((e) => e.required && !hidden.has(e.f.key) && (form[e.f.key] === undefined || form[e.f.key] === null || String(form[e.f.key]).trim() === '')).map((e) => e.f));
 
 	function build() {
 		const set: Record<string, unknown> = {};
 		for (const f of fields) {
+			// A field the layout hides right now is not sent (show_if, §6.14).
+			if (hidden.has(f.key)) continue;
 			const v = form[f.key];
 			if (v === undefined || v === null || v === '') continue;
 			set[f.key] = v;
@@ -134,9 +163,7 @@
 			<div class="banner w" data-testid="cannot-create">你在 {project?.key} 不能建立「{trackers.find((t) => t.id === trackerId)?.name}」類型的單。換一個專案或類型試試。</div>
 		{:else if schema}
 			<div class="card" data-testid="new-form">
-				{#each fields as f (f.key)}
-					<FieldInput field={f} bind:value={form[f.key]} {assignees} {versions} required={f.required} disabled={busy || uncertain} />
-				{/each}
+				<FormSections fields={entries} layout={describe?.layout} bind:form {values} {assignees} {versions} disabled={busy || uncertain} />
 				{#if privateChoice.length > 1}
 					<label class="row" style="gap:6px;margin-top:6px"><input type="checkbox" bind:checked={isPrivate} disabled={busy || uncertain} data-testid="new-private" />私有（只有有權看私有單的成員看得到）</label>
 				{:else if privateChoice[0] === true}

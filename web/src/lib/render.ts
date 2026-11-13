@@ -47,6 +47,7 @@ export function issueValues(v: SpaIssue, fields: FieldSchema[]): Record<string, 
 		fixed_version_id: v.fixed_version?.id ?? null,
 		start_date: v.start_date,
 		due_date: v.due_date,
+		estimated_hours: v.estimated_hours ?? null,
 		is_private: v.is_private
 	};
 	for (const f of fields) {

@@ -4,12 +4,17 @@
 	import { page } from '$app/state';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { session, loadSession, signOut } from '$lib/session.svelte';
-	import { loadPrefs, prefs, toggleTheme } from '$lib/prefs.svelte';
+	import { loadPrefs, prefs, THEME_LABEL } from '$lib/prefs.svelte';
+	import { loadMe, me, setPrefs } from '$lib/me.svelte';
+	import { untrack } from 'svelte';
+	import Bell from '$lib/components/Bell.svelte';
+	import Onboarding from '$lib/components/Onboarding.svelte';
 	import { refreshCounts } from '$lib/counts.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import LeftNav from '$lib/components/LeftNav.svelte';
 	import Collab from '$lib/components/Collab.svelte';
 	import Palette from '$lib/components/Palette.svelte';
+	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
 	import LoginForm from '$lib/components/LoginForm.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 
@@ -26,6 +31,14 @@
 		}
 		loadPrefs(session.user?.user_id ?? null);
 		if (session.user) refreshCounts();
+	});
+	// Personal settings follow whoever is signed in (also after the login page or a re-login as someone else).
+	$effect(() => {
+		const id = session.user?.user_id ?? null;
+		untrack(() => {
+			if (id) loadMe();
+			else me.prefs = null;
+		});
 	});
 
 	$effect(() => {
@@ -54,6 +67,10 @@
 		loadPrefs(session.user?.user_id ?? null);
 		refreshCounts();
 	}
+	/** The top bar button flips dark and light; the other themes are in 偏好. */
+	function flipTheme() {
+		setPrefs({ theme: prefs.theme === 'light' ? 'dark' : 'light' });
+	}
 </script>
 
 <svelte:window onkeydown={keys} />
@@ -73,7 +90,8 @@
 					<span class="kbd">Ctrl K</span><span class="t">搜尋紀錄、開單號，或輸入 /new</span>
 				</button>
 				<div class="me">
-					<button class="btn sm ghost" onclick={toggleTheme} title="切換深色／淺色" data-testid="theme">{prefs.theme === 'dark' ? '☾ 深色' : '☀ 淺色'}</button>
+					<button class="btn sm ghost" onclick={flipTheme} title="切換深色／淺色（其他選項在偏好設定）" data-testid="theme">{prefs.theme === 'light' ? '☀' : '☾'} {THEME_LABEL[prefs.theme]}</button>
+					{#if session.user}<Bell />{/if}
 					{#if session.user}
 						<a href="/account" class="nm" style="color:inherit">{session.user.name}</a>
 						<button class="btn sm" onclick={logout}>登出</button>
@@ -87,6 +105,8 @@
 			</div>
 		</div>
 		<Palette bind:open={palette} />
+		<StepUpDialog />
+		{#if page.url.pathname === '/'}<Onboarding />{/if}
 	{/if}
 	{#if session.expired}
 		<div class="modal-bg">

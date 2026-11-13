@@ -4,7 +4,7 @@
 	// default or override), and GitHub repo links. The server checks
 	// manage_project / manage_versions; this page only hides what it can.
 	import { page } from '$app/state';
-	import type { LinkableRepos, RepoLinks, ScheduleSettings, TabInput, TabSettings } from '$api/types';
+	import type { LinkableRepos, RepoLinks, ScheduleSettings, TabInput, TabSettings, ViewSummary } from '$api/types';
 	import { api, ApiError } from '$lib/api';
 	import { projectByKey } from '$lib/session.svelte';
 	import { fmtShort } from '$lib/format';
@@ -29,12 +29,23 @@
 	let uid = 0;
 	function adopt(t: TabSettings) {
 		tabs = t;
-		rows = t.tabs.map((x) => ({ id: x.id, kind: x.kind, title: x.title, query: x.query ?? null, url: x.url ?? null, hidden: x.hidden, builtin: x.kind === 'builtin', uid: ++uid }));
+		rows = t.tabs.map((x) => ({ id: x.id, kind: x.kind, title: x.title, query: x.query ?? null, url: x.url ?? null, view_id: x.view_id ?? null, hidden: x.hidden, builtin: x.kind === 'builtin', uid: ++uid }));
 		defaultTab = t.default_tab;
 		tabConflict = false;
 	}
+	// Project views of this project, for 「視圖」 tabs and the board tab.
+	let projectViews = $state<ViewSummary[]>([]);
+	async function loadViews() {
+		try {
+			const r = await api('GET /views', { query: { scope: 'all', project: key } });
+			projectViews = r.items.filter((v) => v.scope === 'project');
+		} catch {
+			projectViews = [];
+		}
+	}
 	async function loadTabs() {
 		tabError = null;
+		loadViews();
 		try {
 			adopt(await api('GET /projects/{id}/tabs', { path: { id: projectId } }));
 		} catch (e) {
@@ -48,8 +59,9 @@
 		[r[i], r[j]] = [r[j], r[i]];
 		rows = r;
 	}
-	function add(kind: 'query' | 'link') {
-		rows = [...rows, { id: null, kind, title: kind === 'query' ? '新查詢' : '新連結', query: kind === 'query' ? `project:${key} ` : null, url: kind === 'link' ? 'https://' : null, hidden: false, builtin: false, uid: ++uid }];
+	function add(kind: 'query' | 'link' | 'view') {
+		const first = projectViews.find((v) => v.kind === 'list') ?? projectViews[0];
+		rows = [...rows, { id: null, kind, title: kind === 'query' ? '新查詢' : kind === 'view' ? (first?.name ?? '新視圖') : '新連結', query: kind === 'query' ? `project:${key} ` : null, url: kind === 'link' ? 'https://' : null, view_id: kind === 'view' ? (first?.id ?? null) : null, hidden: false, builtin: false, uid: ++uid }];
 	}
 	function remove(i: number) {
 		rows = rows.filter((_, k) => k !== i);
@@ -60,7 +72,7 @@
 		tabError = null;
 		try {
 			const lock = overwrite ? (await api('GET /projects/{id}/tabs', { path: { id: projectId } })).lock_version : tabs.lock_version;
-			const body = { lock_version: lock, default_tab: defaultTab, tabs: rows.map((r) => ({ id: r.id || undefined, kind: r.kind, title: r.title.trim(), query: r.kind === 'query' ? r.query : undefined, url: r.kind === 'link' ? r.url : undefined, hidden: r.hidden })) };
+			const body = { lock_version: lock, default_tab: defaultTab, tabs: rows.map((r) => ({ id: r.id || undefined, kind: r.kind, title: r.title.trim(), query: r.kind === 'query' ? r.query : undefined, url: r.kind === 'link' ? r.url : undefined, view_id: r.kind === 'view' || r.id === 'board' ? r.view_id || undefined : undefined, hidden: r.hidden })) };
 			adopt(await api('PUT /projects/{id}/tabs', { path: { id: projectId }, body }));
 			reload++;
 			toast('已儲存分頁', 'ok');
@@ -205,6 +217,11 @@
 
 <svelte:head><title>{key}・專案設定・oxledger</title></svelte:head>
 <ProjectFrame projectKey={key} active={null} {reload}>
+	<div class="row" style="gap:6px;margin:6px 0" data-testid="settings-links">
+		<a class="btn sm" href="/project/{key}/settings/triage" data-testid="link-triage-settings">Triage 設定</a>
+		<a class="btn sm" href="/project/{key}/settings/time" data-testid="link-time-settings">工時設定</a>
+		<a class="btn sm" href="/project/{key}/settings/forms" data-testid="link-form-settings">表單</a>
+	</div>
 	{#if !tabs && tabError}
 		<ErrorBox error={tabError} onaction={loadTabs} />
 	{:else}
@@ -228,10 +245,20 @@
 					<tr data-testid="tab-row">
 						<td style="white-space:nowrap"><button class="btn sm ghost" onclick={() => move(i, -1)} disabled={!canTabs || i === 0} aria-label="上移">↑</button><button class="btn sm ghost" onclick={() => move(i, 1)} disabled={!canTabs || i === rows.length - 1} aria-label="下移">↓</button></td>
 						<td><input bind:value={r.title} maxlength="40" aria-label="標題" disabled={!canTabs} /></td>
-						<td class="hint">{r.builtin ? '內建' : r.kind === 'query' ? '查詢' : '連結'}</td>
+						<td class="hint">{r.builtin ? '內建' : r.kind === 'query' ? '查詢' : r.kind === 'view' ? '視圖' : '連結'}</td>
 						<td>
 							{#if r.kind === 'query'}<input class="mono" style="width:100%" bind:value={r.query} aria-label="查詢條件" disabled={!canTabs} />
 							{:else if r.kind === 'link'}<input style="width:100%" bind:value={r.url} aria-label="網址" disabled={!canTabs} />{#if host(r.url)}<div class="hint">開啟 {host(r.url)}</div>{/if}
+							{:else if r.kind === 'view'}
+								<select bind:value={r.view_id} aria-label="視圖" disabled={!canTabs} data-testid="tab-view">
+									{#if !r.view_id}<option value={null}>（選一個專案視圖）</option>{/if}
+									{#each projectViews as v (v.id)}<option value={v.id}>{v.name}（{v.kind === 'board' ? '看板' : '列表'}）</option>{/each}
+								</select>
+							{:else if r.id === 'board'}
+								<select bind:value={r.view_id} aria-label="看板視圖" disabled={!canTabs} data-testid="tab-board-view">
+									<option value={null}>內建看板</option>
+									{#each projectViews.filter((v) => v.kind === 'board') as v (v.id)}<option value={v.id}>{v.name}</option>{/each}
+								</select>
 							{:else}<span class="hint">—</span>{/if}
 						</td>
 						<td><input type="checkbox" bind:checked={r.hidden} aria-label="隱藏" disabled={!canTabs} /></td>
@@ -243,6 +270,7 @@
 		<div class="row" style="gap:8px;margin-top:6px;flex-wrap:wrap">
 			<button class="btn sm" onclick={() => add('query')} disabled={!tabs.can_manage}>＋查詢分頁</button>
 			<button class="btn sm" onclick={() => add('link')} disabled={!tabs.can_manage}>＋連結分頁</button>
+			<button class="btn sm" onclick={() => add('view')} disabled={!tabs.can_manage || !projectViews.length} title={projectViews.length ? '' : '這個專案還沒有專案視圖；從視圖的「⋯」複製成專案視圖'} data-testid="add-view-tab">＋視圖分頁</button>
 			<label class="row" style="gap:4px">預設分頁
 				<select bind:value={defaultTab} disabled={!canTabs}>{#each defaultChoices as r (r.uid)}<option value={r.id}>{r.title}</option>{/each}</select>
 			</label>
