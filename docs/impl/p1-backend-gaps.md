@@ -29,3 +29,8 @@
 | G23 | 已修補 | 里程碑清單與健康度門檻沒有「呼叫者能不能改」的旗標，沒有 manage_versions 的人也看到「新增里程碑」「改日期」「儲存門檻」，送出才被擋（F6 驗證發現） | `VersionList.can_manage`、`ScheduleSettings.can_manage`（= manage_versions）；`tests/s6b_schedule.rs` 加 viewer／manager 斷言；`api/` 重新產生 | — |
 | G24 | 未修 | `GET /agents/{id}/activity` 沒有時間與單號參數（§16.10 要求可篩），也沒有分頁 | 前端只對已回傳的項目做時間／單號過濾 | 加 `since`、`key`、cursor |
 | G25 | 已修補（測試） | `review_queue::render` 的 int 分支沒有測試（F0–F5 驗證的 mutation 存活） | `tests/s6b_queue.rs` 加 int 欄位斷言 | — |
+| G26 | 未修 | 議題 view／actions 沒有「呼叫者能不能記工時」（`log_time`）的旗標 | 看得到工時就顯示「記工時」，沒有權限時送出才被擋 | `IssueActions` 加 `time: {can_log, can_log_for_others}` |
+| G27 | 未修 | `GET /time-entries/summary` 沒有 `activity` 參數（§6.8 篩選列有「活動」） | 報表只提供「人」「議題」篩選 | summary 加 `activity`（清單已有） |
+| G28 | 未修 | `GET /time-activities` 沒帶 `project` 時回 `Activity[]`，但 openapi 寫的是 `ProjectActivities` | 管理頁把回應轉型成 `Activity[]` | 拆成 `GET /admin/time-activities`，或 openapi 用 oneOf |
+| G29 | 未修 | 工時報表在「模組沒開」與「沒有 view_time_entries」都回 `forbidden_op`（`time_entries_not_visible`） | 前端另讀 `GET /projects/{id}/time-activities` 的 `module_enabled` 分辨 | reason 分成 `time_module_disabled` 與 `time_entries_not_visible` |
+| G30 | 未修 | 議題 view 的 `triage` 只有狀態字串；can_decide、snoozed_until 要另讀 `GET /issues/{key}`，拒絕預設狀態要另讀專案收件匣的 settings | 議題頁在待分流時多讀兩次 | view 的 `triage` 用和 `GET /issues/{key}` 相同的物件，並帶 decline_status |

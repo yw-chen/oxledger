@@ -74,6 +74,34 @@ const FORM_KIND: Record<string, string> = {
 	field_not_applicable: '有欄位不適用於這個類型'
 };
 
+const TIME_FIELD: Record<string, string> = { issue: '議題', comments: '說明', hours: '時數', spent_on: '日期', activity_id: '活動' };
+const showH = (h: unknown) => String(Math.round(Number(h) * 100) / 100);
+/** Time entry rules (contract 05 §3.5.5 T1–T7, wording §6.6). */
+function timeKind(d: Record<string, unknown>): string | null {
+	switch (d.kind) {
+		case 'max_hours_per_day': {
+			const max = showH(d.max_hours_per_day);
+			if (d.remaining === undefined || d.remaining === null) return `超過每天可記的上限（${max} 小時）`;
+			const used = showH(Number(d.max_hours_per_day) - Number(d.remaining));
+			return `這天已經記了 ${used} 小時，上限是 ${max} 小時（還能記 ${showH(d.remaining)}）`;
+		}
+		case 'future_date':
+			return '不能記未來的日期';
+		case 'closed_issue':
+			return '這張單已結案，不接受記工時';
+		case 'hours_invalid':
+			return '時數要是 0～1000、最多兩位小數（記 0 小時要管理員開放）';
+		case 'activity_inactive':
+			return '這個活動已停用，請選別的活動';
+		case 'snooze_range':
+			return '稍後處理的時間要在 1 小時到 90 天之後';
+		case 'activity_in_use':
+			return '已有工時的活動不能刪除，只能停用';
+		default:
+			return null;
+	}
+}
+
 export function describeError(e: unknown): Shown {
 	if (!(e instanceof ApiError)) return { title: '發生未預期的錯誤', changed: UNKNOWN, next: '重新整理', action: 'refresh' };
 	const d = e.details;
@@ -136,13 +164,19 @@ export function describeError(e: unknown): Shown {
 		case 'not_found':
 			return { title: '找不到，或你沒有權限查看', changed: NOTHING };
 		case 'invalid_value': {
+			const time = timeKind(d);
+			if (time) return { title: time, changed: NOTHING };
 			const why = typeof d.kind === 'string' ? INVALID_KIND[d.kind] : undefined;
 			if (why) return { title: `${rowOf(d.path)}${why}`, changed: NOTHING };
 			const allowed = names(d.allowed);
 			return { title: allowed ? `值不合法；可以用：${allowed}` : '值不合法', changed: NOTHING };
 		}
 		case 'required_field_missing':
-			return { title: `缺少必填欄位${d.field ? `：${String(d.field)}` : ''}`, changed: NOTHING };
+		{
+			const list = d.field ? [String(d.field)] : Array.isArray(d.fields) ? d.fields.map(String) : [];
+			const shown = list.map((f) => TIME_FIELD[f] ?? fieldLabel(f)).join('、');
+			return { title: `缺少必填欄位${shown ? `：${shown}` : ''}`, changed: NOTHING };
+		}
 		case 'readonly_field':
 			return { title: '這個欄位目前不能修改', changed: NOTHING };
 		case 'relation_not_allowed':

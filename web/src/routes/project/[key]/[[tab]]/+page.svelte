@@ -12,6 +12,8 @@
 	import QueryTab from '$lib/components/QueryTab.svelte';
 	import ViewPage from '$lib/components/ViewPage.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import TriageInbox from '$lib/components/TriageInbox.svelte';
+	import TimeReport from '$lib/components/TimeReport.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	const project = $derived(projectByKey(key));
@@ -26,6 +28,9 @@
 	});
 	const tabId = $derived(page.params.tab ?? tabs?.default_tab ?? null);
 	const tab = $derived(tabs?.tabs.find((t) => t.id === tabId) ?? null);
+	// §6.4 / §6.8: the Triage inbox and the time report open at their own
+	// path even when no tab shows them.
+	const special = $derived(page.params.tab === 'triage' || page.params.tab === 'time' ? page.params.tab : null);
 	const host = (u: string) => {
 		try {
 			return new URL(u).host;
@@ -35,12 +40,16 @@
 	};
 </script>
 
-<svelte:head><title>{key}{tab ? `・${tab.title}` : ''}・oxledger</title></svelte:head>
+<svelte:head><title>{key}{tab ? `・${tab.title}` : special === 'time' ? '・工時' : special === 'triage' ? '・Triage' : ''}・oxledger</title></svelte:head>
 {#if error}
 	<div class="page"><ErrorBox {error} /></div>
 {:else}
 	<ProjectFrame projectKey={key} active={tabId}>
-		{#if !tabs}
+		{#if special === 'triage'}
+			{#key key}<TriageInbox projectKey={key} projectId={project?.id ?? null} />{/key}
+		{:else if special === 'time'}
+			{#key key}<TimeReport projectKey={key} />{/key}
+		{:else if !tabs}
 			<div class="sync"><span class="spin"></span>載入中…</div>
 		{:else if !tab}
 			<div class="empty">沒有這個分頁（可能已被管理者移除）。</div>

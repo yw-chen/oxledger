@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { session } from '$lib/session.svelte';
 	import { prefs, savePrefs } from '$lib/prefs.svelte';
-	import { counts, awaitingLabel, attentionContexts } from '$lib/counts.svelte';
+	import { counts, awaitingLabel, attentionContexts, triageLabel } from '$lib/counts.svelte';
 	import { current } from '$lib/current.svelte';
 
 	const path = $derived(page.url.pathname as string);
@@ -22,7 +22,9 @@
 		{ href: '/search?assignee=me&status=open', ic: '◉', label: '我的工作', on: path === '/search' && search.includes('assignee=me') },
 		{ href: '/review', ic: '✓', label: '待審', on: path.startsWith('/review') || path.startsWith('/cs/'), badge: counts.awaiting.length ? awaitingLabel() : '' },
 		{ href: '/search', ic: '☰', label: '全部議題', on: path === '/search' && !search.includes('assignee=me') },
-		{ href: '/views', ic: '▤', label: '我的視圖', on: path.startsWith('/views') }
+		{ href: '/views', ic: '▤', label: '我的視圖', on: path.startsWith('/views') },
+		...(counts.triage.length ? [{ href: '/triage', ic: '⇥', label: '分流', on: path.startsWith('/triage'), badge: triageLabel(), testid: 'triage-badge' }] : []),
+		{ href: '/time', ic: '◷', label: '工時', on: path.startsWith('/time') }
 	]);
 </script>
 
@@ -32,7 +34,7 @@
 	{#each items as it (it.href)}
 		<a href={it.href} class:on={it.on} title={it.label} aria-current={it.on ? 'page' : undefined}>
 			<span class="ic">{it.ic}</span>{#if !mini}<span class="lb">{it.label}</span>{/if}
-			{#if it.badge}<span class="badge" data-testid="awaiting-badge" title="等我審 {it.badge}">{it.badge}</span>{/if}
+			{#if it.badge}<span class="badge" data-testid={it.testid ?? 'awaiting-badge'} title="{it.label} {it.badge}">{it.badge}</span>{/if}
 		</a>
 	{/each}
 	{#if mini}<div class="sep"></div>{:else}<div class="sec">專案</div>{/if}
@@ -48,7 +50,8 @@
 	</a>
 	{#if session.user?.is_admin}
 		{#if mini}<div class="sep"></div>{:else}<div class="sec">管理</div>{/if}
-		<a href="/admin/github" class:on={path.startsWith('/admin')} title="GitHub 連動"><span class="ic">⚒</span>{#if !mini}<span class="lb">GitHub 連動</span>{/if}</a>
+		<a href="/admin/timelog" class:on={path.startsWith('/admin/timelog')} title="工時設定"><span class="ic">◷</span>{#if !mini}<span class="lb">工時設定</span>{/if}</a>
+		<a href="/admin/github" class:on={path.startsWith('/admin/github')} title="GitHub 連動"><span class="ic">⚒</span>{#if !mini}<span class="lb">GitHub 連動</span>{/if}</a>
 	{/if}
 	<span style="flex:1"></span>
 	<button class="btn sm ghost" onclick={toggle} title={mini ? '展開導覽' : '收合成圖示'}>{mini ? '»' : '« 收合'}</button>

@@ -30,7 +30,17 @@ async function login(page: Page, user: string, next = '/') {
 }
 
 /** A REST call inside the page with the session's CSRF token. */
-async function papi(page: Page, method: string, path: string, body?: unknown) {
+async function papi(page: Page, method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
+	try {
+		return await papiOnce(page, method, path, body);
+	} catch (e) {
+		// The page was still navigating (a redirect after login): once more.
+		if (!String(e).includes('Execution context was destroyed')) throw e;
+		await page.waitForLoadState('networkidle');
+		return papiOnce(page, method, path, body);
+	}
+}
+async function papiOnce(page: Page, method: string, path: string, body?: unknown) {
 	return page.evaluate(
 		async ({ method, path, body }) => {
 			const s = await (await fetch('/api/v1/auth/session')).json();
@@ -574,4 +584,237 @@ test('視圖：儲存帶 lock_version；別人先改過時顯示衝突，載入�
 	const saved = (await papi(page, 'GET', `/views/${id}`)).json.data;
 	expect(JSON.stringify(saved.def.query.where)).toContain('assignee');
 	expect(saved.lock_version).toBe(lv + 2);
+});
+
+// ---------------------------------------------------------------- F9: Triage and time (contract 05 §6.4–§6.9)
+
+async function newIssue(page: Page, subject: string): Promise<string> {
+	const projects = (await papi(page, 'GET', '/projects')).json.data as { id: string; key: string }[];
+	const ff = (await papi(page, 'GET', '/filter-fields')).json.data;
+	const bug = ff.fields.find((f: { field: string }) => f.field === 'tracker').options.find((o: { label: string }) => o.label === 'Bug').id;
+	const r = await papi(page, 'POST', '/commands', {
+		command_schema_version: 1,
+		ops: [{ kind: 'create_issue', op_id: uuid(), bind: 'n', project_id: projects.find((p) => p.key === 'AUTH')!.id, tracker_id: bug, fields: { subject, description: `${subject} 的描述` } }],
+		preconditions: []
+	});
+	expect(r.status).toBe(200);
+	return r.json.data.effects[0].key;
+}
+async function issueView(page: Page, key: string) {
+	return (await papi(page, 'GET', `/issues/${key}/view?include=recent_notes`)).json.data;
+}
+
+test('Triage：設定開啟後，收件匣用鍵盤與按鈕拒絕、接受、標重複，最近決定列出', async ({ browser }) => {
+	const page = await alice(browser, '/project/AUTH/settings/triage');
+	await page.getByTestId('ts-enabled').check();
+	await page.getByTestId('ts-rule-all_new').check();
+	await page.getByTestId('ts-responsible').selectOption({ label: 'Carol Wu' });
+	await page.getByTestId('ts-decline').selectOption({ label: 'Closed' });
+	await page.getByTestId('ts-save').click();
+	await expect.poll(async () => (await papi(page, 'GET', '/projects/AUTH/triage-settings')).json.data.enabled).toBe(true);
+	const a = await newIssue(page, 'E2E 分流 A：不是本專案的問題');
+	const b = await newIssue(page, 'E2E 分流 B：登入頁 CSP');
+	const c = await newIssue(page, 'E2E 分流 C：和 AUTH-1 一樣的 SSO 需求');
+	expect((await papi(page, 'GET', '/triage/counts')).json.data.projects[0].count).toBeGreaterThanOrEqual(3);
+
+	await page.goto('/project/AUTH/triage');
+	await expect(page.getByTestId('triage-responsible')).toHaveText('本週負責：Carol Wu');
+	await expect(page.getByTestId('triage-badge')).toBeVisible();
+	await expect(page.locator(`[data-testid=triage-row][data-key=${a}]`)).toBeVisible();
+	// Keyboard: move to A, 2 = decline (preset status Closed, preset note prefix).
+	const keys = await page.getByTestId('triage-row').evaluateAll((rs) => rs.map((r) => (r as HTMLElement).dataset.key));
+	for (let i = 0; i < keys.indexOf(a); i++) await page.keyboard.press('j');
+	await page.keyboard.press('2');
+	await expect(page.getByTestId('triage-panel')).toHaveAttribute('data-decision', 'decline');
+	await expect(page.getByTestId('tp-status').locator('option:checked')).toHaveText('Closed');
+	await expect(page.getByTestId('tp-reason-hint')).toBeVisible();
+	await page.getByTestId('tp-note').fill('（Triage 拒絕）請改報到 WEB。');
+	await page.getByTestId('tp-submit').click();
+	await expect(page.locator(`[data-testid=triage-row][data-key=${a}]`)).toHaveCount(0);
+	const va = await issueView(page, a);
+	expect([va.status, va.triage]).toEqual(['Closed', 'declined']);
+	expect(va.recent_notes.items[0].body).toBe('（Triage 拒絕）請改報到 WEB。');
+
+	// Accept B: assign Bob and move to In Progress in the same document.
+	await page.locator(`[data-testid=triage-row][data-key=${b}]`).getByTestId('act-accept').click();
+	await page.getByTestId('tp-assignee').selectOption({ label: 'Bob Chen' });
+	await page.getByTestId('tp-status').selectOption({ label: 'In Progress' });
+	await page.getByTestId('tp-submit').click();
+	await expect(page.locator(`[data-testid=triage-row][data-key=${b}]`)).toHaveCount(0);
+	const vb = await issueView(page, b);
+	expect([vb.status, vb.assignee, vb.triage]).toEqual(['In Progress', 'Bob Chen', 'accepted']);
+
+	// Duplicate C of AUTH-1: search by key, pick, the note fills in.
+	await page.locator(`[data-testid=triage-row][data-key=${c}]`).getByTestId('act-dup').click();
+	await page.getByTestId('tp-dup-q').fill('AUTH-1');
+	await page.getByTestId('tp-dup-hit').filter({ hasText: /^AUTH-1 / }).first().click();
+	await expect(page.getByTestId('tp-note')).toHaveValue('和 AUTH-1 重複。');
+	await page.getByTestId('tp-submit').click();
+	await expect(page.locator(`[data-testid=triage-row][data-key=${c}]`)).toHaveCount(0);
+	const vc = await issueView(page, c);
+	expect([vc.status, vc.triage]).toEqual(['Closed', 'duplicate']);
+
+	await page.getByTestId('tab-decided').click();
+	for (const [k, d] of [
+		[a, '拒絕'],
+		[b, '接受'],
+		[c, '重複']
+	])
+		await expect(page.locator(`[data-testid=triage-row][data-key=${k}]`).getByTestId('decision')).toHaveText(d);
+	await page.getByTestId('self-only').check();
+	await expect(page.getByTestId('triage-empty')).toHaveText('最近 30 天沒有 agent 分流自己建的單。');
+});
+
+test('Triage：議題頁橫條稍後與取消稍後；別人先處理時說明並移除該列', async ({ browser }) => {
+	const page = await alice(browser, '/');
+	const k = await newIssue(page, 'E2E 分流 D：稍後處理');
+	await page.goto(`/issue/${k}`);
+	await expect(page.getByTestId('triage-bar')).toContainText('這張單在 Triage 收件匣等待分流');
+	await page.getByTestId('tb-snooze').click();
+	await page.getByTestId('triage-panel').getByLabel('下週一 9 點').check();
+	await page.getByTestId('tp-submit').click();
+	await expect(page.getByTestId('triage-bar')).toContainText('稍後處理到');
+	expect((await issueView(page, k)).triage).toBe('snoozed');
+	// Snoozed issues leave the inbox unless asked for.
+	await page.goto('/project/AUTH/triage');
+	await expect(page.getByTestId('triage-empty').or(page.getByTestId('triage-row').first())).toBeVisible();
+	await expect(page.locator(`[data-testid=triage-row][data-key=${k}]`)).toHaveCount(0);
+	await page.getByTestId('show-snoozed').check();
+	await expect(page.locator(`[data-testid=triage-row][data-key=${k}]`).getByTestId('snoozed-until')).toBeVisible();
+	await page.goto(`/issue/${k}`);
+	await page.getByTestId('tb-unsnooze').click();
+	await page.getByTestId('tp-submit').click();
+	await expect(page.getByTestId('tb-accept')).toBeVisible();
+	expect((await issueView(page, k)).triage).toBe('pending');
+
+	// Someone accepts it while my panel is open: said so, and the row leaves.
+	await page.goto('/project/AUTH/triage');
+	const row = page.locator(`[data-testid=triage-row][data-key=${k}]`);
+	await row.getByTestId('act-accept').click();
+	await expect(page.getByTestId('tp-submit')).toBeEnabled();
+	const lock = (await papi(page, 'GET', `/issues/${k}`)).json.data.lock_version;
+	const other = await papi(page, 'POST', '/commands', { command_schema_version: 1, ops: [{ kind: 'triage_decide', op_id: uuid(), target: ref(k), decision: 'accept' }], preconditions: [{ target: ref(k), lock_version: lock }] });
+	expect(other.status).toBe(200);
+	await page.getByTestId('tp-submit').click();
+	await expect(page.getByText('這張單已經被處理了').first()).toBeVisible();
+	await expect(row).toHaveCount(0);
+});
+
+test('工時：議題頁記工時、編輯時同時記；週表就地新增、修改與清空刪除', async ({ browser }) => {
+	const page = await alice(browser, '/');
+	page.on('dialog', (d) => d.accept());
+	const k = await newIssue(page, 'E2E 工時：重現 Safari 問題');
+	await page.goto(`/issue/${k}`);
+	await expect(page.getByTestId('time-sum')).toContainText('已記 0 小時');
+	await page.getByTestId('log-time').click();
+	await page.getByTestId('lt-hours').fill('1:30');
+	await expect(page.getByTestId('lt-hours-parsed')).toHaveText('＝1.50 小時');
+	await page.getByTestId('lt-comments').fill('重現 Safari');
+	await page.getByTestId('lt-submit').click();
+	await expect(page.getByTestId('time-sum')).toContainText('已記 1.5 小時');
+	await expect(page.getByTestId('time-event').first()).toContainText('Alice Lin 記了 1.5 小時・開發');
+	// Edit + log in one document.
+	await page.getByTestId('edit').click();
+	await page.getByTestId('edit-with-time').locator('summary').click();
+	// Hours it cannot read: saving stops and says so (never saves without the time).
+	await page.getByTestId('edit-with-time').getByTestId('lt-hours').fill('abc');
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('time-hint')).toBeVisible();
+	await expect(page.getByTestId('save')).toBeVisible();
+	await page.getByTestId('edit-with-time').getByTestId('lt-hours').fill('0.5');
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('time-sum')).toContainText('已記 2 小時');
+	expect((await issueView(page, k)).spent_hours).toBe('2.00');
+
+	// Timesheet: this week has the issue's row; log a new day, change it, clear it.
+	await page.goto('/time');
+	const row = page.locator(`[data-testid=ts-row][data-issue=${k}]`);
+	await expect(row).toBeVisible();
+	const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' });
+	const days: string[] = await row.getByTestId('cell').evaluateAll((cs) => cs.map((c) => (c as HTMLElement).dataset.date!));
+	const other = days.find((d) => d < today) ?? days.find((d) => d !== today)!;
+	const cell = () => row.locator(`[data-testid=cell][data-date="${other}"]`);
+	await cell().click();
+	await page.getByTestId('cell-input').fill('2h');
+	await page.getByTestId('cell-input').press('Enter');
+	await expect(cell()).toHaveText('2');
+	await cell().click();
+	await expect(page.getByTestId('cell-input')).toHaveValue('2');
+	await page.getByTestId('cell-input').fill('3');
+	await page.getByTestId('cell-input').press('Enter');
+	await expect(cell()).toHaveText('3');
+	// Changed elsewhere while I edit: the stale lock is said and the week reloads.
+	await cell().click();
+	await expect(page.getByTestId('cell-input')).toHaveValue('3');
+	const entry = (await papi(page, 'GET', `/time-entries?issue=${k}&from=${other}&to=${other}`)).json.data.items[0];
+	const elsewhere = await papi(page, 'POST', '/commands', { command_schema_version: 1, ops: [{ kind: 'update_time_entry', op_id: uuid(), target: { type: 'time_entry', id: entry.id }, set: { hours: '2.50' } }], preconditions: [{ target: { type: 'time_entry', id: entry.id }, lock_version: entry.lock_version }] });
+	expect(elsewhere.status).toBe(200);
+	await page.getByTestId('cell-input').fill('4');
+	await page.getByTestId('cell-input').press('Enter');
+	await expect(page.getByText('這筆工時剛被改過，已重新載入')).toBeVisible();
+	await expect(cell()).toHaveText('2.5');
+	// Today's cell holds two entries: a panel, not an inline edit.
+	await row.locator(`[data-testid=cell][data-date="${today}"]`).click();
+	await expect(page.getByTestId('cell-panel').getByTestId('panel-hours')).toHaveCount(2);
+	await page.getByTestId('cell-panel').getByRole('button', { name: '關閉' }).click();
+	// 0 is a real entry while the org accepts 0 hours (the default, T1).
+	await cell().click();
+	await expect(page.getByTestId('cell-input')).toHaveValue('2.5');
+	await page.getByTestId('cell-input').fill('0');
+	await page.getByTestId('cell-input').press('Enter');
+	await expect(cell()).toHaveText('0');
+	// Clearing asks, then deletes.
+	await cell().click();
+	await expect(page.getByTestId('cell-input')).toHaveValue('0');
+	await page.getByTestId('cell-input').fill('');
+	await page.getByTestId('cell-input').press('Enter');
+	await expect(cell()).toHaveText('');
+	const left = (await papi(page, 'GET', `/time-entries?issue=${k}`)).json.data.items;
+	expect(left.map((t: { hours: string }) => t.hours).sort()).toEqual(['0.50', '1.50']);
+});
+
+test('工時：管理員設每日上限，超過時就地說明還能記多少；報表與模組開關', async ({ browser }) => {
+	const ctx = await browser.newContext();
+	contexts.push(ctx);
+	const admin = await ctx.newPage();
+	await login(admin, 'admin', '/admin/timelog');
+	await admin.getByTestId('tl-max').fill('8');
+	await admin.getByTestId('tl-save').click();
+	await expect.poll(async () => (await papi(admin, 'GET', '/org/timelog-settings')).json.data.max_hours_per_day).toBe('8.00');
+
+	const page = await alice(browser, '/');
+	page.on('dialog', (d) => d.accept());
+	// Only administrators get the page (the settings themselves are readable by all).
+	await page.goto('/admin/timelog');
+	await expect(page.getByTestId('tl-denied')).toBeVisible();
+	await expect(page.getByTestId('tl-save')).toHaveCount(0);
+	const k = await newIssue(page, 'E2E 工時：每日上限');
+	await page.goto(`/issue/${k}`);
+	const spent = Number(sqlValue("SELECT COALESCE(sum(te.hours),0) FROM time_entries te JOIN principals u ON u.id = te.user_id WHERE u.login = 'alice' AND te.deleted_at IS NULL AND te.spent_on = (now() AT TIME ZONE 'Asia/Taipei')::date"));
+	await page.getByTestId('log-time').click();
+	await page.getByTestId('lt-hours').fill('9');
+	await page.getByTestId('lt-submit').click();
+	const show = (n: number) => String(Math.round(n * 100) / 100);
+	await expect(page.getByTestId('logtime').getByTestId('error')).toContainText(`這天已經記了 ${show(spent)} 小時，上限是 8 小時（還能記 ${show(Math.max(0, 8 - spent))}）`);
+	expect((await papi(page, 'GET', `/time-entries?issue=${k}`)).json.data.items).toHaveLength(0);
+	await admin.getByTestId('tl-max').fill('0');
+	await admin.getByTestId('tl-save').click();
+	await expect.poll(async () => (await papi(admin, 'GET', '/org/timelog-settings')).json.data.max_hours_per_day).toMatch(/^0(\.00)?$/);
+
+	// Report: grouped by person, with the only-visible footnote.
+	await page.goto('/project/AUTH/time');
+	await expect(page.getByTestId('tr-row').filter({ hasText: 'Alice Lin' })).toBeVisible();
+	await expect(page.getByTestId('tr-note')).toHaveText('只包含你看得到的工時。');
+	// Module off (confirmed), then the report and the issue card say so.
+	await page.goto('/project/AUTH/settings/time');
+	await page.getByTestId('tm-toggle').click();
+	await expect(page.getByTestId('tm-state')).toHaveText('已關閉');
+	await page.goto('/project/AUTH/time');
+	await expect(page.getByTestId('time-off')).toHaveText('這個專案沒有開啟工時。');
+	await page.goto(`/issue/${k}`);
+	await expect(page.getByTestId('issue-subject')).toBeVisible();
+	await expect(page.getByTestId('time-card')).toHaveCount(0);
+	await page.goto('/project/AUTH/settings/time');
+	await page.getByTestId('tm-toggle').click();
+	await expect(page.getByTestId('tm-state')).toHaveText('已開啟');
 });

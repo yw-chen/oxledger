@@ -42,6 +42,7 @@
 		<span class="mono dim">{projectKey}</span>
 		<h1 style="margin:0">{project?.name ?? projectKey}</h1>
 		<span style="flex:1"></span>
+		<a class="btn sm ghost" href="/project/{projectKey}/time" class:on={active === 'time'} data-testid="project-time">工時</a>
 		{#if tabs?.can_manage}<a class="btn sm" href="/project/{projectKey}/settings">專案設定</a>{/if}
 	</div>
 	{#if tabs}

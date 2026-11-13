@@ -217,6 +217,10 @@
 
 <svelte:head><title>{key}・專案設定・oxledger</title></svelte:head>
 <ProjectFrame projectKey={key} active={null} {reload}>
+	<div class="row" style="gap:6px;margin:6px 0" data-testid="settings-links">
+		<a class="btn sm" href="/project/{key}/settings/triage" data-testid="link-triage-settings">Triage 設定</a>
+		<a class="btn sm" href="/project/{key}/settings/time" data-testid="link-time-settings">工時設定</a>
+	</div>
 	{#if !tabs && tabError}
 		<ErrorBox error={tabError} onaction={loadTabs} />
 	{:else}

@@ -17,6 +17,12 @@
 	import FieldInput from '$lib/components/FieldInput.svelte';
 	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
 	import { issueValues, labelOf, show } from '$lib/render';
+	import type { InboxSettings, IssueTriage, TimeEntryView, TriageDecision } from '$api/types';
+	import { logTimeDoc, logTimeOp, showHours, type LogInput } from '$lib/hours';
+	import { refreshTriageCounts } from '$lib/counts.svelte';
+	import TriageDecide from '$lib/components/TriageDecide.svelte';
+	import TimeCard from '$lib/components/TimeCard.svelte';
+	import LogTime from '$lib/components/LogTime.svelte';
 
 	const key = $derived(decodeURIComponent(page.params.key ?? '').toUpperCase());
 	let issue = $state<SpaIssue | null>(null);
@@ -66,8 +72,43 @@
 	$effect(() => {
 		mode = null;
 		conflict = false;
+		triagePanel = null;
 		load(key);
 	});
+
+	// ---- Triage bar (contract 05 §6.4): while the issue waits in the inbox ----
+	let triage = $state<IssueTriage | null>(null);
+	let inbox = $state<InboxSettings | null>(null);
+	let triagePanel = $state<TriageDecision | null>(null);
+	$effect(() => {
+		const v = issue;
+		if (!v || (v.triage !== 'pending' && v.triage !== 'snoozed')) {
+			triage = null;
+			return;
+		}
+		const k = v.key;
+		api('GET /issues/{key}', { path: { key: k } })
+			.then((d) => {
+				if (issue?.key === k) triage = d.triage;
+			})
+			.catch(() => (triage = null));
+		api('GET /projects/{id}/triage', { path: { id: v.project_id }, query: { limit: 1 } })
+			.then((l) => (inbox = l.settings ?? null))
+			.catch(() => (inbox = null));
+	});
+	function triageDone(r: 'done' | 'gone' | 'conflict', text?: string) {
+		triagePanel = null;
+		toast(text ?? '', r === 'done' ? 'ok' : 'w');
+		load(key);
+		refreshTriageCounts();
+	}
+
+	// ---- time (contract 05 §6.6) ----
+	let timeEntries = $state<TimeEntryView[]>([]);
+	let timeReload = $state(0);
+	let logWith = $state(false);
+	let logEntry = $state<LogInput | null>(null);
+	let timeHint = $state('');
 
 	const currentValues = (v: SpaIssue) => issueValues(v, schema?.fields ?? []);
 	const editable = $derived.by(() => {
@@ -114,6 +155,8 @@
 			conflict = false;
 			note = { body: '', private: false };
 			dupKey = '';
+			logWith = false;
+			timeReload++;
 			ripple = true;
 			setTimeout(() => (ripple = false), 400);
 			await load(key);
@@ -140,12 +183,24 @@
 	function saveEdit() {
 		if (!issue) return;
 		const set = wireFields(changedFields(start, form), schema?.fields ?? []);
-		if (!Object.keys(set).length) {
+		// 「同時記工時」 (§6.6): the entry rides in the same document (§3.10.2).
+		if (logWith && !logEntry) {
+			// Opened but not valid: never save silently without the time.
+			timeHint = '「同時記工時」的時數或日期不完整；請修正，或收起「同時記工時」再儲存。';
+			return;
+		}
+		timeHint = '';
+		const withTime = logWith && logEntry ? logEntry : null;
+		if (!Object.keys(set).length && !withTime) {
 			mode = null;
 			return;
 		}
 		const lock = issue.lock_version ?? 0;
-		return send(doc([{ kind: 'update_fields', op_id: op(), target: issueRef(key), set }], [{ key, lock }]), '已儲存');
+		const ops = Object.keys(set).length ? [{ kind: 'update_fields' as const, op_id: op(), target: issueRef(key), set }] : [];
+		if (withTime) ops.push(logTimeOp(withTime) as never);
+		const done = withTime ? (ops.length > 1 ? `已儲存，並記了 ${showHours(withTime.hours)} 小時` : `已記 ${showHours(withTime.hours)} 小時`) : '已儲存';
+		const d = ops.length > 1 || !withTime ? doc(ops, [{ key, lock }]) : logTimeDoc(withTime);
+		return send(d, done);
 	}
 	function transition(to: string, name: string) {
 		if (!issue) return;
@@ -211,8 +266,17 @@
 		fields_changed: '修改欄位',
 		status_changed: '轉狀態',
 		note_added: '新增 note',
-		duplicate_added: '標為重複'
+		duplicate_added: '標為重複',
+		triage_changed: '分流'
 	};
+	const TRIAGE: Record<string, string> = { pending: '待分流', snoozed: '稍後處理', accepted: '接受', declined: '拒絕', duplicate: '重複' };
+	/** History with time entries merged in (§6.6: they come from their own list, by their own visibility). */
+	type HistItem = { at: string; ev?: NonNullable<NonNullable<SpaIssue['recent_events']>['items']>[number]; te?: TimeEntryView };
+	const history = $derived.by(() => {
+		const out: HistItem[] = (issue?.recent_events?.items ?? []).map((ev) => ({ at: ev.at, ev }));
+		for (const te of timeEntries) out.push({ at: te.created_at, te });
+		return out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+	});
 	/** History names custom fields `cf:N` and stores `{"<type>": v}`. */
 	const lookups = $derived({ fields: schema?.fields ?? [], assignees, versions });
 	const changeLabel = (k: string) => labelOf(k, lookups);
@@ -289,6 +353,37 @@
 			{#if v.actions?.duplicate_of?.can_propose}<button class="btn" onclick={() => openMode('dup')} disabled={uncertain} data-testid="dup">標為重複</button>{/if}
 		</div>
 
+		{#if triage && (triage.state === 'pending' || triage.state === 'snoozed')}
+			<div class="banner i triagebar" data-testid="triage-bar">
+				<b>這張單在 Triage 收件匣等待分流</b>{#if triage.snoozed_until}・稍後處理到 {fmtTime(triage.snoozed_until)}{/if}
+				<span class="sp"></span>
+				{#if triage.can_decide}
+					{#if triage.snoozed_until}
+						<button class="btn sm" onclick={() => (triagePanel = 'unsnooze')} data-testid="tb-unsnooze">取消稍後</button>
+					{:else}
+						<button class="btn sm pri" onclick={() => (triagePanel = 'accept')} data-testid="tb-accept">接受</button>
+						<button class="btn sm" onclick={() => (triagePanel = 'decline')} data-testid="tb-decline">拒絕</button>
+						<button class="btn sm" onclick={() => (triagePanel = 'duplicate')} data-testid="tb-dup">重複…</button>
+						<button class="btn sm" onclick={() => (triagePanel = 'snooze')} data-testid="tb-snooze">稍後</button>
+					{/if}
+				{:else}
+					<span class="dim">你可以查看，但不能分流。</span>
+				{/if}
+				<a class="btn sm ghost" href="/project/{v.project_key}/triage">收件匣 →</a>
+			</div>
+			{#if triagePanel}
+				<TriageDecide
+					item={{ key: v.key, lock_version: v.lock_version ?? 0, subject: v.subject ?? '' }}
+					projectId={v.project_id}
+					projectKey={v.project_key}
+					settings={inbox}
+					decision={triagePanel}
+					ondone={triageDone}
+					oncancel={() => (triagePanel = null)}
+				/>
+			{/if}
+		{/if}
+
 		{#if conflict}
 			<div class="banner w" data-testid="conflict">
 				這張單在你開啟後被別人改過，尚未套用任何變更；你填的內容還在。
@@ -307,6 +402,13 @@
 				{#each editable as e (e.f.key)}
 					<FieldInput field={e.f} bind:value={form[e.f.key]} {assignees} {versions} required={e.required} />
 				{/each}
+				{#if v.spent_hours != null}
+					<details class="withtime" bind:open={logWith} data-testid="edit-with-time">
+						<summary>同時記工時</summary>
+						{#if logWith}<LogTime projectId={v.project_id} issueKey={v.key} embedded bind:value={logEntry} />{/if}
+						{#if timeHint && logWith}<div class="err" role="alert" data-testid="time-hint">{timeHint}</div>{/if}
+					</details>
+				{/if}
 				<div class="row">
 					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
@@ -370,6 +472,9 @@
 				{#if v.recent_notes?.truncated}<div class="hint">只顯示最新 10 則（第一版沒有完整 note 分頁）。</div>{/if}
 			</div>
 			<div>
+				{#if v.spent_hours != null}
+					<TimeCard issueKey={v.key} projectId={v.project_id} projectKey={v.project_key} estimated={v.estimated_hours} spent={v.spent_hours} reloadKey={timeReload} bind:entries={timeEntries} onlogged={() => { timeReload++; load(key); }} />
+				{/if}
 				{#if v.dev}
 					<div class="card" data-testid="dev-card">
 						<h3>開發</h3>
@@ -388,13 +493,28 @@
 					</div>
 				{/if}
 				<h2>歷史</h2>
-				{#each v.recent_events?.items ?? [] as ev (ev.event_id)}
-					<div class="ev" data-testid="event">
-						<b>{EVENT[ev.kind] ?? ev.kind}</b>・<span>{ev.actor}</span>
-						<span class="dim">・{fmtTime(ev.at)}</span>
-						{#if ev.redacted}<div class="dim">（內容已遮蔽）</div>{/if}
-						{#each eventLines(ev.detail) as line, i (i)}<div>{line}</div>{/each}
-					</div>
+				{#each history as h (h.ev ? `e${h.ev.event_id}` : `t${h.te?.id}`)}
+					{#if h.ev}
+						{@const ev = h.ev}
+						<div class="ev" data-testid="event">
+							<b>{EVENT[ev.kind] ?? ev.kind}</b>・<span>{ev.actor}</span>
+							<span class="dim">・{fmtTime(ev.at)}</span>
+							{#if ev.redacted}<div class="dim">（內容已遮蔽）</div>{/if}
+							{#if ev.kind === 'triage_changed' && ev.detail && typeof ev.detail === 'object'}
+								{@const d = ev.detail as Record<string, unknown>}
+								<div>{TRIAGE[String(d.old)] ?? d.old ?? '—'} → {TRIAGE[String(d.new)] ?? d.new}{#if d.self_triage}<span class="chip c-warn" style="margin-left:4px">自建自分流</span>{/if}</div>
+							{:else}
+								{#each eventLines(ev.detail) as line, i (i)}<div>{line}</div>{/each}
+							{/if}
+						</div>
+					{:else if h.te}
+						{@const te = h.te}
+						<div class="ev tev" data-testid="time-event">
+							<span>{te.user.name}</span>{#if te.author.kind === 'agent'}<span class="agent-label" style="margin-left:4px" title={te.author.on_behalf_of ? `代表 ${te.author.on_behalf_of.name}` : ''}>agent</span>{/if}
+							記了 {showHours(te.hours)} 小時・{te.activity.name}
+							<span class="dim">・{fmtTime(te.created_at)}（{te.spent_on}）</span>
+						</div>
+					{/if}
 				{:else}
 					<div class="empty">沒有歷史。</div>
 				{/each}
