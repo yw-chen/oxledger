@@ -14,6 +14,7 @@
 		sortable = [],
 		onsort,
 		onclear,
+		onnarrow,
 		onerror
 	}: {
 		run: (i: RunInput) => Promise<ViewRun>;
@@ -23,6 +24,8 @@
 		sortable?: string[];
 		onsort?: (field: string) => void;
 		onclear?: () => void;
+		/** 「縮小範圍」 after `query_timeout` (§6): opens the condition editor. */
+		onnarrow?: () => void;
 		/** Called with the error, or null after a successful run. */
 		onerror?: (e: unknown) => void;
 	} = $props();
@@ -32,6 +35,8 @@
 	let error = $state<unknown>(null);
 	let loading = $state(false);
 	let slow = $state(false);
+	/** §6: no loading sign in the first 400 ms (avoids a flash). */
+	let skeleton = $state(false);
 	let more = $state(false);
 	let seq = 0;
 
@@ -42,6 +47,7 @@
 			error = null;
 		} else more = true;
 		const t = setTimeout(() => n === seq && (slow = true), 2000);
+		const t0 = cursor ? 0 : setTimeout(() => n === seq && (skeleton = true), 400);
 		try {
 			const r = await run({ cursor, limit: 50 });
 			if (n !== seq) return;
@@ -64,9 +70,11 @@
 			onerror?.(e);
 		} finally {
 			clearTimeout(t);
+			clearTimeout(t0);
 			if (n === seq) {
 				loading = false;
 				slow = false;
+				skeleton = false;
 				more = false;
 			}
 		}
@@ -106,9 +114,20 @@
 </script>
 
 {#if loading && !data}
-	{#if slow}<div class="sync"><span class="spin"></span>還在載入…</div>{:else}<div class="sync" style="opacity:.6"><span class="spin"></span></div>{/if}
+	{#if skeleton}
+		<div data-testid="view-skeleton" aria-busy="true" aria-label="載入中">
+			{#if slow}<div class="hint" data-testid="view-slow">還在載入…</div>{/if}
+			<table class="t skel-table">
+				<tbody>
+					{#each { length: 8 } as _, i (i)}
+						<tr><td style="width:90px"><span class="skel"></span></td><td><span class="skel" style="width:{60 + ((i * 37) % 35)}%"></span></td><td style="width:120px"><span class="skel"></span></td></tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	{/if}
 {:else if error}
-	<ErrorBox {error} onaction={() => load()} />
+	<ErrorBox {error} onaction={(a) => (a === 'narrow' && onnarrow ? onnarrow() : load())} />
 {:else if data}
 	{#if !items.length}
 		<div class="empty" data-testid="view-empty">沒有符合條件的議題。{#if onclear}<button class="btn sm" onclick={onclear}>清除條件</button>{/if}</div>

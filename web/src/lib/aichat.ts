@@ -260,3 +260,25 @@ export function quotaText(scope: string | undefined, retry: string | undefined):
 
 export const MAX_INPUT = 8000;
 export const INPUT_HINT = 'AI 只讀得到你委派給它的專案中的公開內容；寫入照你的委派政策。不要貼上不該公開的內容。';
+
+// ------------------------------------------------------------------ conversation list
+
+/** Pages of `GET /ai/conversations` joined in order; an id seen twice keeps its first place. */
+export function appendPage<T extends { id: string }>(have: readonly T[], more: readonly T[]): T[] {
+	const seen = new Set(have.map((x) => x.id));
+	return [...have, ...more.filter((x) => !seen.has(x.id) && (seen.add(x.id), true))];
+}
+
+/** The title dropdown (recent 20): an older conversation opened from the history joins it at the top. */
+export function withConv<T extends { id: string }>(recent: readonly T[], c: T): T[] {
+	return recent.some((x) => x.id === c.id) ? [...recent] : [c, ...recent];
+}
+
+/** §6.19 expiry banner: the projects of delegations still in force, soonest to expire
+ *  first. `GET /ai-team/{id}` also lists expired, unrevoked ones; `/ai/status` does not. */
+export function expiringProjects(policies: readonly { project: string; expires_at: string }[], now: number): string[] {
+	return policies
+		.filter((p) => Date.parse(p.expires_at) > now)
+		.sort((x, y) => Date.parse(x.expires_at) - Date.parse(y.expires_at))
+		.map((p) => p.project);
+}

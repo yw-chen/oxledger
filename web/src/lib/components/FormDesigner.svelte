@@ -13,6 +13,7 @@
 	import { RULE_KIND, cleanLayout, kindsFor, layoutOf, libName, loadLibrary, nextId, ruleSentence, rulesOf, type LField, type LayoutBody, type Library, type Rule, type Section } from '$lib/formdesign';
 	import { describeError } from '$lib/errors';
 	import { statusCategories } from '$lib/triage';
+	import { whoName } from '$lib/who';
 	import ErrorBox from './ErrorBox.svelte';
 	import CondEditor from './CondEditor.svelte';
 	import FormSections from './FormSections.svelte';
@@ -321,6 +322,13 @@
 
 	// ---- try-fill (§6.10 ④): the same evaluator from both doors ----
 	let tryProject = $state('');
+	// The header's 預覽 (§6.10 ①) opens the try-fill panel and brings it into view.
+	let tryOpen = $state(false);
+	let tryEl = $state<HTMLDetailsElement | null>(null);
+	function openPreview() {
+		tryOpen = true;
+		queueMicrotask(() => tryEl?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+	}
 	let cats = $state<Map<string, { label: string; category: string }>>(new Map());
 	$effect(() => {
 		statusCategories()
@@ -420,6 +428,7 @@
 		<button class="tab" class:on={tab === 'rules'} onclick={() => (tab = 'rules')} data-testid="fd-tab-rules">資料規則{rulesDirty ? ' ●' : ''}</button>
 		<button class="tab" class:on={tab === 'layout'} onclick={() => (tab = 'layout')} data-testid="fd-tab-layout">版面{layoutDirty ? ' ●' : ''}</button>
 		<span style="flex:1"></span>
+		<button class="btn" onclick={openPreview} data-testid="fd-preview">預覽</button>
 		<button class="btn" onclick={saveDraft} disabled={busy || !dirty || !!problem} data-testid="fd-save">存草稿</button>
 		<button class="btn" onclick={discard} disabled={busy || (!dirty && !hasDraft)} data-testid="fd-discard">丟棄{hasDraft ? '草稿' : '變更'}</button>
 		<button class="btn pri" onclick={openPublish} disabled={busy || !!problem || (!dirty && !hasDraft)} data-testid="fd-publish">發布…</button>
@@ -582,7 +591,7 @@
 		{/if}
 	{/if}
 
-	<details class="card" data-testid="fd-try">
+	<details class="card" bind:open={tryOpen} bind:this={tryEl} data-testid="fd-try">
 		<summary><b>試填</b>：同一份內容從畫面與 MCP 送出，結果相同（只檢查，不寫入）</summary>
 		{#if !d.project_id}
 			<label class="f" style="max-width:280px">用哪個專案試
@@ -625,6 +634,7 @@
 				<b>v{v.version}</b>
 				<span class="chip {v.state === 'published' ? 'c-ok' : 'c-dim'}">{STATE[v.state] ?? v.state}</span>
 				<span class="dim">{fmtTime(v.published_at ?? v.created_at)}</span>
+				{#if v.published_by ?? v.created_by}<span class="dim" data-testid="fd-version-who">{whoName(v.published_by ?? v.created_by, session.user, tryAssignees)}</span>{/if}
 				{#if v.publish_mode}<span class="dim">{MODE[v.publish_mode] ?? v.publish_mode}</span>{/if}
 				<span style="flex:1"></span>
 				{#if (v.state === 'superseded' || v.state === 'published') && v.version !== currentVersion}

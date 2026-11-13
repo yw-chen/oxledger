@@ -236,6 +236,10 @@ header.top{background:var(--chrome-bg,var(--bg2));color:var(--chrome-fg,var(--fg
 /* 右欄 AI 對話 */
 .collab{display:flex;flex-direction:column;overflow:hidden}
 .collab.rail{overflow:visible}
+/* §6.19: below 1280 px the right column is a drawer (the top bar's 「AI」 opens it) */
+.collab.drawer{position:fixed;top:0;right:0;bottom:0;width:min(400px,100vw);z-index:45;box-shadow:-8px 0 24px rgba(0,0,0,.35);transform:translateX(100%);visibility:hidden;transition:transform .18s ease,visibility 0s linear .18s}
+.collab.drawer.open{transform:none;visibility:visible;transition:transform .18s ease}
+.drawer-bg{position:fixed;inset:0;background:rgba(3,7,15,.45);z-index:44}
 .ctab{background:none;border:0;border-bottom:2px solid transparent;padding:4px 6px;color:var(--muted);font-size:13px;font-weight:600}
 .ctab.on{color:var(--fg);border-bottom-color:var(--act)}
 .collab > .csec{overflow:auto;flex:1}
@@ -303,3 +307,16 @@ tr.changed td{background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .menu .mlist button{background:none;border:0;text-align:left;padding:6px 10px;border-radius:6px}
 .menu .mlist button:hover:not(:disabled),.menu .mlist button:focus-visible{background:var(--act-a)}
 .menu .mlist button:disabled{opacity:.5;cursor:not-allowed}
+/* §6 共通載入骨架（列表 8 列、看板每欄 3 張；400 ms 後才出現） */
+.skel{display:block;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--bg2) 0%,var(--line) 50%,var(--bg2) 100%);background-size:200% 100%;animation:skel 1.2s ease-in-out infinite}
+@keyframes skel{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none}}
+.skel-table td{padding:10px 8px}
+.skel-card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
+/* §6 無權限：停用的按鈕旁的說明 */
+.forbid-note{font-size:12px;color:var(--bad)}
+/* §6.2 日期：「日期」「相對日期」分頁 */
+.dtabs{display:inline-flex;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+.dtabs button{background:none;border:0;padding:2px 10px;font-size:12.5px;color:var(--muted)}
+.dtabs button.on{background:var(--act-a);color:var(--fg)}
+.depth-note{font-size:12px;color:var(--muted)}

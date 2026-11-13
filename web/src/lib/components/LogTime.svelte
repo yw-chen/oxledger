@@ -8,7 +8,7 @@
 	import { session } from '$lib/session.svelte';
 	import { api, ApiError, newOperationId } from '$lib/api';
 	import { submit } from '$lib/commands';
-	import { logTimeDoc, parseHours, showHours, todayLocal, type LogInput } from '$lib/hours';
+	import { hoursEcho, logTimeDoc, parseHours, showHours, todayLocal, type LogInput } from '$lib/hours';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let {
@@ -87,7 +87,7 @@
 		<label>日期 <input type="date" bind:value={spentOn} data-testid="lt-date" /></label>
 		<label>時數
 			<input type="text" inputmode="decimal" bind:value={hoursText} placeholder="1.5、1:30 或 1h30m" style="width:140px" data-testid="lt-hours" aria-invalid={hoursText.trim() !== '' && hours === null} />
-			<span class="hint" data-testid="lt-hours-parsed">{hoursText.trim() === '' ? '' : hours === null ? '看不懂這個時數' : `＝${hours} 小時`}</span>
+			<span class="hint" data-testid="lt-hours-parsed">{hoursEcho(hoursText)}</span>
 		</label>
 		<label>活動
 			<select bind:value={activity} data-testid="lt-activity">

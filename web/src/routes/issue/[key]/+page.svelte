@@ -425,7 +425,7 @@
 
 		{#if triage && (triage.state === 'pending' || triage.state === 'snoozed')}
 			<div class="banner i triagebar" data-testid="triage-bar">
-				<b>這張單在 Triage 收件匣等待分流</b>{#if triage.snoozed_until}・稍後處理到 {fmtTime(triage.snoozed_until)}{/if}
+				<b>這張單在 Triage 收件匣（{v.project_key}）</b>{#if triage.snoozed_until}・稍後處理到 {fmtTime(triage.snoozed_until)}{/if}
 				<span class="sp"></span>
 				{#if triage.can_decide}
 					{#if triage.snoozed_until}

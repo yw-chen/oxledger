@@ -1,12 +1,16 @@
 <script lang="ts">
 	// One view (contract 05 §6.1, §6.3): title with its scope, the condition
 	// chips, the search box (override.q), then the list or the board. Changes
-	// to conditions or sorting are a draft run through /views/preview until
-	// saved (「條件已修改，尚未儲存」). Built-in views are copied before editing.
+	// to conditions are a draft run through /views/preview until saved
+	// (「條件已修改，尚未儲存」). A header click sorts this session only (§6.1):
+	// it is not in the draft, and 「另存變更」 offers to keep it. Built-in views
+	// are copied before editing.
 	import type { FilterFields, FilterOption, RunInput, ViewDetail, ViewEvent } from '$api/types';
 	import { api, ApiError } from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { chips, fromGroup, toGroup, type Group, type Where } from '$lib/filter';
+	import { chips, fromGroup, nextSort, sameSort, toGroup, type Group, type SortKey, type Where } from '$lib/filter';
+	import { FORBIDDEN, isForbidden } from '$lib/errors';
+	import { listTrackers } from '$lib/trackers';
 	import { sourceOptions } from '$lib/filterOptions';
 	import { fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
@@ -19,7 +23,14 @@
 
 	let { viewId, projectKey = null, inFrame = false }: { viewId: string; projectKey?: string | null; inFrame?: boolean } = $props();
 
-	type Def = Record<string, unknown> & { kind: string; query?: { where?: unknown; q?: string | null }; sort?: { field: string; dir: string }[] | null; lanes?: { by: string } };
+	type Def = Record<string, unknown> & {
+		kind: string;
+		query?: { where?: unknown; q?: string | null };
+		sort?: SortKey[] | null;
+		lanes?: { by: string };
+		swimlanes?: { by: string } | null;
+		card_fields?: string[] | null;
+	};
 	let view = $state<ViewDetail | null>(null);
 	let def = $state<Def | null>(null);
 	let loadError = $state<unknown>(null);
@@ -33,9 +44,22 @@
 	let badField = $state<string | null>(null);
 	let saving = $state(false);
 	let menu = $state(false);
+	/** This session's sort (§6.1): not part of the definition or the draft. */
+	let sortOverride = $state<SortKey[] | null>(null);
+	let sortMenu = $state(false);
+	/** The server's definition after a conflict while a draft was open: `view.def`
+	 *  stays the draft's base, but saving only the sort must build on this. */
+	let latestDef: { lock: number; def: Def } | null = null;
+	/** Writes refused with forbidden_op (§6: the button stays, disabled, with the reason). */
+	let denied = $state<Record<string, boolean>>({});
+	/** §6: nothing in the first 400 ms, then the skeleton. */
+	let pageSkel = $state(false);
 
 	const saved = $derived(view ? JSON.stringify(view.def) : '');
 	const dirty = $derived(!!def && JSON.stringify(def) !== saved);
+	const sorted = $derived(!!def && !!sortOverride && !sameSort(sortOverride, def.sort));
+	/** What runs: the draft with this session's sort. */
+	const effDef = $derived(def && sorted ? ({ ...def, sort: sortOverride } as Def) : def);
 	const scopeLabel: Record<string, string> = { personal: '個人', project: '專案', builtin: '內建' };
 	const pkey = $derived(view?.project?.key ?? projectKey);
 	const pid = $derived(view?.project?.id ?? null);
@@ -45,6 +69,11 @@
 		view = null;
 		def = null;
 		conflict = null;
+		sortOverride = null;
+		latestDef = null;
+		denied = {};
+		pageSkel = false;
+		const t = setTimeout(() => (pageSkel = true), 400);
 		try {
 			const v = await api('GET /views/{id}', { path: { id } });
 			view = v;
@@ -52,6 +81,9 @@
 			ff = await api('GET /filter-fields', { query: { project: v.project?.key ?? projectKey ?? undefined } }).catch(() => null);
 		} catch (e) {
 			loadError = e;
+		} finally {
+			clearTimeout(t);
+			pageSkel = false;
 		}
 	}
 	$effect(() => {
@@ -88,11 +120,11 @@
 	const chipList = $derived(ff ? chips(group, ff.fields, ff.today, label, ff.week_start) : []);
 	const statusCategory = $derived(Object.fromEntries((ff?.fields.find((f) => f.field === 'status')?.options ?? []).map((o) => [o.id, o.category ?? ''])));
 
-	const runKey = $derived(JSON.stringify({ d: dirty ? def : null, q: qApplied, id: view?.id }));
+	const runKey = $derived(JSON.stringify({ d: dirty || sorted ? effDef : null, q: qApplied, id: view?.id }));
 	async function run(i: RunInput) {
 		const override = qApplied ? { q: qApplied } : null;
-		if (dirty && def) {
-			return api('POST /views/preview', { body: { ...i, def, override, scope: view?.scope === 'project' ? 'project' : 'personal', project_id: pid } });
+		if ((dirty || sorted) && effDef) {
+			return api('POST /views/preview', { body: { ...i, def: effDef, override, scope: view?.scope === 'project' ? 'project' : 'personal', project_id: pid } });
 		}
 		return api('POST /views/{id}/run', { path: { id: view!.id }, body: { ...i, override } });
 	}
@@ -120,9 +152,66 @@
 	}
 	function sortBy(field: string) {
 		if (!def) return;
-		const cur = def.sort?.[0];
-		def.sort = [{ field, dir: cur?.field === field && cur.dir === 'desc' ? 'asc' : 'desc' }];
+		sortOverride = nextSort(sortOverride ?? def.sort, field);
 	}
+	/** 「另存變更」→「存進這個視圖」: only the sort goes into the saved definition;
+	 *  an unsaved condition draft stays a draft. */
+	async function saveSort() {
+		sortMenu = false;
+		if (!view || !def || !sortOverride) return;
+		saving = true;
+		saveError = null;
+		const wasDirty = dirty;
+		try {
+			const fresh0 = latestDef && latestDef.lock === (view.lock_version ?? 0) ? latestDef.def : $state.snapshot(view.def);
+			const base = structuredClone(fresh0) as Def;
+			const v = await api('PATCH /views/{id}', { path: { id: view.id }, body: { lock_version: view.lock_version ?? 0, def: { ...base, sort: $state.snapshot(sortOverride) } } });
+			view = v;
+			latestDef = null;
+			const fresh = structuredClone(v.def) as Def;
+			def = wasDirty ? ({ ...def, sort: fresh.sort } as Def) : fresh;
+			sortOverride = null;
+			toast('已把排序存進視圖', 'ok');
+		} catch (e) {
+			if (isForbidden(e)) denied.save = true;
+			if (!(await latestAfterConflict(e))) saveError = e;
+		} finally {
+			saving = false;
+		}
+	}
+	function setSwim(by: string) {
+		if (!def || !view) return;
+		const had = (view.def as Def)?.swimlanes !== undefined;
+		if (by) def.swimlanes = { by };
+		else if (had) def.swimlanes = null;
+		else delete def.swimlanes;
+	}
+	// §6.3: 「建立議題」 on an empty board only for people with add_issues. The
+	// API has no permission list; a tracker schema's `creation.allowed` says it
+	// (per project). Without a project the new-issue page decides.
+	let canCreate = $state(true);
+	const createProject = $derived(pid ?? (projectKey ? session.projects.find((p) => p.key === projectKey)?.id : null) ?? null);
+	const isBoard = $derived(def?.kind === 'board');
+	$effect(() => {
+		const id = createProject;
+		if (!isBoard || !id) {
+			canCreate = true;
+			return;
+		}
+		let live = true;
+		canCreate = false;
+		listTrackers()
+			.then((ts) => Promise.all(ts.map((t) => api('GET /projects/{id}/trackers/{tracker_id}/schema', { path: { id, tracker_id: t.id } }).catch(() => null))))
+			.then((ss) => {
+				if (live) canCreate = ss.some((x) => x?.creation.allowed);
+			})
+			.catch(() => {
+				if (live) canCreate = false;
+			});
+		return () => {
+			live = false;
+		};
+	});
 	function discard() {
 		if (view) def = structuredClone($state.snapshot(view.def)) as Def;
 		conflict = null;
@@ -153,6 +242,7 @@
 			conflict = null;
 			toast('已儲存視圖', 'ok');
 		} catch (e) {
+			if (isForbidden(e)) denied.save = true;
 			if (e instanceof ApiError && e.code === 'conflict') {
 				conflict = ((e.details as { current?: ViewDetail }).current ?? null) as ViewDetail | null;
 				if (!conflict) conflict = await api('GET /views/{id}', { path: { id: view.id } }).catch(() => null);
@@ -172,23 +262,31 @@
 	let saveAs = $state<{ name: string; scope: string; mode: 'draft' | 'copy' } | null>(null);
 	function openSaveAs(mode: 'draft' | 'copy', scope = 'personal') {
 		menu = false;
+		sortMenu = false;
+		if (scope === 'project' && denied.project) scope = 'personal';
 		saveError = null;
 		saveAs = { name: `${view?.name ?? '視圖'}（副本）`, scope, mode };
 	}
 	async function doSaveAs() {
-		if (!view || !def || !saveAs) return;
+		if (!view || !def || !effDef || !saveAs) return;
 		saving = true;
 		saveError = null;
 		try {
 			const projectId = pid ?? (projectKey ? session.projects.find((p) => p.key === projectKey)?.id : null) ?? null;
+			// The session sort goes with a new view (「另存變更」).
 			const v =
-				saveAs.mode === 'copy' && !dirty
+				saveAs.mode === 'copy' && !dirty && !sorted
 					? await api('POST /views/{id}/copy', { path: { id: view.id }, body: { name: saveAs.name, scope: saveAs.scope, project_id: projectId } })
-					: await api('POST /views', { body: { name: saveAs.name, scope: saveAs.scope, kind: def.kind, def, project_id: projectId } });
+					: await api('POST /views', { body: { name: saveAs.name, scope: saveAs.scope, kind: def.kind, def: effDef, project_id: projectId } });
 			saveAs = null;
 			toast('已建立視圖', 'ok');
 			goto(viewHref(v.id, v.project?.key ?? null, v.scope === 'project'));
 		} catch (e) {
+			// No manage_public_views: keep the dialog, offer a personal copy.
+			if (isForbidden(e) && saveAs?.scope === 'project') {
+				denied.project = true;
+				saveAs.scope = 'personal';
+			}
 			onSaveError(e);
 		} finally {
 			saving = false;
@@ -204,6 +302,7 @@
 		if (cur) {
 			// Only the header (name, version) moves to the latest; an unsaved
 			// draft stays the person's.
+			latestDef = dirty ? { lock: cur.lock_version ?? 0, def: structuredClone(cur.def) as Def } : null;
 			view = dirty ? { ...cur, def: view.def } : cur;
 			if (!dirty) def = structuredClone($state.snapshot(cur.def)) as Def;
 		}
@@ -218,6 +317,7 @@
 			toast('已刪除視圖', 'ok');
 			goto(inFrame && pkey ? `/project/${pkey}` : '/views');
 		} catch (e) {
+			if (isForbidden(e)) denied.delete = true;
 			if (!(await latestAfterConflict(e))) saveError = e;
 		}
 	}
@@ -227,9 +327,11 @@
 		try {
 			const v = await api('PATCH /views/{id}', { path: { id: view.id }, body: { lock_version: view.lock_version ?? 0, name: rename.trim() } });
 			// Keep an unsaved draft: only the name and version come from the server.
+			latestDef = dirty ? { lock: v.lock_version ?? 0, def: structuredClone(v.def) as Def } : null;
 			view = dirty ? { ...v, def: view.def } : v;
 			rename = null;
 		} catch (e) {
+			if (isForbidden(e)) denied.rename = true;
 			// The typed name stays in the box for another try.
 			if (!(await latestAfterConflict(e))) saveError = e;
 		}
@@ -255,14 +357,48 @@
 		<ErrorBox error={loadError} onaction={() => load(viewId)} />
 	{/if}
 {:else if !view || !def}
-	<div class="sync" style="opacity:.6"><span class="spin"></span></div>
+	{#if pageSkel}
+		<div data-testid="view-skeleton" aria-busy="true" aria-label="載入中">
+			<span class="skel" style="width:220px;height:20px;margin:6px 0 12px"></span>
+			<table class="t skel-table">
+				<tbody>
+					{#each { length: 8 } as _, i (i)}
+						<tr><td style="width:90px"><span class="skel"></span></td><td><span class="skel" style="width:{60 + ((i * 37) % 35)}%"></span></td><td style="width:120px"><span class="skel"></span></td></tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	{/if}
 {:else}
 	<div class="row" style="gap:8px;margin:4px 0 8px;flex-wrap:wrap">
 		<h2 style="margin:0" data-testid="view-name">{view.name}</h2>
 		<span class="scope-badge" data-testid="view-scope">{scopeLabel[view.scope] ?? view.scope}</span>
 		{#if view.scope === 'project'}<span class="hint">所有成員都看得到</span>{/if}
 		<span style="flex:1"></span>
+		{#if sorted}
+			<div class="menu row" style="gap:4px" data-testid="view-sorted">
+				<span class="hint">排序只套用這次</span>
+				<button class="btn sm" onclick={() => (sortMenu = !sortMenu)} aria-haspopup="true" aria-expanded={sortMenu} data-testid="view-sort-save">另存變更</button>
+				<button class="btn sm ghost" onclick={() => ((sortOverride = null), (sortMenu = false))} data-testid="view-sort-reset">還原排序</button>
+				{#if sortMenu}
+					<div class="mlist" role="menu">
+						{#if view.editable}<button role="menuitem" onclick={saveSort} disabled={saving || denied.save} title={denied.save ? FORBIDDEN : ''} data-testid="view-sort-save-here">存進這個視圖</button>{/if}
+						<button role="menuitem" onclick={() => openSaveAs('draft', view?.scope === 'project' ? 'project' : 'personal')} data-testid="view-sort-save-as">另存為新視圖</button>
+					</div>
+				{/if}
+			</div>
+		{/if}
 		{#if def.kind === 'board'}
+			<label class="row" style="gap:4px;font-size:13px">
+				<span class="hint">泳道</span>
+				<select value={def.swimlanes?.by ?? ''} onchange={(e) => setSwim(e.currentTarget.value)} aria-label="泳道" data-testid="board-swim">
+					<option value="">無</option>
+					<option value="assignee">指派</option>
+					<option value="priority">優先權</option>
+					<option value="fixed_version">里程碑</option>
+					<option value="project">專案</option>
+				</select>
+			</label>
 			<button class="btn sm" onclick={() => (settings = true)} data-testid="board-settings">⚙ 看板設定</button>
 		{/if}
 		<button class="btn sm" onclick={() => (editing = true)} data-testid="edit-conditions">編輯條件</button>
@@ -270,11 +406,11 @@
 			<button class="btn sm" onclick={() => (menu = !menu)} aria-haspopup="true" aria-expanded={menu} aria-label="更多" data-testid="view-menu">⋯</button>
 			{#if menu}
 				<div class="mlist" role="menu">
-					<button role="menuitem" disabled={!view.editable} title={view.editable ? '' : '內建視圖不能改，可以複製'} onclick={() => ((menu = false), (rename = view!.name))}>改名稱</button>
+					<button role="menuitem" disabled={!view.editable || denied.rename} title={denied.rename ? FORBIDDEN : view.editable ? '' : '內建視圖不能改，可以複製'} onclick={() => ((menu = false), (rename = view!.name))} data-testid="view-rename">改名稱</button>
 					<button role="menuitem" onclick={() => openSaveAs('copy', 'personal')} data-testid="copy-personal">複製成個人視圖</button>
-					{#if pkey}<button role="menuitem" onclick={() => openSaveAs('copy', 'project')} data-testid="copy-project">複製成專案視圖</button>{/if}
+					{#if pkey}<button role="menuitem" onclick={() => openSaveAs('copy', 'project')} disabled={denied.project} title={denied.project ? FORBIDDEN : ''} data-testid="copy-project">複製成專案視圖</button>{/if}
 					<button role="menuitem" disabled={view.scope === 'builtin'} onclick={openHistory}>歷史</button>
-					<button role="menuitem" disabled={!view.editable} title={view.editable ? '' : '你不能刪除這個視圖'} onclick={remove} data-testid="view-delete">刪除</button>
+					<button role="menuitem" disabled={!view.editable || denied.delete} title={denied.delete ? FORBIDDEN : view.editable ? '' : '你不能刪除這個視圖'} onclick={remove} data-testid="view-delete">刪除</button>
 				</div>
 			{/if}
 		</div>
@@ -295,7 +431,7 @@
 	{:else if dirty}
 		<div class="banner i" data-testid="view-dirty">
 			條件已修改，尚未儲存。
-			{#if view.editable}<button class="btn sm pri" onclick={() => save()} disabled={saving} data-testid="view-save">{saving ? '儲存中…' : '儲存'}</button>{/if}
+			{#if view.editable}<button class="btn sm pri" onclick={() => save()} disabled={saving || denied.save} title={denied.save ? FORBIDDEN : ''} data-testid="view-save">{saving ? '儲存中…' : '儲存'}</button>{#if denied.save}<span class="forbid-note" data-testid="view-save-denied">{FORBIDDEN}</span>{/if}{/if}
 			<button class="btn sm" onclick={() => openSaveAs('draft', view?.scope === 'project' ? 'project' : 'personal')} data-testid="view-save-as">另存為新視圖</button>
 			<button class="btn sm" onclick={discard} data-testid="view-discard">捨棄修改</button>
 		</div>
@@ -306,9 +442,9 @@
 	<ErrorBox error={saveError} />
 
 	{#if def.kind === 'board'}
-		<Board {run} reloadKey={runKey} onerror={(e) => (runError = e)} fieldType={ff?.fields.find((f) => f.field === String(def!.lanes?.by))?.type} doneDays={Number(def.done_window_days ?? 14)} by={String(def.lanes?.by ?? 'status_category')} {statusCategory} canSettings={view.editable || view.scope === 'builtin'} onsettings={() => (settings = true)} canCreate createHref={pkey ? `/new?project=${pkey}` : '/new'} />
+		<Board {run} reloadKey={runKey} onerror={(e) => (runError = e)} onnarrow={() => (editing = true)} fieldType={ff?.fields.find((f) => f.field === String(def!.lanes?.by))?.type} doneDays={Number(def.done_window_days ?? 14)} by={String(def.lanes?.by ?? 'status_category')} {statusCategory} canSettings={view.editable || view.scope === 'builtin'} onsettings={() => (settings = true)} {canCreate} createHref={pkey ? `/new?project=${pkey}` : '/new'} cardFields={Array.isArray(def.card_fields) ? def.card_fields : null} fieldLabels={ff?.fields ?? []} />
 	{:else}
-		<ViewTable {run} reloadKey={runKey} sort={def.sort ?? []} sortable={ff?.sortable ?? []} onsort={sortBy} onclear={def.query?.where ? clearWhere : undefined} onerror={(e) => (runError = e)} />
+		<ViewTable {run} reloadKey={runKey} sort={effDef?.sort ?? []} sortable={ff?.sortable ?? []} onsort={sortBy} onclear={def.query?.where ? clearWhere : undefined} onnarrow={() => (editing = true)} onerror={(e) => (runError = e)} />
 	{/if}
 
 	{#if editing && ff}
@@ -319,13 +455,17 @@
 			{def}
 			statuses={ff?.fields.find((f) => f.field === 'status')?.options ?? []}
 			builtin={view.scope === 'builtin'}
+			fields={ff?.fields ?? []}
+			projectView={view.scope === 'project'}
+			canProject={!!pkey}
+			projectDenied={!!denied.project}
 			onapply={(d) => {
 				def = d as Def;
 				settings = false;
 			}}
-			oncopy={() => {
+			oncopy={(scope) => {
 				settings = false;
-				openSaveAs('copy', 'project');
+				openSaveAs('copy', scope);
 			}}
 			oncancel={() => (settings = false)}
 		/>
@@ -341,9 +481,10 @@
 				><span>給誰看</span>
 				<select bind:value={saveAs.scope} data-testid="save-as-scope">
 					<option value="personal">只有我（個人視圖）</option>
-					{#if pkey}<option value="project">{pkey} 的所有成員（專案視圖）</option>{/if}
+					{#if pkey}<option value="project" disabled={denied.project}>{pkey} 的所有成員（專案視圖）{denied.project ? `：${FORBIDDEN}` : ''}</option>{/if}
 				</select>
 			</label>
+			{#if denied.project}<div class="forbid-note" data-testid="save-as-denied">{FORBIDDEN}（建立專案視圖需要「管理公開視圖」）；可以改存成個人視圖。</div>{/if}
 			{#if saveAs.scope === 'project'}<div class="hint">專案視圖的名稱與條件所有成員都看得到；不能使用受限欄位；需要「管理公開視圖」權限。</div>{/if}
 			<ErrorBox error={saveError} />
 			<div class="row" style="gap:8px;margin-top:10px">

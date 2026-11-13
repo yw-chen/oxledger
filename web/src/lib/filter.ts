@@ -243,3 +243,68 @@ export function searchToWhere(
 	if (p.overdue) c.push({ field: 'overdue', op: 'eq', value: true });
 	return c.length === 0 ? null : c.length === 1 ? c[0] : { and: c };
 }
+
+/** Two conditions that must both hold (either may be empty). */
+export function andWhere(a: Where, b: Where): Where {
+	if (!a) return b ?? null;
+	if (!b) return a;
+	const list = (w: Exclude<Where, null>): Where[] => ('and' in w ? (w as { and: Where[] }).and : [w]);
+	return { and: [...list(a), ...list(b)] };
+}
+
+/** The search page keeps its conditions in the URL (`where=`): a bad value is no condition. */
+export function whereFromParam(s: string | null): Where {
+	if (!s) return null;
+	try {
+		const w = JSON.parse(s) as unknown;
+		return w && typeof w === 'object' ? (fromGroup(toGroup(w)) ?? null) : null;
+	} catch {
+		return null;
+	}
+}
+
+export type SortKey = { field: string; dir: string };
+/** Header click on a list (§6.1): this column descending, then ascending. */
+export function nextSort(cur: SortKey[] | null | undefined, field: string): SortKey[] {
+	const first = cur?.[0];
+	return [{ field, dir: first?.field === field && first.dir === 'desc' ? 'asc' : 'desc' }];
+}
+export function sameSort(a: SortKey[] | null | undefined, b: SortKey[] | null | undefined): boolean {
+	return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+}
+
+/** Card fields a board may show (M1.2-D4; at most 8; `key` is always on the card). */
+export const CARD_FIELD_KEYS = ['subject', 'assignee', 'priority', 'due_date', 'status', 'tracker', 'fixed_version', 'author', 'start_date', 'estimated_hours', 'updated_at', 'created_at', 'project'];
+export const MAX_CARD_FIELDS = 8;
+export const DEFAULT_CARD_FIELDS = ['key', 'subject', 'assignee', 'priority', 'due_date'];
+const CARD_LABEL: Record<string, string> = {
+	key: '單號',
+	subject: '標題',
+	assignee: '指派',
+	priority: '優先權',
+	due_date: '到期日',
+	status: '狀態',
+	tracker: '類型',
+	fixed_version: '里程碑',
+	author: '作者',
+	start_date: '開始日',
+	estimated_hours: '預估工時',
+	updated_at: '更新時間',
+	created_at: '建立時間',
+	project: '專案'
+};
+export function cardFieldLabel(k: string, fields: { field: string; label: string }[] = []): string {
+	return CARD_LABEL[k] ?? fields.find((f) => f.field === k)?.label ?? k;
+}
+/** Toggle one card field, keeping `key` first and the order the person built. */
+/** The card's fields with `key` first when it was left out. */
+export function withCardKey(cur: readonly string[]): string[] {
+	return cur.includes('key') ? [...cur] : ['key', ...cur];
+}
+export function toggleCardField(cur: string[], k: string): string[] {
+	if (k === 'key') return cur;
+	const base = withCardKey(cur);
+	if (base.includes(k)) return base.filter((x) => x !== k);
+	if (base.length >= MAX_CARD_FIELDS) return base;
+	return [...base, k];
+}

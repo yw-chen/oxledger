@@ -10,6 +10,7 @@
 	import { describeError, describeFailure } from '$lib/errors';
 	import { fieldLabel, fmtShort, fmtValue } from '$lib/format';
 	import { refreshCounts } from '$lib/counts.svelte';
+	import { agentChainReason, AGENT_CHAIN_TIP, diffLines, neverTickable, RULES_CHANGED, whyNotQueue as whyNot } from '$lib/review';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 
 	type RowResult = { state: 'sending' | 'ok' | 'failed' | 'pending' | 'not_sent'; text?: string; keys?: string[]; op?: string };
@@ -54,7 +55,7 @@
 	const issueIds = (c: ChangesetSummary) => c.targets.map((t) => t.id);
 	const pickedRows = $derived(items.filter((c) => picked[c.changeset_id]));
 	const pickedIssues = $derived(new Set(pickedRows.flatMap(issueIds)));
-	const queueable = (c: ChangesetSummary) => c.state === 'proposed' && c.review_modes.includes('queue') && !!c.proposal_hash && (!results[c.changeset_id] || results[c.changeset_id].state === 'not_sent');
+	const queueable = (c: ChangesetSummary) => c.state === 'proposed' && !neverTickable(c) && c.review_modes.includes('queue') && !!c.proposal_hash && (!results[c.changeset_id] || results[c.changeset_id].state === 'not_sent');
 	function blockedBySameIssue(c: ChangesetSummary) {
 		return !picked[c.changeset_id] && issueIds(c).some((id) => pickedIssues.has(id));
 	}
@@ -147,12 +148,8 @@
 	});
 	const STATE: Record<string, string> = { proposed: '待審', failed: '套用失敗', applied: '已套用', rejected: '已拒絕', canceled: '已取消', expired: '已到期', superseded: '已取代', approved: '已核准' };
 	const WHY_NOT: Record<string, string> = { evidence_changed: '根據已變動' };
-	function whyNotQueue(c: ChangesetSummary): string {
-		if (c.state !== 'proposed') return '';
-		if (c.warnings.length) return c.warnings.map((w) => WHY_NOT[w] ?? w).join('、') + '：請打開看';
-		if (c.validation?.status && c.validation.status !== 'passed') return c.validation.status === 'conflict' ? '有衝突：請打開處理' : '檢查沒通過：請打開看';
-		return '內容需要打開看（長文、note、建立、關係或私有設定）';
-	}
+	/** Includes the agent chain (§3.12.4) and changed form rules (§3.6.3) branches. */
+	const whyNotQueue = (c: ChangesetSummary) => whyNot(c, (w) => WHY_NOT[w] ?? w);
 </script>
 
 <svelte:head><title>待審・oxledger</title></svelte:head>
@@ -182,6 +179,8 @@
 		{@const canTick = queueable(c)}
 		<div class="card" style="padding:10px 12px" data-testid="cs-row" data-id={c.changeset_id}>
 			<div class="row" style="gap:8px;align-items:flex-start">
+				<!-- A disabled checkbox gets no hover in some browsers: the wrapper carries the reason too. -->
+				<span title={!canTick ? whyNotQueue(c) : blockedBySameIssue(c) ? '同一次選取不能有兩份改同一張單' : undefined} data-testid="tick-wrap">
 				<input
 					type="checkbox"
 					aria-label="勾選這份提案"
@@ -191,21 +190,25 @@
 					onchange={() => toggle(c)}
 					data-testid="tick"
 				/>
+				</span>
 				<div style="flex:1;min-width:0">
 					<div class="row" style="gap:8px">
 						<a href="/cs/{c.changeset_id}"><b>{c.title ?? '（沒有標題）'}</b></a>
 						<span class="chip c-dim">{STATE[c.state] ?? c.state}</span>
 						{#if c.validation}<span class="chip {c.validation.status === 'passed' ? 'c-ok' : c.validation.status === 'conflict' ? 'c-warn' : 'c-bad'}">{c.validation.status === 'passed' ? '檢查通過' : c.validation.status === 'conflict' ? '有衝突' : '檢查未通過'}{c.validation.checked_at ? `・${fmtShort(c.validation.checked_at)}` : ''}</span>{/if}
 						{#each c.warnings as w (w)}<span class="chip c-warn">{WHY_NOT[w] ?? w}</span>{/each}
+						{#if c.agent_chain}<span class="chip c-warn" title={AGENT_CHAIN_TIP} data-testid="cs-agent-chain">轉送審原因：{agentChainReason(c.agent_chain)}</span>{/if}
+						{#if c.rules_changed}<span class="chip c-warn" data-testid="cs-rules-changed">⚠ {RULES_CHANGED}</span>{/if}
 						<span class="hint">到期 {fmtShort(c.expires_at)}</span>
 					</div>
 					<div class="hint">{#each c.targets as t, i (t.id)}{i ? '、' : ''}<a class="key" href="/issue/{t.key}">{t.key}</a>{/each}</div>
 					{#if c.diff.length}
 						<table class="t" style="margin-top:4px" data-testid="diff">
 							<tbody>
-								{#each c.diff as d, i (i)}
-									{#if d.field === 'note'}
-										<tr><td class="mono">{d.target.key}</td><td colspan="4">新增{(d.after as { is_private?: boolean })?.is_private ? '私有 ' : ' '}note（內容請打開看）</td></tr>
+								{#each diffLines(c.diff) as l, i (i)}
+									{@const d = l.row}
+									{#if l.kind === 'summary'}
+										<tr data-testid="diff-summary" data-field={d.field}><td class="mono">{d.target.key}</td><td colspan="4">{l.text}{#if l.detail}<div class="hint">{l.detail}</div>{/if}</td></tr>
 									{:else}
 										<tr><td class="mono">{d.target.key}</td><td>{d.field.startsWith('cf:') ? d.label : fieldLabel(d.field)}</td><td class="muted">{fmtValue(d.before)}</td><td>→</td><td><b>{fmtValue(d.after)}</b></td></tr>
 									{/if}

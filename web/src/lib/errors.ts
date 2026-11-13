@@ -13,10 +13,19 @@ export type Shown = {
 	/** The suggested next step, as button text (the page wires it up). */
 	next?: string;
 	/** Kind of next step the page can act on. */
-	action?: 'login' | 'retry' | 'refresh' | 'conflict' | 'latest' | 'delegations' | 'queue' | 'reauth' | 'wait' | 'transitions';
+	action?: 'login' | 'retry' | 'refresh' | 'conflict' | 'latest' | 'delegations' | 'queue' | 'reauth' | 'wait' | 'transitions' | 'narrow';
 };
 
 const NOTHING = '沒有改到任何資料。';
+/** §6 無權限 wording: a read that finds nothing never says which of the two it was. */
+export const NOT_FOUND = '找不到這個頁面，或你沒有權限查看。';
+/** §6: shown next to a write the person may not do (the button is then disabled). */
+export const FORBIDDEN = '你沒有權限執行這個動作';
+
+/** A write refused for lack of permission (§6: disable the button, explain on hover). */
+export function isForbidden(e: unknown): boolean {
+	return e instanceof ApiError && e.code === 'forbidden_op';
+}
 const UNKNOWN = '尚未確認是否完成。';
 
 function names(v: unknown): string {
@@ -160,9 +169,9 @@ export function describeError(e: unknown): Shown {
 		case 'execution_in_progress':
 			return { title: '結果確認中，請勿重複按；會自動更新', changed: UNKNOWN, action: 'wait' };
 		case 'forbidden_op':
-			return { title: '你沒有這個操作的權限', changed: NOTHING };
+			return { title: FORBIDDEN, changed: NOTHING };
 		case 'not_found':
-			return { title: '找不到，或你沒有權限查看', changed: NOTHING };
+			return { title: NOT_FOUND, changed: NOTHING };
 		case 'invalid_value': {
 			const time = timeKind(d);
 			if (time) return { title: time, changed: NOTHING };
@@ -253,7 +262,8 @@ export function describeError(e: unknown): Shown {
 		case 'field_definition_changed':
 			return { title: '條件用到的自訂欄位設定剛被改過，請重新選擇條件', changed: NOTHING, next: '重新載入', action: 'refresh' };
 		case 'query_timeout':
-			return { title: '查詢太久沒有完成；請縮小範圍（例如加上專案、狀態或日期）再試', changed: NOTHING };
+			// §6: 「縮小範圍」 opens the condition editor (pages without one retry).
+			return { title: '查詢太久沒有完成；請縮小範圍（例如加上專案、狀態或日期）再試', changed: NOTHING, next: '縮小範圍', action: 'narrow' };
 		case 'invalid_view': {
 			const why = typeof d.reason === 'string' ? VIEW_REASON[d.reason] : undefined;
 			const where = typeof d.path === 'string' ? `（${d.path}）` : '';

@@ -13,6 +13,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import LeftNav from '$lib/components/LeftNav.svelte';
 	import Collab from '$lib/components/Collab.svelte';
+	import { closeDrawer, collabUi, openDrawer, watchNarrow } from '$lib/collab.svelte';
 	import Palette from '$lib/components/Palette.svelte';
 	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
 	import LoginForm from '$lib/components/LoginForm.svelte';
@@ -50,7 +51,11 @@
 
 	afterNavigate(() => {
 		if (session.user) refreshCounts();
+		// A link followed from the drawer shows its page, not the drawer over it.
+		closeDrawer(false);
 	});
+	// §6.19: below 1280 px the right column is a drawer.
+	onMount(() => watchNarrow());
 
 	function keys(e: KeyboardEvent) {
 		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -90,6 +95,9 @@
 					<span class="kbd">Ctrl K</span><span class="t">搜尋紀錄、開單號，或輸入 /new</span>
 				</button>
 				<div class="me">
+					{#if collabUi.narrow && session.user}
+						<button class="btn sm" class:pri={collabUi.drawer} onclick={() => (collabUi.drawer ? closeDrawer() : openDrawer())} aria-expanded={collabUi.drawer} title={collabUi.ai?.enabled ? 'AI 助理與 agent 動態' : 'agent 動態'} data-testid="top-ai">{collabUi.ai?.enabled ? 'AI' : '動態'}</button>
+					{/if}
 					<button class="btn sm ghost" onclick={flipTheme} title="切換深色／淺色（其他選項在偏好設定）" data-testid="theme">{prefs.theme === 'light' ? '☀' : '☾'} {THEME_LABEL[prefs.theme]}</button>
 					{#if session.user}<Bell />{/if}
 					{#if session.user}

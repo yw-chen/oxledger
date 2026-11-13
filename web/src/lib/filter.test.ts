@@ -151,3 +151,49 @@ describe('search → view', () => {
 		});
 	});
 });
+
+import { andWhere, whereFromParam, nextSort, sameSort, toggleCardField, withCardKey, cardFieldLabel, MAX_CARD_FIELDS } from './filter';
+
+describe('search conditions and session sort', () => {
+	const a = { field: 'project', op: 'eq', value: 'p1' };
+	const b = { field: 'assignee', op: 'eq', value: { me: true } };
+	it('ANDs two conditions, flattening an and', () => {
+		expect(andWhere(null, null)).toBeNull();
+		expect(andWhere(a, null)).toEqual(a);
+		expect(andWhere(null, b)).toEqual(b);
+		expect(andWhere({ and: [a, a] }, b)).toEqual({ and: [a, a, b] });
+		expect(andWhere(a, { or: [b, b] })).toEqual({ and: [a, { or: [b, b] }] });
+	});
+	it('reads the URL condition, a bad one is none', () => {
+		expect(whereFromParam(null)).toBeNull();
+		expect(whereFromParam('{bad')).toBeNull();
+		expect(whereFromParam('3')).toBeNull();
+		expect(whereFromParam(JSON.stringify(b))).toEqual(b);
+		expect(whereFromParam(JSON.stringify({ and: [a, b] }))).toEqual({ and: [a, b] });
+	});
+	it('header clicks go desc, then asc', () => {
+		expect(nextSort(null, 'due_date')).toEqual([{ field: 'due_date', dir: 'desc' }]);
+		expect(nextSort([{ field: 'due_date', dir: 'desc' }], 'due_date')).toEqual([{ field: 'due_date', dir: 'asc' }]);
+		expect(nextSort([{ field: 'due_date', dir: 'asc' }], 'due_date')).toEqual([{ field: 'due_date', dir: 'desc' }]);
+		expect(sameSort(null, [])).toBe(true);
+		expect(sameSort([{ field: 'a', dir: 'asc' }], [{ field: 'a', dir: 'desc' }])).toBe(false);
+	});
+});
+
+describe('board card fields', () => {
+	it('keeps key, adds in order, removes, stops at the limit', () => {
+		expect(toggleCardField([], 'subject')).toEqual(['key', 'subject']);
+		expect(toggleCardField(['key', 'subject'], 'key')).toEqual(['key', 'subject']);
+		expect(withCardKey(['subject', 'priority'])).toEqual(['key', 'subject', 'priority']);
+		expect(withCardKey(['subject', 'key'])).toEqual(['subject', 'key']);
+		expect(toggleCardField(['key', 'subject', 'priority'], 'subject')).toEqual(['key', 'priority']);
+		const full = ['key', 'a', 'b', 'c', 'd', 'e', 'f', 'g'];
+		expect(full.length).toBe(MAX_CARD_FIELDS);
+		expect(toggleCardField(full, 'h')).toEqual(full);
+	});
+	it('names built-in and custom fields', () => {
+		expect(cardFieldLabel('due_date')).toBe('到期日');
+		expect(cardFieldLabel('cf:7', [{ field: 'cf:7', label: '嚴重度' } as never])).toBe('嚴重度');
+		expect(cardFieldLabel('cf:9')).toBe('cf:9');
+	});
+});

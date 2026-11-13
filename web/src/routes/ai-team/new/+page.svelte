@@ -10,8 +10,10 @@
 	import { anyAllowed, byMode, changesFrom, commandLabel, ROLE_KEY, setAll, sharedRuntimeText, TEMPLATE_DUTY, TEMPLATE_LABEL, TIME_WARNING, WIZARD_TEMPLATES, type Policies } from '$lib/aiteam';
 	import { refreshCounts } from '$lib/counts.svelte';
 	import { fieldLabel } from '$lib/format';
-	import { session } from '$lib/session.svelte';
-	import { stepped } from '$lib/stepup.svelte';
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+	import { session, steppedUpRecently } from '$lib/session.svelte';
+	import { askPassword, stepped, stepUp } from '$lib/stepup.svelte';
 	import { customFieldNames } from '$lib/trackers';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 	import PolicyTable from '$lib/components/PolicyTable.svelte';
@@ -47,6 +49,27 @@
 	let taken = $state<{ runtime_id: string; label: string } | null>(null);
 	let done = $state<CreatedRole | null>(null);
 	let op = newOperationId();
+
+	// §6.18: the wizard opens after a step-up (cancelling goes back to the
+	// list). The final create still goes through stepped() in case the 15
+	// minutes run out while the person fills it in.
+	let unlocked = $state(steppedUpRecently());
+	onMount(() => {
+		if (unlocked) return;
+		let gone = false;
+		const asking = askPassword('建立 AI 角色需要確認身分');
+		const mine = stepUp.resolve;
+		asking.then((ok) => {
+			if (gone) return;
+			if (ok) unlocked = true;
+			else goto('/ai-team', { replaceState: true });
+		});
+		// Leaving (back button) while the dialog is open closes it; it asked for this page.
+		return () => {
+			gone = true;
+			if (stepUp.resolve === mine) mine?.(false);
+		};
+	});
 
 	$effect(() => {
 		Promise.all([api('GET /ai-team/templates'), api('GET /agent-clients'), api('GET /me/agent-runtimes'), api('GET /delegations')])
@@ -163,6 +186,8 @@
 			{/if}
 			<a class="btn" href="/ai-team/{encodeURIComponent(done.principal.handle)}" data-testid="go-role">前往角色頁</a>
 		</div>
+	{:else if !unlocked}
+		<p class="hint" data-testid="wizard-locked">確認身分後才能建立角色。</p>
 	{:else}
 		<div class="steps" data-testid="steps">
 			{#each STEPS as s, i (s)}<span class:on={step === i + 1} class:done={step > i + 1}>{i + 1}. {s}</span>{/each}
@@ -264,6 +289,11 @@
 				{#each picked as pid (pid)}
 					{@const m = byMode(pol[pid])}
 					<div style="margin-top:6px" data-testid="confirm-project"><b>{projectKey(pid)}</b>：直接寫入 {m.direct.map(commandLabel).join('、') || '—'}；需要核准 {m.review.map(commandLabel).join('、') || '—'}</div>
+					<!-- §6.18 ⑥: the final whole table, read-only (commands, and 修改欄位's fields under 逐欄設定). -->
+					<details open class="fulltable" data-testid="confirm-table" data-project={projectKey(pid)}>
+						<summary>{projectKey(pid)} 的完整政策表</summary>
+						<PolicyTable policies={pol[pid]} fieldName={(f) => fname(pid, f)} onpick={() => {}} disabled name="c-{pid}" />
+					</details>
 				{/each}
 				<p class="hint">讀不到私有內容、不能擴大你的權限；直接寫入不保證內容正確，可在活動頁回復。</p>
 				{#if taken}
@@ -296,4 +326,6 @@
 	.fl { display: flex; flex-direction: column; gap: 3px; }
 	.warnbox { border: 2px solid var(--warn, #c77700); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
 	.warnbox p { margin: 4px 0; font-size: 13px; }
+	.fulltable { margin: 4px 0 8px; }
+	.fulltable summary { cursor: pointer; font-size: 13px; color: var(--dim, inherit); }
 </style>

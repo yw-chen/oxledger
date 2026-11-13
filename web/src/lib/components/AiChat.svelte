@@ -4,10 +4,11 @@
 	// through the delegations set up here, with the same policies as any agent.
 	// The page in the middle is sent as a reference, never as text.
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { onDestroy } from 'svelte';
 	import type { AiStatus, ConversationView, MessageView, TemplateSpec } from '$api/types';
 	import { api, ApiError, newOperationId } from '$lib/api';
-	import { INPUT_HINT, MAX_INPUT, pageRef, pageRefLabel, quotaText, renderMd, sseParser, stopTail, UNAVAILABLE, WRITE_REASON, writeLine, type Part } from '$lib/aichat';
+	import { appendPage, expiringProjects, INPUT_HINT, MAX_INPUT, pageRef, pageRefLabel, quotaText, renderMd, sseParser, stopTail, UNAVAILABLE, WRITE_REASON, withConv, writeLine, type Part } from '$lib/aichat';
 	import { TIME_WARNING } from '$lib/aiteam';
 	import { refreshCounts } from '$lib/counts.svelte';
 	import { describeError } from '$lib/errors';
@@ -31,6 +32,37 @@
 	let noRef = $state(false);
 	let leaving = $state<{ host: string; href: string } | null>(null);
 	let confirmDelete = $state(false);
+	// The ⋯ menu (§6.19 ①): 刪除對話, 對話紀錄, 設定 AI 助理的專案.
+	let menu = $state(false);
+	// 對話紀錄: every conversation, a page at a time (cursor).
+	let hist = $state<{ items: ConversationView[]; next: string | null; loading: boolean; error: unknown } | null>(null);
+	/** Each load of the history list; a page answered after the list was reopened is dropped. */
+	let histSeq = 0;
+	async function loadHistory(more = false) {
+		const cursor = more ? (hist?.next ?? undefined) : undefined;
+		const seq = more && hist ? histSeq : ++histSeq;
+		if (!more || !hist) hist = { items: [], next: null, loading: true, error: null };
+		else hist.loading = true;
+		try {
+			const p = await api('GET /ai/conversations', { query: { limit: 50, cursor } });
+			if (!hist || seq !== histSeq) return;
+			hist = { items: more ? appendPage(hist.items, p.items) : p.items, next: p.next_cursor, loading: false, error: null };
+		} catch (e) {
+			if (hist && seq === histSeq) hist = { ...hist, loading: false, error: e };
+		}
+	}
+	function openHistory() {
+		menu = false;
+		confirmDelete = false;
+		loadHistory();
+	}
+	async function pickHistory(c: ConversationView) {
+		if (runId) return;
+		hist = null;
+		histSeq++;
+		convs = withConv(convs, c);
+		await open(c);
+	}
 
 	const a = $derived(status.assistant);
 	const ready = $derived(!!a && a.delegated_projects > 0 && a.context_state === 'active');
@@ -239,6 +271,7 @@
 		try {
 			await api('DELETE /ai/conversations/{id}', { path: { id } });
 			convs = convs.filter((c) => c.id !== id);
+			if (hist) hist.items = hist.items.filter((c) => c.id !== id);
 			conv = null;
 			msgs = [];
 			toast('已刪除對話', 'ok');
@@ -327,6 +360,19 @@
 		if (!/^https?:\/\//.test(href)) return;
 		leaving = { host: el.dataset.ext ?? '', href };
 	}
+	// §6.19「AI 助理對 AUTH 等 2 個專案的權限將在 11/20 到期」: the status has
+	// only a count, the projects come from the assistant's own detail.
+	let expiringKeys = $state<string[]>([]);
+	$effect(() => {
+		const id = a?.expiring_soon ? a.principal : null;
+		if (!id) return;
+		api('GET /ai-team/{id}', { path: { id } })
+			.then((t) => (expiringKeys = expiringProjects(t.policies, Date.now())))
+			.catch(() => (expiringKeys = []));
+	});
+	const expiringText = $derived(
+		expiringKeys.length ? `${expiringKeys[0]}${(a?.delegated_projects ?? 0) > 1 ? ` 等 ${a!.delegated_projects} 個專案` : ''}` : `${a?.delegated_projects ?? 0} 個專案`
+	);
 	const expireDay = $derived(a?.delegations_expire_at ? new Date(a.delegations_expire_at).toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric', timeZone: 'Asia/Taipei' }) : '');
 	const origin = typeof location === 'undefined' ? 'http://localhost' : location.origin;
 </script>
@@ -366,16 +412,40 @@
 				{#if conv}<option value="__new">＋ 新對話</option>{/if}
 			</select>
 			<span style="flex:1"></span>
-			{#if conv}<button class="btn sm ghost" onclick={() => (confirmDelete = true)} disabled={!!runId} title="刪除對話" data-testid="ai-delete">刪除</button>{/if}
-			<a class="btn sm ghost" href="/ai-team/{encodeURIComponent(a?.handle ?? '')}" title="AI 助理可以使用的專案">設定</a>
+			<div class="menu">
+				<button class="btn sm ghost" onclick={() => (menu = !menu)} aria-haspopup="true" aria-expanded={menu} aria-label="更多" data-testid="ai-menu">⋯</button>
+				{#if menu}
+					<div class="mlist" role="menu">
+						<button role="menuitem" onclick={() => ((menu = false), (hist = null), (confirmDelete = true))} disabled={!conv || !!runId} title={runId ? '回覆進行中，不能刪除' : ''} data-testid="ai-delete">刪除對話</button>
+						<button role="menuitem" onclick={openHistory} disabled={!!runId} title={runId ? '回覆進行中，不能切換對話' : ''} data-testid="ai-history">對話紀錄</button>
+						<button role="menuitem" onclick={() => ((menu = false), goto(`/ai-team/${encodeURIComponent(a?.handle ?? '')}`))} data-testid="ai-settings">設定 AI 助理的專案</button>
+					</div>
+				{/if}
+			</div>
 		</div>
+		{#if hist}
+			<div class="ahist" data-testid="ai-history-list">
+				<div class="row"><b>對話紀錄</b><span style="flex:1"></span><button class="btn sm ghost" onclick={() => (hist = null)} data-testid="ai-history-close">關閉</button></div>
+				{#if hist.error}<div class="banner b">{describeError(hist.error).title}</div>{/if}
+				{#each hist.items as c (c.id)}
+					<button class="hitem" class:on={conv?.id === c.id} onclick={() => pickHistory(c)} disabled={!!runId} data-testid="ai-history-item">
+						<span class="ht">{convLabel(c)}{c.state === 'read_only' ? '（已封存）' : ''}</span>
+						<span class="dim">{fmtShort(c.last_at)}</span>
+					</button>
+				{:else}
+					{#if !hist.loading}<div class="hint">還沒有對話。</div>{/if}
+				{/each}
+				{#if hist.loading}<div class="hint">載入中…</div>{/if}
+				{#if hist.next && !hist.loading}<button class="btn sm" onclick={() => loadHistory(true)} data-testid="ai-history-more">載入更多</button>{/if}
+			</div>
+		{/if}
 		{#if confirmDelete}
 			<div class="banner w" data-testid="ai-delete-ask">刪除後無法復原。AI 已經做的變更不會被撤回，仍可在活動頁復原。<span class="sp"></span><button class="btn sm pri" onclick={del} data-testid="ai-delete-confirm">刪除</button><button class="btn sm" onclick={() => (confirmDelete = false)}>取消</button></div>
 		{/if}
 		{#if a?.context_state === 'quarantined'}
 			<div class="banner b" data-testid="ai-reset">AI 助理的權限需要重新設定（有專案的權限改變了）。舊對話會封存。<span class="sp"></span><button class="btn sm pri" onclick={reset}>重新設定</button></div>
 		{:else if a?.expiring_soon}
-			<div class="banner w" data-testid="ai-expiring">AI 助理對 {a.delegated_projects} 個專案的權限將在 {expireDay} 到期<span class="sp"></span><button class="btn sm" onclick={extend}>延長</button></div>
+			<div class="banner w" data-testid="ai-expiring">AI 助理對 {expiringText} 的權限將在 {expireDay} 到期<span class="sp"></span><button class="btn sm" onclick={extend}>延長</button></div>
 		{/if}
 
 		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -473,6 +543,11 @@
 	.aic { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 	.ahead { display: flex; gap: 6px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); }
 	.ahead select { max-width: 200px; }
+	.ahist { border-bottom: 1px solid var(--line); padding: 6px 12px; display: flex; flex-direction: column; gap: 2px; max-height: 45%; overflow: auto; font-size: 13px; }
+	.hitem { display: flex; gap: 8px; align-items: baseline; background: none; border: 0; text-align: left; padding: 4px 6px; border-radius: 6px; cursor: pointer; color: inherit; }
+	.hitem:hover:not(:disabled), .hitem.on { background: var(--act-a); }
+	.hitem .ht { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.hitem .dim { font-size: 12px; }
 	.amsgs { flex: 1; overflow: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
 	.amsg { font-size: 13px; max-width: 100%; }
 	.amsg.user { align-self: flex-end; background: var(--act-a); border-radius: 8px; padding: 6px 9px; max-width: 85%; white-space: pre-wrap; }

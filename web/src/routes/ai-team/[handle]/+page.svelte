@@ -6,11 +6,12 @@
 	// runtime; a project manager the policy of the projects they manage
 	// (stricter only).
 	import { page } from '$app/state';
-	import type { ActivityItem, CredentialSummary, IssuedCredential, PolicyMode, ProjectPolicy, TeamDetail, TemplateSpec } from '$api/types';
+	import type { ActivityItem, CredentialSummary, IssuedCredential, PolicyMode, ProjectPolicy, SafetySummary, TeamDetail, TemplateSpec } from '$api/types';
 	import { api, ApiError } from '$lib/api';
 	import { commandLabel, isStricter, STATUS_LABEL, TEMPLATE_LABEL, type Policies } from '$lib/aiteam';
 	import { refreshCounts } from '$lib/counts.svelte';
-	import { fieldLabel, fmtShort, fmtTime } from '$lib/format';
+	import { defaultModeFor, newOperations, withNewOperations } from '$lib/review';
+	import { fieldLabel, fmtShort, fmtTime, MODE_LABELS } from '$lib/format';
 	import { labelOf, show, type Lookups } from '$lib/render';
 	import { session } from '$lib/session.svelte';
 	import { stepped } from '$lib/stepup.svelte';
@@ -54,6 +55,8 @@
 			await Promise.all(d.policies.map(async (p) => (names[p.project_id] = await customFieldNames(p.project_id).catch(() => new Map()))));
 			if (stale()) return;
 			cfNames = names;
+			await loadNewOps(detail, stale);
+			if (stale()) return;
 			creds = d.actions.includes('credentials') ? (await api('GET /ai-team/{id}/credentials', { path: { id: m.id } }).catch(() => ({ items: null }))).items : null;
 			const a = await api('GET /ai-team/{id}/activity', { path: { id: m.id }, query: { limit: 20 } }).catch(() => null);
 			if (stale()) return;
@@ -143,6 +146,14 @@
 	};
 
 	// ---- policies ----
+	/** §6.18 ②: the allowed commands split into direct / review, from the policy table when the viewer has it. */
+	function safetySplit(x: SafetySummary): { direct: string[]; review: string[] } | null {
+		const p = d?.policies.find((q) => q.project_id === x.project_id);
+		if (!p) return null;
+		const mode = (c: string) => p.commands[c] ?? 'off';
+		return { direct: x.allowed_commands.filter((c) => mode(c) === 'direct'), review: x.allowed_commands.filter((c) => mode(c) === 'review') };
+	}
+
 	// A failed change leaves the radio where it was clicked: draw the table again from the saved policies.
 	let policyRev = $state(0);
 	async function pick(p: ProjectPolicy, kind: 'commands' | 'fields', key: string, mode: PolicyMode) {
@@ -152,11 +163,49 @@
 		await act(async () => {
 			await api('PUT /delegations/{id}/policies', { path: { id: p.delegation_id }, body: next });
 			ok = true;
-		}, `已更新 ${p.project} 的政策`);
+		}, `已更新 ${p.project} 的政策`, { why: '修改委派政策需要確認身分' });
 		if (!ok) policyRev++;
 	}
 	/** Sponsors may loosen too; a project manager only tightens (§3.12.5). */
 	const canPick = (from: PolicyMode, to: PolicyMode) => isSponsor || isStricter(from, to);
+	// ---- new operations an existing delegation could add (contract 05 §4.3, §6.14; 02 §17.9a) ----
+	/** delegation id → what it lacks; only the delegator may read `GET /delegations/{id}/policies`. */
+	let newOps = $state<Record<string, { commands: string[]; fields: string[] }>>({});
+	/** delegation id → `c:<op>` / `f:<field>` → ticked (default all ticked). */
+	let newOpsSkip = $state<Record<string, Record<string, boolean>>>({});
+	async function loadNewOps(detail: TeamDetail, stale: () => boolean) {
+		if (detail.sponsor.id !== session.user?.user_id || detail.status === 'retired') {
+			newOps = {};
+			return;
+		}
+		const out: typeof newOps = {};
+		await Promise.all(
+			detail.policies.map(async (p) => {
+				const v = await api('GET /delegations/{id}/policies', { path: { id: p.delegation_id } }).catch(() => null);
+				if (v) out[p.delegation_id] = newOperations(v);
+			})
+		);
+		if (stale()) return;
+		newOps = out;
+		newOpsSkip = {};
+	}
+	const newOpCount = (n: { commands: string[]; fields: string[] }) => n.commands.length + n.fields.length;
+	function toggleNewOp(id: string, k: string) {
+		newOpsSkip[id] = { ...(newOpsSkip[id] ?? {}), [k]: !newOpsSkip[id]?.[k] };
+	}
+	function addNewOps(p: ProjectPolicy) {
+		const n = newOps[p.delegation_id];
+		if (!n) return;
+		const skip = newOpsSkip[p.delegation_id] ?? {};
+		const add = { commands: n.commands.filter((c) => !skip[`c:${c}`]), fields: n.fields.filter((f) => !skip[`f:${f}`]) };
+		const count = newOpCount(add);
+		if (!count) return;
+		const body = withNewOperations(p, add);
+		return act(() => api('PUT /delegations/{id}/policies', { path: { id: p.delegation_id }, body }), `已把 ${count} 個新操作加入 ${p.project} 的政策（可在表中調整）`, {
+			why: '放寬委派政策需要確認身分'
+		});
+	}
+
 	const revokeDelegation = (p: ProjectPolicy) => act(() => api('POST /delegations/{id}/revoke', { path: { id: p.delegation_id }, body: {} }), `已撤銷 ${p.project} 的委派`);
 
 	// ---- add a project (sponsor) ----
@@ -291,10 +340,20 @@
 			<div class="hint">範本：{TEMPLATE_LABEL[d.role.template] ?? d.role.template}。只列你看得到的專案。</div>
 			{#if d.safety_summary.length}
 				<table class="t">
-					<thead><tr><th>專案</th><th>可以做的事</th></tr></thead>
+					<thead><tr><th>專案</th><th>直接寫入</th><th>需要核准</th></tr></thead>
 					<tbody>
 						{#each d.safety_summary as x (x.project_id)}
-							<tr data-testid="safety-row"><td class="mono">{x.project}</td><td>{x.allowed_commands.map(commandLabel).join('、') || '—'}</td></tr>
+							{@const split = safetySplit(x)}
+							<tr data-testid="safety-row">
+								<td class="mono">{x.project}</td>
+								{#if split}
+									<td data-testid="safety-direct">{split.direct.map(commandLabel).join('、') || '—'}</td>
+									<td data-testid="safety-review">{split.review.map(commandLabel).join('、') || '—'}</td>
+								{:else}
+									<!-- The summary has no modes for viewers without the full settings (backend gap G39). -->
+									<td colspan="2">{x.allowed_commands.map(commandLabel).join('、') || '—'}<span class="hint">（直接寫入或需要核准：伺服器沒有提供）</span></td>
+								{/if}
+							</tr>
 						{/each}
 					</tbody>
 				</table>
@@ -322,6 +381,22 @@
 							{#if isSponsor}<button class="btn sm ghost" onclick={() => revokeDelegation(p)} disabled={busy} data-testid="revoke-delegation" title="撤銷委派不會解除共用來源的寫入限制">撤銷委派</button>{/if}
 						{/if}
 					</div>
+					{#if isSponsor && newOps[p.delegation_id] && newOpCount(newOps[p.delegation_id]) && d.status !== 'retired'}
+						{@const nw = newOps[p.delegation_id]}
+						{@const skip = newOpsSkip[p.delegation_id] ?? {}}
+						<div class="banner i" data-testid="new-ops" data-count={newOpCount(nw)}>
+							<div>有 {newOpCount(nw)} 個新操作可以加入。現有委派不會自動加入；勾選要加入的，之後可以在下表調整。</div>
+							<div class="row" style="gap:10px;flex-wrap:wrap;margin-top:4px">
+								{#each nw.commands as op (op)}
+									<label class="row" style="gap:4px" data-testid="new-op" data-op={op}><input type="checkbox" checked={!skip[`c:${op}`]} onchange={() => toggleNewOp(p.delegation_id, `c:${op}`)} disabled={busy} />{commandLabel(op)}<span class="hint">（預設{MODE_LABELS[defaultModeFor(op)]}）</span></label>
+								{/each}
+								{#each nw.fields as f (f)}
+									<label class="row" style="gap:4px" data-testid="new-op" data-field={f}><input type="checkbox" checked={!skip[`f:${f}`]} onchange={() => toggleNewOp(p.delegation_id, `f:${f}`)} disabled={busy} />欄位〈{fname(p.project_id, f)}〉<span class="hint">（預設{MODE_LABELS.direct}）</span></label>
+								{/each}
+								<button class="btn sm pri" onclick={() => addNewOps(p)} disabled={busy || (Object.values(skip).filter(Boolean).length >= newOpCount(nw))} data-testid="new-ops-add">加入政策表</button>
+							</div>
+						</div>
+					{/if}
 					{#key policyRev}<PolicyTable policies={p} fieldName={(f) => fname(p.project_id, f)} onpick={(k, key, m) => pick(p, k, key, m)} {canPick} disabled={busy || d.status === 'retired'} name={p.delegation_id} />{/key}
 					{#if !isSponsor}<div class="hint">你是這個專案的管理者：只能把政策改嚴（直接寫入 → 需要核准 → 不允許）。</div>{/if}
 				</div>
