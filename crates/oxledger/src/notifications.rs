@@ -53,14 +53,16 @@ use uuid::Uuid;
 
 /// The outbox consumer (`outbox_cursors.consumer`).
 pub const CONSUMER: &str = "notify";
-/// `notifications.reasons` (0028 CHECK).
-pub const REASONS: [&str; 6] = [
+/// `notifications.reasons` (0028 CHECK; `mentioned` from 0032, dispatched
+/// from M2.1, design 06 §3.4).
+pub const REASONS: [&str; 7] = [
     "watching",
     "assigned",
     "author",
     "agent_on_behalf",
     "triage_decided",
     "ai_budget",
+    "mentioned",
 ];
 /// `notifications.kind` (0028 CHECK).
 pub const KINDS: [&str; 2] = ["issue", "ai_budget"];

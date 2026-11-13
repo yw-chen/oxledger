@@ -3,7 +3,8 @@
 > 狀態：**第二版**，2026-11-12。已處理獨立審查的意見（附錄 C 逐條列出問題、處理與改動章節）。§9.1 的 A 類問題（A1–A6）**還沒有使用者決定**，正文先照建議預設寫，相關段落標〔依建議預設 Ax，待確認〕；B 類照預設寫，列在 §9.2（之後進 `docs/impl/decisions.tsv`）。
 > 範圍：研究文件 §8 的 M2 定義——**CommonMark（comrak）、Git webhook、`fixed_by`、wiki、CSV 匯入匯出**；D4：不做 Redmine 匯入器、不做 Textile、不做 REST 相容。另外收進：05 延到 M2、而且被上面五項直接帶出的項目（@提及、工時 CSV、附件〔A2〕、`/agent-contexts*` 相容別名移除）。05 延到 M2 的其他項目（email、品牌、設計交接、內建 AI 角色化…）的落點見 §1.3，建議另開 P5 契約〔A1〕；01 §14.8 排在 M2 的圖件（自由心智圖、BPMN 圖件、圖件版本與連結權限）本文**沒有涵蓋**，落點也在 A1 一起決定。
 > 讀者：前端 session 照 §6 做畫面；後端照 §2–§5、§7、§8 做。格式比照[設計 05](05-m1-daily-use-contract.md)；**本文沒寫的共通規則一律沿用 02 與 05**（02 §4.3 錯誤格式、§4.5 分頁、§6.7 驗證順序、§6.8 冪等、§16 D20 政策與 undo、§3.8 受眾；05 §1.4 不變條件、§2.1 CHECK 重建規則、§6 共通狀態元件）。
-> SQL 都是**新 migration 的草案**，沒有執行或編譯過。目前最新是 `0030_ai_chat.sql`，本文從 **0031** 起到 **0036**。
+> SQL 都是**新 migration 的草案**，沒有執行或編譯過（0032 已在 M2.0 實作，見 `migrations/0032_m2_prereq.sql`）。寫作時最新是 `0030_ai_chat.sql`；之後 P2 後端用掉了 `0031_p2_api_gaps.sql`，所以本文的編號**全部順延一號**，從 **0032** 起到 **0037**。
+> 修訂（2026-11-13，M2.0）：使用者決定 A1–A6 全照建議（正文「待確認」的標記一律視為已決定）；migration 編號 0031–0036 順延成 0032–0037（原 0031＝現 0032、原 0036＝現 0037，正文與附錄已一併改號）；B-1…B-57 已寫進 `docs/impl/decisions.tsv`。
 > 標記：【事實】有來源（附錄 A 或程式路徑）；【推論】判斷，沒有直接來源；【待查證】寫作時沒查到，實作前要查；〔依建議預設 Ax，待確認〕。
 
 ## 0. 一頁摘要
@@ -24,7 +25,7 @@ M2 要做到：**團隊的文件、程式碼與既有資料能接進 oxledger**�
 | K10 | **@提及發站內通知**：新原因 `mentioned`；只通知「提及當下在該專案可指派清單裡（和自動完成同一個集合）、且派送時讀得到那則內容」的人；agent 寫的提及照樣渲染但**不發通知** | 05 A2 把 @提及排到 M2；通知是新的出口，agent 不該能用它叫人 |
 | K11 | **D12 涵蓋所有新內容**：wiki 版本與標題、附件（清除檔案本體）、commit 訊息（擴充既有「撤除」）、匯入暫存檔、提及列；渲染快取以內容 hash 為鍵，遮蔽後自然失效 | 01 §16.7、02 §7.5 |
 | K12 | **沒有任何新的伺服端出站請求**，除了既有的 GitHub API（固定在 `OXLEDGER_GITHUB_API_URL`）：不抓外部圖片、不做連結預覽、不從網址匯入 | SSRF 面維持為零 |
-| K13 | **security_epoch**：migration 不 bump——0031 授權時暫停 `role_permissions_epoch`。**注意這和 0023 不同**：0023 暫停的是 `enabled_modules_epoch`，它的權限授予**刻意** bump 一次；本文選擇不 bump（理由與兩案代價見 §2.1、B-37）。執行期的權限、模組變更沿用既有 trigger；新增 bump 的只有 D12 遮蔽 wiki／附件、撤除 commit | §2.1 |
+| K13 | **security_epoch**：migration 不 bump——0032 授權時暫停 `role_permissions_epoch`。**注意這和 0023 不同**：0023 暫停的是 `enabled_modules_epoch`，它的權限授予**刻意** bump 一次；本文選擇不 bump（理由與兩案代價見 §2.1、B-37）。執行期的權限、模組變更沿用既有 trigger；新增 bump 的只有 D12 遮蔽 wiki／附件、撤除 commit | §2.1 |
 
 實作拆成 **10 階段**（§8，M2.0–M2.9）。A 類 6 題待決（§9.1）。
 
@@ -132,28 +133,28 @@ M2 要做到：**團隊的文件、程式碼與既有資料能接進 oxledger**�
 
 | 編號 | 內容 | 階段 |
 |---|---|---|
-| 0031 | 新權限（CHECK 聯集重建）；`issues.description_format`、`issue_notes.body_format`；`issue_event_mentions`；通知原因 `mentioned` 與偏好；`issue_events`、`command_executions` 的 origin 加 `integration`（CHECK 聯集重建）；`command_executions.import_id`（先建欄、FK 在 0036） | M2.0 |
-| 0032 | wiki：`wiki_settings`（回填既有專案＋新專案 trigger）、`wiki_pages`、`wiki_page_versions`、`wiki_redirects`、`wiki_events`、`wiki_redactions`、`execution_wiki_changes`；政策、提案 op、`agent_write_log` 的 CHECK 聯集；wiki 索引的 outbox consumer **不在 migration 建**（`wiki@<世代>`，§3.14） | M2.2 |
-| 0033 | 附件〔A2〕：`attachment_blobs`（以世代為列）、`uploads`、`upload_daily_usage`、`attachments`；`issue_events_kind_check` 聯集 | M2.4 |
-| 0034 | Git：`github_repos.default_branch`、`github_commits`（含 `sender_login`、`redacted_at`）、`commit_issue_refs`、`project_commit_hidden`、`project_commit_revocations`（撤除墓碑）；`project_setting_events_kind_check` 聯集 | M2.5 |
-| 0035 | `fixed_by`：`project_fix_rules`、`issue_fix_links` | M2.6 |
-| 0036 | 匯入匯出：`imports`、`import_rows`、`export_events`；`command_executions.import_id` 的 FK | M2.7、M2.8 |
+| 0032 | 新權限（CHECK 聯集重建）；`issues.description_format`、`issue_notes.body_format`；`issue_event_mentions`；通知原因 `mentioned` 與偏好；`issue_events`、`command_executions` 的 origin 加 `integration`（CHECK 聯集重建）；`command_executions.import_id`（先建欄、FK 在 0037） | M2.0 |
+| 0033 | wiki：`wiki_settings`（回填既有專案＋新專案 trigger）、`wiki_pages`、`wiki_page_versions`、`wiki_redirects`、`wiki_events`、`wiki_redactions`、`execution_wiki_changes`；政策、提案 op、`agent_write_log` 的 CHECK 聯集；wiki 索引的 outbox consumer **不在 migration 建**（`wiki@<世代>`，§3.14） | M2.2 |
+| 0034 | 附件〔A2〕：`attachment_blobs`（以世代為列）、`uploads`、`upload_daily_usage`、`attachments`；`issue_events_kind_check` 聯集 | M2.4 |
+| 0035 | Git：`github_repos.default_branch`、`github_commits`（含 `sender_login`、`redacted_at`）、`commit_issue_refs`、`project_commit_hidden`、`project_commit_revocations`（撤除墓碑）；`project_setting_events_kind_check` 聯集 | M2.5 |
+| 0036 | `fixed_by`：`project_fix_rules`、`issue_fix_links` | M2.6 |
+| 0037 | 匯入匯出：`imports`、`import_rows`、`export_events`；`command_executions.import_id` 的 FK | M2.7、M2.8 |
 
 **合併順序必須等於編號順序**（05 §2.1）。M2.5–M2.6（Git）可以和 M2.2–M2.4 並行開發，但要提早合併就改號到當時的下一號，並同步改本表與 §8。
 
-**CHECK 重建**：本文各節寫的固定清單是**要新增的值**；重建時一律「`pg_get_constraintdef` 讀出現行值的聯集 ＋ 本文新值」（05 §2.1、附錄 D V12）。受影響的 CHECK：`role_permissions_known`、`notifications.reasons`、`issue_events` 的 origin 與 provenance、`command_executions.origin`、`delegation_command_policies.command_kind`、`delegations_proposal_ops_check`、`changeset_version_ops_kind_check`、`agent_write_log` kind、`issue_events_kind_check`（新值 `attachment_added`、`attachment_removed`，0033）、`project_setting_events_kind_check`（新值 `wiki_start_page`〔0032〕、`commit_hidden`、`commit_unhidden`〔0034〕、`fix_rule_changed`〔0035〕）。`wiki_events.kind` 是 0032 新建的表，不用重建。T-M1-124 的比對擴充成 T-M2-96（程式常數 vs `pg_get_constraintdef`）。
+**CHECK 重建**：本文各節寫的固定清單是**要新增的值**；重建時一律「`pg_get_constraintdef` 讀出現行值的聯集 ＋ 本文新值」（05 §2.1、附錄 D V12）。受影響的 CHECK：`role_permissions_known`、`notifications.reasons`、`issue_events` 的 origin 與 provenance、`command_executions.origin`、`delegation_command_policies.command_kind`、`delegations_proposal_ops_check`、`changeset_version_ops_kind_check`、`agent_write_log` kind、`issue_events_kind_check`（新值 `attachment_added`、`attachment_removed`，0034）、`project_setting_events_kind_check`（新值 `wiki_start_page`〔0033〕、`commit_hidden`、`commit_unhidden`〔0035〕、`fix_rule_changed`〔0036〕）。`wiki_events.kind` 是 0033 新建的表，不用重建。T-M1-124 的比對擴充成 T-M2-96（程式常數 vs `pg_get_constraintdef`）。
 
 **security_epoch**：
-- **migration 不 bump**（B-37）。0031 加權限並授給既有角色時，用 `ALTER TABLE role_permissions DISABLE TRIGGER role_permissions_epoch` → INSERT → `ENABLE`。**更正第一版的說法**：這**不是** 0023 的做法——0023 暫停的是 `enabled_modules_epoch`（只包住加 `time_tracking` 模組那一句），之後的 `role_permissions` 授予**刻意讓 trigger bump 一次**（0023 的註解：權限授予本來就會讓每個專案 bump 一次）。本文刻意和 0023 不同，兩案比較：
-  - **不 bump（預設）**。為什麼安全：epoch 的用途是讓「讀過某專案內容的工作脈絡」在那些內容的讀者集合改變後失效。(1) 升級前不存在任何 wiki、附件內容，沒有任何脈絡讀過它們；(2) 0031 的新權限都不是 `view_issues`、也不改角色的 `issues_visibility`，既有議題、留言、工時的讀者集合 A(P) 在升級前後**完全相同**；(3) agent 讀 wiki 的條件（R-AG1）在每次讀取當下用 `wiki_audience()` 計算，不依賴 epoch。代價：這個論證只在「新權限不影響既有內容的讀者」時成立——將來若有 migration 把既有內容改掛到新權限下，就不能照抄；升級測試（§7.9）要斷言升級前後所有專案的 epoch 不變、既有脈絡不會 `context_unavailable`。
+- **migration 不 bump**（B-37）。0032 加權限並授給既有角色時，用 `ALTER TABLE role_permissions DISABLE TRIGGER role_permissions_epoch` → INSERT → `ENABLE`。**更正第一版的說法**：這**不是** 0023 的做法——0023 暫停的是 `enabled_modules_epoch`（只包住加 `time_tracking` 模組那一句），之後的 `role_permissions` 授予**刻意讓 trigger bump 一次**（0023 的註解：權限授予本來就會讓每個專案 bump 一次）。本文刻意和 0023 不同，兩案比較：
+  - **不 bump（預設）**。為什麼安全：epoch 的用途是讓「讀過某專案內容的工作脈絡」在那些內容的讀者集合改變後失效。(1) 升級前不存在任何 wiki、附件內容，沒有任何脈絡讀過它們；(2) 0032 的新權限都不是 `view_issues`、也不改角色的 `issues_visibility`，既有議題、留言、工時的讀者集合 A(P) 在升級前後**完全相同**；(3) agent 讀 wiki 的條件（R-AG1）在每次讀取當下用 `wiki_audience()` 計算，不依賴 epoch。代價：這個論證只在「新權限不影響既有內容的讀者」時成立——將來若有 migration 把既有內容改掛到新權限下，就不能照抄；升級測試（§7.9）要斷言升級前後所有專案的 epoch 不變、既有脈絡不會 `context_unavailable`。
   - **照 0023 bump 一次**。代價：每個專案 epoch +1，升級後**所有 agent 工作脈絡**（含內建 AI 的對話）在下一次讀寫時 `context_unavailable`，每個使用者都要重開脈絡；好處是不用上面的論證。
 - **`wiki` 模組不自動開**給既有專案（B-9），所以也不用動 `enabled_modules_epoch`。新建專案預設開（新專案沒有既有脈絡）。
 - **執行期**：權限、角色、模組、成員變更沿用既有 trigger（都會 bump）；本文新增的 bump 點只有 §3.13 的遮蔽（wiki 版本、wiki 事件、附件）與撤除 commit（沿用 02 §19.9 revoke）。
 - `issues.description_format` 等格式欄位、提及列、匯入表不影響讀者集合，不 bump。
 
-**升級說明要求**（M2.9 前寫進 `docs/impl/upgrade-notes.md`）：(1) 0031 授權規則（下節）與「既有內容保留純文字」；(2) wiki 模組既有專案預設關、新專案預設開；(3) GitHub App 要在 GitHub 上**加訂 `push` 事件**（權限不變，`Contents: read` 已有【推論：GitHub 文件說 push 事件需要 Contents 權限；加訂事件是否需要安裝者重新同意，待查證】）；(4) 附件的 `OXLEDGER_FILES_DIR`、備份要和 PostgreSQL 同時間點；(5) `/agent-contexts*` 移除；(6) 匯出上限與 `export_issues` 權限的授予規則（依 A4）；(7) `format` 省略的語意：**更新**既有說明時省略＝保留原格式，M1 的用戶端與 agent 不會把 `plain` 默默轉成 `markdown`（R-M9）；(8) GitHub 的限制：一次推送超過 3 個 tag 或 5000 個分支時 GitHub 不送 push 事件（R-C4）；(9) 附件的配額、同時上傳數與磁碟門檻設定（R-A2）。
+**升級說明要求**（M2.9 前寫進 `docs/impl/upgrade-notes.md`）：(1) 0032 授權規則（下節）與「既有內容保留純文字」；(2) wiki 模組既有專案預設關、新專案預設開；(3) GitHub App 要在 GitHub 上**加訂 `push` 事件**（權限不變，`Contents: read` 已有【推論：GitHub 文件說 push 事件需要 Contents 權限；加訂事件是否需要安裝者重新同意，待查證】）；(4) 附件的 `OXLEDGER_FILES_DIR`、備份要和 PostgreSQL 同時間點；(5) `/agent-contexts*` 移除；(6) 匯出上限與 `export_issues` 權限的授予規則（依 A4）；(7) `format` 省略的語意：**更新**既有說明時省略＝保留原格式，M1 的用戶端與 agent 不會把 `plain` 默默轉成 `markdown`（R-M9）；(8) GitHub 的限制：一次推送超過 3 個 tag 或 5000 個分支時 GitHub 不送 push 事件（R-C4）；(9) 附件的配額、同時上傳數與磁碟門檻設定（R-A2）。
 
-### 2.2 0031：權限、格式、提及、整合 origin
+### 2.2 0032：權限、格式、提及、整合 origin
 
 ```sql
 -- 權限（聯集重建；以下只列新值）
@@ -203,11 +204,11 @@ ALTER TABLE notification_preferences ADD COLUMN on_mentioned boolean NOT NULL DE
 --   principal），operation_id = UUIDv5(NS_FIXED_BY, issue_fix_links.id)（operation_id 是 uuid，不能放
 --   'fix:{id}' 字串），action = 'command'；UNIQUE (caller_id, operation_id) 保證同一 fix link 只執行一次。
 
-ALTER TABLE command_executions ADD COLUMN import_id uuid;   -- FK 在 0036
+ALTER TABLE command_executions ADD COLUMN import_id uuid;   -- FK 在 0037
 CREATE INDEX command_executions_import_idx ON command_executions (import_id) WHERE import_id IS NOT NULL;
 ```
 
-### 2.3 0032：wiki
+### 2.3 0033：wiki
 
 ```sql
 CREATE TABLE wiki_settings (                  -- 每專案一列；建頁與起始頁設定的序列化鎖
@@ -216,7 +217,7 @@ CREATE TABLE wiki_settings (                  -- 每專案一列；建頁與起�
     page_count    integer NOT NULL DEFAULT 0 CHECK (page_count BETWEEN 0 AND 5000),
     lock_version  bigint NOT NULL DEFAULT 0
 );
--- 回填：0032 對每個既有專案 INSERT 一列；新專案用 AFTER INSERT ON projects 的 trigger 建
+-- 回填：0033 對每個既有專案 INSERT 一列；新專案用 AFTER INSERT ON projects 的 trigger 建
 -- （同 0015 的 project_tab_settings_row）。R-W10 的鎖都假設這列一定存在。
 
 CREATE TABLE wiki_pages (
@@ -314,7 +315,7 @@ CREATE TABLE execution_wiki_changes (         -- undo 用；保留 30 天；D12 
 
 專案分頁：`project_tabs.rs` `BUILTIN` 尾端加 `("wiki", "Wiki")`，0021 的 `project_tabs_default()` 同步；模組沒開或沒有 `view_wiki_pages` 時這個分頁不出現（和 `dev` 分頁的做法相同）。
 
-### 2.4 0033：附件〔依建議預設 A2，待確認〕
+### 2.4 0034：附件〔依建議預設 A2，待確認〕
 
 ```sql
 CREATE TABLE attachment_blobs (               -- 以專案為範圍去重（跨專案去重會洩漏「某檔案存在」，研究 §5.5）
@@ -381,12 +382,12 @@ CREATE INDEX attachments_issue_idx ON attachments (issue_id) WHERE issue_id IS N
 CREATE INDEX attachments_wiki_idx ON attachments (wiki_page_id) WHERE wiki_page_id IS NOT NULL;
 CREATE INDEX attachments_blob_idx ON attachments (blob_id);
 -- 掛上、刪除、還原寫 issue_events（issue_events_kind_check 聯集加 'attachment_added'、'attachment_removed'）
--- 或 wiki_events（0032 已含這兩個 kind），payload 只有 attachment id 與檔名。
+-- 或 wiki_events（0033 已含這兩個 kind），payload 只有 attachment id 與檔名。
 ```
 
 檔案本體放 `$OXLEDGER_FILES_DIR/<project_id>/<blob id 前 2 碼>/<blob id>`（以世代 id 命名，不用 sha256：清除後重新上傳的同內容是另一個檔）；上傳時**邊收邊寫**暫存檔並同時算 sha256（不整份放記憶體，R-A2），`fsync`、`rename`，成功後才在交易裡寫 `attachment_blobs`；同專案已有 `present` 的同內容世代時刪掉暫存檔、沿用那個世代。沒設定 `OXLEDGER_FILES_DIR` 時附件功能關閉（上傳回 `forbidden_op`，`reason = attachments_disabled`；畫面不顯示附件區）。
 
-### 2.5 0034：Git commit
+### 2.5 0035：Git commit
 
 ```sql
 ALTER TABLE github_repos ADD COLUMN default_branch text;   -- 每個帶 repository 物件的事件都更新；NULL＝還不知道
@@ -437,10 +438,10 @@ CREATE TABLE project_commit_revocations (    -- 撤除墓碑：持久，不隨 g
     revoked_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, repo_id, sha)
 );
--- project_setting_events_kind_check 聯集 + 'commit_hidden', 'commit_unhidden'（'fix_rule_changed' 在 0035）
+-- project_setting_events_kind_check 聯集 + 'commit_hidden', 'commit_unhidden'（'fix_rule_changed' 在 0036）
 ```
 
-### 2.6 0035：`fixed_by`〔依建議預設 A3，待確認〕
+### 2.6 0036：`fixed_by`〔依建議預設 A3，待確認〕
 
 ```sql
 CREATE TABLE project_fix_rules (
@@ -485,7 +486,7 @@ CREATE UNIQUE INDEX issue_fix_links_sha_uq ON issue_fix_links (issue_id, repo_id
 CREATE INDEX issue_fix_links_pending_idx ON issue_fix_links (next_at) WHERE state = 'pending';
 ```
 
-### 2.7 0036：匯入與匯出
+### 2.7 0037：匯入與匯出
 
 ```sql
 CREATE TABLE imports (
@@ -789,7 +790,7 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 
 | # | 規則 |
 |---|---|
-| R-AG1 | **讀 wiki 的範圍**：專案 P 在委派內（02 §3.5）、`wiki` 模組開、而且 **W(P) ⊇ A(P)**（讀得到 wiki 的人包含所有讀得到 P 公開議題的人）。**W(P) 用新函式 `wiki_audience()` 算，不能沿用 `holders()`**：`holders()` 一律 join `enabled_modules … module = 'issue_tracking'`，議題模組關、wiki 開的專案會算出空集合；而且以 `Vis::Public` 只算 `issues_visibility` 是 all／default 的角色，`own` 角色若持有 `view_wiki_pages` 會被漏掉——W(P) 被低估，R-AG3 的 W(P) ⊆ ∩A(R) 就可能誤判通過（實際讀者比算出來的多＝外洩）。`wiki_audience(P, perm)`：專案開了 `wiki` 模組且未封存時，持有 `perm` 的使用者，**不論角色的 `issues_visibility`**（相當於 `Vis::Any`）；Non member、Anonymous、系統管理員照 `holders()` 現行的處理方式。W(P)＝`wiki_audience(P, view_wiki_pages)`，H(P)＝`wiki_audience(P, view_wiki_edits)`。議題模組關閉時 A(P) 是空集合：agent 讀得到 wiki（W ⊇ ∅），但目的地讀者非空的寫入一律過不了 M9。不成立時，對 P 的任何 wiki 工具回 `forbidden_op`（`reason = wiki_not_delegable`），**不分頁存不存在**；委派頁顯示「這個專案的 wiki 讀者比議題讀者少，agent 不能讀寫 wiki」。**舊版本**的讀者是 H(P)＝`view_wiki_edits` 持有者（⊆ W(P)），所以 agent 讀舊版（`wiki_get` 帶 `version`）另要 **H(P) ⊇ A(P)**，否則 `forbidden_op`（`reason = wiki_history_not_delegable`）；0031 把 `view_wiki_edits` 授給和 `view_wiki_pages` 相同的角色，預設情況兩者相等 |
+| R-AG1 | **讀 wiki 的範圍**：專案 P 在委派內（02 §3.5）、`wiki` 模組開、而且 **W(P) ⊇ A(P)**（讀得到 wiki 的人包含所有讀得到 P 公開議題的人）。**W(P) 用新函式 `wiki_audience()` 算，不能沿用 `holders()`**：`holders()` 一律 join `enabled_modules … module = 'issue_tracking'`，議題模組關、wiki 開的專案會算出空集合；而且以 `Vis::Public` 只算 `issues_visibility` 是 all／default 的角色，`own` 角色若持有 `view_wiki_pages` 會被漏掉——W(P) 被低估，R-AG3 的 W(P) ⊆ ∩A(R) 就可能誤判通過（實際讀者比算出來的多＝外洩）。`wiki_audience(P, perm)`：專案開了 `wiki` 模組且未封存時，持有 `perm` 的使用者，**不論角色的 `issues_visibility`**（相當於 `Vis::Any`）；Non member、Anonymous、系統管理員照 `holders()` 現行的處理方式。W(P)＝`wiki_audience(P, view_wiki_pages)`，H(P)＝`wiki_audience(P, view_wiki_edits)`。議題模組關閉時 A(P) 是空集合：agent 讀得到 wiki（W ⊇ ∅），但目的地讀者非空的寫入一律過不了 M9。不成立時，對 P 的任何 wiki 工具回 `forbidden_op`（`reason = wiki_not_delegable`），**不分頁存不存在**；委派頁顯示「這個專案的 wiki 讀者比議題讀者少，agent 不能讀寫 wiki」。**舊版本**的讀者是 H(P)＝`view_wiki_edits` 持有者（⊆ W(P)），所以 agent 讀舊版（`wiki_get` 帶 `version`）另要 **H(P) ⊇ A(P)**，否則 `forbidden_op`（`reason = wiki_history_not_delegable`）；0032 把 `view_wiki_edits` 授給和 `view_wiki_pages` 相同的角色，預設情況兩者相等 |
 | R-AG2 | **理由**：02 §3.8 的保證是「agent 寫到的地方，讀者不比它讀過的任何來源多」，以 A(R) 為下界。W(P) ⊇ A(P) 時，從 wiki 讀到的內容讀者 ⊇ A(P)，原證明不變，**不需要新例外、也不需要 taint**；wiki 比議題窄的專案就和工時同類，本文不開例外 |
 | R-AG3 | **寫 wiki 的目的地檢查**：wiki 內容的讀者是 W(P)；M9 要求 W(P) ⊆ ∩A(R)。和 R-AG1 合起來，agent 只寫得進「W(P) = A(P) 且所有來源受眾都包含它」的 wiki；失敗回 `audience_expansion_forbidden`（02） |
 | R-AG4 | **來源記錄**：讀 wiki 把 P 加進工作脈絡的來源集合 R（和讀議題相同）；wiki 提案的來源快照照 02 §3.8 |
@@ -1197,7 +1198,7 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 - canary 洩漏 = 0：Markdown 渲染（參照 title、提及、wiki 連結）、預覽、通知摘要、wiki 搜尋、匯出、匯入報表、附件中繼資料、開發卡（commit 與 fix link）、內建 AI 的 wiki 工具結果。
 - XSS 語料（T-M2-01）全過；前端元件測試：`{@html}` 只出現在 `<RichText>`（lint）。
 - webhook：T-M2-69（重放）、T-G1–T-G36 全部重跑。
-- 升級測試：從 0030 的資料庫（含 agent 委派、通知、GitHub 連動）升到 0036：既有 agent token 照常、既有說明顯示不變（`plain`）、**每個專案的 epoch 不變、既有工作脈絡不會 `context_unavailable`**（B-37 的前提）、`wiki_settings` 每個專案一列、搜尋藍綠重建完成。
+- 升級測試：從 0030 的資料庫（**M1 發布版**；改號後要經過 `0031_p2_api_gaps.sql`，它只加欄位、不動權限與 epoch）（含 agent 委派、通知、GitHub 連動）升到 0037：既有 agent token 照常、既有說明顯示不變（`plain`）、**每個專案的 epoch 不變、既有工作脈絡不會 `context_unavailable`**（B-37 的前提）、`wiki_settings` 每個專案一列、搜尋藍綠重建完成。
 
 **哪些只在測試裡驗證**：GitHub 的 push、compare、PR API 在 CI 只用假伺服器；**真實 GitHub App 加訂 push 後的事件形狀、commits 上限、compare 回應**要在 M2.6 用一個測試 repo 手動跑一次並記錄；Excel（Windows 繁中）開啟匯出檔、存 Big5 CSV 再匯入，要手動驗一次；瀏覽器實際 CSP 與附件下載標頭要在真瀏覽器確認。
 
@@ -1207,16 +1208,16 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 
 | 階段 | 內容 | 依賴 | 完成標準 |
 |---|---|---|---|
-| **M2.0** 前置 | 新 crate 由使用者核可後加入（§9.2 的新依賴表，D17）並過 `cargo deny`；0031；`perm.rs`；`format` 欄位進命令引擎、describe、事件、undo；`issue_event_mentions` 寫入；origin `integration` 的 CHECK；`/agent-contexts*` 移除 | M1 完成 | 既有測試全綠；T-M2-96；OpenAPI 與 `api/types.ts` 重產；升級說明草稿 |
+| **M2.0** 前置 | 新 crate 由使用者核可後加入（§9.2 的新依賴表，D17）並過 `cargo deny`；0032；`perm.rs`；`format` 欄位進命令引擎、describe、事件、undo；`issue_event_mentions` 寫入；origin `integration` 的 CHECK；`/agent-contexts*` 移除 | M1 完成 | 既有測試全綠；T-M2-96；OpenAPI 與 `api/types.ts` 重產；升級說明草稿 |
 | **M2.1** Markdown | `markdown.rs`（comrak＋ammonia、AST 走訪、佔位節點、第二階段解析、快取、純文字抽取）；`*_html` 欄位；`/markdown/preview`；提及派送（`notify` 加 `mentioned`、偏好）；議題索引改純文字＋layout +1；前端 `<RichText>`、`<MarkdownEditor>` | M2.0 | T-M2-01…21；E1 nDCG@10 ≥ 0.810；前端議題頁可用 |
-| **M2.2** Wiki 核心 | 0032（含 `wiki_settings` 回填與 trigger）；wiki op 與鎖序；人的 wiki undo 新路徑（R-W9）；已刪除頁讀取；歷史、差異（`similar`）、回復、undo；轉址；刪除與還原；保護；起始頁；D12 的 wiki 目標；專案分頁 `wiki`；REST | M2.1 | T-M2-25…35（含 26a、26b、34a–34c）；前端 §6.3–§6.6 可用 |
+| **M2.2** Wiki 核心 | 0033（含 `wiki_settings` 回填與 trigger）；wiki op 與鎖序；人的 wiki undo 新路徑（R-W9）；已刪除頁讀取；歷史、差異（`similar`）、回復、undo；轉址；刪除與還原；保護；起始頁；D12 的 wiki 目標；專案分頁 `wiki`；REST | M2.1 | T-M2-25…35（含 26a、26b、34a–34c）；前端 §6.3–§6.6 可用 |
 | **M2.3** Wiki 搜尋與 agent | wiki 索引與 consumer；`search kinds`；`audience.rs` 新增 `wiki_audience()`；MCP `wiki_list`、`wiki_get`、wiki op 進 `command_submit`／提案；R-AG1–R-AG11；政策與範本；內建 AI 工具 | M2.2 | T-M2-36、37、40…49（含 42b、42c、47a）；**02 E4w、§9.6 受眾測試、05 T-M1-66 矩陣全部重跑全綠** |
-| **M2.4** 附件〔A2〕 | 0033；儲存、上傳、`attach`／`delete_attachment`、下載標頭、GC、R-M4 圖片、D12 目標 | M2.2（wiki 附件）；可和 M2.3 並行 | T-M2-50…59；T-M2-07、07a、21a、21b；前端附件卡與編輯器附檔 |
-| **M2.5** Git push 與 commit | 0034；`push` 分派、`default_branch`、commit 與 ref（不論 distinct 的預設分支判斷）、compare 補抓、hide、revoke 擴充（撤除墓碑、`redacted_at`）、保存；webhook load shed；開發卡 Commits；admin 頁 push 狀態 | M2.0（可和 M2.1–M2.4 並行，改號規則見 §2.1） | T-M2-60…66（含 65a、65b）、T-M2-78；T-G1–T-G36 全綠 |
-| **M2.6** `fixed_by`〔A3〕 | 0035；偵測、API 確認工作、執行（origin `integration`）、提示、規則 API 與設定頁、停用邏輯 | M2.5 | T-M2-67…77（含 68a、68b、70a、70b、71a、74a）；**用真 GitHub App 與測試 repo 手動跑一次 push＋PR 合併＋fixes**，記錄結果 |
-| **M2.7** CSV 匯出 | 0036 的 `export_events`；`/exports/*`；公式跳脫；稽核 API；前端匯出對話框 | M2.1（說明原文） | T-M2-80…86；Excel 手動開檔一次 |
-| **M2.8** CSV 匯入 | 0036 其餘；上傳、編碼／分隔偵測、對應、試跑、worker、報表、撤銷、通知選項；Filter 欄位 `import_id`；前端精靈 | M2.7（共用格式化）；M2.1 | T-M2-87…98；5,000 列匯入本機 ≤ 5 分鐘；Big5 樣本手動驗一次 |
-| **M2.9** 發布門檻 | §7.9 全部；`docs/impl/upgrade-notes.md` 0031–0036 | 全部 | 越權、繞過政策、重複效果、canary 洩漏、XSS = 0；升級測試通過 |
+| **M2.4** 附件〔A2〕 | 0034；儲存、上傳、`attach`／`delete_attachment`、下載標頭、GC、R-M4 圖片、D12 目標 | M2.2（wiki 附件）；可和 M2.3 並行 | T-M2-50…59；T-M2-07、07a、21a、21b；前端附件卡與編輯器附檔 |
+| **M2.5** Git push 與 commit | 0035；`push` 分派、`default_branch`、commit 與 ref（不論 distinct 的預設分支判斷）、compare 補抓、hide、revoke 擴充（撤除墓碑、`redacted_at`）、保存；webhook load shed；開發卡 Commits；admin 頁 push 狀態 | M2.0（可和 M2.1–M2.4 並行，改號規則見 §2.1） | T-M2-60…66（含 65a、65b）、T-M2-78；T-G1–T-G36 全綠 |
+| **M2.6** `fixed_by`〔A3〕 | 0036；偵測、API 確認工作、執行（origin `integration`）、提示、規則 API 與設定頁、停用邏輯 | M2.5 | T-M2-67…77（含 68a、68b、70a、70b、71a、74a）；**用真 GitHub App 與測試 repo 手動跑一次 push＋PR 合併＋fixes**，記錄結果 |
+| **M2.7** CSV 匯出 | 0037 的 `export_events`；`/exports/*`；公式跳脫；稽核 API；前端匯出對話框 | M2.1（說明原文） | T-M2-80…86；Excel 手動開檔一次 |
+| **M2.8** CSV 匯入 | 0037 其餘；上傳、編碼／分隔偵測、對應、試跑、worker、報表、撤銷、通知選項；Filter 欄位 `import_id`；前端精靈 | M2.7（共用格式化）；M2.1 | T-M2-87…98；5,000 列匯入本機 ≤ 5 分鐘；Big5 樣本手動驗一次 |
+| **M2.9** 發布門檻 | §7.9 全部；`docs/impl/upgrade-notes.md` 0032–0037 | 全部 | 越權、繞過政策、重複效果、canary 洩漏、XSS = 0；升級測試通過 |
 
 M2.5–M2.6（Git）和 M2.1–M2.4 不同表、不同模組，可以並行；M2.3 會改 agent 讀取範圍與 `audience.rs`，和 M2.6 的命令引擎改動（origin `integration`）要排先後合併（建議 M2.3 → M2.6）。前端可從 M2.1 起接真資料。
 
@@ -1279,7 +1280,7 @@ M2.5–M2.6（Git）和 M2.1–M2.4 不同表、不同模組，可以並行；M2
 | B-34 | Markdown 渲染快取 | 記憶體 LRU、只快取第一階段 | 第二階段依觀看者，不能共用 |
 | B-35 | agent 寫的提及 | 渲染但不通知 | R-MN4 |
 | B-36 | 新角色範本「文件維護」 | 預設 review | 範本給團隊共用的 bot，比個人委派保守（05 B-22 的精神） |
-| B-37 | 0031 授予 wiki 權限時要不要 bump epoch | **不 bump**（暫停 `role_permissions_epoch`；和 0023 刻意 bump 一次不同） | 新權限不改既有內容的讀者集合、升級前沒有 wiki 內容、R-AG1 在讀取當下計算（§2.1）；bump 的代價是所有 agent 脈絡升級後都要重開。前提由升級測試斷言（§7.9） |
+| B-37 | 0032 授予 wiki 權限時要不要 bump epoch | **不 bump**（暫停 `role_permissions_epoch`；和 0023 刻意 bump 一次不同） | 新權限不改既有內容的讀者集合、升級前沒有 wiki 內容、R-AG1 在讀取當下計算（§2.1）；bump 的代價是所有 agent 脈絡升級後都要重開。前提由升級測試斷言（§7.9） |
 | B-38 | agent 內容被人改寫或複製後 | 改寫後算人的內容（編輯器提示「含 agent 寫入的連結」）；複製到別處不追蹤 | 追蹤複製要做內容指紋，成本高、誤判多；剩下的風險是「人把 agent 的連結原樣貼到別處」（審查 M13 的已知限制） |
 | B-39 | 提及的 login 比對 | 先精確；不分大小寫只在命中一人時才算 | 0001 的 login 是區分大小寫唯一（審查 M6；附錄 B C2 結案） |
 | B-40 | 匯出的資源上限 | 逐列串流、10,000 列、50 MB、30 秒、每人同時一個、每分鐘 5 次 | 防止匯出拖垮伺服器（審查 M11） |
@@ -1332,6 +1333,8 @@ M2.5–M2.6（Git）和 M2.1–M2.4 不同表、不同模組，可以並行；M2
 | D-M2-9 | wiki 刪除 | 硬刪 | 軟刪、30 天可還原 | 稽核、undo |
 
 ### 9.4 本文以外要改的文件（這次沒改）
+
+> M2.0（2026-11-13）已改：02 §19.1、R-G4、§19.2、§3.8、§16.7；05 §3.11。00、01 §14.8 與研究 §8 還沒改（不在 M2.0 範圍）。
 
 - 00：A1–A6 的決定結果；U45b 的狀態（若 A3 照建議）。
 - 01 §14.8：依 A1 改圖件的階段（建議改成 P5）。
@@ -1422,7 +1425,7 @@ M2.5–M2.6（Git）和 M2.1–M2.4 不同表、不同模組，可以並行；M2
 | O4 | `wiki_index` consumer 若只消費 wiki 列會卡住 outbox GC，也沒有世代機制 | 中 | 沿用 0018 的 `search@` 世代命名（`wiki@<uuid>`）、state 與藍綠；像 `notify` 一樣消費全部列、推進到 frontier；migration 不建 cursor | §2.1、§2.3、§3.14、§9.2 B-49 |
 | L1 | K3「每份文件只動一頁」與 `wiki_delete` reparent 矛盾 | 低 | K3 改寫；寫出 reparent 的鎖序與 undo | §0 K3、§2.3、§3.5 R-W5／R-W9／R-W10、§7.3 T-M2-34a |
 | L2 | `wiki_move` 並行可能成環 | 低 | 搬移、建立、刪除、還原與帶 title／parent 的 `wiki_put` 先鎖 `wiki_settings` 列 | §3.5 R-W4／R-W10、§7.3 T-M2-34b |
-| L3 | `wiki_settings` 沒有回填與新專案建立；唯一衝突的錯誤碼 | 低 | 0032 回填＋新專案 trigger；唯一索引衝突一律 `wiki_page_exists` | §2.1、§2.3、§3.5 R-W10、§7.3 T-M2-26b、§7.9 |
+| L3 | `wiki_settings` 沒有回填與新專案建立；唯一衝突的錯誤碼 | 低 | 0033 回填＋新專案 trigger；唯一索引衝突一律 `wiki_page_exists` | §2.1、§2.3、§3.5 R-W10、§7.3 T-M2-26b、§7.9 |
 | L4 | `title_key` 用 lower()、標題可含 Cf、`wiki_redirects` 可指向別專案 | 低 | NFKC_Casefold；標題與附件檔名禁 Cc、Cf；`wiki_redirects` 用 (project_id, page_id) 複合 FK | §2.3、§2.4、§3.5 R-W2、§7.3 T-M2-26a、§9.2 B-51、附錄 B C13 |
 | L5 | WikiVersion 遮蔽沒包含修改說明 | 低 | 連 `comment` 一起換掉 | §2.3、§3.13 |
 | L6 | 已刪除頁的歷史讀取規則未定 | 低 | 新 R-W16 與 `/wiki/deleted*` 端點：只有 `manage_wiki` | §3.1、§3.5 R-W16、§6.5、§7.3 T-M2-34c、§9.2 B-55 |

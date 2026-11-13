@@ -284,6 +284,10 @@ pub struct CreateIssueOp {
     /// `priority_id`, `fixed_version_id`, `start_date`, `due_date`,
     /// `estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`.
     pub fields: BTreeMap<String, Json>,
+    /// Design 06 R-M9: the description's format; omitted = `markdown`.
+    /// Agents may write only `markdown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<TextFormat>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -293,7 +297,60 @@ pub struct UpdateFieldsOp {
     pub target: TargetRef,
     /// Field key → new value; `null` clears.
     pub set: BTreeMap<String, Json>,
+    /// Design 06 R-M9: the description's format, only with `description` in
+    /// `set`; omitted = the current format is kept. Agents may write only
+    /// `markdown`, and must say so when the current description is `plain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<TextFormat>,
 }
+
+/// The format of a description or note (design 06 R-M9, K2): `markdown`
+/// (CommonMark with GFM, the default for new text) or `plain` (text written
+/// before M2, shown as it is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TextFormat {
+    Plain,
+    Markdown,
+}
+
+impl TextFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TextFormat::Plain => "plain",
+            TextFormat::Markdown => "markdown",
+        }
+    }
+
+    /// A stored value (the 0032 CHECKs allow only these two).
+    pub fn from_db(s: &str) -> TextFormat {
+        if s == "markdown" {
+            TextFormat::Markdown
+        } else {
+            TextFormat::Plain
+        }
+    }
+}
+
+/// `issues.description_format`, `issue_notes.body_format` (0032 CHECKs).
+pub const TEXT_FORMATS: [&str; 2] = ["plain", "markdown"];
+
+/// `issue_events.origin` (0008 CHECK; `integration` from 0032).
+pub const EVENT_ORIGINS: [&str; 6] = [
+    "human_direct",
+    "agent_direct",
+    "external_agent",
+    "seed",
+    "import",
+    "integration",
+];
+
+/// `command_executions.origin` (0008 CHECK; `integration` from 0032).
+pub const EXECUTION_ORIGINS: [&str; 3] = ["agent_direct", "human_direct", "integration"];
+
+/// `execution_field_changes.field_key` of the description's format (undo
+/// copies only; it is not a field a document sets).
+pub const DESCRIPTION_FORMAT_KEY: &str = "description_format";
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -311,6 +368,10 @@ pub struct AddNoteOp {
     pub body: String,
     #[serde(default)]
     pub is_private: bool,
+    /// Design 06 R-M9: omitted = `markdown`; agents may write only
+    /// `markdown`. A note's format never changes (notes are not edited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<TextFormat>,
 }
 
 /// `source` is the duplicate, `target` the original. Must be the only op.
@@ -501,6 +562,16 @@ fn op_err(
         m.extend(x);
     }
     ApiError::new(code, msg).with_details(d).into()
+}
+
+/// Design 06 R-M9: an agent wrote `plain`, or rewrote a plain description
+/// without `format: "markdown"`.
+fn agent_format(fail: impl Fn(ErrorCode, String, Json) -> anyhow::Error) -> anyhow::Error {
+    fail(
+        ErrorCode::ForbiddenOp,
+        "agents write Markdown only; send format \"markdown\" (describe text_format)".into(),
+        json!({"reason": "agent_format"}),
+    )
 }
 
 pub(crate) fn issue_not_found(what: &str) -> anyhow::Error {
@@ -903,11 +974,14 @@ enum Op {
         tracker_id: Uuid,
         fields: Vec<Write>,
         is_private: Option<bool>,
+        format: TextFormat,
     },
     Update {
         op_id: Uuid,
         target: Target,
         set: Vec<Write>,
+        /// With a description in `set` only; `None` keeps the current one.
+        format: Option<TextFormat>,
     },
     Transition {
         op_id: Uuid,
@@ -919,6 +993,7 @@ enum Op {
         target: Target,
         body: String,
         private: bool,
+        format: TextFormat,
     },
     Duplicate {
         op_id: Uuid,
@@ -1717,6 +1792,7 @@ async fn parse_seen(
                     tracker_id: o.tracker_id,
                     fields,
                     is_private,
+                    format: o.format.unwrap_or(TextFormat::Markdown),
                 }
             }
             OpInput::UpdateFields(o) => {
@@ -1724,6 +1800,9 @@ async fn parse_seen(
                 let (set, _) = parse_writes(&o.set, &p("set"), false)?;
                 if set.is_empty() {
                     return Err(bad(&p("set"), "set names at least one field"));
+                }
+                if o.format.is_some() && !set.iter().any(|w| w.key == Key::Description) {
+                    return Err(bad(&p("format"), "format goes with a description in set"));
                 }
                 for w in &set {
                     if !set_fields.insert((t.clone(), w.key)) {
@@ -1737,6 +1816,7 @@ async fn parse_seen(
                     op_id: o.op_id,
                     target: t,
                     set,
+                    format: o.format,
                 }
             }
             OpInput::Transition(o) => {
@@ -1763,6 +1843,7 @@ async fn parse_seen(
                     target: t,
                     body: o.body.clone(),
                     private: o.is_private,
+                    format: o.format.unwrap_or(TextFormat::Markdown),
                 }
             }
             OpInput::DuplicateOf(o) => {
@@ -2249,6 +2330,8 @@ struct IssueRow {
     status_id: Uuid,
     subject: String,
     description: String,
+    /// `plain` or `markdown` (design 06 R-M9).
+    description_format: String,
     author_id: Uuid,
     created_on_behalf_of_id: Option<Uuid>,
     assigned_to_id: Option<Uuid>,
@@ -2327,8 +2410,10 @@ struct Work {
     status: Uuid,
     values: BTreeMap<Key, Json>,
     orig_values: BTreeMap<Key, Json>,
+    /// The description's format (design 06 R-M9).
+    desc_format: TextFormat,
     events: Vec<PendingEvent>,
-    notes: Vec<(Uuid, String, bool)>,
+    notes: Vec<(Uuid, String, bool, TextFormat)>,
     dups: Vec<(Uuid, Uuid, Uuid)>, // (relation id, source, target)
     fields_touched: bool,
     effect: bool,
@@ -2935,7 +3020,7 @@ pub(crate) async fn current_values(
 ) -> Result<Option<(i32, Uuid, BTreeMap<String, Json>)>> {
     let r: Option<IssueRow> = sqlx::query_as(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
-                i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
+                i.description_format, i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
                 i.fixed_version_id, i.start_date, i.due_date,
                 trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
@@ -2966,7 +3051,7 @@ pub(crate) async fn issue_state(
 ) -> Result<Option<(Uuid, Uuid, bool, BTreeMap<String, Json>)>> {
     let r: Option<IssueRow> = sqlx::query_as(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
-                i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
+                i.description_format, i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
                 i.fixed_version_id, i.start_date, i.due_date,
                 trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
@@ -3324,7 +3409,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
     // Step 7: issues FOR UPDATE in id order.
     let rows: Vec<IssueRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT i.id, k.key, i.project_id, i.tracker_id, i.status_id, i.subject, i.description,
-                i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
+                i.description_format, i.author_id, i.created_on_behalf_of_id, i.assigned_to_id, i.priority_id,
                 i.fixed_version_id, i.start_date, i.due_date,
                 trim_scale(i.estimated_hours)::text AS estimated_hours, i.is_private, i.lock_version,
                 i.last_event_seq
@@ -3504,6 +3589,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 status: r.status_id,
                 orig_values: values.clone(),
                 values,
+                desc_format: TextFormat::from_db(&r.description_format),
                 events: Vec::new(),
                 notes: Vec::new(),
                 dups: Vec::new(),
@@ -3827,7 +3913,11 @@ async fn run_ops(
                 tracker_id,
                 fields,
                 is_private,
+                format,
             } => {
+                if actor.is_agent() && *format != TextFormat::Markdown {
+                    return Err(agent_format(fail));
+                }
                 let pp = &perms[project_id];
                 let tracker: Option<(Option<Uuid>, bool)> = sqlx::query_as(
                     "SELECT t.default_status_id, t.private_by_default FROM trackers t
@@ -3899,6 +3989,7 @@ async fn run_ops(
                     status: initial,
                     orig_values: BTreeMap::new(),
                     values: BTreeMap::new(),
+                    desc_format: *format,
                     events: Vec::new(),
                     notes: Vec::new(),
                     dups: Vec::new(),
@@ -3953,7 +4044,7 @@ async fn run_ops(
                 payload.insert("status_id".into(), json!(initial));
                 payload.insert("is_private".into(), json!(private));
                 let fields_list: Vec<String> = payload.keys().cloned().collect();
-                let mut created = json!({"fields": payload});
+                let mut created = json!({"fields": payload, "description_format": format.as_str()});
                 if w.enters_triage {
                     created["triage"] = json!("pending");
                 }
@@ -3976,12 +4067,26 @@ async fn run_ops(
                     time_entry_id: None,
                 });
             }
-            Op::Update { op_id, target, set } => {
+            Op::Update {
+                op_id,
+                target,
+                set,
+                format,
+            } => {
                 let id = resolve(target);
-                let (project_id, tracker_id, status) = {
+                let (project_id, tracker_id, status, cur_format) = {
                     let w = &work[&id];
-                    (w.project_id, w.tracker_id, w.status)
+                    (w.project_id, w.tracker_id, w.status, w.desc_format)
                 };
+                // R-M9: agents write Markdown only, and say so when they
+                // rewrite a plain description (no silent conversion).
+                if actor.is_agent()
+                    && set.iter().any(|w| w.key == Key::Description)
+                    && format.unwrap_or(cur_format) != TextFormat::Markdown
+                {
+                    return Err(agent_format(fail));
+                }
+                let new_format = format.unwrap_or(cur_format);
                 let pp = &perms[&project_id];
                 let r = &rules[&(project_id, tracker_id)];
                 // §6.3: after a transition earlier in the document, the new status' rules.
@@ -4019,15 +4124,28 @@ async fn run_ops(
                 for (k, v) in new_values {
                     w.values.insert(k, v);
                 }
-                let applied = !changes.is_empty();
+                let format_changed = new_format != cur_format;
+                w.desc_format = new_format;
+                let applied = !changes.is_empty() || format_changed;
                 if applied {
                     w.fields_touched = true;
                     w.effect = true;
-                    let fields = changes.keys().cloned().collect();
+                    let mut fields: Vec<String> = changes.keys().cloned().collect();
+                    let mut payload = json!({"changes": changes});
+                    if format_changed {
+                        // The format belongs to the description: its origin
+                        // moves with it (R-M3 judges agent content by it).
+                        payload["description_format"] =
+                            json!({"old": cur_format.as_str(), "new": new_format.as_str()});
+                        let d = Key::Description.name();
+                        if !fields.contains(&d) {
+                            fields.push(d);
+                        }
+                    }
                     w.events.push(PendingEvent {
                         kind: "fields_changed",
                         op_id: *op_id,
-                        payload: json!({"changes": changes}),
+                        payload,
                         note_id: None,
                         fields,
                     });
@@ -4102,7 +4220,11 @@ async fn run_ops(
                 target,
                 body,
                 private,
+                format,
             } => {
+                if actor.is_agent() && *format != TextFormat::Markdown {
+                    return Err(agent_format(fail));
+                }
                 let id = resolve(target);
                 let w = &work[&id];
                 let pp = &perms[&w.project_id];
@@ -4124,7 +4246,7 @@ async fn run_ops(
                 }
                 let note_id = Uuid::now_v7();
                 let w = work.get_mut(&id).expect("target");
-                w.notes.push((note_id, body.clone(), *private));
+                w.notes.push((note_id, body.clone(), *private, *format));
                 w.events.push(PendingEvent {
                     kind: "note_added",
                     op_id: *op_id,
@@ -4558,10 +4680,11 @@ pub(crate) async fn write_effects(
             lock_version = 0;
         }
         if w.effect {
-            for (note_id, body, private) in &w.notes {
+            for (note_id, body, private, format) in &w.notes {
                 sqlx::query(
-                    "INSERT INTO issue_notes (id, issue_id, author_id, created_on_behalf_of_id, body, is_private)
-                     VALUES ($1,$2,$3,$4,$5,$6)",
+                    "INSERT INTO issue_notes (id, issue_id, author_id, created_on_behalf_of_id, body, is_private,
+                                              body_format)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7)",
                 )
                 .bind(note_id)
                 .bind(id)
@@ -4569,6 +4692,7 @@ pub(crate) async fn write_effects(
                 .bind(at.author_on_behalf)
                 .bind(body)
                 .bind(private)
+                .bind(format.as_str())
                 .execute(&mut *conn)
                 .await?;
             }
@@ -4661,6 +4785,26 @@ pub(crate) async fn write_effects(
                     .execute(&mut *conn)
                     .await?;
                 }
+                // Design 06 R-MN3, R-MN4: who a person's text mentions (an
+                // agent's mentions render but are never recorded).
+                if at.actor_kind != "agent"
+                    && let Some((new, old)) = event_texts(w, ev)
+                {
+                    let new = crate::mentions::candidates(&new.0, new.1);
+                    if !new.is_empty() {
+                        let ids = crate::mentions::resolve(&mut *conn, w.project_id, &new).await?;
+                        // A rewritten description: only who was not mentioned before.
+                        let before = match old {
+                            Some((t, f)) => {
+                                let c = crate::mentions::candidates(&t, f);
+                                crate::mentions::resolve(&mut *conn, w.project_id, &c).await?
+                            }
+                            None => Vec::new(),
+                        };
+                        crate::mentions::record(&mut *conn, event_id, at.author_id, &ids, &before)
+                            .await?;
+                    }
+                }
             }
             if let (true, Some(o)) = (at.record_changes, w.orig.as_ref()) {
                 // Agent writes keep before/after copies for undo (§16.7).
@@ -4678,6 +4822,15 @@ pub(crate) async fn write_effects(
                     .collect();
                 if o.status_id != w.status {
                     changed.push(("status_id".into(), json!(o.status_id), json!(w.status)));
+                }
+                // R-M9: undo restores the description's format with its text
+                // (undo.rs reads this row with the description, never alone).
+                if o.description_format != w.desc_format.as_str() {
+                    changed.push((
+                        DESCRIPTION_FORMAT_KEY.into(),
+                        json!(o.description_format),
+                        json!(w.desc_format.as_str()),
+                    ));
                 }
                 if let (Some(plan), Some(after)) = (&w.triage, &triage_after) {
                     changed.push((
@@ -4716,6 +4869,36 @@ pub(crate) async fn write_effects(
     }
 
     Ok(effects)
+}
+
+type Text = (String, TextFormat);
+
+/// The text an event writes that may mention people (design 06 R-MN3): a
+/// note's body, a new issue's description, or a rewritten description with
+/// the text it replaced.
+fn event_texts(w: &Work, ev: &PendingEvent) -> Option<(Text, Option<Text>)> {
+    let fmt = |v: &Json| v.as_str().map(TextFormat::from_db);
+    match ev.kind {
+        "note_added" => {
+            let (_, body, _, f) = w.notes.iter().find(|n| Some(n.0) == ev.note_id)?;
+            Some(((body.clone(), *f), None))
+        }
+        "created" => {
+            let d = ev.payload["fields"]["description"].as_str()?;
+            let f = fmt(&ev.payload["description_format"]).unwrap_or(w.desc_format);
+            Some(((d.to_string(), f), None))
+        }
+        "fields_changed" => {
+            let c = &ev.payload["changes"]["description"];
+            let new = c["new"].as_str()?;
+            let old = c["old"].as_str().unwrap_or_default();
+            let f = &ev.payload["description_format"];
+            let new_f = fmt(&f["new"]).unwrap_or(w.desc_format);
+            let old_f = fmt(&f["old"]).unwrap_or(new_f);
+            Some(((new.to_string(), new_f), Some((old.to_string(), old_f))))
+        }
+        _ => None,
+    }
 }
 
 fn json_uuid_ref(v: &Json) -> Option<Uuid> {
@@ -5076,8 +5259,9 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     sqlx::query(
         "INSERT INTO issues (id, project_id, tracker_id, status_id, subject, description, author_id,
                              created_on_behalf_of_id, assigned_to_id, priority_id, fixed_version_id,
-                             start_date, due_date, is_private, last_event_seq, estimated_hours)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::numeric)",
+                             start_date, due_date, is_private, last_event_seq, estimated_hours,
+                             description_format)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::numeric,$17)",
     )
     .bind(w.id)
     .bind(w.project_id)
@@ -5097,6 +5281,7 @@ async fn insert_issue(conn: &mut PgConnection, w: &Work) -> Result<String> {
     // final sequence and the outbox trigger fires once (§6.9).
     .bind(w.events.len() as i64)
     .bind(v(Key::EstimatedHours).as_str().map(String::from))
+    .bind(w.desc_format.as_str())
     .execute(&mut *conn)
     .await?;
     let key = format!("{pkey}-{number}");
@@ -5126,7 +5311,7 @@ async fn update_issue(conn: &mut PgConnection, w: &Work, last_event_seq: i64) ->
     sqlx::query(
         "UPDATE issues SET status_id = $2, subject = $3, description = $4, assigned_to_id = $5,
                 priority_id = $6, fixed_version_id = $7, start_date = $8, due_date = $9,
-                estimated_hours = $11::numeric,
+                estimated_hours = $11::numeric, description_format = $12,
                 lock_version = lock_version + 1, last_event_seq = $10, updated_at = now()
          WHERE id = $1",
     )
@@ -5141,6 +5326,7 @@ async fn update_issue(conn: &mut PgConnection, w: &Work, last_event_seq: i64) ->
     .bind(json_date(&v(Key::DueDate)))
     .bind(last_event_seq)
     .bind(v(Key::EstimatedHours).as_str().map(String::from))
+    .bind(w.desc_format.as_str())
     .execute(&mut *conn)
     .await?;
     Ok(())

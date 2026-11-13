@@ -5,8 +5,9 @@
 //!   baseline the server recorded when the agent proposed (only fields the
 //!   agent could read; shown only while the viewer can read them; cleared
 //!   by redaction).
-//! * G14: listing an agent's tokens (`/ai-team/{p}/credentials`,
-//!   `/agent-contexts/{id}/credentials`) and `last_used_at`.
+//! * G14: listing an agent's tokens (`/ai-team/{p}/credentials`; the
+//!   `/agent-contexts/{id}/credentials` alias was removed in M2.0) and
+//!   `last_used_at`.
 //! * G24: the activity lists' filters and signed cursor; what the caller
 //!   cannot read changes neither the page nor the cursor.
 //!

@@ -242,7 +242,8 @@ pub(crate) async fn credential_rows(
         .collect())
 }
 
-/// `GET /agent-contexts/{id}/credentials` (G14): the tokens of one of the
+/// G14 (its HTTP alias `GET /agent-contexts/{id}/credentials` was removed in
+/// M2.0; the API is `GET /ai-team/{principal}/credentials`): the tokens of one of the
 /// caller's work contexts, optionally of one role (`agent_principal_id`;
 /// a context's runtime may hold several). Someone else's context, or a role
 /// that is not this runtime's: `not_found`.
@@ -652,7 +653,11 @@ async fn close_context_locked(conn: &mut PgConnection, context: Uuid, reason: &s
 
 /// Projects of R whose epoch differs from the one recorded (the context is
 /// quarantined if any). Locks the project rows FOR SHARE in id order.
-async fn changed_sources(conn: &mut PgConnection, context: Uuid, lock: bool) -> Result<Vec<Uuid>> {
+pub(crate) async fn changed_sources(
+    conn: &mut PgConnection,
+    context: Uuid,
+    lock: bool,
+) -> Result<Vec<Uuid>> {
     let sql = format!(
         "SELECT p.id, (p.security_epoch <> r.security_epoch) AS changed
          FROM agent_context_source_projects r JOIN projects p ON p.id = r.project_id

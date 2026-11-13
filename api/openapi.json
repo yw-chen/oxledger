@@ -1685,18 +1685,6 @@
         ],
         "type": "object"
       },
-      "Created": {
-        "properties": {
-          "id": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "type": "object"
-      },
       "CreatedRole": {
         "properties": {
           "credential_id": {
@@ -1770,32 +1758,6 @@
           "is_private",
           "enters_triage"
         ],
-        "type": "object"
-      },
-      "CredentialBody": {
-        "additionalProperties": false,
-        "properties": {
-          "agent_principal_id": {
-            "default": null,
-            "description": "Design 05 §3.1 (compatibility alias): the role the token is for;\nmay be left out only when the runtime has one active role.",
-            "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expires_in_days": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "label": {
-            "default": "",
-            "type": "string"
-          }
-        },
         "type": "object"
       },
       "CredentialInput": {
@@ -4628,6 +4590,10 @@
           "description": {
             "type": "string"
           },
+          "description_format": {
+            "description": "`markdown`, or `plain` for a description written before M2 and not\nrewritten since (design 06 R-M9). An editor that rewrites a plain\ndescription sends `format: \"markdown\"` to convert it.",
+            "type": "string"
+          },
           "due_date": {
             "format": "date",
             "type": [
@@ -4733,6 +4699,7 @@
           "key",
           "subject",
           "description",
+          "description_format",
           "project",
           "tracker",
           "status",
@@ -5421,23 +5388,6 @@
         ],
         "type": "object"
       },
-      "NewContextBody": {
-        "additionalProperties": false,
-        "properties": {
-          "agent_client_id": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "fresh_context_ack": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "agent_client_id",
-          "fresh_context_ack"
-        ],
-        "type": "object"
-      },
       "NewConversation": {
         "additionalProperties": false,
         "properties": {
@@ -5837,6 +5787,10 @@
           "body": {
             "type": "string"
           },
+          "body_format": {
+            "description": "`markdown`, or `plain` for notes written before M2 (design 06 R-M9).",
+            "type": "string"
+          },
           "citation_id": {
             "description": "Cites the whole note (source kind issue_note).",
             "type": [
@@ -5875,7 +5829,8 @@
           "author",
           "created_at",
           "is_private",
-          "body"
+          "body",
+          "body_format"
         ],
         "type": "object"
       },
@@ -6196,6 +6151,17 @@
                 "description": "`subject` (required), `description`, `is_private`, `assigned_to_id`,\n`priority_id`, `fixed_version_id`, `start_date`, `due_date`,\n`estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`.",
                 "type": "object"
               },
+              "format": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TextFormat"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Design 06 R-M9: the description's format; omitted = `markdown`.\nAgents may write only `markdown`."
+              },
               "kind": {
                 "const": "create_issue",
                 "type": "string"
@@ -6225,6 +6191,17 @@
           {
             "additionalProperties": false,
             "properties": {
+              "format": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TextFormat"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Design 06 R-M9: the description's format, only with `description` in\n`set`; omitted = the current format is kept. Agents may write only\n`markdown`, and must say so when the current description is `plain`."
+              },
               "kind": {
                 "const": "update_fields",
                 "type": "string"
@@ -6282,6 +6259,17 @@
             "properties": {
               "body": {
                 "type": "string"
+              },
+              "format": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TextFormat"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Design 06 R-M9: omitted = `markdown`; agents may write only\n`markdown`. A note's format never changes (notes are not edited)."
               },
               "is_private": {
                 "default": false,
@@ -8989,6 +8977,14 @@
             "description": "Created by the 0029 upgrade from a 02 agent.",
             "type": "boolean"
           },
+          "changed_projects": {
+            "description": "Source projects of the active context whose `security_epoch` changed\nsince they were read (the context is quarantined; start a new one).\nWhat `ContextView.changed_projects` gave before `/agent-contexts`\nwas removed (M2.0); empty without an active context.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "context_id": {
             "description": "The active work context, if any.",
             "format": "uuid",
@@ -9036,6 +9032,20 @@
             },
             "type": "array"
           },
+          "suspended_at": {
+            "description": "Writes of the active context are paused (02 §16.6): by the sponsor\n(`manual`) or by the incident breaker (`audience_blocked`, …). Lift\nwith `POST /me/agent-runtimes/{id}/resume`.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suspension_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "time_readers": {
             "items": {
               "type": "string"
@@ -9052,6 +9062,9 @@
           "created_at",
           "retired_at",
           "context_id",
+          "suspended_at",
+          "suspension_reason",
+          "changed_projects",
           "sources",
           "time_readers",
           "roles"
@@ -10076,6 +10089,13 @@
             ]
           },
           "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description_format": {
+            "description": "With `description`: `markdown`, or `plain` for a description written\nbefore M2 and not rewritten since (design 06 R-M9).",
             "type": [
               "string",
               "null"
@@ -11112,6 +11132,14 @@
           "at"
         ],
         "type": "object"
+      },
+      "TextFormat": {
+        "description": "The format of a description or note (design 06 R-M9, K2): `markdown`\n(CommonMark with GFM, the default for new text) or `plain` (text written\nbefore M2, shown as it is).",
+        "enum": [
+          "plain",
+          "markdown"
+        ],
+        "type": "string"
       },
       "Thresholds": {
         "description": "The thresholds in use (org default or the project override); a null\nvalue turns `deadline_near_incomplete` off.",
@@ -16362,453 +16390,6 @@
         "x-access": "session"
       }
     },
-    "/agent-contexts": {
-      "get": {
-        "operationId": "get_agent_contexts",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "$ref": "#/components/schemas/ContextView"
-                      },
-                      "type": "array"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "Own agents' work contexts, R and why a context is unusable.",
-        "x-access": "session"
-      },
-      "post": {
-        "operationId": "post_agent_contexts",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewContextBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/Created"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "New work context (fresh_context_ack: true); closes the old one.",
-        "x-access": "stepup",
-        "x-csrf": true
-      }
-    },
-    "/agent-contexts/{id}/close": {
-      "post": {
-        "operationId": "post_agent_contexts_id_close",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Empty"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/Done"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "Stop this agent: close the context, revoke delegations and tokens.",
-        "x-access": "session",
-        "x-csrf": true
-      }
-    },
-    "/agent-contexts/{id}/credentials": {
-      "get": {
-        "operationId": "get_agent_contexts_id_credentials",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/CredentialList"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "Tokens of one of your work contexts, newest first (compatibility alias of GET /ai-team/{id}/credentials). Query agent_principal_id narrows to one role of the context's runtime (not_found for another runtime's role). Never the token or its hash.",
-        "x-access": "session"
-      },
-      "post": {
-        "operationId": "post_agent_contexts_id_credentials",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CredentialBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/IssuedCredential"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "New agent token (shown once). Compatibility alias: in a runtime with more than one active role the body needs `agent_principal_id`, otherwise `invalid_argument` with `details.reason = \"principal_required\"`.",
-        "x-access": "stepup",
-        "x-csrf": true
-      }
-    },
-    "/agent-contexts/{id}/resume": {
-      "post": {
-        "operationId": "post_agent_contexts_id_resume",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Empty"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/Done"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "Resume a paused context (needs a step-up; re-checks the context first).",
-        "x-access": "session",
-        "x-csrf": true
-      }
-    },
-    "/agent-contexts/{id}/suspend": {
-      "post": {
-        "operationId": "post_agent_contexts_id_suspend",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Empty"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "data": {
-                      "$ref": "#/components/schemas/Done"
-                    },
-                    "meta": {
-                      "$ref": "#/components/schemas/Meta"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "meta"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorBody"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Error (§4.3)"
-          }
-        },
-        "summary": "Pause the agent's writes in this context (reads go on).",
-        "x-access": "session",
-        "x-csrf": true
-      }
-    },
     "/agent-credentials/{id}/revoke": {
       "post": {
         "operationId": "post_agent_credentials_id_revoke",
@@ -21405,6 +20986,76 @@
         "x-csrf": true
       }
     },
+    "/me/agent-runtimes/{id}/resume": {
+      "post": {
+        "operationId": "post_me_agent_runtimes_id_resume",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Lift a pause of the runtime's active work context, manual or by the incident breaker (needs a step-up; re-checks R's epochs and that a delegation is usable: context_unavailable with details.kind quarantined, delegation_unavailable).",
+        "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
     "/me/agent-runtimes/{id}/retire": {
       "post": {
         "operationId": "post_me_agent_runtimes_id_retire",
@@ -21472,6 +21123,76 @@
         },
         "summary": "Retire an external runtime: its context closes and its roles retire.",
         "x-access": "stepup",
+        "x-csrf": true
+      }
+    },
+    "/me/agent-runtimes/{id}/suspend": {
+      "post": {
+        "operationId": "post_me_agent_runtimes_id_suspend",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Pause the writes of the runtime's active work context, for every role of the runtime (reads go on). not_found without an active context.",
+        "x-access": "session",
         "x-csrf": true
       }
     },

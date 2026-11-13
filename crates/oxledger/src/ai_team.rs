@@ -1912,6 +1912,16 @@ pub struct RuntimeView {
     pub retired_at: Option<DateTime<Utc>>,
     /// The active work context, if any.
     pub context_id: Option<Uuid>,
+    /// Writes of the active context are paused (02 §16.6): by the sponsor
+    /// (`manual`) or by the incident breaker (`audience_blocked`, …). Lift
+    /// with `POST /me/agent-runtimes/{id}/resume`.
+    pub suspended_at: Option<DateTime<Utc>>,
+    pub suspension_reason: Option<String>,
+    /// Source projects of the active context whose `security_epoch` changed
+    /// since they were read (the context is quarantined; start a new one).
+    /// What `ContextView.changed_projects` gave before `/agent-contexts`
+    /// was removed (M2.0); empty without an active context.
+    pub changed_projects: Vec<Uuid>,
     /// Keys of R in the active context.
     pub sources: Vec<String>,
     pub time_readers: Vec<String>,
@@ -1944,6 +1954,23 @@ pub async fn runtimes(app: &App, ctx: AuthContext) -> Result<Vec<RuntimeView>> {
     let mut out = Vec::new();
     for (id, kind, label, lock_version, backfilled, created_at, retired_at, context_id) in rows {
         let info = runtime_info(&mut tx, id, None).await?;
+        let suspension: Option<(Option<DateTime<Utc>>, Option<String>)> = match context_id {
+            Some(c) => {
+                sqlx::query_as(
+                    "SELECT suspended_at, suspension_reason FROM agent_context_write_controls
+                     WHERE context_id = $1",
+                )
+                .bind(c)
+                .fetch_optional(&mut *tx)
+                .await?
+            }
+            None => None,
+        };
+        let (suspended_at, suspension_reason) = suspension.unwrap_or((None, None));
+        let changed_projects = match context_id {
+            Some(c) => agents::changed_sources(&mut tx, c, false).await?,
+            None => Vec::new(),
+        };
         let roles: Vec<(Uuid, String, String, bool)> = sqlx::query_as(
             "SELECT agent_principal_id, handle, role_key, retired_at IS NOT NULL FROM agent_principals
              WHERE runtime_id = $1 ORDER BY handle",
@@ -1960,6 +1987,9 @@ pub async fn runtimes(app: &App, ctx: AuthContext) -> Result<Vec<RuntimeView>> {
             created_at,
             retired_at,
             context_id,
+            suspended_at,
+            suspension_reason,
+            changed_projects,
             sources: info.sources,
             time_readers: info.time_readers,
             roles: roles
@@ -2127,6 +2157,43 @@ pub async fn runtime_new_context(
         .into_iter()
         .find(|c| c.id == new)
         .ok_or_else(|| api(ErrorCode::NotFound, "no such work context"))
+}
+
+/// The active context of the caller's live runtime `id`, or `not_found`.
+async fn active_context(app: &App, user: Uuid, id: Uuid) -> Result<Uuid> {
+    let c: Option<Uuid> = sqlx::query_scalar(
+        "SELECT w.id FROM agent_runtimes r
+         JOIN agent_work_contexts w ON w.runtime_id = r.id AND w.state = 'active'
+         WHERE r.id = $1 AND r.sponsor_user_id = $2 AND r.retired_at IS NULL",
+    )
+    .bind(id)
+    .bind(user)
+    .fetch_optional(&app.pool)
+    .await?;
+    c.ok_or_else(|| api(ErrorCode::NotFound, "no such runtime"))
+}
+
+/// `POST /me/agent-runtimes/{id}/suspend` (design 06 M2.0; replaces
+/// `POST /agent-contexts/{id}/suspend`): pause the writes of the runtime's
+/// active context (every role of the runtime, design 05 §2.11); reads go on.
+pub async fn suspend_runtime(app: &App, ctx: AuthContext, id: Uuid) -> Result<()> {
+    let (user, _) = ctx.require_human_session()?;
+    let context = active_context(app, user, id).await?;
+    agents::suspend_context(&app.pool, &ctx, context).await
+}
+
+/// `POST /me/agent-runtimes/{id}/resume` (design 06 M2.0; replaces
+/// `POST /agent-contexts/{id}/resume`): lift a manual or breaker suspension
+/// of the active context after the 02 §16.6 checks. Step-up.
+pub async fn resume_runtime(
+    app: &App,
+    policy: &SessionPolicy,
+    ctx: AuthContext,
+    id: Uuid,
+) -> Result<()> {
+    let (user, _) = ctx.require_human_session()?;
+    let context = active_context(app, user, id).await?;
+    agents::resume_context(&app.pool, policy, &ctx, context).await
 }
 
 /// `POST /me/agent-runtimes/{id}/retire` (§3.12.2): an external runtime

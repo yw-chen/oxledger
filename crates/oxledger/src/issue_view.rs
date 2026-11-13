@@ -102,6 +102,8 @@ pub struct NoteView {
     pub created_at: DateTime<Utc>,
     pub is_private: bool,
     pub body: String,
+    /// `markdown`, or `plain` for notes written before M2 (design 06 R-M9).
+    pub body_format: String,
     /// The body was redacted (D12); there is no citation for it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
@@ -175,6 +177,10 @@ pub struct IssueView {
     pub subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// With `description`: `markdown`, or `plain` for a description written
+    /// before M2 and not rewritten since (design 06 R-M9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -404,7 +410,7 @@ async fn plan(conn: &mut PgConnection, caller: AuthContext, a: Ask<'_>) -> Resul
 fn column(f: &str) -> Option<&'static str> {
     Some(match f {
         "subject" => "i.subject",
-        "description" => "i.description",
+        "description" => "i.description, i.description_format",
         "project" => "p.name AS project",
         "tracker" => "t.name AS tracker",
         "status" => "s.name AS status",
@@ -625,6 +631,7 @@ async fn get_one(
             requested_key: d.requested_key,
             subject: Some(d.subject),
             description: Some(d.description),
+            description_format: Some(d.description_format),
             project: Some(d.project),
             tracker: Some(d.tracker),
             status: Some(d.status),
@@ -705,7 +712,10 @@ async fn get_one(
     for f in sel {
         match *f {
             "subject" => v.subject = Some(row.try_get("subject")?),
-            "description" => v.description = Some(row.try_get("description")?),
+            "description" => {
+                v.description = Some(row.try_get("description")?);
+                v.description_format = Some(row.try_get("description_format")?);
+            }
             "project" => v.project = Some(row.try_get("project")?),
             "tracker" => v.tracker = Some(row.try_get("tracker")?),
             "status" => v.status = Some(row.try_get("status")?),
@@ -926,6 +936,7 @@ struct NoteRow {
     created_at: DateTime<Utc>,
     is_private: bool,
     body: String,
+    body_format: String,
     redacted: bool,
     retracted_by: Option<String>,
     retracted: bool,
@@ -944,7 +955,7 @@ async fn recent_notes(
     loop {
         let rows: Vec<NoteRow> = sqlx::query_as(
             "SELECT n.id, p.name AS author, n.author_id, n.created_on_behalf_of_id, n.created_at,
-                    n.is_private, n.body, n.redacted_at IS NOT NULL AS redacted,
+                    n.is_private, n.body, n.body_format, n.redacted_at IS NOT NULL AS redacted,
                     rp.name AS retracted_by, n.retracted_at IS NOT NULL AS retracted
              FROM issue_notes n JOIN principals p ON p.id = n.author_id
              LEFT JOIN command_executions rx ON rx.id = n.retracted_by_execution_id
@@ -1000,6 +1011,7 @@ async fn recent_notes(
                     )
                 }),
                 body: if r.retracted { String::new() } else { r.body },
+                body_format: r.body_format,
                 redacted: r.redacted,
                 retracted: r.retracted,
                 retracted_by: r.retracted_by,
@@ -1262,10 +1274,16 @@ pub(crate) async fn event_view(
                 let empty = Map::new();
                 let map = r.payload[key].as_object().unwrap_or(&empty);
                 let shown = filter_fields(&mut *conn, rc, map, changes).await?;
-                if changes && shown.is_empty() {
+                // Design 06 R-M9: the description's format (it changes only
+                // with the description, which every reader of the issue sees).
+                let format = r.payload.get("description_format");
+                if changes && shown.is_empty() && format.is_none() {
                     return Ok(None);
                 }
                 let mut d = json!({ key: shown });
+                if let Some(f) = format {
+                    d["description_format"] = f.clone();
+                }
                 if let Some(t) = r.payload.get("triage") {
                     d["triage"] = t.clone();
                 }

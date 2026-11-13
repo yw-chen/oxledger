@@ -10,8 +10,8 @@
 
 use crate::agents::{AgentClientView, ContextView, DelegationView, IssuedCredential};
 use crate::api::{
-    Created, CredentialBody, DelegationBody, Done, Empty, LoginBody, LoginContextData, LoginData,
-    NewContextBody, PasswordBody, SessionData, SessionItem,
+    DelegationBody, Done, Empty, LoginBody, LoginContextData, LoginData, PasswordBody, SessionData,
+    SessionItem,
 };
 use crate::error::ErrorBody;
 use crate::registry;
@@ -1153,64 +1153,8 @@ pub fn session_routes() -> Vec<RouteDoc> {
             Some(s::<crate::agents::PolicyInput>),
             s::<crate::agents::PolicyView>,
         ),
-        r(
-            "GET",
-            "/agent-contexts",
-            "Own agents' work contexts, R and why a context is unusable.",
-            Session,
-            None,
-            s::<Vec<ContextView>>,
-        ),
-        r(
-            "POST",
-            "/agent-contexts",
-            "New work context (fresh_context_ack: true); closes the old one.",
-            StepUp,
-            Some(s::<NewContextBody>),
-            s::<Created>,
-        ),
-        r(
-            "POST",
-            "/agent-contexts/{id}/close",
-            "Stop this agent: close the context, revoke delegations and tokens.",
-            Session,
-            Some(s::<Empty>),
-            s::<Done>,
-        ),
-        r(
-            "POST",
-            "/agent-contexts/{id}/suspend",
-            "Pause the agent's writes in this context (reads go on).",
-            Session,
-            Some(s::<Empty>),
-            s::<Done>,
-        ),
-        r(
-            "POST",
-            "/agent-contexts/{id}/resume",
-            "Resume a paused context (needs a step-up; re-checks the context first).",
-            Session,
-            Some(s::<Empty>),
-            s::<Done>,
-        ),
-        r(
-            "POST",
-            "/agent-contexts/{id}/credentials",
-            "New agent token (shown once). Compatibility alias: in a runtime with more than one \
-             active role the body needs `agent_principal_id`, otherwise `invalid_argument` with \
-             `details.reason = \"principal_required\"`.",
-            StepUp,
-            Some(s::<CredentialBody>),
-            s::<IssuedCredential>,
-        ),
-        r(
-            "GET",
-            "/agent-contexts/{id}/credentials",
-            "Tokens of one of your work contexts, newest first (compatibility alias of GET /ai-team/{id}/credentials). Query agent_principal_id narrows to one role of the context's runtime (not_found for another runtime's role). Never the token or its hash.",
-            Session,
-            None,
-            s::<crate::agents::CredentialList>,
-        ),
+        // `/agent-contexts*` (02's compatibility aliases) were removed in
+        // M2.0 (design 06 §3.1, 05 B-43): /me/agent-runtimes* and /ai-team*.
         r(
             "POST",
             "/agent-credentials/{id}/revoke",
@@ -1327,6 +1271,22 @@ pub fn session_routes() -> Vec<RouteDoc> {
             "POST",
             "/me/agent-runtimes/{id}/retire",
             "Retire an external runtime: its context closes and its roles retire.",
+            StepUp,
+            Some(s::<Empty>),
+            s::<Done>,
+        ),
+        r(
+            "POST",
+            "/me/agent-runtimes/{id}/suspend",
+            "Pause the writes of the runtime's active work context, for every role of the runtime (reads go on). not_found without an active context.",
+            Session,
+            Some(s::<Empty>),
+            s::<Done>,
+        ),
+        r(
+            "POST",
+            "/me/agent-runtimes/{id}/resume",
+            "Lift a pause of the runtime's active work context, manual or by the incident breaker (needs a step-up; re-checks R's epochs and that a delegation is usable: context_unavailable with details.kind quarantined, delegation_unavailable).",
             StepUp,
             Some(s::<Empty>),
             s::<Done>,
