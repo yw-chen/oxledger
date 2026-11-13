@@ -21,7 +21,8 @@
 		{ href: '/', ic: '⌂', label: '首頁', on: path === '/' },
 		{ href: '/search?assignee=me&status=open', ic: '◉', label: '我的工作', on: path === '/search' && search.includes('assignee=me') },
 		{ href: '/review', ic: '✓', label: '待審', on: path.startsWith('/review') || path.startsWith('/cs/'), badge: counts.awaiting.length ? awaitingLabel() : '' },
-		{ href: '/search', ic: '☰', label: '全部議題', on: path === '/search' && !search.includes('assignee=me') }
+		{ href: '/search', ic: '☰', label: '全部議題', on: path === '/search' && !search.includes('assignee=me') },
+		{ href: '/views', ic: '▤', label: '我的視圖', on: path.startsWith('/views') }
 	]);
 </script>
 

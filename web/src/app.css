@@ -249,3 +249,42 @@ details.ev summary{cursor:pointer}
 
 /* P1 */
 tr.changed td{background:color-mix(in srgb,var(--warn) 12%,transparent)}
+
+/* M1: drawer, condition editor, views, board */
+.drawer-bg{position:fixed;inset:0;background:rgba(3,7,15,.45);z-index:40}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,100vw);background:var(--card);border-left:1px solid var(--line2);z-index:41;display:flex;flex-direction:column}
+.drawer .dh{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.drawer .db{flex:1;overflow:auto;padding:12px 14px}
+.drawer .df{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cond{border:1px solid var(--line);border-radius:8px;padding:8px;margin:0 0 8px;background:var(--card2)}
+.cond.bad{border-color:var(--bad)}
+.cond .r{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.cond select,.cond input[type=text],.cond input[type=date],.cond input[type=number]{background:var(--bg2);border:1px solid var(--line2);border-radius:6px;padding:3px 6px;max-width:100%}
+.subgroup{border-left:3px solid var(--prop);padding-left:8px;margin:0 0 8px}
+.optpick{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:6px;max-height:160px;overflow:auto}
+.optpick label{display:flex;gap:4px;align-items:center;font-size:13px}
+.fchip{display:inline-flex;align-items:center;gap:4px;padding:1px 10px;border-radius:99px;border:1px solid var(--line2);background:var(--card2);font-size:12.5px;cursor:pointer}
+.scope-badge{font-size:11.5px;padding:0 8px;border-radius:99px;border:1px solid var(--line2);color:var(--muted)}
+.vtable td.num{text-align:right;font-variant-numeric:tabular-nums}
+.vtable th button{background:none;border:0;padding:0;color:inherit;font:inherit}
+.vtable tr.grp td{background:var(--bg2);font-weight:600}
+.overdue{color:var(--bad)}
+.board{display:flex;gap:10px;overflow-x:auto;align-items:flex-start;padding-bottom:8px}
+.lane{flex:0 0 260px;background:var(--bg2);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;max-height:calc(100vh - 220px)}
+.lane .lh{padding:8px 10px;font-weight:600;font-size:13px;border-bottom:1px solid var(--line);display:flex;gap:6px;align-items:center}
+.lane .lh.wip{background:var(--warn-a)}
+.lane .lb{padding:8px;overflow:auto;display:flex;flex-direction:column;gap:6px;min-height:60px}
+.lane.can-drop{outline:2px dashed var(--act);outline-offset:-2px}
+.lane.no-drop{opacity:.45}
+.lane.over{background:var(--act-a)}
+.bcard{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px;cursor:grab}
+.bcard:focus-visible{outline:2px solid var(--act)}
+.bcard.busy{opacity:.5}
+.bcard.flash{box-shadow:0 0 0 2px var(--ok)}
+.bcard .st{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.swim{font-size:12px;color:var(--dim);margin:6px 0 2px;font-weight:600}
+.menu{position:relative;display:inline-block}
+.menu .mlist{position:absolute;right:0;top:100%;z-index:30;background:var(--card);border:1px solid var(--line2);border-radius:8px;min-width:180px;padding:4px;display:flex;flex-direction:column}
+.menu .mlist button{background:none;border:0;text-align:left;padding:6px 10px;border-radius:6px}
+.menu .mlist button:hover:not(:disabled),.menu .mlist button:focus-visible{background:var(--act-a)}
+.menu .mlist button:disabled{opacity:.5;cursor:not-allowed}

@@ -424,3 +424,154 @@ test('佇列：同一張單的兩份提案不能同時勾；出錯後剩下的�
 	const unsent = ids[texts.findIndex((t) => t?.includes('未送出'))];
 	expect(sqlValue(`SELECT count(*) FROM changesets WHERE id = '${unsent}' AND state = 'proposed'`)).toBe('1');
 });
+
+// ---- M1 views and boards (contract 05 §6.1–§6.3)
+
+test('視圖：專案議題加「指派＝我」，另存成個人視圖，我的視圖列出', async ({ browser }) => {
+	const page = await alice(browser, '/project/AUTH/issues');
+	await expect(page.getByTestId('view-scope')).toHaveText('內建');
+	await expect(page.getByTestId('view-table').or(page.getByTestId('view-empty'))).toBeVisible();
+	await page.getByTestId('edit-conditions').click();
+	await page.getByTestId('fe-add').click();
+	const cond = page.getByTestId('fe-cond').last();
+	await cond.getByTestId('fe-field').selectOption('assignee');
+	await cond.getByTestId('fe-options').getByLabel('我').check();
+	await expect(page.getByTestId('fe-preview')).toContainText(/有結果|沒有結果/);
+	await page.getByTestId('fe-apply').click();
+	await expect(page.getByTestId('chips')).toContainText('指派：我');
+	await expect(page.getByTestId('view-dirty')).toContainText('尚未儲存');
+	await page.getByTestId('view-save-as').click();
+	const name = `E2E 我的待辦 ${Date.now()}`;
+	await page.getByTestId('save-as-name').fill(name);
+	await page.getByTestId('save-as-submit').click();
+	await expect(page.getByTestId('view-name')).toHaveText(name);
+	await expect(page.getByTestId('view-scope')).toHaveText('個人');
+	await expect(page.getByTestId('view-dirty')).toHaveCount(0);
+	await page.goto('/views');
+	await expect(page.getByTestId('view-item').filter({ hasText: name })).toBeVisible();
+	// The saved condition is the server's, not just the page's.
+	const id = new URL((await page.getByTestId('view-item').filter({ hasText: name }).getByRole('link').getAttribute('href'))!, 'http://x').pathname.split('/').pop()!;
+	const v = (await papi(page, 'GET', `/views/${id}`)).json.data;
+	expect(JSON.stringify(v.def.query.where)).toContain('assignee');
+});
+
+test('搜尋：把查詢存成視圖，條件變成 chip', async ({ browser }) => {
+	const page = await alice(browser, `/search?q=${encodeURIComponent('project:AUTH status:open')}`);
+	await page.getByTestId('save-as-view').click();
+	await page.getByTestId('sv-name').fill('E2E 未完成');
+	await page.getByTestId('sv-submit').click();
+	await page.waitForURL(/\/project\/AUTH\/views\//);
+	await expect(page.getByTestId('chips')).toContainText('狀態分類：待處理、進行中');
+	await expect(page.getByTestId('view-scope')).toHaveText('個人');
+});
+
+/** The first card in a lane of the AUTH board. */
+async function cardIn(page: Page, lane: string) {
+	const c = page.locator(`[data-testid=lane][data-lane=${lane}] [data-testid=card]`).first();
+	await expect(c).toBeVisible();
+	return (await c.getAttribute('data-key'))!;
+}
+async function categoryOf(page: Page, key: string) {
+	return (await papi(page, 'GET', `/issues/${key}/view`)).json.data;
+}
+
+test('看板：鍵盤 M 與拖拉都移到進行中，之後只重載兩欄', async ({ browser }) => {
+	const page = await alice(browser, '/project/AUTH/board');
+	await expect(page.getByTestId('lane')).toHaveCount(3);
+	// Watch the runs sent after the board is on screen.
+	const runs: string[] = [];
+	page.on('request', (r) => {
+		if (r.method() === 'POST' && /\/views\/[^/]+\/run$/.test(new URL(r.url()).pathname)) runs.push(r.postData() ?? '');
+	});
+	const key = await cardIn(page, 'todo');
+	await page.locator(`[data-testid=card][data-key="${key}"]`).focus();
+	await page.keyboard.press('m');
+	await page.getByTestId('move-menu').getByTestId('move-to').filter({ hasText: '進行中' }).click();
+	if (await page.getByTestId('pick-status').first().isVisible().catch(() => false)) await page.getByTestId('pick-status').first().click();
+	await expect(page.locator(`[data-testid=lane][data-lane=doing] [data-testid=card][data-key="${key}"]`)).toBeVisible();
+	expect(JSON.stringify(await categoryOf(page, key))).toContain('"doing"');
+	// Only the two lanes were run again, not the whole board.
+	expect(runs.length).toBe(2);
+	expect(runs.every((b) => /"lane":"(todo|doing)"/.test(b))).toBe(true);
+	// Another card by HTML5 drag and drop: it must really move.
+	const key2 = await cardIn(page, 'todo');
+	expect(key2).not.toBe(key);
+	await page.locator(`[data-testid=card][data-key="${key2}"]`).dragTo(page.locator('[data-testid=lane][data-lane=doing]'));
+	if (await page.getByTestId('pick-status').first().isVisible().catch(() => false)) await page.getByTestId('pick-status').first().click();
+	await expect(page.locator(`[data-testid=lane][data-lane=doing] [data-testid=card][data-key="${key2}"]`)).toBeVisible();
+	expect(JSON.stringify(await categoryOf(page, key2))).toContain('"doing"');
+	await expect(page.getByTestId('done-window')).toContainText('14 天');
+});
+
+test('看板：別人剛改過的卡片，移動時說明並重新載入', async ({ browser }) => {
+	const page = await alice(browser, '/project/AUTH/board');
+	const key = await cardIn(page, 'todo');
+	const lock = (await papi(page, 'GET', `/issues/${key}`)).json.data.lock_version;
+	const r = await papi(page, 'POST', '/commands', {
+		command_schema_version: 1,
+		ops: [{ kind: 'update_fields', op_id: uuid(), target: ref(key), set: { due_date: '2027-02-01' } }],
+		preconditions: [{ target: ref(key), lock_version: lock }]
+	});
+	expect(r.status).toBe(200);
+	await page.locator(`[data-testid=card][data-key="${key}"]`).focus();
+	await page.keyboard.press('m');
+	await page.getByTestId('move-menu').getByTestId('move-to').filter({ hasText: '進行中' }).click();
+	if (await page.getByTestId('pick-status').first().isVisible().catch(() => false)) await page.getByTestId('pick-status').first().click();
+	await expect(page.locator('.toast').last()).toContainText('這張單剛被別人更新，已重新載入。');
+	// The person's move did not go through on the old version.
+	expect(JSON.stringify(await categoryOf(page, key))).not.toContain('"doing"');
+});
+
+test('專案設定：加「視圖」分頁並把看板分頁換成專案看板', async ({ browser }) => {
+	const page = await alice(browser, '/project/AUTH/board');
+	// A project board view to point at (alice manages AUTH).
+	const pid = (await papi(page, 'GET', '/projects')).json.data.find((p: { key: string }) => p.key === 'AUTH').id;
+	const copy = await papi(page, 'POST', `/views/${encodeURIComponent('builtin:project_board:' + pid)}/copy`, { name: 'E2E 團隊看板', scope: 'project', project_id: pid });
+	expect(copy.status).toBe(201);
+	await page.goto('/project/AUTH/settings');
+	await page.getByTestId('add-view-tab').click();
+	await expect(page.getByTestId('tab-view')).toHaveValue(copy.json.data.id);
+	await page.getByTestId('tab-board-view').selectOption(copy.json.data.id);
+	await page.getByRole('button', { name: '儲存分頁' }).click();
+	await expect(page.locator('.toast').last()).toContainText('已儲存分頁');
+	await page.getByTestId('ptabs').getByRole('link', { name: '看板' }).first().click();
+	await expect(page.getByTestId('view-name')).toHaveText('E2E 團隊看板');
+	await expect(page.getByTestId('view-scope')).toHaveText('專案');
+});
+
+test('視圖：儲存帶 lock_version；別人先改過時顯示衝突，載入最新後我的草稿不見', async ({ browser }) => {
+	const page = await alice(browser, '/views');
+	const made = await papi(page, 'POST', '/views', { scope: 'personal', kind: 'list', name: 'E2E 衝突視圖', def: { kind: 'list', query: { where: null, q: null }, columns: ['key', 'subject'], sort: [{ field: 'updated_at', dir: 'desc' }] } });
+	expect(made.status).toBe(201);
+	const id = made.json.data.id;
+	await page.goto(`/views/${id}`);
+	await expect(page.getByTestId('view-name')).toHaveText('E2E 衝突視圖');
+	// My draft: a condition.
+	await page.getByTestId('edit-conditions').click();
+	await page.getByTestId('fe-add').click();
+	await page.getByTestId('fe-cond').last().getByTestId('fe-field').selectOption('assignee');
+	await page.getByTestId('fe-cond').last().getByTestId('fe-options').getByLabel('我').check();
+	await page.getByTestId('fe-apply').click();
+	await expect(page.getByTestId('view-dirty')).toBeVisible();
+	// Someone (same person, another tab) renames it meanwhile.
+	const lv = (await papi(page, 'GET', `/views/${id}`)).json.data.lock_version;
+	expect((await papi(page, 'PATCH', `/views/${id}`, { lock_version: lv, name: 'E2E 別人改的名字' })).status).toBe(200);
+	await page.getByTestId('view-save').click();
+	await expect(page.getByTestId('view-conflict')).toContainText('最新名稱：「E2E 別人改的名字」');
+	// Nothing was written: the server still has no condition.
+	expect((await papi(page, 'GET', `/views/${id}`)).json.data.def.query.where).toBeNull();
+	await page.getByTestId('view-conflict').getByRole('button', { name: '放棄我的修改，載入最新' }).click();
+	await expect(page.getByTestId('view-name')).toHaveText('E2E 別人改的名字');
+	await expect(page.getByTestId('view-dirty')).toHaveCount(0);
+	// Now a plain save goes through with the new lock_version.
+	await page.getByTestId('edit-conditions').click();
+	await page.getByTestId('fe-add').click();
+	await page.getByTestId('fe-cond').last().getByTestId('fe-field').selectOption('assignee');
+	await page.getByTestId('fe-cond').last().getByTestId('fe-options').getByLabel('我').check();
+	await page.getByTestId('fe-apply').click();
+	await page.getByTestId('view-save').click();
+	await expect(page.getByTestId('view-dirty')).toHaveCount(0);
+	const saved = (await papi(page, 'GET', `/views/${id}`)).json.data;
+	expect(JSON.stringify(saved.def.query.where)).toContain('assignee');
+	expect(saved.lock_version).toBe(lv + 2);
+});

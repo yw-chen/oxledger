@@ -6,11 +6,11 @@
 	import { api } from '$lib/api';
 	import { projectByKey } from '$lib/session.svelte';
 	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import SearchView from '$lib/components/SearchView.svelte';
 	import Timeline from '$lib/components/Timeline.svelte';
 	import Milestones from '$lib/components/Milestones.svelte';
 	import DevTab from '$lib/components/DevTab.svelte';
 	import QueryTab from '$lib/components/QueryTab.svelte';
+	import ViewPage from '$lib/components/ViewPage.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
@@ -49,7 +49,11 @@
 		{:else if tab.id === 'milestones'}
 			<Milestones projectId={project?.id ?? key} projectKey={key} />
 		{:else if tab.id === 'issues'}
-			<SearchView scopeProject={key} />
+			{#if project}{#key project.id}<ViewPage viewId={`builtin:project_issues:${project.id}`} projectKey={key} inFrame />{/key}{/if}
+		{:else if tab.id === 'board'}
+			{#if project}{#key tab.view_id ?? project.id}<ViewPage viewId={tab.view_id ?? `builtin:project_board:${project.id}`} projectKey={key} inFrame />{/key}{/if}
+		{:else if tab.kind === 'view' && tab.view_id}
+			{#key tab.view_id}<ViewPage viewId={tab.view_id} projectKey={key} inFrame />{/key}
 		{:else if tab.id === 'dev'}
 			<DevTab projectId={project?.id ?? key} />
 		{:else if tab.id === 'plan'}
