@@ -1901,10 +1901,7 @@ async fn agent_direct(
             "consistent_after": consistent_after,
             "versions": versions,
             "time_entries": time_entries,
-            "effects": effects.iter().map(|e| json!({
-                "issue_id": e.issue_id, "lock_version": e.lock_version,
-                "changed": e.changed, "created": e.created,
-            })).collect::<Vec<_>>(),
+            "effects": effects.iter().map(commands::stored_effect).collect::<Vec<_>>(),
             "items": sim.items,
         }),
     )
@@ -2011,6 +2008,15 @@ async fn chain_record(
         .bind(execution)
         .bind(agent)
         .fetch_one(&mut *conn)
+        .await?;
+        // P3 gap G40: each issue's own chain, for its history (migration 0033).
+        sqlx::query(
+            "INSERT INTO command_execution_chains (execution_id, issue_id, writes) VALUES ($1, $2, $3)",
+        )
+        .bind(execution)
+        .bind(issue)
+        .bind(w)
+        .execute(&mut *conn)
         .await?;
         max = Some(match max {
             None => (w, d),
@@ -2822,13 +2828,7 @@ pub async fn agent_operation(
             .iter()
             .filter_map(|x| {
                 let id: Uuid = x["issue_id"].as_str()?.parse().ok()?;
-                Some(Effect {
-                    issue_id: id,
-                    key: keys.get(&id)?.clone(),
-                    lock_version: x["lock_version"].as_i64()? as i32,
-                    changed: x["changed"].as_bool()?,
-                    created: x["created"].as_bool()?,
-                })
+                commands::effect_from_stored(x, id, keys.get(&id)?.clone())
             })
             .collect();
         out.versions = serde_json::from_value(r["versions"].clone()).unwrap_or_default();
@@ -2879,13 +2879,7 @@ async fn exec_view(
         .iter()
         .filter_map(|e| {
             let id: Uuid = e["issue_id"].as_str()?.parse().ok()?;
-            Some(Effect {
-                issue_id: id,
-                key: visible.get(&id)?.clone(),
-                lock_version: e["lock_version"].as_i64()? as i32,
-                changed: e["changed"].as_bool()?,
-                created: e["created"].as_bool()?,
-            })
+            commands::effect_from_stored(e, id, visible.get(&id)?.clone())
         })
         .collect();
     let items = items
@@ -4396,9 +4390,7 @@ async fn apply_tx(
             "version_id": i.version_id, "time_entry_id": i.time_entry_id})).collect::<Vec<_>>(),
         "versions": sim.version.iter().map(|p| p.effect()).collect::<Vec<_>>(),
         "time_entries": sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
-        "effects": effects.iter().map(|e| json!({
-            "issue_id": e.issue_id, "lock_version": e.lock_version,
-            "changed": e.changed, "created": e.created})).collect::<Vec<_>>(),
+        "effects": effects.iter().map(commands::stored_effect).collect::<Vec<_>>(),
     });
     sqlx::query(
         "INSERT INTO changeset_applications (changeset_id, version, execution_id, effect_count)

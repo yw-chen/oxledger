@@ -322,6 +322,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/agent-credentials/{id}/revoke", post(revoke_credential))
         .route("/ai-team", get(ai_team_list).post(ai_team_create))
         .route("/ai-team/templates", get(ai_team_templates))
+        .route("/ai-team/activity", get(ai_team_activity_all))
         .route("/ai-team/{id}", get(ai_team_get))
         .route("/ai-team/{id}/activity", get(ai_team_activity))
         .route("/ai-team/{id}/pause", post(ai_team_pause))
@@ -1098,6 +1099,9 @@ pub struct ProjectItem {
     /// The issue key prefix, e.g. `AUTH`.
     pub key: String,
     pub name: String,
+    /// What you may do here (P3 gap G46): which buttons to offer.
+    #[sqlx(skip)]
+    pub permissions: crate::perm::ProjectFlags,
 }
 
 /// `GET /projects`: the projects whose issues the caller may see (the same
@@ -1110,11 +1114,16 @@ async fn projects_list(
     let mut tx = service::read_tx(&st.app).await?;
     let scope = crate::db::load_scope(&mut tx, ctx).await?;
     let ids: Vec<Uuid> = scope.project_ids().collect();
-    let items: Vec<ProjectItem> =
+    let mut items: Vec<ProjectItem> =
         sqlx::query_as("SELECT id, key, name FROM projects WHERE id = ANY($1) ORDER BY key")
             .bind(&ids)
             .fetch_all(&mut *tx)
             .await?;
+    let actor = crate::perm::actor(&mut tx, ctx).await?;
+    let mut flags = crate::perm::projects_flags(&mut tx, &actor, &ids).await?;
+    for p in &mut items {
+        p.permissions = flags.remove(&p.id).unwrap_or_default();
+    }
     tx.commit().await?;
     Ok(ok(items))
 }
@@ -1669,6 +1678,8 @@ fn time_query(q: &HashMap<String, String>) -> Result<crate::time_reports::ListQu
         to: q.get("to").cloned(),
         cursor: q.get("cursor").cloned(),
         limit: int_param(q, "limit")?.map(|l| l.clamp(1, 200) as u32),
+        tracker: q.get("tracker").cloned(),
+        fixed_version: q.get("fixed_version").cloned(),
     })
 }
 
@@ -2805,6 +2816,35 @@ async fn ai_team_activity(
         &st.app,
         ctx,
         id_param(&id)?,
+        &activity_query(&q)?,
+    )
+    .await?))
+}
+
+/// `GET /ai-team/activity?role=&runtime=&from=&to=&issue=&cursor=&limit=`
+/// (P3 gap G42).
+async fn ai_team_activity_all(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let uuid_param = |name: &str| -> Result<Option<Uuid>, ApiFailure> {
+        match q.get(name) {
+            None => Ok(None),
+            Some(v) => v.parse::<Uuid>().map(Some).map_err(|_| {
+                ApiError::new(ErrorCode::InvalidArgument, format!("{name} is an id"))
+                    .with_details(json!({"path": name}))
+                    .into()
+            }),
+        }
+    };
+    let (role, runtime) = (uuid_param("role")?, uuid_param("runtime")?);
+    Ok(ok(crate::ai_team::activity_all(
+        &st.app,
+        ctx,
+        role,
+        runtime,
         &activity_query(&q)?,
     )
     .await?))

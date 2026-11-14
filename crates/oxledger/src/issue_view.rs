@@ -154,6 +154,27 @@ pub struct EventView {
     pub detail: Option<Json>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
+    /// `user`, `agent` or `system` (P3 gap G41; 02 §16.2).
+    pub actor_kind: String,
+    /// The person an agent acted for (`claude-code@alice〔agent〕`, tooltip
+    /// 「代表 Alice」; G41). Absent for people's own writes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<crate::time_reports::Named>,
+    /// Who approved the applied proposal (「Alice 核准」, 02 §16.10; G41).
+    /// Only when the viewer may know it: the approver is the person the
+    /// agent acted for (the delegator, who alone reviews proposals), or the
+    /// viewer is the approver or a site administrator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<crate::time_reports::Named>,
+    /// The agent's direct write extended this issue's chain to at least 2
+    /// agent writes with no person in between (「agent 連續寫入中」, §6.14;
+    /// G40). Only this issue's own chain (a write that also touched other
+    /// issues says nothing about theirs); writes from before migration 0033
+    /// show no flag. A flag,
+    /// never the count: the chain may hold writes the viewer cannot read
+    /// (appendix D V21).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_chain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1114,7 +1135,7 @@ async fn recent_notes(
 
 // ---------------------------------------------------------------- events
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Default)]
 pub(crate) struct EventRow {
     pub(crate) id: Uuid,
     pub(crate) seq: i64,
@@ -1124,7 +1145,31 @@ pub(crate) struct EventRow {
     pub(crate) payload: Json,
     pub(crate) note_id: Option<Uuid>,
     pub(crate) redacted: bool,
+    /// The attribution columns ([`EVENT_BY_COLS`]); readers that only ask
+    /// whether an event is readable leave them out.
+    #[sqlx(default)]
+    pub(crate) actor_kind: String,
+    #[sqlx(default)]
+    pub(crate) obo_id: Option<Uuid>,
+    #[sqlx(default)]
+    pub(crate) obo_name: Option<String>,
+    #[sqlx(default)]
+    pub(crate) approver_id: Option<Uuid>,
+    #[sqlx(default)]
+    pub(crate) approver_name: Option<String>,
+    #[sqlx(default)]
+    pub(crate) chain_writes: Option<i32>,
 }
+
+/// The attribution columns of [`EventRow`] for `issue_events e` (P3 gaps
+/// G40, G41): who the agent acted for, who approved an applied proposal,
+/// and the agent chain of this event's issue after the direct write (its
+/// own chain, migration 0033: never another issue's of the same write).
+pub(crate) const EVENT_BY_COLS: &str = "e.actor_kind, e.on_behalf_of_id AS obo_id,
+    (SELECT name FROM principals WHERE id = e.on_behalf_of_id) AS obo_name,
+    e.approver_id, (SELECT name FROM principals WHERE id = e.approver_id) AS approver_name,
+    (SELECT c.writes FROM command_execution_chains c
+      WHERE c.execution_id = e.command_execution_id AND c.issue_id = e.issue_id) AS chain_writes";
 
 /// What [`event_view`] looks up once per reader and issue.
 #[derive(Default)]
@@ -1132,6 +1177,8 @@ pub(crate) struct EventCache {
     /// Readable custom field ids in the issue's project (loaded on first use).
     pub(crate) readable_cf: Option<Vec<i32>>,
     notes: HashMap<Uuid, bool>,
+    /// The reader is a site administrator (a person; loaded on first use).
+    admin: Option<bool>,
 }
 
 /// Names for ids in event payloads (contract 02 §7.3: shown as names).
@@ -1293,13 +1340,13 @@ async fn visible_events(
     let mut out = Vec::new();
     let mut before: Option<i64> = None;
     loop {
-        let rows: Vec<EventRow> = sqlx::query_as(
+        let rows: Vec<EventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT e.id, e.seq, e.kind, e.at, p.name AS actor, e.payload, e.note_id,
-                    e.redaction_id IS NOT NULL AS redacted
+                    e.redaction_id IS NOT NULL AS redacted, {EVENT_BY_COLS}
              FROM issue_events e JOIN principals p ON p.id = e.actor_id
              WHERE e.issue_id = $1 AND ($2::bigint IS NULL OR e.seq < $2)
-             ORDER BY e.seq DESC LIMIT $3",
-        )
+             ORDER BY e.seq DESC LIMIT $3"
+        )))
         .bind(issue.id)
         .bind(before)
         .bind(PAGE)
@@ -1403,6 +1450,30 @@ pub(crate) async fn event_view(
             _ => None,
         }
     };
+    let named = |id: Option<Uuid>, name: Option<String>| match (id, name) {
+        (Some(id), Some(name)) => Some(crate::time_reports::Named { id, name }),
+        _ => None,
+    };
+    // G41: the approver only where the viewer may know it (see EventView).
+    let approved_by = match r.approver_id {
+        None => None,
+        Some(a) if r.obo_id == Some(a) || caller.user_id() == Some(a) => {
+            named(Some(a), r.approver_name.clone())
+        }
+        Some(a) => {
+            if cache.admin.is_none() {
+                cache.admin = Some(
+                    caller.user_id().is_some() && crate::db::is_admin(&mut *conn, caller).await?,
+                );
+            }
+            if cache.admin == Some(true) {
+                named(Some(a), r.approver_name.clone())
+            } else {
+                None
+            }
+        }
+    };
+    let agent = r.actor_kind == "agent";
     Ok(Some(EventView {
         event_id: r.id,
         kind: r.kind,
@@ -1410,5 +1481,14 @@ pub(crate) async fn event_view(
         actor: r.actor,
         detail,
         redacted: r.redacted,
+        on_behalf_of: if agent {
+            named(r.obo_id, r.obo_name)
+        } else {
+            None
+        },
+        approved_by,
+        // G40: the chain the direct write extended (agent writes only).
+        agent_chain: agent && r.chain_writes.is_some_and(|w| w >= 2),
+        actor_kind: r.actor_kind,
     }))
 }

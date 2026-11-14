@@ -1679,6 +1679,13 @@ pub struct ActivityItem {
     pub keys: Vec<String>,
     pub diff: Vec<ActivityDiff>,
     pub undoable: bool,
+    /// The write holds a Triage decision the agent made on an issue it
+    /// created itself (A5 `self_triage`, 「自建自分流」, §6.14; P3 gap G42).
+    /// Only from a decision the caller can read.
+    pub self_triage: bool,
+    /// The role that wrote it: only in `GET /ai-team/activity` (G42).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<ActivityAgent>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
@@ -1778,13 +1785,16 @@ pub(crate) async fn visible_stats(
 /// a duplicate are left out. The keys of the issues with something readable
 /// and the readable field changes, or `None` when nothing is left (the
 /// write then shows and counts nowhere).
+///
+/// P3 gap G42: also whether a readable Triage decision of the write was a
+/// self-triage (「自建自分流」, §6.14).
 async fn readable_execution(
     conn: &mut PgConnection,
     reader: &mut crate::citations::Reader,
     caller: AuthContext,
     cf: &mut HashMap<Uuid, Vec<i32>>,
     id: Uuid,
-) -> Result<Option<(Vec<String>, Vec<ActivityDiff>)>> {
+) -> Result<Option<Readable>> {
     use crate::issue_view::{EventCache, EventRow, IssueRef};
     let issues = touched_issues(&mut *conn, id).await?;
     let keys_map = visible(&mut *conn, caller, &issues).await?;
@@ -1840,8 +1850,12 @@ async fn readable_execution(
     .bind(&ids)
     .fetch_all(&mut *conn)
     .await?;
+    let mut self_triage = false;
     for (issue, eid, seq, kind, at, actor, payload, note_id, redacted) in events {
-        if shown.contains(&issue) {
+        // G42: a readable decision flagged self_triage (the A5 flag the
+        // executor wrote into the event; a redacted payload says nothing).
+        let triage = kind == "triage_changed" && !redacted && payload["self_triage"] == true;
+        if shown.contains(&issue) && (self_triage || !triage) {
             continue;
         }
         let Some(r) = refs.get(&issue).copied() else {
@@ -1858,12 +1872,14 @@ async fn readable_execution(
             payload,
             note_id,
             redacted,
+            ..EventRow::default()
         };
         if crate::issue_view::event_view(&mut *conn, reader, caller, r, &mut cache, row)
             .await?
             .is_some()
         {
             shown.insert(issue);
+            self_triage |= triage;
         }
     }
     let ch: Vec<(Uuid, String, Option<Json>, Option<Json>)> = sqlx::query_as(
@@ -1901,7 +1917,18 @@ async fn readable_execution(
     if keys.is_empty() {
         return Ok(None);
     }
-    Ok(Some((keys, diff)))
+    Ok(Some(Readable {
+        keys,
+        diff,
+        self_triage,
+    }))
+}
+
+/// What [`readable_execution`] leaves of one write.
+struct Readable {
+    keys: Vec<String>,
+    diff: Vec<ActivityDiff>,
+    self_triage: bool,
 }
 
 /// Who reads [`activity_of`] (design 05 §3.12.5).
@@ -1932,22 +1959,77 @@ pub async fn activity_of(
     q: &ActivityQuery,
     view: ActivityView,
 ) -> Result<Activity> {
-    let user = person(&caller)?;
-    let limit = q.limit.unwrap_or(ACTIVITY_PAGE).clamp(1, MAX_ACTIVITY_PAGE) as usize;
     let qhash = crate::cursor::query_hash(&json!({
         "agent_activity": agent, "sponsor": sponsor, "view": format!("{view:?}"),
         "from": q.from, "to": q.to, "issue": q.issue,
     }));
+    let role = ActivityRole {
+        agent,
+        handle: String::new(),
+        sponsor,
+        view,
+    };
+    activity_list(app, caller, &[role], q, &qhash, false).await
+}
+
+/// A row before visibility: (id, at, kind, index into the roles).
+type ActivityRow = (Uuid, DateTime<Utc>, String, usize);
+
+fn tag(rows: Vec<(Uuid, DateTime<Utc>, String)>, role: usize) -> Vec<ActivityRow> {
+    rows.into_iter()
+        .map(|(id, at, kind)| (id, at, kind, role))
+        .collect()
+}
+
+/// One role of an activity list (P3 gap G42): who it is, whose writes it
+/// makes, and how the caller sees it.
+#[derive(Debug, Clone)]
+pub struct ActivityRole {
+    pub agent: Uuid,
+    pub handle: String,
+    pub sponsor: Uuid,
+    pub view: ActivityView,
+}
+
+/// The role an item of `GET /ai-team/activity` belongs to (G42).
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+pub struct ActivityAgent {
+    pub agent_principal_id: Uuid,
+    pub handle: String,
+}
+
+/// [`activity_of`] over several roles, merged newest first (G42: the
+/// activity page's role and runtime filters). Each role's rows follow its
+/// own view, exactly as [`activity_of`] for that role alone; each item is
+/// checked against the caller's reading before it counts toward the page.
+///
+/// `tagged`: the merged list. Items name their role, and an undo shows only
+/// when the write it reverted belongs to one of `roles` that the caller
+/// sponsors (alone, a role's list keeps every undo of the sponsor, as before).
+pub async fn activity_list(
+    app: &App,
+    caller: AuthContext,
+    roles: &[ActivityRole],
+    q: &ActivityQuery,
+    qhash: &str,
+    tagged: bool,
+) -> Result<Activity> {
+    let user = person(&caller)?;
+    let limit = q.limit.unwrap_or(ACTIVITY_PAGE).clamp(1, MAX_ACTIVITY_PAGE) as usize;
     let after = match q.cursor.as_deref() {
         None => None,
-        Some(c) => {
-            match crate::cursor::decode(&app.pool, c, caller.principal_id(), &qhash).await? {
-                crate::cursor::Position::Keyset { t, i } => Some((t, i)),
-                _ => return Err(api(ErrorCode::InvalidCursor, "invalid cursor")),
-            }
-        }
+        Some(c) => match crate::cursor::decode(&app.pool, c, caller.principal_id(), qhash).await? {
+            crate::cursor::Position::Keyset { t, i } => Some((t, i)),
+            _ => return Err(api(ErrorCode::InvalidCursor, "invalid cursor")),
+        },
     };
     let (from, to, issue) = (q.from, q.to, q.issue.as_deref());
+    if roles.is_empty() {
+        return Ok(Activity {
+            items: Vec::new(),
+            next_cursor: None,
+        });
+    }
     let mut tx = app.pool.begin().await?;
     sqlx::query("SET TRANSACTION READ ONLY")
         .execute(&mut *tx)
@@ -1958,10 +2040,37 @@ pub async fn activity_of(
         .await?;
     let from = from.unwrap_or(now - chrono::Duration::days(UNDO_DAYS));
     let to = to.unwrap_or(now);
-    let mut rows = agent_executions(&mut tx, sponsor, agent, from, to).await?;
-    if view == ActivityView::Sponsor {
-        let undos: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
-            "SELECT u.id, u.created_at, 'undo' FROM command_executions u
+    let mut rows: Vec<ActivityRow> = Vec::new();
+    for (n, r) in roles.iter().enumerate() {
+        rows.extend(tag(
+            agent_executions(&mut tx, r.sponsor, r.agent, from, to).await?,
+            n,
+        ));
+        // Refusals touch no readable issue, so an issue filter leaves them out.
+        if r.view != ActivityView::Member && issue.is_none() {
+            let blocked: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
+                "SELECT l.id, l.at, 'blocked' FROM agent_write_log l
+                 JOIN agent_principals ap ON ap.agent_principal_id = l.agent_principal_id
+                 WHERE l.agent_principal_id = $1 AND ap.delegator_user_id = $2 AND l.kind = 'audience_blocked'
+                   AND l.at >= $3 AND l.at <= $4",
+            )
+            .bind(r.agent)
+            .bind(r.sponsor)
+            .bind(from)
+            .bind(to)
+            .fetch_all(&mut *tx)
+            .await?;
+            rows.extend(tag(blocked, n));
+        }
+    }
+    if roles.iter().any(|r| r.view == ActivityView::Sponsor) {
+        // The sponsor's undos, with the agent of the write each reverted.
+        let undos: Vec<(Uuid, DateTime<Utc>, String, Option<Uuid>)> = sqlx::query_as(
+            "SELECT u.id, u.created_at, 'undo', COALESCE(ce.actor_id, cs.proposer_id)
+             FROM command_executions u
+             LEFT JOIN command_executions ce ON ce.id = u.reverts_execution_id
+             LEFT JOIN changeset_executions xe ON xe.id = u.reverts_execution_id
+             LEFT JOIN changesets cs ON cs.id = xe.changeset_id
              WHERE u.actor_id = $1 AND u.reverts_execution_id IS NOT NULL
                AND u.created_at >= $2 AND u.created_at <= $3",
         )
@@ -1970,23 +2079,18 @@ pub async fn activity_of(
         .bind(to)
         .fetch_all(&mut *tx)
         .await?;
-        rows.extend(undos);
-    }
-    // Refusals touch no readable issue, so an issue filter leaves them out.
-    if view != ActivityView::Member && issue.is_none() {
-        let blocked: Vec<(Uuid, DateTime<Utc>, String)> = sqlx::query_as(
-            "SELECT l.id, l.at, 'blocked' FROM agent_write_log l
-             JOIN agent_principals ap ON ap.agent_principal_id = l.agent_principal_id
-             WHERE l.agent_principal_id = $1 AND ap.delegator_user_id = $2 AND l.kind = 'audience_blocked'
-               AND l.at >= $3 AND l.at <= $4",
-        )
-        .bind(agent)
-        .bind(sponsor)
-        .bind(from)
-        .bind(to)
-        .fetch_all(&mut *tx)
-        .await?;
-        rows.extend(blocked);
+        for (id, at, kind, reverted) in undos {
+            let role = if tagged {
+                roles
+                    .iter()
+                    .position(|r| r.view == ActivityView::Sponsor && Some(r.agent) == reverted)
+            } else {
+                Some(0)
+            };
+            if let Some(n) = role {
+                rows.push((id, at, kind, n));
+            }
+        }
     }
     // Newest first by (at, id); a page starts after the cursor's item.
     rows.sort_by_key(|r| std::cmp::Reverse((r.1, r.0)));
@@ -1997,13 +2101,17 @@ pub async fn activity_of(
     let mut more = false;
     let mut reader = crate::citations::Reader::new(&mut tx, caller).await?;
     let mut cf = HashMap::new();
-    for (id, at, kind) in rows {
+    for (id, at, kind, n) in rows {
+        let agent = tagged.then(|| ActivityAgent {
+            agent_principal_id: roles[n].agent,
+            handle: roles[n].handle.clone(),
+        });
         if items.len() == limit {
             // Only an item the caller may see makes a next page.
             more = kind == "blocked"
                 || readable_execution(&mut tx, &mut reader, caller, &mut cf, id)
                     .await?
-                    .is_some_and(|(keys, _)| issue.is_none_or(|k| keys.iter().any(|x| x == k)));
+                    .is_some_and(|r| issue.is_none_or(|k| r.keys.iter().any(|x| x == k)));
             if more {
                 break;
             }
@@ -2019,12 +2127,17 @@ pub async fn activity_of(
                     keys: Vec::new(),
                     diff: Vec::new(),
                     undoable: false,
+                    self_triage: false,
+                    agent,
                 },
             ));
             continue;
         }
-        let Some((keys, diff)) =
-            readable_execution(&mut tx, &mut reader, caller, &mut cf, id).await?
+        let Some(Readable {
+            keys,
+            diff,
+            self_triage,
+        }) = readable_execution(&mut tx, &mut reader, caller, &mut cf, id).await?
         else {
             continue; // nothing of it is readable now
         };
@@ -2048,6 +2161,8 @@ pub async fn activity_of(
                 keys,
                 diff,
                 undoable,
+                self_triage,
+                agent,
             },
         ));
     }
@@ -2057,7 +2172,7 @@ pub async fn activity_of(
             crate::cursor::encode(
                 &app.pool,
                 caller.principal_id(),
-                &qhash,
+                qhash,
                 crate::cursor::Position::Keyset { t: item.at, i: *i },
             )
             .await?,

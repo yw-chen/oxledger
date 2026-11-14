@@ -364,7 +364,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/time-entries",
-            "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
+            "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, tracker and fixed_version (an id or none: the issue's current tracker / milestone as GET /time-entries/summary groups them; none also matches entries without an issue), from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
             Session,
             None,
             s::<crate::time_reports::TimeEntryPage>,
@@ -1202,6 +1202,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
             Session,
             None,
             s::<crate::ai_team::TeamDetail>,
+        ),
+        r(
+            "GET",
+            "/ai-team/activity",
+            "The writes of every role you see on the AI team page, merged newest first; each item names its role (agent) and is filtered to what you can read, exactly as GET /ai-team/{id}/activity for that role. Query role (an agent principal id; a role you do not see gives an empty list), runtime (a runtime id; matches only roles whose runtime you may see: their sponsor and site admins), from, to, issue, cursor, limit. Your undos show under the role whose write they reverted. No totals.",
+            Session,
+            None,
+            s::<crate::undo::Activity>,
         ),
         r(
             "GET",

@@ -195,6 +195,12 @@ pub struct ViewDetail {
     pub updated_by: Option<PersonRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// The signed-in person's permissions in `project` (P3 gap G46: a
+    /// built-in board without `manage_public_views` offers only the personal
+    /// copy; an empty board offers 「建立議題」 only with `add_issues`).
+    /// Only with `project`, and only for people (not agents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<crate::perm::ProjectFlags>,
 }
 
 /// `POST /views` (Idempotency-Key).
@@ -1702,7 +1708,15 @@ async fn detail(conn: &mut PgConnection, caller: AuthContext, l: &Loaded) -> Res
         Some(_) => (None, true),
         None => (None, false),
     };
+    let permissions = match (&project, caller.user_id()) {
+        (Some(p), Some(_)) => {
+            let actor = perm::actor(&mut *conn, caller).await?;
+            Some(perm::project_flags(&mut *conn, &actor, p.id).await?)
+        }
+        _ => None,
+    };
     Ok(ViewDetail {
+        permissions,
         id: l.id.clone(),
         scope: l.scope.clone(),
         kind: l.kind.as_str().into(),

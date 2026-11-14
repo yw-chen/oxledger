@@ -187,7 +187,7 @@
   - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
   - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 
-## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0033–0037）
+## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0038）
 
 - **不會讓 agent 工作脈絡失效**：授予新權限時暫停了 `role_permissions_epoch` trigger（契約 06 B-37），每個專案的 `security_epoch` 不變。理由：新權限不改既有議題內容的讀者集合，升級前也沒有任何 wiki 內容。
 - **新權限與自動授予**（之後管理者可以自己調整；調整會照常讓 epoch 加一）：
@@ -222,7 +222,7 @@
   - `ContextView.changed_projects`（來源專案的權限已變更、脈絡已不能用）改由 `RuntimeView.changed_projects` 提供：目前脈絡中 epoch 已變的來源專案 id，沒有目前脈絡時是空陣列。前端的「需要注意」徽章可以用它；以角色為單位的狀態仍可用 `/ai-team` 的 `state = quarantined`。
   - **這個分支上的 `web/` 與 `scripts/e2e_s1.py` 暫時不能用**：它們還呼叫 `/agent-contexts*`（`web/src/lib/counts.svelte.ts`、`web/src/routes/agents/` 三個頁面、`e2e_s1.py` 第 68–79 行），要等前端 F12 改成上表的新路由；M2.0 後端沒有改它們，以免和前端 session 衝突。
 - **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）已建好，**派送從 M2.1 開始**；升級前的內容不回溯。
-- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0037）。目前不會寫出這些值。
+- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0038）。目前不會寫出這些值。
 
 ## M2.1（Markdown，沒有 migration）
 
@@ -237,4 +237,11 @@
 - **`POST /markdown/preview`**：編輯器預覽，不寫入、不通知；每人每分鐘 60 次（`rate_limited`，`details.kind = "markdown_preview"`）；文字超過 262144 bytes 回新錯誤碼 `payload_too_large`（HTTP 413，`details.limit`）。看不到的議題或專案與不存在的回同一個 `not_found`。
 - **@提及開始派送**：被提及的人收到通知（原因 `mentioned`），前提是他用自己的權限讀得到那個事件；被提及不會自動關注。通知讀取時再驗一次：留言被遮蔽或撤回、或說明的那次修改被遮蔽後，只因提及而來的通知不再顯示。偏好 `on_mentioned`（預設開）可以關；`PUT /me/notification-preferences` 沒帶 `on_mentioned` 時維持原值，舊用戶端的重送仍會比對成同一個請求。升級前寫的提及不補發（派送從升級後的新事件開始）。
 - **通知摘錄**：`note_excerpt` 改成留言的純文字（Markdown 語法去掉）。
+
+## 0033_p3_backend_gaps（P3 後端缺口）
+
+- **新表 `command_execution_chains`**（只增不改）：agent 直接寫入時，每個寫到的議題各記一列「寫入後該議題的 agent chain 長度」。議題歷史的 `agent_chain` 旗標改讀這裡，只看事件所在議題自己的 chain。
+- **升級前的 agent 寫入不顯示 `agent_chain`**：舊寫入沒有這些列，升級後的新寫入才有。不回填（舊的 `command_executions.agent_chain_writes` 是整份寫入的最大值，拿來回填會把別的議題的 chain 標到這個議題上）。
+- 不動權限、角色與成員，`security_epoch` 不變，agent 工作脈絡不受影響。
+- 同一階段沒有 migration 的 API 變更（G38–G47）見 `docs/impl/p1-backend-gaps.md`；其中要注意的：用 key 指定議題的 `log_time` 命令，升級前送出、升級後用同一個 Idempotency-Key 重送，會回 `idempotency_key_reused`（請求的正規化雜湊改了）。
 

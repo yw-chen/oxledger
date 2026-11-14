@@ -90,6 +90,23 @@
         ],
         "type": "object"
       },
+      "ActivityAgent": {
+        "description": "The role an item of `GET /ai-team/activity` belongs to (G42).",
+        "properties": {
+          "agent_principal_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_principal_id",
+          "handle"
+        ],
+        "type": "object"
+      },
       "ActivityDiff": {
         "properties": {
           "after": true,
@@ -145,6 +162,17 @@
       },
       "ActivityItem": {
         "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActivityAgent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The role that wrote it: only in `GET /ai-team/activity` (G42)."
+          },
           "at": {
             "format": "date-time",
             "type": "string"
@@ -172,6 +200,10 @@
             "description": "`direct`, `proposal` (applied), `blocked` or `undo`.",
             "type": "string"
           },
+          "self_triage": {
+            "description": "The write holds a Triage decision the agent made on an issue it\ncreated itself (A5 `self_triage`, 「自建自分流」, §6.14; P3 gap G42).\nOnly from a decision the caller can read.",
+            "type": "boolean"
+          },
           "undoable": {
             "type": "boolean"
           }
@@ -181,7 +213,8 @@
           "at",
           "keys",
           "diff",
-          "undoable"
+          "undoable",
+          "self_triage"
         ],
         "type": "object"
       },
@@ -2442,6 +2475,13 @@
           "created": {
             "type": "boolean"
           },
+          "events": {
+            "description": "The issue event kinds the write recorded on this issue, in order\n(`created`, `fields_changed`, `status_changed`, `note_added`,\n`duplicate_added`, `triage_changed`; P3 gap G38). Empty when nothing\nchanged, and on results stored before G38 (a replay of such a\nresult has none).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "issue_id": {
             "format": "uuid",
             "type": "string"
@@ -2983,6 +3023,25 @@
           "actor": {
             "type": "string"
           },
+          "actor_kind": {
+            "description": "`user`, `agent` or `system` (P3 gap G41; 02 §16.2).",
+            "type": "string"
+          },
+          "agent_chain": {
+            "description": "The agent's direct write extended this issue's chain to at least 2\nagent writes with no person in between (「agent 連續寫入中」, §6.14;\nG40). Only this issue's own chain (a write that also touched other\nissues says nothing about theirs); writes from before migration 0033\nshow no flag. A flag,\nnever the count: the chain may hold writes the viewer cannot read\n(appendix D V21).",
+            "type": "boolean"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who approved the applied proposal (「Alice 核准」, 02 §16.10; G41).\nOnly when the viewer may know it: the approver is the person the\nagent acted for (the delegator, who alone reviews proposals), or the\nviewer is the approver or a site administrator."
+          },
           "at": {
             "format": "date-time",
             "type": "string"
@@ -2999,6 +3058,17 @@
             "description": "created | fields_changed | status_changed | note_added | duplicate_added\n| triage_changed (contract 05 §3.4) | …",
             "type": "string"
           },
+          "on_behalf_of": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person an agent acted for (`claude-code@alice〔agent〕`, tooltip\n「代表 Alice」; G41). Absent for people's own writes."
+          },
           "redacted": {
             "type": "boolean"
           }
@@ -3007,7 +3077,8 @@
           "event_id",
           "kind",
           "at",
-          "actor"
+          "actor",
+          "actor_kind"
         ],
         "type": "object"
       },
@@ -4122,6 +4193,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "`created_by`'s display name (P3 gap G43), or null when the viewer may\nnot see it: shown to site administrators, for the viewer themselves,\nand for members (directly or through a group) of the form's project.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "impact": true,
           "publish_mode": {
             "type": [
@@ -4138,6 +4216,13 @@
           },
           "published_by": {
             "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_by_name": {
+            "description": "`published_by`'s display name, under the same rule (G43).",
             "type": [
               "string",
               "null"
@@ -4161,7 +4246,9 @@
           "created_by",
           "created_at",
           "published_by",
-          "published_at"
+          "published_at",
+          "created_by_name",
+          "published_by_name"
         ],
         "type": "object"
       },
@@ -7594,6 +7681,24 @@
         ],
         "type": "object"
       },
+      "ProjectFlags": {
+        "description": "What the signed-in person may do in one project, for the SPA to offer\nthe right buttons (P3 gap G46). The server checks again on every write;\nthese flags only decide what to show.",
+        "properties": {
+          "add_issues": {
+            "description": "`add_issues` on at least one of the project's trackers that has a\ndefault status (create_issue refuses the others), and the project\ntakes writes (active, issue module).",
+            "type": "boolean"
+          },
+          "manage_public_views": {
+            "description": "`manage_public_views` in an active project (R-VD2: project views).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "add_issues",
+          "manage_public_views"
+        ],
+        "type": "object"
+      },
       "ProjectHealthSettings": {
         "properties": {
           "health_at_risk_days": {
@@ -7634,12 +7739,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/ProjectFlags",
+            "description": "What you may do here (P3 gap G46): which buttons to offer."
           }
         },
         "required": [
           "id",
           "key",
-          "name"
+          "name",
+          "permissions"
         ],
         "type": "object"
       },
@@ -7828,6 +7938,10 @@
             "format": "date-time",
             "type": "string"
           },
+          "has_changes": {
+            "description": "`payload.changes` is present (G45). False for events written before\nG45 (they hold the new values only; compare with an older event of\nthe same provider to see what changed) and for kinds without changes\n(`created`, `retired`, `activated`, `test_run`).",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -7836,7 +7950,9 @@
             "description": "`created`, `updated`, `retired`, `activated`, `settings_updated`, `test_run`.",
             "type": "string"
           },
-          "payload": true,
+          "payload": {
+            "description": "The new values; `updated` and `settings_updated` events also carry\n`changes`: `{field: {\"old\", \"new\"}}` for the fields that changed\n(P3 gap G45). Never a key or other secret."
+          },
           "provider_id": {
             "format": "uuid",
             "type": [
@@ -7852,7 +7968,8 @@
           "actor_name",
           "kind",
           "provider_id",
-          "payload"
+          "payload",
+          "has_changes"
         ],
         "type": "object"
       },
@@ -9212,18 +9329,34 @@
             },
             "type": "array"
           },
+          "direct": {
+            "description": "Of `allowed_commands`, the ones written directly (§6.18 ②; P3 gap\nG39). Only the command modes, never the field policies.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "project": {
             "type": "string"
           },
           "project_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "review": {
+            "description": "Of `allowed_commands`, the ones sent for review (§6.18 ②; G39).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "project_id",
           "project",
-          "allowed_commands"
+          "allowed_commands",
+          "direct",
+          "review"
         ],
         "type": "object"
       },
@@ -13873,6 +14006,17 @@
           "name": {
             "type": "string"
           },
+          "permissions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectFlags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The signed-in person's permissions in `project` (P3 gap G46: a\nbuilt-in board without `manage_public_views` offers only the personal\ncopy; an empty board offers 「建立議題」 only with `add_issues`).\nOnly with `project`, and only for people (not agents)."
+          },
           "project": {
             "anyOf": [
               {
@@ -16840,6 +16984,55 @@
         "summary": "Create a role bot: runtime, role, delegations and its first token (shown once; null on a replay). Idempotency-Key.",
         "x-access": "stepup",
         "x-csrf": true
+      }
+    },
+    "/ai-team/activity": {
+      "get": {
+        "operationId": "get_ai_team_activity",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Activity2"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The writes of every role you see on the AI team page, merged newest first; each item names its role (agent) and is filtered to what you can read, exactly as GET /ai-team/{id}/activity for that role. Query role (an agent principal id; a role you do not see gives an empty list), runtime (a runtime id; matches only roles whose runtime you may see: their sponsor and site admins), from, to, issue, cursor, limit. Your undos show under the role whose write they reverted. No totals.",
+        "x-access": "session"
       }
     },
     "/ai-team/templates": {
@@ -24408,7 +24601,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
+        "summary": "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, tracker and fixed_version (an id or none: the issue's current tracker / milestone as GET /time-entries/summary groups them; none also matches entries without an issue), from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
         "x-access": "session"
       }
     },

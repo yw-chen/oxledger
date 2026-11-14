@@ -28,6 +28,12 @@ export type Activity2 = {
   next_cursor: string | null;
 };
 
+/** The role an item of `GET /ai-team/activity` belongs to (G42). */
+export type ActivityAgent = {
+  agent_principal_id: string;
+  handle: string;
+};
+
 export type ActivityDiff = {
   after: unknown;
   before: unknown;
@@ -45,12 +51,16 @@ export type ActivityInput = {
 };
 
 export type ActivityItem = {
+  /** The role that wrote it: only in `GET /ai-team/activity` (G42). */
+  agent?: ActivityAgent | null;
   at: string;
   diff: Array<ActivityDiff>;
   execution_id?: string | null;
   keys: Array<string>;
   /** `direct`, `proposal` (applied), `blocked` or `undo`. */
   kind: string;
+  /** The write holds a Triage decision the agent made on an issue it created itself (A5 `self_triage`, 「自建自分流」, §6.14; P3 gap G42). Only from a decision the caller can read. */
+  self_triage: boolean;
   undoable: boolean;
 };
 
@@ -688,6 +698,8 @@ export type Effect = {
   /** Anything changed (fields, status, note, relation). */
   changed: boolean;
   created: boolean;
+  /** The issue event kinds the write recorded on this issue, in order (`created`, `fields_changed`, `status_changed`, `note_added`, `duplicate_added`, `triage_changed`; P3 gap G38). Empty when nothing changed, and on results stored before G38 (a replay of such a result has none). */
+  events?: Array<string>;
   issue_id: string;
   key: string;
   lock_version: number;
@@ -744,6 +756,12 @@ export type EventActor = {
 
 export type EventView = {
   actor: string;
+  /** `user`, `agent` or `system` (P3 gap G41; 02 §16.2). */
+  actor_kind: string;
+  /** The agent's direct write extended this issue's chain to at least 2 agent writes with no person in between (「agent 連續寫入中」, §6.14; G40). Only this issue's own chain (a write that also touched other issues says nothing about theirs); writes from before migration 0033 show no flag. A flag, never the count: the chain may hold writes the viewer cannot read (appendix D V21). */
+  agent_chain?: boolean;
+  /** Who approved the applied proposal (「Alice 核准」, 02 §16.10; G41). Only when the viewer may know it: the approver is the person the agent acted for (the delegator, who alone reviews proposals), or the viewer is the approver or a site administrator. */
+  approved_by?: Named | null;
   at: string;
   /** The event's content as the caller may see it (readable fields only; ids shown as names). Absent when redacted. */
   detail?: unknown;
@@ -751,6 +769,8 @@ export type EventView = {
   event_id: string;
   /** created | fields_changed | status_changed | note_added | duplicate_added | triage_changed (contract 05 §3.4) | … */
   kind: string;
+  /** The person an agent acted for (`claude-code@alice〔agent〕`, tooltip 「代表 Alice」; G41). Absent for people's own writes. */
+  on_behalf_of?: Named | null;
   redacted?: boolean;
 };
 
@@ -1033,10 +1053,14 @@ export type FormVersionView = {
   body: unknown;
   created_at: string;
   created_by: string;
+  /** `created_by`'s display name (P3 gap G43), or null when the viewer may not see it: shown to site administrators, for the viewer themselves, and for members (directly or through a group) of the form's project. */
+  created_by_name: string | null;
   impact: unknown;
   publish_mode: string | null;
   published_at: string | null;
   published_by: string | null;
+  /** `published_by`'s display name, under the same rule (G43). */
+  published_by_name: string | null;
   /** draft, published, superseded, discarded. */
   state: string;
   version: number;
@@ -1959,6 +1983,14 @@ export type ProjectDev = {
   next_cursor: string | null;
 };
 
+/** What the signed-in person may do in one project, for the SPA to offer the right buttons (P3 gap G46). The server checks again on every write; these flags only decide what to show. */
+export type ProjectFlags = {
+  /** `add_issues` on at least one of the project's trackers that has a default status (create_issue refuses the others), and the project takes writes (active, issue module). */
+  add_issues: boolean;
+  /** `manage_public_views` in an active project (R-VD2: project views). */
+  manage_public_views: boolean;
+};
+
 export type ProjectHealthSettings = {
   health_at_risk_days: number | null;
   health_at_risk_open_pct: number | null;
@@ -1971,6 +2003,8 @@ export type ProjectItem = {
   /** The issue key prefix, e.g. `AUTH`. */
   key: string;
   name: string;
+  /** What you may do here (P3 gap G46): which buttons to offer. */
+  permissions: ProjectFlags;
 };
 
 export type ProjectPolicy = {
@@ -2020,9 +2054,12 @@ export type ProviderEvent = {
   actor_id: string;
   actor_name: string;
   at: string;
+  /** `payload.changes` is present (G45). False for events written before G45 (they hold the new values only; compare with an older event of the same provider to see what changed) and for kinds without changes (`created`, `retired`, `activated`, `test_run`). */
+  has_changes: boolean;
   id: string;
   /** `created`, `updated`, `retired`, `activated`, `settings_updated`, `test_run`. */
   kind: string;
+  /** The new values; `updated` and `settings_updated` events also carry `changes`: `{field: {"old", "new"}}` for the fields that changed (P3 gap G45). Never a key or other secret. */
   payload: unknown;
   provider_id: string | null;
 };
@@ -2412,8 +2449,12 @@ export type RuntimeView = {
 export type SafetySummary = {
   /** Commands not `off` in this project (no fields, no duties). */
   allowed_commands: Array<string>;
+  /** Of `allowed_commands`, the ones written directly (§6.18 ②; P3 gap G39). Only the command modes, never the field policies. */
+  direct: Array<string>;
   project: string;
   project_id: string;
+  /** Of `allowed_commands`, the ones sent for review (§6.18 ②; G39). */
+  review: Array<string>;
 };
 
 export type ScheduleSettings = {
@@ -3664,6 +3705,8 @@ export type ViewDetail = {
   kind: string;
   lock_version?: number | null;
   name: string;
+  /** The signed-in person's permissions in `project` (P3 gap G46: a built-in board without `manage_public_views` offers only the personal copy; an empty board offers 「建立議題」 only with `add_issues`). Only with `project`, and only for people (not agents). */
+  permissions?: ProjectFlags | null;
   project?: ProjectRef2 | null;
   /** A personal view bound to a project the caller can no longer see (left it, or it became private): `project` is left out and a run is `invalid_view` (reason `project_unavailable`). */
   project_unavailable?: boolean;
@@ -3890,6 +3933,7 @@ export interface Endpoints {
   "POST /agents/{id}/incident-recovery/preview": { body: IncidentInput; data: IncidentPreview };
   "GET /ai-team": { body: never; data: TeamList };
   "POST /ai-team": { body: CreateRoleInput; data: CreatedRole };
+  "GET /ai-team/activity": { body: never; data: Activity2 };
   "GET /ai-team/templates": { body: never; data: Array<TemplateSpec> };
   "GET /ai-team/{id}": { body: never; data: TeamDetail };
   "GET /ai-team/{id}/activity": { body: never; data: Activity2 };

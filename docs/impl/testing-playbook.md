@@ -76,13 +76,13 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 搜尋與通知只處理 xid 低於 cluster 共用 horizon H 的 outbox 列。同一個 cluster 上任何一個還沒結束、已分配 xid 的交易都會壓住 H，所以平行時：
 
 - **對 H 敏感的測試**：只呼叫一次 `sync`／`sync_round`／`dispatch_round`，或停在 fault gate 等 worker 走到某一步，就斷言自己的列已經處理。別的測試剛好有寫入交易時，這一輪看不到自己的列，測試失敗或永遠等不到 gate（T1 第一次平行跑：p2_search 3 個、s8_gate 1 個、m1_8 2 個失敗，s8_gate_probes 卡 6 分鐘）。
-  名單：`p2_search`、`s8_gate_probes`、`s8_search_consistency` 全檔；`s7_redaction::search_never_shows_redacted_text`、`s8_gate::t_s2_outbox_consumed_twice`、`m1_7_search::legacy_generation_on_disk_is_opened`、`m1_8_notifications` 的 5 個（見 nextest.toml）。
+  名單：`p2_search`、`s8_gate_probes`、`s8_search_consistency` 全檔；`s7_redaction::search_never_shows_redacted_text`、`s8_gate::t_s2_outbox_consumed_twice`、`m1_7_search::legacy_generation_on_disk_is_opened`、`m1_8_notifications` 的 7 個（見 nextest.toml；`t_m1_71_private_note`、`t_m1_73_private_issue` 是 P3 缺口第二輪的獨立驗證在大量平行時看到失敗後加的）。
 - **長時間持有 xid 的測試**：`p2_strategy` 的 2 個、`m1_2_views` 的 2 個一次交易寫上萬筆 issue，平行時要 20–40 秒，會讓旁邊所有 `sync_all` 等滿 20 秒逾時（s1_identity 就這樣失敗過，`describe_xid_holders` 直接指出是 `UPDATE projects SET issue_counter = issue_counter + 12000`）。
 - **`t1_test_infra::horizon_timeout_message_names_the_holder`**（G2）：在 cluster 最老的 5 個 xid 持有者裡找自己的交易，平行時會被別的測試的交易擠掉。
 
 這些測試用 `threads-required = 'num-test-threads'`：等其他測試都結束才開始，跑的時候沒有別人。
-用 `cargo nextest list -E <兩段 filter>` 核對（T1 第三輪）：共 44 個，43 個會執行，另外 1 個是 `#[ignore]` 的 `m1_8_notifications::perf_dispatch_p95`（平常不跑）。
-其中 T1 原本的 42 個可執行，加上第三輪新增的 G2 測試。合計約 100 秒（單獨跑時每個 1–2 秒，p2_strategy 各約 20 秒）。
+用 `cargo nextest list -E <兩段 filter>` 核對（P3 缺口第二輪）：共 46 個，45 個會執行，另外 1 個是 `#[ignore]` 的 `m1_8_notifications::perf_dispatch_p95`（平常不跑）。
+其中 T1 原本的 42 個可執行，加上第三輪新增的 G2 測試，再加上 P3 缺口第二輪的 `m1_8_notifications` 2 個。合計約 100 秒（單獨跑時每個 1–2 秒，p2_strategy 各約 20 秒）。
 新寫的測試如果直接呼叫 `sync`／`sync_round`／`dispatch_round` 或 fault gate，要用 `_all` 版本，或加進這份名單。
 
 暫時保留單獨跑的原因：這些測試斷言的是「worker 走一輪就處理到」或「gate 一定等得到」，正確性建立在「cluster 上沒有別人的寫入交易」這個前提。
@@ -91,7 +91,7 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 ### 待辦：改寫成可以平行的測試
 
 - [ ] `p2_search`、`s8_search_consistency`、`s7_redaction::search_never_shows_redacted_text`、`m1_7_search::legacy_generation_on_disk_is_opened`：改成迴圈等明確條件（`frontier() > X`、自己的列已處理），像 `s8_search_consistency` 的 `catch_up`，或改用 `sync_all`。
-- [ ] `m1_8_notifications` 的 5 個：改用 `dispatch_all` 或等自己的 outbox 列被消耗；`perf_dispatch_p95` 要另外想量測方式（平行時的 p95 本來就不準）。
+- [ ] `m1_8_notifications` 的 7 個：改用 `dispatch_all` 或等自己的 outbox 列被消耗；`perf_dispatch_p95` 要另外想量測方式（平行時的 p95 本來就不準）。
 - [ ] `s8_gate::t_s2_outbox_consumed_twice`、`s8_gate_probes`：gate 等待加上「H 已越過自己的列」的前置條件，不要假設下一輪一定處理到。
 - [ ] `p2_strategy` 的 2 個、`m1_2_views` 的 2 個：把一次寫上萬筆的交易拆小，或改用 `COPY`／分批 commit，讓 xid 不要一次持有 20–40 秒。
 - 完成一項就把它從 `.config/nextest.toml` 的 override 拿掉，平行跑全套三次都過才算。

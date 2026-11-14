@@ -336,6 +336,8 @@ impl DispatchEvent {
             payload: self.payload.clone(),
             note_id: self.note_id,
             redacted: self.redacted,
+            // Notifications show their own attribution (only `detail` is used).
+            ..EventRow::default()
         }
     }
 

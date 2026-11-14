@@ -772,6 +772,19 @@ async fn t_m1_102_103_writes_follow_the_policies() {
         .collect();
     assert_eq!(outcomes, ["applied", "review_required"]);
     assert_eq!(r.writes[1]["reason"], "policy");
+    // P3 gap G38: the write card names what was recorded (§3.13.4).
+    let key: String =
+        sqlx::query_scalar("SELECT key FROM issue_keys WHERE issue_id = $1 AND is_current")
+            .bind(i)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        r.writes[0]["effects"],
+        json!([{"key": key, "kind": "note_added"}]),
+        "{:?}",
+        r.writes
+    );
     assert_eq!(
         count(
             &pool,

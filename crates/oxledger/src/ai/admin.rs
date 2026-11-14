@@ -417,6 +417,54 @@ fn needs_org_attest(class: Option<AddrClass>) -> bool {
     !matches!(class, Some(AddrClass::Private | AddrClass::Loopback))
 }
 
+/// The audited columns of a provider (P3 gap G45): what an `updated`
+/// event's `changes` may name. Never a key: keys live only in the server's
+/// environment (B-29) and no column here can hold one.
+const PROVIDER_AUDIT: &str = "SELECT jsonb_build_object(
+        'name', name, 'endpoint_name', endpoint_name, 'model', model,
+        'max_output_tokens', max_output_tokens,
+        'input_usd_per_mtok', input_usd_per_mtok::text,
+        'output_usd_per_mtok', output_usd_per_mtok::text,
+        'org_account_attested', org_account_attested_at IS NOT NULL)
+    FROM ai_providers WHERE id = $1";
+
+/// The audited settings (G45), named as in `settings_updated` payloads.
+const SETTINGS_AUDIT: &str = "SELECT jsonb_build_object(
+        'enabled', enabled, 'active_provider_id', active_provider_id,
+        'monthly_budget_usd', monthly_budget_usd::text,
+        'user_daily_budget_usd', user_daily_budget_usd::text,
+        'user_runs_per_hour', user_runs_per_hour,
+        'conversation_retention_days', conversation_retention_days)
+    FROM ai_settings";
+
+async fn audit_snapshot(
+    conn: &mut PgConnection,
+    sql: &'static str,
+    id: Option<Uuid>,
+) -> anyhow::Result<Json> {
+    let q = sqlx::query_scalar::<_, Json>(sql);
+    let q = match id {
+        Some(id) => q.bind(id),
+        None => q,
+    };
+    Ok(q.fetch_one(&mut *conn).await?)
+}
+
+/// G45: `{field: {"old", "new"}}` for the fields that differ between two
+/// audit snapshots (only the snapshot's own fields; nothing else can enter).
+fn audit_changes(before: &Json, after: &Json) -> Json {
+    let mut out = serde_json::Map::new();
+    if let (Some(b), Some(a)) = (before.as_object(), after.as_object()) {
+        for (k, new) in a {
+            let old = b.get(k).cloned().unwrap_or(Json::Null);
+            if &old != new {
+                out.insert(k.clone(), json!({"old": old, "new": new}));
+            }
+        }
+    }
+    Json::Object(out)
+}
+
 async fn event(
     conn: &mut PgConnection,
     provider: Option<Uuid>,
@@ -610,6 +658,7 @@ pub async fn update_provider(
         ));
     }
     auth::require_step_up(&mut tx, policy, &ctx).await?;
+    let audit_before = audit_snapshot(&mut tx, PROVIDER_AUDIT, Some(id)).await?;
     sqlx::query(
         "UPDATE ai_providers SET
             name = coalesce($2, name), endpoint_name = $3, model = $4,
@@ -642,6 +691,7 @@ pub async fn update_provider(
         }
         _ => e.into(),
     })?;
+    let audit_after = audit_snapshot(&mut tx, PROVIDER_AUDIT, Some(id)).await?;
     event(
         &mut tx,
         Some(id),
@@ -649,7 +699,8 @@ pub async fn update_provider(
         "updated",
         json!({"name": input.name, "endpoint_name": new_endpoint, "model": new_model,
                "max_output_tokens": max_out, "input_usd_per_mtok": input.input_usd_per_mtok,
-               "output_usd_per_mtok": input.output_usd_per_mtok, "config_changed": changed_config}),
+               "output_usd_per_mtok": input.output_usd_per_mtok, "config_changed": changed_config,
+               "changes": audit_changes(&audit_before, &audit_after)}),
     )
     .await?;
     // §3.13.2: `enabled` needs a test that succeeded after the provider's
@@ -672,7 +723,8 @@ pub async fn update_provider(
                 Some(id),
                 user,
                 "settings_updated",
-                json!({"enabled": false, "reason": "provider_config_changed"}),
+                json!({"enabled": false, "reason": "provider_config_changed",
+                       "changes": {"enabled": {"old": true, "new": false}}}),
             )
             .await?;
         }
@@ -1150,6 +1202,7 @@ pub async fn put_settings(
     if cur.0 != input.enabled || cur.1 != input.active_provider_id {
         auth::require_step_up(&mut tx, policy, &ctx).await?;
     }
+    let audit_before = audit_snapshot(&mut tx, SETTINGS_AUDIT, None).await?;
     sqlx::query(
         "UPDATE ai_settings SET enabled = $1, active_provider_id = $2, monthly_budget_usd = $3::numeric,
                 user_daily_budget_usd = $4::numeric, user_runs_per_hour = $5, conversation_retention_days = $6,
@@ -1165,6 +1218,7 @@ pub async fn put_settings(
     .execute(&mut *tx)
     .await?;
     sync_client(&mut tx).await?;
+    let audit_after = audit_snapshot(&mut tx, SETTINGS_AUDIT, None).await?;
     if cur.1 != input.active_provider_id
         && let Some(p) = input.active_provider_id
     {
@@ -1185,7 +1239,8 @@ pub async fn put_settings(
         json!({"enabled": input.enabled, "active_provider_id": input.active_provider_id,
                "monthly_budget_usd": input.monthly_budget_usd, "user_daily_budget_usd": input.user_daily_budget_usd,
                "user_runs_per_hour": input.user_runs_per_hour,
-               "conversation_retention_days": input.conversation_retention_days}),
+               "conversation_retention_days": input.conversation_retention_days,
+               "changes": audit_changes(&audit_before, &audit_after)}),
     )
     .await?;
     let v = settings_view(&mut tx).await?;
@@ -1311,8 +1366,16 @@ pub struct ProviderEvent {
     /// `created`, `updated`, `retired`, `activated`, `settings_updated`, `test_run`.
     pub kind: String,
     pub provider_id: Option<Uuid>,
+    /// The new values; `updated` and `settings_updated` events also carry
+    /// `changes`: `{field: {"old", "new"}}` for the fields that changed
+    /// (P3 gap G45). Never a key or other secret.
     #[schemars(with = "serde_json::Value")]
     pub payload: Json,
+    /// `payload.changes` is present (G45). False for events written before
+    /// G45 (they hold the new values only; compare with an older event of
+    /// the same provider to see what changed) and for kinds without changes
+    /// (`created`, `retired`, `activated`, `test_run`).
+    pub has_changes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1350,6 +1413,7 @@ pub async fn events(app: &App, ctx: AuthContext) -> anyhow::Result<ProviderEvent
                 actor_name: r.3,
                 kind: r.4,
                 provider_id: r.5,
+                has_changes: r.6.get("changes").is_some_and(Json::is_object),
                 payload: r.6,
             })
             .collect(),

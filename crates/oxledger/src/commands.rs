@@ -501,6 +501,42 @@ pub struct Effect {
     /// Anything changed (fields, status, note, relation).
     pub changed: bool,
     pub created: bool,
+    /// The issue event kinds the write recorded on this issue, in order
+    /// (`created`, `fields_changed`, `status_changed`, `note_added`,
+    /// `duplicate_added`, `triage_changed`; P3 gap G38). Empty when nothing
+    /// changed, and on results stored before G38 (a replay of such a
+    /// result has none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+}
+
+/// The stored form of an [`Effect`] (`operation_requests` and execution
+/// results): ids only, never the key (a replay re-checks visibility).
+pub(crate) fn stored_effect(e: &Effect) -> Json {
+    json!({
+        "issue_id": e.issue_id, "lock_version": e.lock_version,
+        "changed": e.changed, "created": e.created, "events": e.events,
+    })
+}
+
+/// An [`Effect`] read back from [`stored_effect`] with the key the reader
+/// may see now; `None` for a malformed row.
+pub(crate) fn effect_from_stored(x: &Json, issue_id: Uuid, key: String) -> Option<Effect> {
+    Some(Effect {
+        issue_id,
+        key,
+        lock_version: x["lock_version"].as_i64()? as i32,
+        changed: x["changed"].as_bool()?,
+        created: x["created"].as_bool()?,
+        events: x["events"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|k| k.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -2303,10 +2339,15 @@ fn normalize_refs(doc: &mut Json, resolved: &BTreeMap<String, Uuid>) {
     };
     if let Some(Json::Array(ops)) = doc.get_mut("ops") {
         for op in ops {
-            for f in ["target", "source", "duplicate_of"] {
+            // `issue`: log_time's issue (P3 gap G47; review_queue reads its id).
+            for f in ["target", "source", "duplicate_of", "issue"] {
                 if let Some(t) = op.get_mut(f) {
                     fix(t);
                 }
+            }
+            // update_time_entry moves an entry with `set.issue`.
+            if let Some(t) = op.get_mut("set").and_then(|s| s.get_mut("issue")) {
+                fix(t);
             }
         }
     }
@@ -2688,10 +2729,7 @@ async fn run(
     let result_ref = json!({
         "execution_id": result.execution_id,
         "consistent_after": result.search.consistent_after,
-        "effects": result.effects.iter().map(|e| json!({
-            "issue_id": e.issue_id, "lock_version": e.lock_version,
-            "changed": e.changed, "created": e.created,
-        })).collect::<Vec<_>>(),
+        "effects": result.effects.iter().map(stored_effect).collect::<Vec<_>>(),
         "items": result.items,
         "time_entries": result.time_entries,
     });
@@ -3116,13 +3154,7 @@ pub(crate) async fn replay(
         .iter()
         .filter_map(|e| {
             let id = json_uuid(&e["issue_id"])?;
-            Some(Effect {
-                issue_id: id,
-                key: visible.get(&id)?.clone(),
-                lock_version: e["lock_version"].as_i64()? as i32,
-                changed: e["changed"].as_bool()?,
-                created: e["created"].as_bool()?,
-            })
+            effect_from_stored(e, id, visible.get(&id)?.clone())
         })
         .collect();
     let items = serde_json::from_value::<Vec<ItemResult>>(r["items"].clone())
@@ -4865,6 +4897,19 @@ pub(crate) async fn write_effects(
             lock_version,
             changed: w.effect,
             created: w.orig.is_none(),
+            // G38: what the write recorded (the history's event kinds),
+            // each kind once, in the order first recorded.
+            events: if w.effect {
+                let mut kinds: Vec<String> = Vec::new();
+                for e in &w.events {
+                    if !kinds.iter().any(|k| k == e.kind) {
+                        kinds.push(e.kind.to_string());
+                    }
+                }
+                kinds
+            } else {
+                Vec::new()
+            },
         });
     }
 

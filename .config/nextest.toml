@@ -47,7 +47,8 @@ filter = '''
     | (binary(=m1_8_notifications) & (test(=t_m1_77_at_least_once_is_exactly_once)
         | test(=v_progress_lock_with_read_between) | test(=perf_dispatch_p95)
         | test(=v_read_all_before_marks_row_committed_after_list)
-        | test(=v_poison_issue_is_skipped)))
+        | test(=v_poison_issue_is_skipped)
+        | test(=t_m1_71_private_note) | test(=t_m1_73_private_issue)))
     | (binary(=t1_test_infra) & test(=horizon_timeout_message_names_the_holder))
 '''
 threads-required = 'num-test-threads'
