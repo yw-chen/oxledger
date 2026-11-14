@@ -1114,7 +1114,10 @@ async fn t_m1_96_97_chain_reads_and_concurrency() {
     // T-M1-97: two agents at once on one issue: serialized, counted right.
     let l = lv(&w, i).await;
     let (da, db) = (note_doc(i, l, "a"), note_doc(i, l, "b"));
-    let (ra, rb) = tokio::join!(submit(&w, a, &da), submit(&w, b, &db));
+    let (ra, rb) = common::wait_for("two racing submits", common::WAIT_TIMEOUT, async {
+        tokio::join!(submit(&w, a, &da), submit(&w, b, &db))
+    })
+    .await;
     let ok = [&ra, &rb]
         .iter()
         .filter(|r| matches!(r, Ok(SubmitResult::Applied { .. })))
@@ -1221,11 +1224,14 @@ async fn t1b_concurrent_creates_never_deadlock() {
             ga.release.notify_one();
             gb.release.notify_one();
         };
-        let (x, y, ()) = tokio::join!(
-            create(&w, w.alice_ctx, &a),
-            create(&w, w.alice_ctx, &b),
-            barrier
-        );
+        let (x, y, ()) = common::wait_for("two racing creates", common::WAIT_TIMEOUT, async {
+            tokio::join!(
+                create(&w, w.alice_ctx, &a),
+                create(&w, w.alice_ctx, &b),
+                barrier
+            )
+        })
+        .await;
         let (won, lost) = match (x, y) {
             (Ok(r), Err(e)) | (Err(e), Ok(r)) => (r, e),
             (x, y) => panic!(
@@ -1275,7 +1281,10 @@ async fn t_m1_121_one_runtime_per_client() {
     let cursor = new_client(&w, "Cursor").await;
     let i1 = role(new_rt("C1"), cursor, "c", "personal", &[w.web]);
     let i2 = role(new_rt("C2"), cursor, "c", "personal", &[w.web]);
-    let (x, y) = tokio::join!(create(&w, w.alice_ctx, &i1), create(&w, w.alice_ctx, &i2));
+    let (x, y) = common::wait_for("two creates for one client", common::WAIT_TIMEOUT, async {
+        tokio::join!(create(&w, w.alice_ctx, &i1), create(&w, w.alice_ctx, &i2))
+    })
+    .await;
     assert_eq!([x.is_ok(), y.is_ok()].iter().filter(|o| **o).count(), 1);
     let loser = x.err().or(y.err()).unwrap();
     assert_eq!(code(&loser), ErrorCode::RuntimeClientTaken, "{loser:#}");
@@ -1907,7 +1916,10 @@ async fn v_chain_concurrent_at_limit() {
     assert_eq!(chain(&w, i).await, Some((19, 0)));
     let l = lv(&w, i).await;
     let (d1, d2) = (note_doc(i, l, "x"), note_doc(i, l, "y"));
-    let (r1, r2) = tokio::join!(submit(&w, a, &d1), submit(&w, a, &d2));
+    let (r1, r2) = common::wait_for("two submits by one agent", common::WAIT_TIMEOUT, async {
+        tokio::join!(submit(&w, a, &d1), submit(&w, a, &d2))
+    })
+    .await;
     let outcomes = [&r1, &r2]
         .iter()
         .map(|r| match r {
@@ -1981,7 +1993,7 @@ async fn v_q2_trigger_concurrent_sql() {
         "the second insert must wait for the first"
     );
     sqlx::raw_sql("COMMIT").execute(&mut c1).await.unwrap();
-    let (ok, msg) = h.await.unwrap();
+    let (ok, msg) = common::join("the concurrent statement", h).await;
     assert!(!ok, "both runtimes got the client");
     assert!(msg.contains("runtime_client_taken"), "{msg}");
     assert_eq!(
@@ -2408,9 +2420,16 @@ async fn v_pause_waits_for_running_write() {
             "the pause did not wait for the running write"
         );
         gate.release.notify_one();
-        p.await.unwrap();
+        common::wait_for("the pause after the release", common::WAIT_TIMEOUT, p)
+            .await
+            .unwrap();
     };
-    let (written, ()) = tokio::join!(write, pausing);
+    let (written, ()) = common::wait_for(
+        "the running write and the pause",
+        common::WAIT_TIMEOUT,
+        async { tokio::join!(write, pausing) },
+    )
+    .await;
     applied(&written.unwrap());
     let e = note(&w, a, i, "after").await.unwrap_err();
     assert_eq!(reason(&e), "agent_paused");

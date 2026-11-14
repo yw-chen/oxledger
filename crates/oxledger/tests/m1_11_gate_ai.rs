@@ -49,7 +49,6 @@ use oxledger::triage::{self, TriageSettingsPut};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tower::ServiceExt;
 use uuid::Uuid;
 use world::*;
@@ -1061,12 +1060,12 @@ async fn canary_ai_everywhere() {
     let sse = runner::stream(&w.app, w.alice_ctx, r.run_id, None)
         .await
         .unwrap();
-    let sse = tokio::time::timeout(
-        Duration::from_secs(30),
+    let sse = common::wait_for(
+        "the run's event stream to end",
+        common::WAIT_TIMEOUT,
         axum::body::to_bytes(sse.into_body(), usize::MAX),
     )
     .await
-    .unwrap()
     .unwrap();
     let sse = String::from_utf8_lossy(&sse).to_string();
     let (state, stop) = wait_run(w, r.run_id).await;

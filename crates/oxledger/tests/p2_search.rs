@@ -141,16 +141,33 @@ async fn empty_rounds_commit_the_payload_only_now_and_then() {
     idx.set_durable_interval(Duration::from_secs(3600));
     idx.sync_all(&pool).await.unwrap();
     let (_, d0) = idx.durable_state().unwrap();
-    // Another transaction moves H on; no outbox rows.
+    // Another transaction moves H on; no outbox rows. An older transaction
+    // elsewhere on the cluster can hold H back for a while (G21), so the
+    // empty rounds repeat until F moves; every one of them must leave the
+    // payload's F alone.
     for _ in 0..3 {
         xid_now(&pool).await;
     }
-    idx.sync(&pool).await.unwrap();
-    let (_, d1) = idx.durable_state().unwrap();
-    assert_eq!(d1, d0, "no empty commit inside the interval");
-    assert!(idx.frontier() > d0, "the served F still moves");
+    let idx = &idx;
+    common::poll_until(
+        "the served F to move past d0",
+        common::WAIT_TIMEOUT,
+        async || {
+            idx.sync(&pool).await.unwrap();
+            let (_, d1) = idx.durable_state().unwrap();
+            assert_eq!(d1, d0, "no empty commit inside the interval");
+            let f = idx.frontier();
+            if f > d0 {
+                common::Break(())
+            } else {
+                common::Continue(format!("F={f} d0={d0}"))
+            }
+        },
+    )
+    .await;
     idx.set_durable_interval(Duration::ZERO);
     xid_now(&pool).await;
+    // F is past d0 now, so the next empty round commits it.
     idx.sync(&pool).await.unwrap();
     let (_, d2) = idx.durable_state().unwrap();
     assert!(d2 > d0, "durable after the interval");
@@ -222,7 +239,23 @@ async fn no_token_is_satisfied_before_a_generation_serves() {
     .await
     .unwrap_err();
     assert_eq!(code(&e), ErrorCode::SearchUnavailable);
-    fresh.index.sync_round(&fresh.pool).await.unwrap();
+    // The first round builds the snapshot generation, whose F is the
+    // snapshot's H: another open transaction on the cluster older than x
+    // keeps it at or below x for a while (T1b). Poll rounds, bounded.
+    common::poll_until(
+        &format!("the new generation's frontier to pass xid {x}"),
+        common::WAIT_TIMEOUT,
+        async || {
+            fresh.index.sync_round(&fresh.pool).await.unwrap();
+            let f = fresh.index.frontier();
+            if f > x {
+                common::Break(())
+            } else {
+                common::Continue(format!("F={f}"))
+            }
+        },
+    )
+    .await;
     assert!(fresh.index.frontier() > x);
     assert_eq!(
         found(&fresh, &w, "quokka").await,
@@ -271,7 +304,7 @@ async fn blue_green_rebuild_keeps_serving() {
     let f_mid = app.index.frontier();
     assert!(f_mid >= f1);
     gate.release.notify_one();
-    let r = job.await.unwrap().unwrap();
+    let r = common::join("the rebuild job", job).await.unwrap();
     assert_eq!(r.previous, Some(g1));
     assert_ne!(r.generation, g1);
     assert_eq!(app.index.generation(), Some(r.generation));
@@ -345,6 +378,17 @@ async fn outbox_gc_respects_leases() {
     for _ in 0..3 {
         w.issue(w.auth_p, "wallaby").await;
     }
+    // The first round builds the generation from a snapshot; its cursor is
+    // that snapshot's H. Only once H is past every row is each row below
+    // the cursor (applied by the baseline), which is what "applied rows go"
+    // below needs: an older transaction elsewhere on the cluster would
+    // leave the newest rows to be applied one by one, the last one at the
+    // cursor itself, where the GC (xid < cursor) keeps it (G21).
+    let newest: String = sqlx::query_scalar("SELECT max(xid)::text FROM outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    common::wait_horizon_past(&pool, newest.parse().unwrap()).await;
     app.index.sync_all(&pool).await.unwrap();
     let old = "UPDATE outbox SET created_at = now() - interval '2 hours'";
     exec(&pool, old).await;
@@ -439,7 +483,7 @@ async fn gc_during_bootstrap_keeps_replay_rows() {
         .unwrap();
     assert!(below >= 3, "rows from the lease on survive");
     gate.release.notify_one();
-    job.await.unwrap().unwrap();
+    common::join("the rebuild job", job).await.unwrap();
     assert_eq!(found(&app, &w, "possum").await.len(), 4);
 }
 
@@ -822,7 +866,10 @@ async fn an_unexplained_mismatch_aborts_the_switch() {
     }
     tx.commit().await.unwrap();
     gate.release.notify_one();
-    assert!(job.await.unwrap().is_err(), "the health check aborts");
+    assert!(
+        common::join("the rebuild job", job).await.is_err(),
+        "the health check aborts"
+    );
     assert_eq!(app.index.generation(), Some(g1));
     assert_eq!(found(&app, &w, "platypus").await.len(), 1);
 }

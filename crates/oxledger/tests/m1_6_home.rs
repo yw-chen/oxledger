@@ -437,10 +437,17 @@ async fn preferences_put_and_concurrency() {
     let mut two = prefs_put(1);
     two.theme = Some("light".into());
     let (k1, k2) = (Uuid::now_v7(), Uuid::now_v7());
-    let (r1, r2) = tokio::join!(
-        home::put_preferences(&w.app, a, k1, &one),
-        home::put_preferences(&w.app, a, k2, &two)
-    );
+    let (r1, r2) = common::wait_for(
+        "two racing preference writes",
+        common::WAIT_TIMEOUT,
+        async {
+            tokio::join!(
+                home::put_preferences(&w.app, a, k1, &one),
+                home::put_preferences(&w.app, a, k2, &two)
+            )
+        },
+    )
+    .await;
     let (ok, err) = match (r1, r2) {
         (Ok(v), Err(e)) | (Err(e), Ok(v)) => (v, e),
         (a, b) => panic!("expected one conflict: {:?} / {:?}", a.is_ok(), b.is_ok()),
@@ -478,15 +485,18 @@ async fn preferences_put_and_concurrency() {
     assert!(!p.onboarded);
     // Same for the home: two PUTs on lock 0, one conflict.
     let h = home::home(&w.app, a).await.unwrap();
-    let (r1, r2) = tokio::join!(
-        put_home(&w, a, h.lock_version, vec![wi("need_decision")]),
-        put_home(
-            &w,
-            a,
-            h.lock_version,
-            vec![wi("need_decision"), wi("agent_summary")]
+    let (r1, r2) = common::wait_for("two racing home writes", common::WAIT_TIMEOUT, async {
+        tokio::join!(
+            put_home(&w, a, h.lock_version, vec![wi("need_decision")]),
+            put_home(
+                &w,
+                a,
+                h.lock_version,
+                vec![wi("need_decision"), wi("agent_summary")]
+            )
         )
-    );
+    })
+    .await;
     assert_eq!(
         [r1.is_ok(), r2.is_ok()].iter().filter(|x| **x).count(),
         1,

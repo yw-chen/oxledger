@@ -1518,7 +1518,7 @@ async fn s4_commands() {
     }
     let mut execs = std::collections::BTreeSet::new();
     for h in handles {
-        let r = h.await.unwrap().unwrap();
+        let r = common::join("a concurrent submit", h).await.unwrap();
         execs.insert(r.execution_id);
     }
     assert_eq!(execs.len(), 1, "one execution");
@@ -1588,10 +1588,13 @@ async fn s4_commands() {
     let (l3, l4) = (lock_version(&pool, w3).await, lock_version(&pool, w4).await);
     let d1 = dup(w3, w4, l3, l4);
     let d2 = dup(w3, w4, l3, l4);
-    let (a, b) = tokio::join!(
-        commands::submit(&app, as_(alice), Uuid::now_v7(), &d1),
-        commands::submit(&app, as_(dan), Uuid::now_v7(), &d2)
-    );
+    let (a, b) = common::wait_for("two racing submits", common::WAIT_TIMEOUT, async {
+        tokio::join!(
+            commands::submit(&app, as_(alice), Uuid::now_v7(), &d1),
+            commands::submit(&app, as_(dan), Uuid::now_v7(), &d2)
+        )
+    })
+    .await;
     let codes: Vec<Option<ErrorCode>> = [&a, &b]
         .iter()
         .map(|r| r.as_ref().err().map(code))
@@ -1689,7 +1692,7 @@ async fn s4_commands() {
     };
     tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
     holder.rollback().await.unwrap();
-    let r = req.await.unwrap();
+    let r = common::join("the HTTP request", req).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
     assert_eq!(lock_version(&pool, w2).await, lw, "zero effect");
 
@@ -1836,7 +1839,7 @@ async fn s4_commands() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(!pending.is_finished(), "the write waits for the rotation");
     rot.commit().await.unwrap();
-    let r = pending.await.unwrap().unwrap();
+    let r = common::join("the pending submit", pending).await.unwrap();
     assert_eq!(
         r.search.consistent_after,
         commands::token(
@@ -1873,7 +1876,9 @@ async fn s4_commands() {
         .await
         .unwrap();
     closing.commit().await.unwrap();
-    let e = pending.await.unwrap().unwrap_err();
+    let e = common::join("the pending submit", pending)
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), ErrorCode::VersionNotOpen);
 
     // M05: a replay after the issue became invisible shows no effect.

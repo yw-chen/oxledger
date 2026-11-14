@@ -147,9 +147,60 @@ pub async fn test_pool_sized(max: u32) -> PgPool {
     } else {
         db::pool_options().max_connections(max)
     };
-    db::connect_with(opts, &db.url())
+    let pool = db::connect_with(opts, &db.url())
         .await
-        .expect("connect test database")
+        .expect("connect test database");
+    // A wait that times out reports this database's outbox and the xid holders.
+    oxledger::test_support::set_report_pool(&pool);
+    pool
+}
+
+// Bounded waits (T1b, testing-playbook "等待一律有上限"): every wait in a test
+// goes through these or a fault gate (`Gate::reached.notified()`, bounded
+// the same way). A timeout panics with what was awaited, the outbox backlog
+// and `metrics::describe_xid_holders`.
+#[allow(unused_imports)]
+pub use oxledger::test_support::{
+    POLL_EVERY, WAIT_TIMEOUT, join, panic_text, poll_until, state_report, state_report_for,
+    wait_for,
+};
+#[allow(unused_imports)]
+pub use std::ops::ControlFlow::{Break, Continue};
+
+/// Waits until the cluster-wide snapshot horizon H is above `xid`, so the
+/// next search or notify round is sure to see the outbox rows of `xid`
+/// (03 §4.7: rows at or above H wait for a later round). Tests that stop a
+/// single round at a fault gate call this first, or the round may skip
+/// their row and never reach the gate (G21).
+#[track_caller]
+pub fn wait_horizon_past(pool: &PgPool, xid: u64) -> impl std::future::Future<Output = ()> {
+    wait_horizon_past_within(pool, xid, WAIT_TIMEOUT)
+}
+
+/// [`wait_horizon_past`] with its own bound (tests of the helper).
+#[track_caller]
+pub fn wait_horizon_past_within(
+    pool: &PgPool,
+    xid: u64,
+    dur: std::time::Duration,
+) -> impl std::future::Future<Output = ()> {
+    poll_until(
+        &format!("the snapshot horizon to pass xid {xid}"),
+        dur,
+        async move || {
+            let h: String =
+                sqlx::query_scalar("SELECT pg_snapshot_xmin(pg_current_snapshot())::text")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            let h: u64 = h.parse().unwrap();
+            if h > xid {
+                Break(())
+            } else {
+                Continue(format!("H={h}"))
+            }
+        },
+    )
 }
 
 /// Stack for [`run_with_big_stack`]: what `RUST_MIN_STACK` used to give

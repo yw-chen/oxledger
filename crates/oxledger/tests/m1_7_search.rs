@@ -859,7 +859,7 @@ async fn legacy_index_serves_until_the_upgrade_switches() {
             .all(|i| i.matched.as_ref().unwrap().expanded.is_empty())
     );
     gate.release.notify_one();
-    job.await.unwrap().unwrap();
+    common::join("the released rebuild", job).await.unwrap();
     faults::clear();
     assert!(!app.index.needs_upgrade());
     assert_eq!(app.index.view().unwrap().layout(), Layout::Current);

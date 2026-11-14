@@ -660,7 +660,7 @@ async fn s6_direct() {
         }));
     }
     for t in tasks {
-        for r in t.await.unwrap() {
+        for r in common::join("a context's writes", t).await {
             applied(&r.unwrap());
         }
     }

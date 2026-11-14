@@ -71,13 +71,77 @@ const LIST_LIMIT: i64 = 200;
 #[cfg(feature = "test-support")]
 pub mod faults {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tokio::sync::Notify;
 
     /// A barrier: `reached` fires when the request gets there, and it waits for `release`.
     #[derive(Default)]
     pub struct Gate {
-        pub reached: Notify,
+        pub reached: Reached,
         pub release: Notify,
+    }
+
+    impl Gate {
+        /// A gate whose `reached.notified()` gives up after `timeout`
+        /// instead of [`crate::test_support::WAIT_TIMEOUT`].
+        pub fn with_timeout(timeout: Duration) -> Gate {
+            let g = Gate::default();
+            if let Ok(mut t) = g.reached.timeout.lock() {
+                *t = Some(timeout);
+            }
+            g
+        }
+    }
+
+    /// `reached` of a [`Gate`]: a `Notify` whose wait is bounded (T1b). A
+    /// gate that is never reached (the work skipped the point, G21) panics
+    /// with the point's name, the outbox backlog and the xid holders
+    /// instead of hanging the test.
+    #[derive(Default)]
+    pub struct Reached {
+        notify: Notify,
+        /// The point the gate was armed at (set by [`arm`]).
+        point: Mutex<Option<String>>,
+        timeout: Mutex<Option<Duration>>,
+    }
+
+    impl Reached {
+        pub fn notify_one(&self) {
+            self.notify.notify_one();
+        }
+
+        /// How long [`Self::notified`] waits:
+        /// [`crate::test_support::WAIT_TIMEOUT`] unless the gate was made
+        /// with [`Gate::with_timeout`].
+        pub fn timeout(&self) -> Duration {
+            self.timeout
+                .lock()
+                .ok()
+                .and_then(|t| *t)
+                .unwrap_or(crate::test_support::WAIT_TIMEOUT)
+        }
+
+        /// The point [`arm`] armed this gate at.
+        pub fn point(&self) -> Option<String> {
+            self.point.lock().ok().and_then(|p| p.clone())
+        }
+
+        /// Waits until the armed point is hit; panics after
+        /// [`Self::timeout`] with the point, the caller's line and the state.
+        #[track_caller]
+        pub fn notified(&self) -> impl std::future::Future<Output = ()> + '_ {
+            let at = std::panic::Location::caller();
+            async move {
+                let point = self.point().unwrap_or_else(|| "(not armed)".into());
+                crate::test_support::wait_at(
+                    &format!("fault gate {point} to be reached"),
+                    self.timeout(),
+                    self.notify.notified(),
+                    at,
+                )
+                .await;
+            }
+        }
     }
 
     pub enum Action {
@@ -103,6 +167,11 @@ pub mod faults {
 
     /// Arms `point` for its next hit only.
     pub fn arm(point: &str, a: Action) {
+        if let Action::Block(g) = &a
+            && let Ok(mut p) = g.reached.point.lock()
+        {
+            *p = Some(point.to_string());
+        }
         ARMED.lock().unwrap().push((point.to_string(), a));
     }
 

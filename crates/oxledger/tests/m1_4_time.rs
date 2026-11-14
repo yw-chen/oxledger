@@ -561,7 +561,7 @@ async fn t33_daily_limit_concurrent() {
     }
     let mut ok = 0;
     for task in tasks {
-        match task.await.unwrap() {
+        match common::join("a parallel time entry write", task).await {
             Ok(_) => ok += 1,
             Err(e) => {
                 assert_eq!(code(&e), ErrorCode::InvalidValue, "{e:#}");
@@ -1452,7 +1452,7 @@ async fn t43_lock_order_stress() {
         }));
     }
     for task in tasks {
-        if let Err(e) = task.await.unwrap() {
+        if let Err(e) = common::join("a parallel time entry write", task).await {
             let c = code(&e);
             assert!(
                 matches!(c, ErrorCode::PreconditionFailed | ErrorCode::NotFound),
@@ -1477,7 +1477,9 @@ async fn t43_lock_order_stress() {
         }));
     }
     for task in tasks {
-        task.await.unwrap().unwrap();
+        common::join("a parallel time entry write", task)
+            .await
+            .unwrap();
     }
     exec(&pool, "SELECT pg_stat_clear_snapshot()").await;
     // Give the stats collector a moment (counters are flushed at commit).
@@ -3052,25 +3054,27 @@ async fn t43_lock_order_two_documents() {
         tokio::spawn(async move { commands::submit(&app, who, Uuid::now_v7(), &d).await })
     };
     // The second document is waiting for a row the first holds.
-    let mut waiting = false;
-    for _ in 0..200 {
-        if count(
-            &pool,
-            "SELECT count(*) FROM pg_stat_activity
-             WHERE datname = current_database() AND wait_event_type = 'Lock'",
-        )
-        .await
-            > 0
-        {
-            waiting = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    assert!(waiting, "the second document never waited for a lock");
+    common::poll_until(
+        "the second document to wait for a lock",
+        common::WAIT_TIMEOUT,
+        async || {
+            let n = count(
+                &pool,
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+            )
+            .await;
+            if n > 0 {
+                common::Break(())
+            } else {
+                common::Continue(String::new())
+            }
+        },
+    )
+    .await;
     gate.release.notify_one();
-    first.await.unwrap().unwrap();
-    second.await.unwrap().unwrap();
+    common::join("the first document", first).await.unwrap();
+    common::join("the second document", second).await.unwrap();
     faults::clear();
     exec(&pool, "SELECT pg_stat_clear_snapshot()").await;
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;

@@ -413,7 +413,10 @@ async fn linking_rules() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     g.release.notify_one();
-    let (x, y) = (first.await.unwrap(), second.await.unwrap());
+    let (x, y) = (
+        common::join("the first request", first).await,
+        common::join("the second request", second).await,
+    );
     assert!(x.is_ok(), "the first one holds the settings lock");
     assert_eq!(code(&y.unwrap_err()), ErrorCode::RepoLinkLimit, "T-G27");
     assert_eq!(
@@ -758,8 +761,8 @@ async fn unlink_races_the_worker() {
         "unlink waits for the worker's FOR SHARE"
     );
     g.release.notify_one();
-    worker.await.unwrap();
-    assert!(unlink.await.unwrap().unwrap().changed);
+    common::join("the GitHub worker", worker).await;
+    assert!(common::join("the unlink", unlink).await.unwrap().changed);
     assert_eq!(refs(l).await, 0, "worker first");
     assert!(dev_of(&e, e.alice, &k1).await.is_empty());
 
@@ -784,8 +787,8 @@ async fn unlink_races_the_worker() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(!worker.is_finished(), "the worker waits for the unlink");
     g.release.notify_one();
-    unlink.await.unwrap().unwrap();
-    worker.await.unwrap();
+    common::join("the unlink", unlink).await.unwrap();
+    common::join("the GitHub worker", worker).await;
     assert_eq!(refs(l2).await, 0, "unlink first");
     let result: String = sqlx::query_scalar(
         "SELECT result FROM github_deliveries ORDER BY received_at DESC LIMIT 1",

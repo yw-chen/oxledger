@@ -847,8 +847,8 @@ async fn proposal_quotas() {
     );
     g1.release.notify_one();
     g2.release.notify_one();
-    h1.await.unwrap().unwrap();
-    h2.await.unwrap().unwrap();
+    common::join("the first request", h1).await.unwrap();
+    common::join("the second request", h2).await.unwrap();
     // A slot is free again.
     m.call(
         "changeset_propose",

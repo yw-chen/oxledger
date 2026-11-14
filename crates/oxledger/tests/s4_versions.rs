@@ -1136,7 +1136,10 @@ async fn s4_versions() {
         "the close waits for the issue transaction"
     );
     holder.commit().await.unwrap();
-    assert_eq!(closing.await.unwrap().status, StatusCode::OK);
+    assert_eq!(
+        common::join("the close request", closing).await.status,
+        StatusCode::OK
+    );
     let lv: i32 = sqlx::query_scalar("SELECT lock_version FROM issues WHERE id = $1")
         .bind(i4)
         .fetch_one(&pool)
@@ -1188,7 +1191,10 @@ async fn s4_versions() {
     let (hx, hy) = (spawn(a.clone(), "from a"), spawn(d.clone(), "from d"));
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     gate.commit().await.unwrap();
-    let (x, y) = (hx.await.unwrap(), hy.await.unwrap());
+    let (x, y) = (
+        common::join("request x", hx).await,
+        common::join("request y", hy).await,
+    );
     let mut codes = vec![x.code().to_string(), y.code().to_string()];
     codes.sort();
     assert_eq!(codes, ["", "conflict"], "{} / {}", x.body, y.body);

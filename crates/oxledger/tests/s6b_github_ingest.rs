@@ -1294,7 +1294,7 @@ async fn new_run_race_keeps_completed() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(!b.is_finished(), "the second insert waits for the first");
     a.commit().await.unwrap();
-    b.await.unwrap();
+    common::join("the newer webhook", b).await;
     let st: String =
         sqlx::query_scalar("SELECT status FROM github_check_runs WHERE gh_run_id = 990001")
             .fetch_one(&pool)

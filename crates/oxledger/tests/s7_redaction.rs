@@ -802,8 +802,8 @@ async fn undo_and_redaction() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!und.is_finished(), "undo waits for the redaction");
     g.release.notify_one();
-    red.await.unwrap().unwrap();
-    let err = und.await.unwrap().unwrap_err();
+    common::join("the redaction", red).await.unwrap();
+    let err = common::join("the undo", und).await.unwrap_err();
     assert_eq!(code(&err).as_str(), "undo_not_applicable", "{err:#}");
     let details = err
         .downcast_ref::<oxledger::error::ApiError>()
@@ -844,8 +844,8 @@ async fn undo_and_redaction() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!red.is_finished(), "the redaction waits for the undo");
     g.release.notify_one();
-    let u = und.await.unwrap().unwrap();
-    red.await.unwrap().unwrap();
+    let u = common::join("the undo", und).await.unwrap();
+    common::join("the redaction", red).await.unwrap();
     assert_eq!(description(w, a4).await, "SECRET-B before");
     let vals: Vec<(Value, Value)> = sqlx::query_as(
         "SELECT before_value, after_value FROM execution_field_changes WHERE execution_id = $1",
@@ -891,8 +891,8 @@ async fn propose_races_redaction() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!pr.is_finished(), "propose waits on WEB");
     g.release.notify_one();
-    red.await.unwrap().unwrap();
-    let err = pr.await.unwrap().unwrap_err();
+    common::join("the redaction", red).await.unwrap();
+    let err = common::join("the proposal", pr).await.unwrap_err();
     assert_eq!(
         code(&err),
         ErrorCode::ContextUnavailable,
@@ -919,8 +919,8 @@ async fn propose_races_redaction() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!red.is_finished(), "the redaction waits for the propose");
     g.release.notify_one();
-    let p = pr.await.unwrap().unwrap();
-    red.await.unwrap().unwrap();
+    let p = common::join("the proposal", pr).await.unwrap();
+    common::join("the redaction", red).await.unwrap();
     assert_eq!(states(w, p.changeset_id).await, vec!["redacted"], "T-S9");
     assert_eq!(leaks(w, "SECRET-R2").await, 0);
 }

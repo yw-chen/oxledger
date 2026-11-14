@@ -333,9 +333,10 @@ async fn mixed_version_and_issue_writes() {
     }
     let mut total: BTreeMap<String, usize> = BTreeMap::new();
     for h in workers {
-        let seen = tokio::time::timeout(Duration::from_secs(120), h)
+        // No deadlock: workers finish. The stress mix keeps its 120 s
+        // (twice WAIT_TIMEOUT); the timeout reports the state.
+        let seen = common::wait_for("a stress worker to finish", Duration::from_secs(120), h)
             .await
-            .expect("no deadlock: workers finish")
             .unwrap();
         for (k, n) in seen {
             *total.entry(k).or_default() += n;

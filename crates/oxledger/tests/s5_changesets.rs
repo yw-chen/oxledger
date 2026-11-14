@@ -138,26 +138,27 @@ async fn notes(pool: &PgPool, issue: Uuid) -> i64 {
 /// Waits until a backend in this database runs a statement starting with
 /// `query` and waits on a lock (T1b: an explicit condition, not a sleep).
 async fn wait_for_lock_wait(pool: &PgPool, query: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let waiting: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-              WHERE datname = current_database() AND wait_event_type = 'Lock'
-                AND starts_with(ltrim(query), $1))",
-        )
-        .bind(query)
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        if waiting {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no lock wait for {query:?} within 10s"
-        );
-        tokio::task::yield_now().await;
-    }
+    common::poll_until(
+        &format!("a lock wait for {query:?}"),
+        common::WAIT_TIMEOUT,
+        async || {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                  WHERE datname = current_database() AND wait_event_type = 'Lock'
+                    AND starts_with(ltrim(query), $1))",
+            )
+            .bind(query)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if waiting {
+                common::Break(())
+            } else {
+                common::Continue(String::new())
+            }
+        },
+    )
+    .await
 }
 
 /// Moves a proposal's expiry (immutable for the application) for timing tests.
@@ -609,7 +610,7 @@ async fn s5_changesets_body() {
     }
     let mut ids = std::collections::BTreeSet::new();
     for h in hs {
-        match h.await.unwrap() {
+        match common::join("a concurrent request", h).await {
             Ok(r) => {
                 ids.insert(r.changeset_id);
             }
@@ -1017,7 +1018,7 @@ async fn s5_changesets_body() {
     }
     let mut execs = std::collections::BTreeSet::new();
     for h in hs {
-        match h.await.unwrap() {
+        match common::join("a concurrent request", h).await {
             Ok(o) => {
                 execs.insert(o.execution_id);
             }
@@ -1460,7 +1461,7 @@ async fn s5_changesets_body() {
         o.execution.as_ref().map(|e| (&e.error, &e.items))
     );
     g.release.notify_one();
-    let o1 = first.await.unwrap().unwrap();
+    let o1 = common::join("the first request", first).await.unwrap();
     assert_eq!(status(&o1), "succeeded", "C found the application");
     assert_eq!(
         text(
@@ -1521,7 +1522,7 @@ async fn s5_changesets_body() {
         .unwrap();
     assert_eq!(s.state, "canceled");
     g.release.notify_one();
-    let o1 = first.await.unwrap().unwrap();
+    let o1 = common::join("the first request", first).await.unwrap();
     let ex = o1.execution.unwrap();
     assert_eq!(
         (ex.status.as_str(), ex.error.unwrap().code.as_str()),
@@ -1576,8 +1577,17 @@ async fn s5_changesets_body() {
         "cancel waits for the ChangeSet lock"
     );
     g.release.notify_one();
-    assert_eq!(status(&applying.await.unwrap().unwrap()), "succeeded");
-    let e = canceling.await.unwrap().unwrap_err();
+    assert_eq!(
+        status(
+            &common::join("the applying request", applying)
+                .await
+                .unwrap()
+        ),
+        "succeeded"
+    );
+    let e = common::join("the cancel request", canceling)
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), ErrorCode::ChangesetNotExecutable);
 
     // T-R3: two keys for one version at once → one application.
@@ -1604,7 +1614,7 @@ async fn s5_changesets_body() {
     }
     let mut ok = 0;
     for h in hs {
-        match h.await.unwrap() {
+        match common::join("a concurrent request", h).await {
             Ok(o) => {
                 assert_eq!(status(&o), "succeeded");
                 ok += 1;
@@ -1667,8 +1677,10 @@ async fn s5_changesets_body() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(revoking.is_finished(), !expect_ok, "{point}");
         g.release.notify_one();
-        let o = applying.await.unwrap().unwrap();
-        revoking.await.unwrap();
+        let o = common::join("the applying request", applying)
+            .await
+            .unwrap();
+        common::join("the revoking session", revoking).await;
         if expect_ok {
             assert_eq!(status(&o), "succeeded", "{point}");
             assert_eq!(notes(&pool, w7).await, before + 1);
@@ -1715,7 +1727,11 @@ async fn s5_changesets_body() {
     };
     tokio::time::sleep(Duration::from_millis(2000)).await;
     holder.commit().await.unwrap();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
     assert_eq!(
         (ex.status.as_str(), ex.error.unwrap().code.as_str()),
         ("failed", "changeset_expired")
@@ -1779,7 +1795,11 @@ async fn s5_changesets_body() {
     };
     tokio::time::sleep(Duration::from_millis(2000)).await;
     holder.commit().await.unwrap();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
     assert_eq!(ex.error.unwrap().code, "changeset_expired");
     assert_eq!(
         count(&pool, "SELECT count(*) FROM issues").await,
@@ -1840,8 +1860,12 @@ async fn s5_changesets_body() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!rotating.is_finished(), "the rotation waits for the write");
     g.release.notify_one();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
-    let new_epoch = rotating.await.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
+    let new_epoch = common::join("the epoch rotation", rotating).await;
     let tok = ex.search.unwrap().consistent_after;
     let xid = tok.rsplit('.').next().unwrap();
     assert_eq!(tok, oxledger::commands::token(old_epoch, xid));
@@ -2078,7 +2102,11 @@ async fn s5_changesets_body() {
         .await
         .unwrap();
     g.release.notify_one();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
     assert_eq!(
         (ex.status.as_str(), ex.error.unwrap().code.as_str()),
         ("failed", "unauthenticated")
@@ -2146,9 +2174,11 @@ async fn s5_changesets_body() {
     faults::arm("apply.after_commit", Action::Block(after_commit.clone()));
     g.release.notify_one();
     after_commit.reached.notified().await;
-    revoking.await.unwrap();
+    common::join("the revoking session", revoking).await;
     after_commit.release.notify_one();
-    let o = applying.await.unwrap().unwrap();
+    let o = common::join("the applying request", applying)
+        .await
+        .unwrap();
     // The write went through; the revoked caller cannot read it back, so
     // the response is 202 with where to look (§8.6), and the record says
     // succeeded.
@@ -2198,7 +2228,11 @@ async fn s5_changesets_body() {
     )
     .await;
     g.release.notify_one();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
     exec(
         &pool,
         &format!("UPDATE principals SET status = 'active' WHERE id = '{alice_id}'"),
@@ -2298,7 +2332,11 @@ async fn s5_changesets_body() {
     )
     .await;
     g.release.notify_one();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
     exec(
         &pool,
         &format!("UPDATE principals SET status = 'active' WHERE id = '{agent_id}'"),
@@ -2380,7 +2418,11 @@ async fn s5_changesets_body() {
         .await
         .unwrap();
     g.release.notify_one();
-    let ex = applying.await.unwrap().unwrap().execution.unwrap();
+    let ex = common::join("the applying request", applying)
+        .await
+        .unwrap()
+        .execution
+        .unwrap();
     assert_eq!(
         (ex.status.as_str(), ex.error.unwrap().code.as_str()),
         ("failed", "context_unavailable")

@@ -250,7 +250,7 @@ async fn s6b_queue() {
     )
     .await;
     g.release.notify_one();
-    let o = task.await.unwrap().unwrap();
+    let o = common::join("the queued request", task).await.unwrap();
     let ex = o.execution.unwrap();
     assert_eq!(ex.status, "failed");
     assert_eq!(ex.error.unwrap().code, "review_outdated");

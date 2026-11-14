@@ -822,19 +822,18 @@ async fn t_m1_77_at_least_once_is_exactly_once() {
     subject(w, f.bob_ctx, i, "once 2").await;
     // Crash before the cursor moves.
     faults::arm("notify.before_cursor", Action::Fail);
-    let mut failed = false;
-    for _ in 0..50 {
-        match notifications::dispatch_round(&pool).await {
-            Err(_) => {
-                failed = true;
-                break;
-            }
-            Ok(r) if r.messages == 0 => tokio::time::sleep(Duration::from_millis(20)).await,
-            Ok(_) => {}
-        }
-    }
+    // Rounds until one reaches the armed point (a round may see nothing
+    // while H is held back); bounded, the timeout reports the outbox.
+    common::poll_until(
+        "a dispatch round to hit notify.before_cursor",
+        common::WAIT_TIMEOUT,
+        async || match notifications::dispatch_round(&pool).await {
+            Err(_) => common::Break(()),
+            Ok(r) => common::Continue(format!("round sent {} messages", r.messages)),
+        },
+    )
+    .await;
     faults::clear();
-    assert!(failed, "the fault fired");
     assert_eq!(item(w, w.alice_ctx, &key).await.unwrap().events.len(), 1);
     // The same messages again (after the crash, then from the very start).
     dispatch(w).await;
@@ -1358,15 +1357,14 @@ async fn t_m1_126_read_race_and_unread_merge() {
     faults::arm("notify.deliver", Action::Block(gate.clone()));
     let p = pool.clone();
     let job = tokio::spawn(async move { notifications::dispatch_all(&p).await });
-    tokio::time::timeout(Duration::from_secs(20), gate.reached.notified())
-        .await
-        .expect("the dispatcher reached notify.deliver");
+    // The dispatcher reaches notify.deliver (bounded, reports the outbox).
+    gate.reached.notified().await;
     // … alice reads the row meanwhile …
     notifications::mark_read(&w.app, w.alice_ctx, &first.id.to_string())
         .await
         .unwrap();
     gate.release.notify_one();
-    job.await.unwrap().unwrap();
+    common::join("the released dispatch", job).await.unwrap();
     faults::clear();
     // … so the new event is in a new unread row.
     let second = item(w, w.alice_ctx, &key).await.unwrap();
@@ -1515,27 +1513,28 @@ async fn paging_and_event_cap() {
 // ---------------------------------------------------------------- verification follow-ups
 
 /// Waits until a backend of this database waits on a lock while running a
-/// statement LIKE `pattern` (at most 20 s).
+/// statement LIKE `pattern` (bounded by `common::WAIT_TIMEOUT`).
 async fn wait_lock(pool: &sqlx::PgPool, pattern: &str) {
-    let t = Instant::now();
-    loop {
-        let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity
-             WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1",
-        )
-        .bind(pattern)
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        if n > 0 {
-            return;
-        }
-        assert!(
-            t.elapsed() < Duration::from_secs(20),
-            "nobody waits on a lock in {pattern}"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    common::poll_until(
+        &format!("a lock wait in {pattern}"),
+        common::WAIT_TIMEOUT,
+        async || {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1",
+            )
+            .bind(pattern)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if n > 0 {
+                common::Break(())
+            } else {
+                common::Continue(String::new())
+            }
+        },
+    )
+    .await
 }
 
 /// Redacts (D12, event level) the newest event of `kind` on issue `i`.
@@ -1627,7 +1626,15 @@ async fn v_read_all_before_marks_row_committed_after_list() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     hold_x.rollback().await.unwrap();
-    job.await.unwrap().unwrap();
+    // The job polls dispatch rounds until one carries events; bounded here.
+    common::wait_for(
+        "the dispatch job to deliver x and y",
+        common::WAIT_TIMEOUT,
+        job,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let shown = inbox(w, w.alice_ctx).await;
     let keys: Vec<&str> = shown
         .items
@@ -1888,9 +1895,8 @@ async fn v_unwatch_during_auto_watch() {
     faults::arm("notify.after_auto_watch", Action::Block(gate.clone()));
     let p = pool.clone();
     let job = tokio::spawn(async move { notifications::dispatch_all(&p).await });
-    tokio::time::timeout(Duration::from_secs(20), gate.reached.notified())
-        .await
-        .expect("the dispatcher wrote the automatic watch");
+    // The dispatcher wrote the automatic watch (bounded, reports the outbox).
+    gate.reached.notified().await;
     let app = w.app.clone();
     let carol = f.carol_ctx;
     let k = key.clone();
@@ -1901,8 +1907,8 @@ async fn v_unwatch_during_auto_watch() {
         "the unwatch waits for the dispatch's automatic watch"
     );
     gate.release.notify_one();
-    job.await.unwrap().unwrap();
-    let st = unwatch.await.unwrap().unwrap();
+    common::join("the released dispatch", job).await.unwrap();
+    let st = common::join("the unwatch", unwatch).await.unwrap();
     faults::clear();
     assert!(!st.watching);
     assert!(source(w, i, w.carol).await.is_none());
@@ -1936,25 +1942,26 @@ async fn v_poison_issue_is_skipped() {
         faults::arm(&point, Action::Deadlock);
     }
     let mut errors = 0;
-    let mut ok = false;
-    for _ in 0..50 {
-        match notifications::dispatch_round(&pool).await {
+    // Rounds until one delivers i's event; bounded, the timeout reports the
+    // outbox and the xid holders.
+    common::poll_until(
+        "a dispatch round past the poisoned issue",
+        common::WAIT_TIMEOUT,
+        async || match notifications::dispatch_round(&pool).await {
             Err(_) => {
                 errors += 1;
                 assert!(
                     item(w, w.alice_ctx, &kj).await.is_some(),
                     "j goes out anyway"
                 );
+                common::Continue(format!("{errors} failed rounds"))
             }
-            Ok(r) if r.messages > 0 => {
-                ok = true;
-                break;
-            }
-            Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
-        }
-    }
+            Ok(r) if r.messages > 0 => common::Break(()),
+            Ok(_) => common::Continue(format!("{errors} failed rounds, then an empty one")),
+        },
+    )
+    .await;
     faults::clear();
-    assert!(ok);
     assert_eq!(errors, notifications::MAX_ISSUE_FAILURES - 1);
     assert_eq!(rows_for(w, w.alice, i).await, 0, "i's event was skipped");
     let (progress, last): (i64, i64) = sqlx::query_as(
@@ -2064,9 +2071,7 @@ async fn v_progress_lock_with_read_between() {
     faults::arm("notify.deliver", Action::Block(gate.clone()));
     let p = pool.clone();
     let a = tokio::spawn(async move { notifications::dispatch_all(&p).await });
-    tokio::time::timeout(Duration::from_secs(20), gate.reached.notified())
-        .await
-        .unwrap();
+    gate.reached.notified().await;
     let p = pool.clone();
     let b = tokio::spawn(async move { notifications::dispatch_round(&p).await });
     wait_lock(&pool, "%notification_issue_progress%").await;
@@ -2074,8 +2079,8 @@ async fn v_progress_lock_with_read_between() {
         .await
         .unwrap();
     gate.release.notify_one();
-    a.await.unwrap().unwrap();
-    b.await.unwrap().unwrap();
+    common::join("dispatcher A", a).await.unwrap();
+    common::join("dispatcher B", b).await.unwrap();
     faults::clear();
     dispatch(w).await;
     let pairs: Vec<(Uuid, i64)> = sqlx::query_as(
@@ -2638,7 +2643,12 @@ async fn perf_dispatch_p95() {
     let started = Instant::now();
     let mut sent: Vec<(Uuid, Instant)> = Vec::new();
     for h in writers {
-        sent.extend(h.await.unwrap());
+        // The perf workload (ignored test): five times the usual bound.
+        sent.extend(
+            common::wait_for("a perf writer", common::WAIT_TIMEOUT * 5, h)
+                .await
+                .unwrap(),
+        );
     }
     let wrote = started.elapsed();
     // Poll until every event is in some row.
@@ -2664,7 +2674,7 @@ async fn perf_dispatch_p95() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    dispatcher.await.unwrap();
+    common::join("the stopped dispatcher", dispatcher).await;
     assert_eq!(seen.len(), sent.len(), "every event was delivered");
     let mut lat: Vec<f64> = sent
         .iter()

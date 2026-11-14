@@ -93,6 +93,7 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 - [ ] `p2_search`、`s8_search_consistency`、`s7_redaction::search_never_shows_redacted_text`、`m1_7_search::legacy_generation_on_disk_is_opened`：改成迴圈等明確條件（`frontier() > X`、自己的列已處理），像 `s8_search_consistency` 的 `catch_up`，或改用 `sync_all`。
 - [ ] `m1_8_notifications` 的 7 個：改用 `dispatch_all` 或等自己的 outbox 列被消耗；`perf_dispatch_p95` 要另外想量測方式（平行時的 p95 本來就不準）。
 - [ ] `s8_gate::t_s2_outbox_consumed_twice`、`s8_gate_probes`：gate 等待加上「H 已越過自己的列」的前置條件，不要假設下一輪一定處理到。
+  T1b 已改 `s8_gate_probes::no_waiter_passes_before_publish`（`common::wait_horizon_past`）與 `p2_search::no_token_is_satisfied_before_a_generation_serves`（輪詢到 F 越過）；兩檔仍在單獨跑名單，要平行跑全套驗過才拿掉。
 - [ ] `p2_strategy` 的 2 個、`m1_2_views` 的 2 個：把一次寫上萬筆的交易拆小，或改用 `COPY`／分批 commit，讓 xid 不要一次持有 20–40 秒。
 - 完成一項就把它從 `.config/nextest.toml` 的 override 拿掉，平行跑全套三次都過才算。
 
@@ -112,6 +113,45 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 每一筆持有 xid 的交易的 `datname`、`pid`、`xact_start`、經過秒數、`state`、`wait_event`（`型別:事件`）、`application_name`、`query`（前 120 字），連同 prepared transactions。
 例如 `wait_event=IPC:CheckpointDone`、`query="DROP DATABASE …"` 就是 DROP 在等 checkpoint。
 訊息由 `metrics::horizon_timeout_message()` 組成，`t1_test_infra::horizon_timeout_message_names_the_holder`（G2）持有一個寫入交易，檢查訊息含它的 pid、datname，而且 query 截在 120 字。
+
+## 等待一律有上限（T1b、G11）
+
+測試裡的每一個等待都要有上限，逾時就 panic，訊息寫明在等什麼，並附上當下狀態。**新測試必須用共用的 wait helper**，不要自己寫 `loop { … sleep … }`，也不要直接 `.await` 一個可能永遠不會完成的東西。
+
+| 要等的東西 | 用法 |
+|---|---|
+| fault gate 被走到 | `gate.reached.notified().await`：`Gate` 本身有上限（`Reached` 型別），逾時訊息帶 gate 的 point 名稱。要更短的上限用 `Gate::with_timeout(d)` |
+| 輪詢某個條件（run 結束、有人在等鎖、F 越過某個 xid、轉換到某個狀態） | `common::poll_until(label, common::WAIT_TIMEOUT, async \|\| …)`，閉包回 `common::Break(值)`（成立）或 `common::Continue(看到什麼)`（還沒，逾時訊息會附上最後一次看到的） |
+| 一個 `tokio::spawn` 出去的 task | `common::join(label, handle).await`：上限 `WAIT_TIMEOUT`；task 自己 panic 時原樣往外拋（`resume_unwind`），其他 `JoinError` 轉成帶 label 的 panic |
+| 其他 future（`Notify`、channel、還沒 spawn 的請求 future） | `common::wait_for(label, common::WAIT_TIMEOUT, fut).await` |
+| 同時跑幾個請求（`tokio::join!`）、`JoinSet` 收完所有 task | 整段包起來：`common::wait_for(label, common::WAIT_TIMEOUT, async { tokio::join!(a, b) }).await`；`JoinSet` 則把 `while let Some(r) = set.join_next().await { … }` 整個迴圈包進 `wait_for` |
+| 搜尋或通知的下一輪「一定處理到」自己的列 | 先 `common::wait_horizon_past(&pool, xid)`：等 cluster 的 snapshot horizon H 越過自己的 xid，再停 gate 或只跑一輪 |
+
+- 上限常數是 `oxledger::test_support::WAIT_TIMEOUT` = **60 秒**（`common::WAIT_TIMEOUT` 重新匯出）。規則是「該等待平常耗時的 10 倍以上，下限 30 秒」：這些等待平常不到 1 秒，全套平行時最慢到數秒（m1_10_ai_run 整檔曾從 50 秒變 350 秒），`sync_all`／`dispatch_all` 自己也會等 horizon 20 秒。輪詢間隔 `POLL_EVERY` = 20 ms。`Gate::default()` 的上限就是這個常數（`t1_test_infra::gates_wait_sixty_seconds_by_default`，不實際等 60 秒）。
+- 逾時訊息（`test_support::timeout_message`）：`timed out after 60s waiting for <label> (wait at <檔案>:<行>:<欄>)`，接著
+  - `outbox: H=… newest xid=… rows=…` 與每個 consumer cursor（`search@…`、`notify`）的狀態與之後還有幾筆 `issue` 列；
+  - `metrics::describe_xid_holders` 的輸出（誰壓住 horizon）。
+  狀態讀自 `common::test_pool()` 最後開的那個 DB（`test_support::set_report_pool`），用自己的連線讀，池被卡住的工作佔滿時也讀得到。每一步各自有上限，一步失敗只寫原因，不會蓋掉其他段：
+  - 連線：先開一條單獨連線，3 秒（`REPORT_CONNECT_TIMEOUT`）；連不上時保留 sqlx 的錯誤（例如被拒），對方收了連線卻不回應時寫 `state: cannot connect: no answer within 3s`。不直接用池連，是因為池會把「連線被拒」重試到逾時，最後只剩 `PoolTimedOut`。
+  - outbox、xid holders 兩段各 5 秒（`REPORT_SECTION_TIMEOUT`），連線另設 `lock_timeout` 2 秒、`statement_timeout` 4 秒。`outbox` 被 `LOCK TABLE` 鎖住時，outbox 段寫 `outbox: lookup failed: … lock timeout`，xid holders 段照印（`t1_test_infra::state_report_survives_a_locked_outbox`）。
+  - 整份報告再有 15 秒的總上限。連線失敗兩種情況由 `t1_test_infra::state_report_says_why_it_cannot_connect` 檢查。
+- **`(wait at …)` 指向呼叫的那一行**：`poll_until`、`wait_for`、`join`、`wait_horizon_past`、`Reached::notified` 都是 `#[track_caller]` 的一般函式，回傳 `impl Future`（`async fn` 不能加 `#[track_caller]`），呼叫時先記下 `Location::caller()`。自己包一層 helper 時也要加 `#[track_caller]` 並寫成回傳 future 的一般函式，否則位置會停在 helper 裡。
+- **`poll_until` 的檢查本身 panic 也會附狀態**：檢查閉包裡的查詢失敗（例如 `PoolTimedOut`）或斷言失敗，會被接住，改成 `the check failed while waiting for <label> (wait at …): <原訊息>` 加上狀態再 panic（`t1_test_infra::a_failing_check_reports_the_state`）。所以輪詢裡的不變式斷言可以直接寫在閉包裡（例如 `s8_search_consistency::frontier_never_passes_a_partly_applied_xid` 的「F 不能越過還沒套完的 xid」）。
+- 只跑一輪 `sync`／`sync_round`／`gc` 就對「處理到自己的列」下斷言的測試，在 cluster 上有別人的舊交易時會失敗（G21）。先 `common::wait_horizon_past(&pool, xid)` 再跑那一輪，或用 `poll_until` 重跑到條件成立，每輪都檢查不變式（`p2_search::outbox_gc_respects_leases`、`p2_search::empty_rounds_commit_the_payload_only_now_and_then`、`s8_gate::t_s2_outbox_consumed_twice`）。
+- 輪詢不要用「最多 N 輪」當上限：horizon 被壓住時一輪可能什麼都沒做（G21），輪數和進度無關。用 `poll_until` 的時間上限。
+- `t1_test_infra::bounded_waits_panic_with_the_state` 用 200 ms 的 gate、100 ms 的 `poll_until` 檢查兩種逾時真的會 panic、訊息含 label、呼叫位置、outbox 與 xid holders；`wait_horizon_past_waits_for_older_holders` 檢查有較舊的 xid 壓著時 `wait_horizon_past` 不會提早回來。
+- 平常就短的等待不用改成 60 秒：測試刻意設的時間窗（例如「1500 ms 內不能回來」）是斷言，不是等待。只有「等某件事發生」才算等待。
+
+### 例外（刻意不套 `WAIT_TIMEOUT` 的地方）
+
+| 位置 | 理由 |
+|---|---|
+| 刻意的短時間窗：`p2_api_gaps` 的 5 秒、`m1_5_forms` 的 700 ms、`m1_9_ai_team` 的 400 ms「不能提早完成」檢查、`s8_search_consistency` 的等待者時間窗 | 這些是斷言（「這段時間內不能發生」），逾時是預期結果，不是卡住。時間窗之後真正等完成的那一步已改用 `wait_for`／`join` |
+| `p2_tx_cancel` 的 `idle` 輪詢（200 µs 間隔、10 秒上限） | 已有自己的上限；它要抓很短的狀態，20 ms 的 `POLL_EVERY` 太粗 |
+| `m1_8_notifications` 的效能寫入 task | 用 `wait_for(…, WAIT_TIMEOUT * 5, …)`：大量寫入本來就要數十秒，60 秒在滿載時太緊 |
+| `s8_gate_extra` 的背景 task | 用 `wait_for(…, 120 s, …)`，理由同上 |
+| `m1_11_e5` 的 harness（等 run 結束的迴圈） | 已有自己的輪數上限（每輪 100 ms），到上限回 `Err("run did not end")` 給 harness 計分，不 panic；`e5_live` 接真的模型，時間由外部服務決定 |
+- nextest 的 `slow-timeout`（60 秒標示、10 分鐘砍）是最後一道防線，數值等 D3 量測後再定；有了 `WAIT_TIMEOUT`，卡住的測試會在 60 秒左右自己失敗並印出狀態，不會等到被砍。
 
 ## 連線數（D10）
 

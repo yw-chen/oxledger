@@ -577,21 +577,22 @@ async fn github_and_ai_workers_report_rounds() {
     assert!(!metrics::worker_is_started(Worker::Github));
     oxledger::github::spawn_worker(a.clone(), Arc::new(oxledger::github::client::NoGithub));
     oxledger::ai::runner::spawn_jobs(pool.clone());
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let g = metrics::worker_rounds(Worker::Github);
-        let ai = metrics::worker_rounds(Worker::AiJobs);
-        // Counted either way (the slot database may hold other tests'
-        // GitHub jobs, which the no-GitHub client fails).
-        if g.0 + g.1 >= 1 && ai.0 + ai.1 >= 1 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no rounds: {g:?} {ai:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    common::poll_until(
+        "a GitHub and an AI jobs round",
+        common::WAIT_TIMEOUT,
+        async || {
+            let g = metrics::worker_rounds(Worker::Github);
+            let ai = metrics::worker_rounds(Worker::AiJobs);
+            // Counted either way (the slot database may hold other tests'
+            // GitHub jobs, which the no-GitHub client fails).
+            if g.0 + g.1 >= 1 && ai.0 + ai.1 >= 1 {
+                common::Break(())
+            } else {
+                common::Continue(format!("rounds: github {g:?} ai {ai:?}"))
+            }
+        },
+    )
+    .await;
     assert!(metrics::worker_is_started(Worker::Github));
     assert!(metrics::worker_is_started(Worker::AiJobs));
 }
@@ -711,9 +712,12 @@ async fn readyz_checks_are_single_flight_and_cached() {
         let r = r.clone();
         set.spawn(async move { readyz(&r).await.status });
     }
-    while let Some(s) = set.join_next().await {
-        assert_eq!(s.unwrap(), StatusCode::OK);
-    }
+    common::wait_for("64 parallel readyz checks", common::WAIT_TIMEOUT, async {
+        while let Some(s) = set.join_next().await {
+            assert_eq!(s.unwrap(), StatusCode::OK);
+        }
+    })
+    .await;
     assert_eq!(api::READY_DB_CHECKS.load(Relaxed) - before, 1);
     tokio::time::sleep(api::READY_CACHE + Duration::from_millis(100)).await;
     assert_eq!(readyz(&r).await.status, StatusCode::OK);

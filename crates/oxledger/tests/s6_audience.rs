@@ -577,7 +577,12 @@ async fn s6_audience() {
         let (_, agent) = w.token(ctx).await;
         let i = w.issue(web, "race").await;
         let doc = subject_doc(i, lv(&pool, i).await, &format!("race {round}"));
-        let (d, p) = tokio::join!(w.delegate(auth_p), propose(&w, agent, &doc));
+        let (d, p) = common::wait_for(
+            "a delegation racing a proposal",
+            common::WAIT_TIMEOUT,
+            async { tokio::join!(w.delegate(auth_p), propose(&w, agent, &doc)) },
+        )
+        .await;
         d.unwrap();
         match p {
             Ok(p) => {
