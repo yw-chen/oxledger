@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>測試速度、可觀測性、程式品質</title>
+<style>
+:root{--bg:#F4F7FB;--card:#FFFFFF;--line:#D5DFEC;--fg:#0E1726;--muted:#3E4C63;--dim:#5F6D83;--act:#0E7490;--prop:#6D28D9;--ok:#047857;--warn:#A16207;--bad:#BE123C;--bar:#0E7490;--bar2:#94A3B8;--soft:#EAF1F8}
+@media (prefers-color-scheme:dark){:root{--bg:#0B1220;--card:#142033;--line:#24344F;--fg:#F1F5F9;--muted:#B6C2D3;--dim:#8391A7;--act:#67E8F9;--prop:#C4B5FD;--ok:#6EE7B7;--warn:#FCD34D;--bad:#FDA4AF;--bar:#22D3EE;--bar2:#475569;--soft:#1A2940}}
+*{box-sizing:border-box}
+html,body{overflow-x:hidden}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.65 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:26px;margin:0 0 4px;line-height:1.3}
+h2{font-size:19px;margin:38px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+h3{font-size:16px;margin:18px 0 6px}
+p{margin:6px 0}
+a{color:var(--act)}
+code{font:13px ui-monospace,Consolas,monospace;background:var(--soft);padding:0 4px;border-radius:4px;overflow-wrap:anywhere}
+.lead{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0;min-width:0}
+.k{font:600 11px ui-monospace,Consolas,monospace;letter-spacing:.06em;color:var(--dim);text-transform:uppercase}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.grid>.card{margin:0}
+.chip{display:inline-block;border:1px solid currentColor;border-radius:99px;padding:0 8px;font-size:12px;font-weight:600;white-space:nowrap}
+.c-act{color:var(--act)}.c-prop{color:var(--prop)}.c-ok{color:var(--ok)}.c-warn{color:var(--warn)}.c-bad{color:var(--bad)}.c-dim{color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+th{color:var(--dim);font-weight:600}
+.tw{overflow-x:auto;max-width:100%}
+.tl{border-left:2px solid var(--line);margin-left:6px;padding-left:16px}
+.tl .it{position:relative;margin:0 0 16px}
+.tl .it:before{content:"";position:absolute;left:-23px;top:6px;width:12px;height:12px;border-radius:50%;background:var(--act)}
+.tl .it.f:before{background:var(--bad)}.tl .it.p:before{background:var(--ok)}.tl .it.d:before{background:var(--prop)}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--fg);font-size:13px;font-family:inherit}
+svg .bx{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+svg .bxs{fill:var(--soft);stroke:var(--line)}
+svg .a{fill:none;stroke:var(--dim);stroke-width:1.6}
+svg .ab{fill:none;stroke:var(--bad);stroke-width:2}
+svg .ao{fill:none;stroke:var(--ok);stroke-width:1.8}
+svg .t-dim{fill:var(--dim);font-size:11.5px}
+svg .t-bad{fill:var(--bad)}
+svg .t-act{fill:var(--act)}
+svg .t-ok{fill:var(--ok)}
+svg .t-prop{fill:var(--prop)}
+svg .t-b{font-weight:700}
+svg .zone{fill:none;stroke:var(--dim);stroke-dasharray:6 5}
+svg .hz{fill:none;stroke:var(--warn);stroke-width:2.5}
+svg .badbx{fill:var(--card);stroke:var(--bad);stroke-width:1.8}
+svg .okbx{fill:var(--card);stroke:var(--ok);stroke-width:1.8}
+.small{font-size:13px;color:var(--muted)}
+.fix{border-left:3px solid var(--warn);padding-left:10px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:22px;line-height:1.2}
+.stat span{font-size:12.5px;color:var(--muted)}
+.bars{display:grid;gap:6px}
+.br{display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr) 46px;gap:8px;align-items:center;font-size:13px}
+.br .n{overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.br .t{background:var(--soft);border-radius:4px;height:14px;overflow:hidden}
+.br .t i{display:block;height:100%;background:var(--bar);border-radius:4px}
+.br .v{text-align:right;font-variant-numeric:tabular-nums}
+ol.min{margin:6px 0;padding-left:22px}
+ol.min li{margin:4px 0}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 0}
+nav.toc a{font-size:13px;text-decoration:none;border:1px solid var(--line);border-radius:99px;padding:2px 10px;background:var(--card)}
+@media (max-width:560px){
+  h1{font-size:22px}
+  .br{grid-template-columns:minmax(0,110px) minmax(0,1fr) 40px}
+  table{font-size:12.5px}
+  th,td{padding:5px 5px}
+  .hide-s{display:none}
+}
+</style>
+</head>
+<body><main>
+<div class="k">oxledger · 研究 05–08 · 2026-11-13</div>
+<h1>測試速度、可觀測性、程式品質</h1>
+<p class="lead">使用者要求：只測自己改的部分、研究測試加速、可觀測性、程式品質。三份研究同時進行，再由一份獨立審查修正；<b>內容有出入時以 08 的修正為準</b>。文字版：<a href="05-testing-speed.md">05</a>、<a href="06-observability.md">06</a>、<a href="07-code-quality.md">07</a>、<a href="08-review-05-06-07.md">08 審查</a>。</p>
+<nav class="toc">
+<a href="#sum">結論</a><a href="#tl">時間軸</a><a href="#g21">G21 機制</a><a href="#test">測試現況</a><a href="#obs">可觀測性</a><a href="#q">程式品質</a><a href="#d">D1–D14</a><a href="#tools">工具所在地</a><a href="#proc">研究過程</a>
+</nav>
+
+<h2 id="sum">結論</h2>
+<div class="grid">
+  <div class="card"><div class="k">G21 根因</div><p>sync worker 的前進界線 H＝<code>pg_snapshot_xmin</code>，是<b>整個 cluster 共用</b>的。實測抓到的是<b>別的資料庫的 <code>DROP DATABASE</code></b>：等 checkpoint 18–70 秒，期間持有 xid，H 卡住，<code>sync_all</code> 20 秒逾時。</p></div>
+  <div class="card"><div class="k">測試平行化</div><p>05 原案「每個測試從 template CREATE、結束 DROP」會把 G21 放大，<span class="chip c-bad">不採用</span>。改成<b>固定 N 個 slot DB 重複使用</b>（<code>oxledger_test_&lt;slot&gt;</code>），沿用 TRUNCATE reset，跑測試期間不 DROP。</p></div>
+  <div class="card"><div class="k">可觀測性</div><p>有文字 log 與部分 <code>/metrics</code>；沒有 span、沒有 HTTP 與連線池指標，request id 和 log 對不上，<code>/healthz</code> 是靜態 <code>ok</code>。M2 的最小集合共 7 項，除了 <code>json</code> feature 外不加 crate。</p></div>
+  <div class="card"><div class="k">程式品質</div><p><code>unsafe</code> 0、TS <code>any</code> 0，測試比產品約 1:1。風險集中在<b>少數超大函式與模組</b>；SQL 全是執行期字串、沒有覆蓋率；mutation 驗證靠人工。數量型指標用棘輪管理。</p></div>
+  <div class="card"><div class="k">決定</div><p>D1–D14 <b>全部照 08 的建議</b>。D5 第一批工具（cargo-nextest、cargo-deny、<code>tracing-subscriber</code> 的 <code>json</code> feature）已核准安裝。</p></div>
+</div>
+
+<h2 id="tl">時間軸（2026-11-13）</h2>
+<div class="tl">
+  <div class="it"><b>1 · 使用者提出要求</b><div class="small">只測自己改的部分（合流時仍跑全套）；研究測試加速、可觀測性、程式品質。</div></div>
+  <div class="it"><b>2 · 三份研究同時進行</b><div class="small">05 測試速度與可靠度 · 06 可觀測性 · 07 程式品質。全部唯讀：沒改程式、沒安裝、沒跑測試（07 有跑嚴格 clippy，輸出放在 repo 外）。</div></div>
+  <div class="it f"><b>3 · 後端 session 實測 G21</b><div class="small">用 A/B 對照排除 <code>after_release</code>（開、關交替各跑一輪，逾時 5 比 4）。逾時當下拍到 7 次快照，壓住 horizon 的都是別的資料庫在跑 <code>DROP DATABASE … WITH (FORCE)</code>（6 次是 E2E 重建 <code>oxledger_fe_e2e</code>，1 次是升級測試建的暫時 DB）。DROP 會觸發 immediate checkpoint，這台機器每次要 sync 約 2 萬個檔，花 18–70 秒；整段期間持有 xid，壓住 cluster 共用的 <code>pg_snapshot_xmin</code>。</div></div>
+  <div class="it f"><b>4 · 獨立審查（08）</b><div class="small">發現 05 原本「每個測試 CREATE／DROP」會放大 G21，改成 slot DB；並指出 05 漏了套件內 12 個會 DROP 的測試檔與 E2E reset 的 DROP、06 的兩處錯誤與 G35 的實際意思、07 低估 cargo-mutants 成本。三份文件去重，合併成 D1–D14。</div></div>
+  <div class="it p"><b>5 · 使用者決定</b><div class="small">D1–D14 全部照建議。D5 第一批工具核准安裝：cargo-nextest、cargo-deny、<code>json</code> feature。工作分給後端與前端 session（見 D 表）。</div></div>
+</div>
+
+<h2 id="g21">G21 機制圖</h2>
+<div class="card">
+<svg viewBox="0 0 760 470" role="img" aria-label="G21 機制：測試資料庫的 outbox 列只有在 xid 小於 cluster 共用的 pg_snapshot_xmin 時才會被 sync worker 處理；另一個資料庫的 DROP DATABASE 先刪 catalog 列而分配 xid，再等 immediate checkpoint 18 到 70 秒，期間持有 xid，horizon 卡住，sync_all 20 秒逾時">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--dim)"/></marker>
+    <marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--bad)"/></marker>
+    <marker id="aro" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--ok)"/></marker>
+  </defs>
+  <rect class="zone" x="6" y="6" width="748" height="410" rx="12"/>
+  <text x="20" y="28" class="t-dim">PostgreSQL cluster（oxledger-pg）· xid 與 snapshot xmin 由所有資料庫共用</text>
+
+  <!-- top row: outbox -> horizon -> worker -->
+  <rect class="bx" x="24" y="50" width="200" height="132" rx="10"/>
+  <text x="38" y="74" class="t-b">oxledger_test</text>
+  <text x="38" y="92" class="t-dim">測試寫入後提交的 outbox 列</text>
+  <rect class="bxs" x="38" y="102" width="172" height="22" rx="4"/><text x="46" y="118" style="font-size:12px">outbox · xid 5001</text>
+  <rect class="bxs" x="38" y="128" width="172" height="22" rx="4"/><text x="46" y="144" style="font-size:12px">outbox · xid 5002</text>
+  <rect class="bxs" x="38" y="154" width="172" height="22" rx="4"/><text x="46" y="170" style="font-size:12px">outbox · xid 5003</text>
+
+  <rect class="bx" x="282" y="50" width="196" height="132" rx="10" style="stroke:var(--warn);stroke-width:2.5"/>
+  <text x="296" y="74" class="t-b">horizon H</text>
+  <text x="296" y="94" style="font-size:12px">pg_snapshot_xmin(</text>
+  <text x="296" y="110" style="font-size:12px">  pg_current_snapshot())</text>
+  <text x="296" y="134" class="t-dim">＝最老的「已分配 xid、</text>
+  <text x="296" y="150" class="t-dim">還沒結束」的交易</text>
+  <text x="296" y="170" style="font-size:12px;fill:var(--warn);font-weight:700">卡在 4990</text>
+
+  <rect class="bx" x="536" y="50" width="200" height="132" rx="10"/>
+  <text x="550" y="74" class="t-b">sync worker</text>
+  <text x="550" y="94" style="font-size:12px">sync_all／dispatch_all</text>
+  <text x="550" y="114" class="t-dim">只處理 xid &lt; H 的列</text>
+  <text x="550" y="134" class="t-dim">每 20 ms 再試一次</text>
+  <text x="550" y="164" class="t-bad t-b">20 秒後逾時</text>
+
+  <path class="a" d="M224 116H280" marker-end="url(#ar)"/>
+  <text x="228" y="108" class="t-dim">xid ≥ H</text>
+  <path class="a" d="M478 116H534" marker-end="url(#ar)"/>
+  <text x="486" y="108" class="t-dim">放行界線</text>
+
+  <!-- bottom row: other DB DROP -->
+  <rect class="badbx" x="24" y="250" width="200" height="140" rx="10"/>
+  <text x="38" y="274" class="t-b">另一個資料庫</text>
+  <text x="38" y="292" class="t-dim">E2E 重建 oxledger_fe_e2e（6 次）</text>
+  <text x="38" y="308" class="t-dim">升級測試的暫時 DB（1 次）</text>
+  <text x="38" y="340" class="t-bad t-b">DROP DATABASE</text>
+  <text x="38" y="358" class="t-bad" style="font-size:12px">… WITH (FORCE)</text>
+  <text x="38" y="378" class="t-dim">① CatalogTupleDelete → 分配 xid</text>
+
+  <rect class="badbx" x="282" y="250" width="196" height="140" rx="10"/>
+  <text x="296" y="274" class="t-b">② checkpoint</text>
+  <text x="296" y="294" style="font-size:12px">RequestCheckpoint(</text>
+  <text x="296" y="310" style="font-size:12px"> IMMEDIATE|FORCE|WAIT)</text>
+  <text x="296" y="336" class="t-dim">這台機器要 sync 約 2 萬個檔</text>
+  <text x="296" y="366" class="t-bad t-b" style="font-size:16px">18–70 秒</text>
+
+  <rect class="badbx" x="536" y="250" width="200" height="140" rx="10"/>
+  <text x="550" y="274" class="t-b">③ 整段持有 xid</text>
+  <text x="550" y="296" class="t-dim">DROP 的交易在 checkpoint</text>
+  <text x="550" y="312" class="t-dim">做完前不會結束</text>
+  <text x="550" y="342" style="font-size:12px">pg_snapshot_xmin 被它</text>
+  <text x="550" y="358" style="font-size:12px">壓住 → H 不前進</text>
+
+  <path class="ab" d="M224 320H280" marker-end="url(#arb)"/>
+  <path class="ab" d="M478 320H534" marker-end="url(#arb)"/>
+  <path class="ab" d="M636 250C636 222 420 222 392 186" marker-end="url(#arb)"/>
+  <text x="470" y="216" class="t-bad" style="font-size:12px;font-weight:700">horizon 卡住</text>
+
+  <text x="12" y="440" class="t-dim">排除：after_release（開／關交替各跑一輪，逾時 5 比 4）。CREATE DATABASE 預設 WAL_LOG 不做 checkpoint，問題在 DROP。</text>
+  <text x="12" y="460" class="t-dim">來源：PostgreSQL REL_18_STABLE dbcommands.c 的 dropdb()；oxledger search.rs:1580 sync_all 的完成條件 c ≥ want || want.xid &lt; f。</text>
+</svg>
+</div>
+<div class="card fix small"><b>08 對 05 的修正：</b>05 對根因（cluster 共用的 <code>pg_snapshot_xmin</code>）判斷正確，但列的嫌疑來源（開發伺服器、<code>gate.reached</code> 長交易測試）不是實測抓到的。05 也漏了：套件本身有 12 個檔會 <code>DROP DATABASE</code>（10 個 <code>m1_*_upgrade</code>、<code>s3_permissions</code>、<code>s5_changesets</code>），以及 E2E 每次 reset 都會 DROP。「逾時時印出是誰」可以直接重用 <code>metrics::xid_holders()</code>（<code>metrics.rs:358</code>），不必另外寫。</div>
+
+<h2 id="test">測試現況與瓶頸</h2>
+<div class="stats">
+  <div class="stat"><b>402</b><span>整合測試（<code>tokio::test</code> 393、multi_thread 3、<code>#[test]</code> 6）＋ src 單元測試 116</span></div>
+  <div class="stat"><b>64</b><span>頂層測試檔（08 修正；05 寫的 70 含 6 個共用模組）</span></div>
+  <div class="stat"><b>2.26 GB</b><span>68 個測試 exe（含舊產物），改一行 src 全部重新連結</span></div>
+  <div class="stat"><b>380</b><span><code>test_pool()</code> 呼叫處（05 寫 379，差在 grep 寫法）</span></div>
+  <div class="stat"><b>約 15 s</b><span>固定 sleep 合計（非輪詢）</span></div>
+  <div class="stat"><b>20–30 分</b><span>全套時間（任務所說，未量測；加速倍數一律待 D3 量測）</span></div>
+</div>
+
+<h3>每個測試的準備步驟（<code>s6_world::World::build</code>）</h3>
+<div class="card">
+<svg viewBox="0 0 760 150" role="img" aria-label="每個測試的準備步驟：test_pool 開兩次連線並檢查 31 個 migration，reset TRUNCATE 48 張表後 reconcile_indexes，用 Argon2 建 3 個使用者並登入 1 次，再建二十幾筆種子資料，最後開記憶體搜尋索引">
+  <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--dim)"/></marker></defs>
+  <rect class="bx" x="4" y="14" width="138" height="96" rx="8"/>
+  <text x="14" y="36" class="t-b">test_pool()</text>
+  <text x="14" y="56" class="t-dim">查 pg_database</text>
+  <text x="14" y="72" class="t-dim">再開 PgPool</text>
+  <text x="14" y="88" class="t-dim">MIGRATOR.run 檢查</text>
+  <text x="14" y="104" class="t-dim">31 個 migration</text>
+  <rect class="bx" x="156" y="14" width="138" height="96" rx="8" style="stroke:var(--warn)"/>
+  <text x="166" y="36" class="t-b">reset</text>
+  <text x="166" y="56" class="t-dim">TRUNCATE 48 張表</text>
+  <text x="166" y="72" class="t-dim">CASCADE</text>
+  <text x="166" y="88" class="t-dim">UPDATE org_settings</text>
+  <text x="166" y="104" class="t-dim">reconcile_indexes</text>
+  <rect class="bx" x="308" y="14" width="138" height="96" rx="8" style="stroke:var(--warn)"/>
+  <text x="318" y="36" class="t-b">建使用者</text>
+  <text x="318" y="56" class="t-dim">create_user ×3</text>
+  <text x="318" y="72" class="t-dim">sign_in ×1</text>
+  <text x="318" y="88" class="t-dim">Argon2 ×4</text>
+  <text x="318" y="104" class="t-dim">每次 19 MiB</text>
+  <rect class="bx" x="460" y="14" width="138" height="96" rx="8"/>
+  <text x="470" y="36" class="t-b">種子資料</text>
+  <text x="470" y="56" class="t-dim">狀態、tracker、</text>
+  <text x="470" y="72" class="t-dim">2 個專案、role、</text>
+  <text x="470" y="88" class="t-dim">workflow、agent</text>
+  <text x="470" y="104" class="t-dim">二十幾條 SQL</text>
+  <rect class="bx" x="612" y="14" width="144" height="96" rx="8"/>
+  <text x="622" y="36" class="t-b">SearchIndex</text>
+  <text x="622" y="56" class="t-dim">open(None)</text>
+  <text x="622" y="72" class="t-dim">記憶體 tantivy</text>
+  <text x="622" y="88" class="t-ok">便宜</text>
+  <path class="a" d="M142 62H154" marker-end="url(#ar2)"/><path class="a" d="M294 62H306" marker-end="url(#ar2)"/><path class="a" d="M446 62H458" marker-end="url(#ar2)"/><path class="a" d="M598 62H610" marker-end="url(#ar2)"/>
+  <text x="4" y="138" class="t-dim">推估每個測試準備 0.5–2 秒（未量測）。黃框是主要成本；D4 決定在 test-support 下改用低 Argon2 參數（PHC 字串帶參數，驗證不受影響）。</text>
+</svg>
+</div>
+
+<h3>為什麼只能單執行緒</h3>
+<div class="grid">
+  <div class="card"><div class="k">共用一個 DB</div><p><code>test_pool()</code> 永遠連到 <code>oxledger_test</code>（或 <code>OXLEDGER_TEST_DATABASE_URL</code>）。</p></div>
+  <div class="card"><div class="k">開頭就 TRUNCATE</div><p><code>reset</code> 清掉 48 張表，另有 13 個檔各有自己的 TRUNCATE 清單。兩個測試同時跑就互相清掉資料，撞 <code>issue_statuses_name_key</code>（G18）。</p></div>
+  <div class="card"><div class="k">衝突在 binary 內</div><p><code>cargo test</code> 在同一個 binary 內多執行緒跑；換成 nextest 或合併 binary 後跨檔也會同時跑，問題一樣。</p></div>
+  <div class="card"><div class="k"><code>RUST_MIN_STACK</code></div><p>repo 只在 <code>m1-11-e5.md:53</code>（真實 AI provider 的 E5 測試跑法）出現。D13：先確認是不是只有 <code>m1_11_e5</code> 需要。</p></div>
+</div>
+
+<h3>平行化方案比較：slot DB</h3>
+<div class="card">
+<svg viewBox="0 0 760 330" role="img" aria-label="三種作法比較：現況一個 DB 序列執行；05 原案每個測試 CREATE 再 DROP，每次 DROP 觸發 checkpoint 讓 G21 放大；修正方案固定 N 個 slot DB，每個 worker 綁一個 slot，沿用 TRUNCATE reset，跑測試期間不 DROP">
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--dim)"/></marker>
+    <marker id="ar3o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--ok)"/></marker>
+  </defs>
+  <!-- col 1 -->
+  <text x="10" y="22" class="t-b">現況</text>
+  <text x="10" y="40" class="t-dim">--test-threads=1</text>
+  <rect class="bxs" x="10" y="56" width="70" height="26" rx="4"/><text x="18" y="73" style="font-size:12px">測試 1</text>
+  <rect class="bxs" x="10" y="88" width="70" height="26" rx="4"/><text x="18" y="105" style="font-size:12px">測試 2</text>
+  <rect class="bxs" x="10" y="120" width="70" height="26" rx="4"/><text x="18" y="137" style="font-size:12px">測試 3</text>
+  <text x="18" y="164" class="t-dim">⋮</text>
+  <path class="a" d="M80 100H128" marker-end="url(#ar3)"/>
+  <rect class="bx" x="130" y="76" width="96" height="48" rx="8"/><text x="138" y="98" style="font-size:12px">oxledger_test</text><text x="138" y="114" class="t-dim">唯一一個</text>
+  <text x="10" y="200" class="t-dim">一個接一個，</text>
+  <text x="10" y="216" class="t-dim">每個都 TRUNCATE</text>
+
+  <!-- col 2 -->
+  <line x1="244" y1="10" x2="244" y2="320" style="stroke:var(--line)"/>
+  <text x="258" y="22" class="t-b t-bad">05 原案（不採用）</text>
+  <text x="258" y="40" class="t-dim">每個測試 CREATE … TEMPLATE</text>
+  <rect class="bxs" x="258" y="56" width="62" height="26" rx="4"/><text x="264" y="73" style="font-size:12px">測試 1</text>
+  <rect class="bxs" x="258" y="88" width="62" height="26" rx="4"/><text x="264" y="105" style="font-size:12px">測試 2</text>
+  <rect class="bxs" x="258" y="120" width="62" height="26" rx="4"/><text x="264" y="137" style="font-size:12px">測試 3</text>
+  <path class="a" d="M320 69H342" marker-end="url(#ar3)"/><path class="a" d="M320 101H342" marker-end="url(#ar3)"/><path class="a" d="M320 133H342" marker-end="url(#ar3)"/>
+  <rect class="bx" x="344" y="56" width="92" height="26" rx="4"/><text x="350" y="73" style="font-size:12px">t_&lt;uuid1&gt;</text>
+  <rect class="bx" x="344" y="88" width="92" height="26" rx="4"/><text x="350" y="105" style="font-size:12px">t_&lt;uuid2&gt;</text>
+  <rect class="bx" x="344" y="120" width="92" height="26" rx="4"/><text x="350" y="137" style="font-size:12px">t_&lt;uuid3&gt;</text>
+  <rect class="badbx" x="258" y="166" width="178" height="62" rx="8"/>
+  <text x="268" y="188" class="t-bad t-b" style="font-size:12px">結束時 DROP ×約 400 次</text>
+  <text x="268" y="204" class="t-dim">每次都等 checkpoint</text>
+  <text x="268" y="220" class="t-dim">並持有 xid</text>
+  <text x="258" y="252" class="t-bad" style="font-size:12px">→ 同時在跑的 sync_all 大量逾時</text>
+  <text x="258" y="270" class="t-dim">DB 越多，checkpoint 要 sync</text>
+  <text x="258" y="286" class="t-dim">的檔案也越多</text>
+
+  <!-- col 3 -->
+  <line x1="452" y1="10" x2="452" y2="320" style="stroke:var(--line)"/>
+  <text x="466" y="22" class="t-b t-ok">修正：slot DB（D2 (a)）</text>
+  <text x="466" y="40" class="t-dim">固定 N 個，重複使用</text>
+  <rect class="bxs" x="466" y="56" width="80" height="26" rx="4"/><text x="472" y="73" style="font-size:12px">worker 0</text>
+  <rect class="bxs" x="466" y="88" width="80" height="26" rx="4"/><text x="472" y="105" style="font-size:12px">worker 1</text>
+  <rect class="bxs" x="466" y="152" width="80" height="26" rx="4"/><text x="472" y="169" style="font-size:12px">worker N-1</text>
+  <text x="500" y="138" class="t-dim">⋮</text>
+  <path class="ao" d="M546 69H592" marker-end="url(#ar3o)"/><path class="ao" d="M546 101H592" marker-end="url(#ar3o)"/><path class="ao" d="M546 165H592" marker-end="url(#ar3o)"/>
+  <rect class="okbx" x="594" y="56" width="158" height="26" rx="4"/><text x="602" y="73" style="font-size:12px">oxledger_test_0</text>
+  <rect class="okbx" x="594" y="88" width="158" height="26" rx="4"/><text x="602" y="105" style="font-size:12px">oxledger_test_1</text>
+  <rect class="okbx" x="594" y="152" width="158" height="26" rx="4"/><text x="602" y="169" style="font-size:12px">oxledger_test_&lt;N-1&gt;</text>
+  <text x="466" y="206" class="t-dim">slot 來源：NEXTEST_TEST_GLOBAL_SLOT，</text>
+  <text x="466" y="222" class="t-dim">或行程內號誌＋advisory lock</text>
+  <text x="466" y="246" class="t-ok" style="font-size:12px">✓ 沿用 TRUNCATE reset</text>
+  <text x="466" y="264" class="t-ok" style="font-size:12px">✓ 跑測試期間 0 次 DROP</text>
+  <text x="466" y="282" class="t-ok" style="font-size:12px">✓ 不累積 DB；test_pool() 已會自動 CREATE</text>
+  <text x="466" y="300" class="t-dim">準備時間不變，但可以平行；</text>
+  <text x="466" y="316" class="t-dim">每個 slot 的池 2–4 條（D10）</text>
+</svg>
+</div>
+<div class="card tw"><table>
+<tr><th>作法（08 §1.3）</th><th>測試期間 DROP</th><th>對 G21</th><th>評估</th></tr>
+<tr><td>每個測試 CREATE，通過就 DROP（05 原案）</td><td>約 400 次</td><td>任何時刻都可能有 DROP 在等 checkpoint</td><td><span class="chip c-bad">不可行</span></td></tr>
+<tr><td>原案＋專用 cluster（<code>fsync=off</code>、tmpfs）</td><td>約 400 次</td><td>停頓預期降到毫秒到百毫秒，仍是 cluster 層級</td><td><span class="chip c-warn">要實測</span></td></tr>
+<tr><td>template CREATE，DROP 延到整套結束</td><td>0</td><td>跑測試期間沒有 DROP，但 DB 會長到約 400 個</td><td><span class="chip c-warn">可行</span></td></tr>
+<tr><td><b>固定 N 個 slot DB，沿用 TRUNCATE</b></td><td>0</td><td>不新增 DROP、不累積 DB</td><td><span class="chip c-ok">建議</span></td></tr>
+<tr><td>slot DB＋reset 改從 template 複製</td><td>每次 reset</td><td>又回到 DROP 的問題</td><td><span class="chip c-bad">不建議</span></td></tr>
+</table></div>
+
+<h3>其他加速項（05 方案，經 08 修正後的定位）</h3>
+<div class="card tw"><table>
+<tr><th>#</th><th>方案</th><th>現在的定位</th></tr>
+<tr><td>T4</td><td>專用測試 PostgreSQL（<code>fsync=off</code>、tmpfs、和開發／E2E 分開）</td><td>併入 D1 (a)</td></tr>
+<tr><td>T5</td><td>64 個測試檔合成一個 binary（<code>tests/it/main.rs</code>）；文獻：Cargo 測試編譯快 3 倍、產物少 5 倍</td><td>D6 (a)，排在 D2 之後</td></tr>
+<tr><td>T6</td><td>cargo-nextest：per-test 行程、test group 序列化、<code>slow-timeout</code>、flaky 標示</td><td>D5 第一批，已核准</td></tr>
+<tr><td>T7</td><td>依 <code>git diff</code> 選測試的對照表腳本；合流時全套</td><td>和 07 的品質腳本合成同一入口（D12）</td></tr>
+<tr><td>T8</td><td>非同步等待改成確定性；固定 sleep 改可注入時間</td><td>逾時診斷改用 <code>xid_holders()</code>（D1 (d)）</td></tr>
+<tr><td>T2／T3</td><td><code>#[sqlx::test]</code>（會失去 G20 release check）／交易 rollback（被測程式自己 commit）</td><td><span class="chip c-dim">不採用</span></td></tr>
+<tr><td>F2</td><td>E2E 改從 template 建 DB</td><td>仍要 DROP 舊的 <code>oxledger_fe_e2e</code>（實測 6 次停頓的來源）→ 改用 D1 (b)：TRUNCATE 或重建 schema</td></tr>
+<tr><td>F3</td><td>E2E 用 <code>vite build</code>＋<code>vite preview</code></td><td>低成本，之後再做</td></tr>
+</table></div>
+
+<h2 id="obs">可觀測性</h2>
+<h3>現況盤點</h3>
+<div class="grid">
+  <div class="card"><div class="k">Logs</div><p><code>tracing</code> 文字格式寫 stderr，<code>RUST_LOG</code> 預設 <code>info</code>；<code>json</code> feature 沒開。<b>全 repo 0 個 span</b>；約 62 處事件，多半是 worker 的 <code>warn!</code>。沒有 access log。sqlx 慢語句（≥1 秒）、慢 acquire（≥2 秒）用 WARN 記。</p></div>
+  <div class="card"><div class="k">Metrics</div><p>手寫 Prometheus 格式的 <code>/metrics</code>（要 token）：搜尋同步、notify、<code>pg_oldest_xid_holder_age_seconds</code>。<b>缺：</b>HTTP RED、連線池、GitHub／AI／field job／sweeper 的 worker 指標；<code>RELEASED_IN_TRANSACTION</code> 存在但沒匯出。</p></div>
+  <div class="card"><div class="k">Traces／correlation</div><p><code>meta.request_id</code> 每次回應新產一個 UUID，和 log 對不上；沒有 <code>X-Request-Id</code>，不接受 <code>traceparent</code>。池沒設 <code>application_name</code>，<code>xid_holders()</code> 的 application 欄是空的。</p></div>
+  <div class="card"><div class="k">Health</div><p><code>/healthz</code> 是 <code>get(|| async { "ok" })</code>，不碰 DB；沒有 readiness。E2E 的後端 log 是 <code>warn</code>、<code>stdout: 'ignore'</code>，不存檔。</p></div>
+  <div class="card"><div class="k">做得好的地方</div><p>稽核在 DB 的 append-only 事件表、有 redaction，不走 tracing。<code>hidden_content_stays_out_of_logs_and_audit</code>（E4w-7）是新增 log 欄位時的守門測試。</p></div>
+</div>
+<div class="card fix small"><b>08 對 06 的修正：</b>(1) 「只有 500 會把 id 寫進 log」只適用 REST；MCP 的領域錯誤與 internal error 都會用和回應相同的 <code>request_id</code> 寫 log（<code>mcp.rs:98-99、114-115</code>）。(2) G35 是前端分支的編號，指連線池借出還在交易中的連線，導致 <code>CREATE INDEX CONCURRENTLY</code> 失敗；和 G20 同根因，已在 <code>0f7c7fd</code> 修好。可觀測性的作用改成偵測復發。(3) 痛點表要加 G21；<code>application_name</code> 優先度往前排，因為同時服務 G21 診斷。(4) E2E 沒有設 <code>OXLEDGER_METRICS_TOKEN</code>，要在 <code>backend.mjs</code> 加一個測試用 token。</div>
+
+<h3>M2 最小集合（7 項，依回報／成本排序）</h3>
+<div class="card">
+<ol class="min">
+  <li><b>request id＋request span（I-1）</b>：同一個 id 出現在 <code>X-Request-Id</code> 標頭、<code>meta</code>／<code>error</code> 本文、這個請求的每一行 log；route 用樣板（<code>MatchedPath</code>），不記 query string；<code>/mcp</code> 也套。</li>
+  <li><b>連線池指標＋<code>application_name</code>＋匯出 G20 計數（I-4）</b>：<code>db_pool_connections{state}</code>、<code>db_pool_acquire_seconds</code>、<code>db_pool_released_in_transaction_total</code>；慢 acquire 門檻調到 500 ms。</li>
+  <li><b>HTTP RED 指標（I-3）</b>：<code>http_requests_total{route,method,status_class}</code>、<code>http_request_duration_seconds{route}</code>。</li>
+  <li><b>worker 統一指標＋每輪 span（I-5）</b>：rounds、last success、backlog、oldest pending age；先補 GitHub 與 AI（目前全盲）。</li>
+  <li><b>E2E／測試失敗附件（I-7）</b>：後端 log 存檔、失敗時附 log 片段＋<code>/metrics</code>＋worker 狀態。D11 決定提前做，因為直接幫助 G21 與 E2E 除錯。</li>
+  <li><b><code>/readyz</code>（I-6）</b>：只看 DB 與 migration；worker 停滯用告警處理，不算 not ready。</li>
+  <li><b>JSON log 開關（I-2）</b>：開 <code>tracing-subscriber</code> 的 <code>json</code> feature（D5 第一批已核准）。</li>
+</ol>
+<p class="small">每一步都擴充 E4w-7 守門測試：也走一次 HTTP 層（含 <code>?q=秘密</code> 的搜尋），斷言 span 與 JSON log 都不含秘密。估計後端 600–1,000 行（含測試）、前端／E2E 100–200 行。之後再做：Prometheus＋Grafana 告警、前端自產 <code>traceparent</code>、OTel traces（Rust traces 仍是 Beta）＋自架 Jaeger v2。</p>
+</div>
+
+<h2 id="q">程式品質</h2>
+<div class="stats">
+  <div class="stat"><b>72,870</b><span>產品程式碼非空行（測試 70,878，約 0.97:1）</span></div>
+  <div class="stat"><b>1,981</b><span>產品函式；中位數 14 行、P90 63、P99 227</span></div>
+  <div class="stat"><b>0</b><span><code>unsafe</code>；TS <code>any</code> 也是 0</span></div>
+  <div class="stat"><b>1,097 / 0</b><span>執行期 <code>sqlx::query*(</code>／編譯期 <code>query!</code></span></div>
+  <div class="stat"><b>2,820</b><span>pedantic＋nursery 不重複警告（src 1,960），71 種 lint</span></div>
+  <div class="stat"><b>17</b><span>超過 1,500 個產品行的檔案</span></div>
+  <div class="stat"><b>361</b><span>8 行視窗的重複程式碼組數</span></div>
+  <div class="stat"><b>48</b><span>commit（2026-11-06 至 11-13）；08 抽查全部正確</span></div>
+</div>
+
+<h3>最大的函式（行數，排除純資料表）</h3>
+<div class="card bars">
+  <div class="br"><span class="n">service::search_with</span><span class="t"><i style="width:100%"></i></span><span class="v">673</span></div>
+  <div class="br"><span class="n">commands::run_ops</span><span class="t"><i style="width:99.9%"></i></span><span class="v">672</span></div>
+  <div class="br"><span class="n">commands::parse_seen</span><span class="t"><i style="width:86%"></i></span><span class="v">579</span></div>
+  <div class="br"><span class="n">time_entries::plan</span><span class="t"><i style="width:84.1%"></i></span><span class="v">566</span></div>
+  <div class="br"><span class="n">views::execute</span><span class="t"><i style="width:71.8%"></i></span><span class="v">483</span></div>
+  <div class="br"><span class="n">commands::simulate</span><span class="t"><i style="width:69.2%"></i></span><span class="v">466</span></div>
+  <div class="br"><span class="n">ai::runner::run_loop</span><span class="t"><i style="width:65.5%"></i></span><span class="v">441</span></div>
+  <div class="br"><span class="n">undo::apply</span><span class="t"><i style="width:63.2%"></i></span><span class="v">425</span></div>
+  <div class="br"><span class="n">seed::seed_demo</span><span class="t"><i style="width:51.4%"></i></span><span class="v">346</span></div>
+  <div class="br"><span class="n">changesets::agent_write_tx</span><span class="t"><i style="width:49.9%"></i></span><span class="v">336</span></div>
+  <p class="small">另有資料表型長函式：<code>openapi.rs::session_routes</code> 1,456 行、<code>api.rs::base_router</code> 292 行，邏輯少但是 churn 熱點。估計複雜度只能拿來排序。</p>
+</div>
+
+<h3>最大的產品檔案（非空行）</h3>
+<div class="card bars">
+  <div class="br"><span class="n">commands.rs</span><span class="t"><i style="width:100%"></i></span><span class="v">5,026</span></div>
+  <div class="br"><span class="n">changesets.rs</span><span class="t"><i style="width:94.6%"></i></span><span class="v">4,756</span></div>
+  <div class="br"><span class="n">views.rs</span><span class="t"><i style="width:79.5%"></i></span><span class="v">3,997</span></div>
+  <div class="br"><span class="n">forms.rs</span><span class="t"><i style="width:74%"></i></span><span class="v">3,720</span></div>
+  <div class="br"><span class="n">api.rs</span><span class="t"><i style="width:69.3%"></i></span><span class="v">3,482</span></div>
+  <div class="br"><span class="n">versions.rs</span><span class="t"><i style="width:54.3%"></i></span><span class="v">2,730</span></div>
+  <div class="br"><span class="n">service.rs</span><span class="t"><i style="width:47.6%"></i></span><span class="v">2,391</span></div>
+</div>
+
+<h3>品質熱點前 10 名</h3>
+<div class="card tw"><table>
+<tr><th>#</th><th>熱點</th><th>證據</th><th class="hide-s">建議做法</th></tr>
+<tr><td>1</td><td><b>超大核心函式</b></td><td>26 個函式超過 200 行；前 5 名見上圖</td><td class="hide-s">碰到才拆；<code>too_many_lines</code> 棘輪</td></tr>
+<tr><td>2</td><td><b>SQL 沒有編譯期檢查、沒有覆蓋率</b></td><td><code>query*(</code> 1,097、<code>query!</code> 0</td><td class="hide-s">先用 cargo-llvm-cov 找沒被執行的 SQL</td></tr>
+<tr><td>3</td><td><b>mutation 驗證靠人工</b></td><td>checklist 大量「拿掉 X 測試失敗」；G25 是存活 mutation 才發現</td><td class="hide-s"><code>cargo-mutants --in-diff</code>，<b>D2 完成後</b>才導入</td></tr>
+<tr><td>4</td><td><b>超大模組</b></td><td>17 個檔超過 1,500 行</td><td class="hide-s">改成目錄模組，只搬不改；行數棘輪</td></tr>
+<tr><td>5</td><td><b>接線檔 churn</b></td><td><code>api.rs</code> 22 次、<code>lib.rs</code> 21、<code>service.rs</code> 19、<code>openapi.rs</code> 18</td><td class="hide-s">各模組自己回傳 <code>Router</code>，<code>base_router</code> 只合併</td></tr>
+<tr><td>6</td><td><b>數值轉型</b></td><td>src 內 <code>cast_possible_wrap</code> 54、<code>truncation</code> 49、<code>sign_loss</code> 32</td><td class="hide-s">工時、金額路徑改 <code>try_from</code></td></tr>
+<tr><td>7</td><td><b>跨檔重複</b></td><td><code>service</code>↔<code>views</code> 19 組、<code>changesets</code>↔<code>undo</code> 11 組</td><td class="hide-s">確認是同一規則就抽共用函式</td></tr>
+<tr><td>8</td><td><b>參數過多、型別過深</b></td><td>15 個 <code>too_many_arguments</code> allow；<code>undo.rs</code> 整模組 <code>type_complexity</code></td><td class="hide-s">參數 struct；<code>allow</code> 改 <code>expect</code> 並寫 reason</td></tr>
+<tr><td>9</td><td><b>品質規則不在 repo</b></td><td>沒有 <code>[workspace.lints]</code>、<code>clippy.toml</code>、<code>.github/</code>；feature 閘門讓 <code>s6b_github_sync</code> 和 3 個 <code>ai</code> 測試檔被靜默略過</td><td class="hide-s">品質腳本；合流用 <code>--features test-support,github,ai</code></td></tr>
+<tr><td>10</td><td><b>前端缺 lint 與元件測試</b></td><td>ESLint 0 設定；單元測試 2 個檔（08 修正）；8 個頁面超過 200 行</td><td class="hide-s">ESLint＋<code>eslint-plugin-svelte</code>＋<code>typescript-eslint</code></td></tr>
+</table></div>
+<div class="card fix small"><b>08 對 07 的修正：</b><code>cargo-mutants</code> 的成本被嚴重低估。全套測試共用同一個 DB，mutants 只能 <code>-j1</code>，或每個 job 一個 slot DB；50 個 mutant × 每次 1–3 分鐘就要 1–2.5 小時。必須等 D2 完成，並只跑受影響的測試檔。拆大函式時可順便用 <code>Box::pin</code> 縮小 future（和 <code>RUST_MIN_STACK</code> 合成一件事）。</div>
+
+<h2 id="d">D1–D14 決定表</h2>
+<p class="small">使用者在 2026-11-13 決定：<b>全部照 08 的建議</b>。負責的 session 依協調者分派：後端分 T1、T2、T3 三個階段（是後端 session 的階段名稱，不是 05 的方案編號），D6 排在 T1 之後；前端負責 D1(b)、D1(c) 與 D11 的 E2E log 存檔、metrics token；協調者負責 D5 安裝。</p>
+<div class="card tw"><table>
+<tr><th>#</th><th>題目</th><th>決定（照建議）</th><th>負責</th></tr>
+<tr><td><b>D1</b> <span class="chip c-bad">急</span></td><td>怎麼止住 G21 逾時</td><td>(d) 逾時時用 <code>xid_holders()</code> 印出是誰＋(b) E2E reset 改 TRUNCATE 或重建 schema，不再 DROP＋(c) 清掉沒在用的測試 DB，馬上做；(a) 測試專用容器（<code>fsync=off</code>）接著做；(e) 12 個會 DROP 的檔進序列群組，等平行化時做</td><td>(a)(d)(e)：<span class="chip c-act">後端 T1</span><br>(b)(c)：<span class="chip c-prop">前端</span></td></tr>
+<tr><td><b>D2</b> <span class="chip c-bad">急</span></td><td>後端測試怎麼平行化</td><td>(a) 固定 N 個 slot DB（<code>oxledger_test_&lt;slot&gt;</code>），沿用 TRUNCATE reset</td><td><span class="chip c-act">後端 T1</span></td></tr>
+<tr><td>D3</td><td>先量測再優化</td><td>(a) 用自己的 DB 跑一個測試檔加臨時計時，同時量 TRUNCATE vs DELETE、Argon2</td><td><span class="chip c-act">後端 T1</span></td></tr>
+<tr><td>D4</td><td>每個測試的準備成本</td><td>(a) <code>test-support</code> 下改用低 Argon2 參數</td><td><span class="chip c-act">後端 T1</span></td></tr>
+<tr><td>D5</td><td>安裝工具（一次決定）</td><td>分批。<b>第一批已核准：cargo-nextest、cargo-deny、<code>json</code> feature</b>；第二批 llvm-cov、ESLint；第三批 mutants（等 D2）</td><td><span class="chip c-warn">協調者</span><br><span class="small">nextest、cargo-deny 安裝中；<code>json</code> feature 由後端加</span></td></tr>
+<tr><td>D6</td><td>測試 binary 合併</td><td>(a) 合成 1 個，排在 D2 之後</td><td><span class="chip c-act">後端（T1 之後）</span></td></tr>
+<tr><td>D7</td><td>flaky 重試政策</td><td>開發時只對已知 flaky 重試 1 次、合流 <code>flaky-result = "fail"</code>；G21 成因找到之前不開重試</td><td><span class="chip c-act">後端 T1</span></td></tr>
+<tr><td>D8</td><td>依賴授權政策（cargo-deny licenses）</td><td>(a) 定一份和 GPL-2.0-or-later 相容的白名單</td><td><span class="chip c-act">後端 T3</span></td></tr>
+<tr><td>D9</td><td>request id 語意、接受客戶端 id</td><td>整個請求同一個 id 並進 log、加 <code>X-Request-Id</code>；只接受 <code>traceparent</code></td><td><span class="chip c-act">後端 T2</span></td></tr>
+<tr><td>D10</td><td>連線池大小</td><td>(b) <code>OXLEDGER_DB_MAX_CONNECTIONS</code> 可設定，測試每個 slot 2–4 條</td><td><span class="chip c-act">後端 T1</span></td></tr>
+<tr><td>D11</td><td>readiness、E2E log、檢視後端、trace 後端</td><td>同 06：<code>/readyz</code> 只看 DB 與 migration；M2 先不架後端；trace 先只用 span＋log。<b>E2E log 存檔提前做</b></td><td><span class="chip c-act">後端 T2</span><br><span class="small">readiness、request id、連線池、HTTP、worker 指標、JSON log</span><br><span class="chip c-prop">前端</span><br><span class="small">E2E log 存檔、metrics token</span></td></tr>
+<tr><td>D12</td><td>lint、大函式、SQL、覆蓋率、檢查位置、mutation</td><td>同 07（挑過的 lint、碰到才拆＋棘輪、先量覆蓋率、diff 覆蓋率、本機腳本）；mutation 在 D2 完成後才導入；品質腳本與 T7 選測試腳本合成同一入口</td><td><span class="chip c-act">後端 T3</span></td></tr>
+<tr><td>D13</td><td><code>RUST_MIN_STACK</code></td><td>先確認是不是只有 <code>m1_11_e5</code> 需要，再決定要不要寫進設定檔</td><td><span class="chip c-act">後端 T1</span></td></tr>
+<tr><td>D14</td><td>Vitest／Vite</td><td>(a) 維持使用（VoidZero 已被 Cloudflare 收購）</td><td><span class="chip c-dim">不需要動作</span></td></tr>
+</table></div>
+
+<h2 id="tools">工具維護者所在地</h2>
+<p class="small">合併 05 §6、06 §3.2、07 §5，以 08 §5 的查證為準。<b>沒有發現違反「不用中國產品」的情況</b>；唯一排除的是 SkyWalking。</p>
+<div class="card tw"><table>
+<tr><th>工具</th><th>維護者</th><th>所在地</th><th>狀態</th></tr>
+<tr><td>cargo-nextest</td><td>Rain（sunshowers），任職 Oxide Computer</td><td>美國（Oakland, CA）</td><td><span class="chip c-ok">D5 第一批已核准</span></td></tr>
+<tr><td>cargo-deny</td><td>Embark Studios（Nexon 旗下，日本上市）</td><td>瑞典</td><td><span class="chip c-ok">D5 第一批已核准</span></td></tr>
+<tr><td><code>tracing-subscriber</code>（<code>json</code> feature）</td><td>tokio-rs</td><td>國際社群</td><td><span class="chip c-ok">D5 第一批已核准</span></td></tr>
+<tr><td>cargo-llvm-cov</td><td>Taiki Endo（taiki-e）</td><td>日本</td><td>第二批</td></tr>
+<tr><td>ESLint／<code>eslint-plugin-svelte</code>／<code>typescript-eslint</code></td><td>OpenJS Foundation／sveltejs／typescript-eslint 組織</td><td>美國／國際社群</td><td>第二批</td></tr>
+<tr><td>cargo-mutants</td><td>Martin Pool（sourcefrog），任職 Stripe</td><td>美國公司（個人所在地只看 GitHub 個人頁）</td><td>第三批，等 D2</td></tr>
+<tr><td>cargo-udeps</td><td>est31</td><td>沒有公開所在地；無中國關聯證據</td><td>未列入</td></tr>
+<tr><td>cargo-machete</td><td>Benjamin Bouvier（bnjbvr）</td><td>法國</td><td>未列入</td></tr>
+<tr><td>Vitest／Vite</td><td>VoidZero，<b>2026-06-04 被 Cloudflare 收購</b>；MIT 授權維持</td><td>公司層級：美國（Cloudflare，舊金山）</td><td>已在使用（D14）</td></tr>
+<tr><td>sqlx</td><td>LaunchBadge</td><td>美國</td><td>已在使用</td></tr>
+<tr><td>Playwright</td><td>Microsoft</td><td>美國</td><td>已在使用</td></tr>
+<tr><td>PostgreSQL</td><td>PostgreSQL Global Development Group</td><td>國際社群</td><td>已在使用</td></tr>
+<tr><td>sccache</td><td>Mozilla</td><td>美國</td><td><span class="chip c-dim">不採用</span></td></tr>
+<tr><td>IntegreSQL</td><td>all about apps GmbH</td><td>奧地利</td><td><span class="chip c-dim">只作參考</span></td></tr>
+<tr><td>Prometheus／Jaeger v2／OTel Collector</td><td>CNCF</td><td>社群治理</td><td>之後的部署選項</td></tr>
+<tr><td>Grafana／Loki／Tempo</td><td>Grafana Labs（AGPL-3.0）</td><td>美國</td><td>之後的部署選項</td></tr>
+<tr><td>SigNoz</td><td>SigNoz Inc.</td><td>登記美國、團隊在印度</td><td><span class="chip c-dim">不建議（過重）</span></td></tr>
+<tr><td>OpenObserve</td><td>OpenObserve Inc.，創辦人 Prabhat Sharma</td><td>舊金山（來源偏薄）</td><td><span class="chip c-dim">不建議</span></td></tr>
+<tr><td>Apache SkyWalking</td><td>創辦人兼 PMC Chair 吳晟（Sheng Wu）</td><td>起源於中國</td><td><span class="chip c-bad">排除</span></td></tr>
+</table></div>
+
+<h2 id="proc">研究過程</h2>
+<div class="grid">
+  <div class="card"><div class="k">05 測試速度</div>
+    <p><b>讀的程式：</b><code>tests/common/mod.rs</code>、<code>s6_world</code>、<code>s8_search_consistency</code>、<code>search.rs</code>、<code>notifications.rs:498</code>、<code>db.rs</code>、<code>backend.mjs</code>、<code>playwright.config.ts</code>、playbook、<code>p1-backend-gaps.md</code>。</p>
+    <p><b>唯讀指令：</b><code>grep</code>／<code>wc</code> 計數、對 3 個測試 exe 只做 <code>--list</code>、<code>git log -S RUST_MIN_STACK</code>。</p>
+    <p><b>外部來源：</b>docs.rs <code>sqlx::test</code>、Kobzol 的 sqlx 重建時間文章、pgtestdb、IntegreSQL、PostgreSQL 18 CREATE DATABASE 與 non-durability、nexte.st、matklad、Rust 官方 lld 部落格、sccache、tokio <code>time::pause</code>、Fowler nonDeterminism、vitest、Playwright。</p></div>
+  <div class="card"><div class="k">06 可觀測性</div>
+    <p><b>讀的程式：</b><code>metrics.rs</code>、<code>main.rs</code>、<code>db.rs</code>、<code>api.rs</code>、GitHub／AI worker、E4w-7 測試、migrations、E2E 設定、本機 cargo registry 的 sqlx-core 0.9.0 原始碼。</p>
+    <p><b>外部來源：</b>OTel Rust 狀態表、tracing-opentelemetry、OTel JS、W3C Trace Context、RED、USE、SRE Workbook〈Alerting on SLOs〉、Jaeger、Grafana 授權變更、SigNoz、OpenObserve、SkyWalking。</p></div>
+  <div class="card"><div class="k">07 程式品質</div>
+    <p><b>執行的指令：</b>嚴格 clippy（pedantic＋nursery，4 分 09 秒，獨立 target 目錄）、自寫 python 量函式長度與重複、<code>git log</code> 算 churn、<code>cargo tree</code> 與 <code>Cargo.lock</code> 算依賴。</p>
+    <p><b>外部來源：</b>Clippy 文件與設定、Cargo <code>[workspace.lints]</code>、rustc instrument-coverage、cargo-llvm-cov、mutants.rs、cargo-deny、cargo-audit、cargo-machete、cargo-udeps、rust-code-analysis、eslint-plugin-svelte、SonarQube quality gate。</p></div>
+  <div class="card"><div class="k">08 獨立審查</div>
+    <p><b>核對：</b>PostgreSQL <code>REL_18_STABLE</code> 的 <code>dbcommands.c</code>（<code>dropdb()</code>／<code>createdb()</code>）、<code>sync_all</code> 完成條件、<code>xid_holders()</code>、<code>mcp.rs</code>、<code>auth.rs:273</code>、<code>git show 0f7c7fd</code>；awk 配對大括號量 <code>search_with</code>。</p>
+    <p><b>外部來源：</b>Cloudflare 收購 VoidZero（Business Wire、Techzine）、opentelemetry-rust README、nextest glossary、GitHub 個人頁（sunshowers、sourcefrog、taiki-e、est31）、SkyWalking 團隊頁。</p></div>
+</div>
+
+<h3>踩到的坑與限制</h3>
+<div class="card tw"><table>
+<tr><th>來源</th><th>症狀或限制</th><th>原因／處理</th></tr>
+<tr><td>05</td><td>「G21」在 repo 裡有兩個意思</td><td>T-G21 是 GitHub 補送測試；<code>p1-backend-gaps.md</code> 的 G21 是 Windows tantivy <code>PermissionDenied</code> 加兩個索引逾時。建議把逾時拆成獨立項目</td></tr>
+<tr><td>05</td><td>任務說「500 多個測試」</td><td>整合 402＋單元 116＝518，合計才對</td></tr>
+<tr><td>05</td><td>沒有每個測試準備時間的實測</td><td>任務限制不跑測試；倍數都是推估或文獻值，文獻多在 Linux／RAM disk 上量</td></tr>
+<tr><td>05</td><td><code>du -sh target/</code> 超過 2 分鐘</td><td>改用 <code>ls -la</code> 加總 exe 大小</td></tr>
+<tr><td>05</td><td>Playwright <code>--only-changed</code>、Windows 上的 <code>rust-lld</code></td><td>只找到二手來源／證據互相矛盾，使用前要自己確認</td></tr>
+<tr><td>06</td><td>docs.rs 的 <code>sqlx::pool::Pool</code> 頁 404</td><td>改讀本機 sqlx-core 0.9.0 原始碼，還拿到文件沒寫的預設值</td></tr>
+<tr><td>06</td><td>「G35」對不上</td><td>06 標為待確認；08 依協調者補充：前端分支的編號，和 G20 同根因、已修</td></tr>
+<tr><td>06</td><td>OTel Rust 穩定時程、廠商背景資料</td><td>只有非正式來源；商業資料庫彼此不一致，只寫一致的部分</td></tr>
+<tr><td>06</td><td><code>tower-http</code> <code>TraceLayer</code> 的隱私陷阱</td><td>預設 span 帶完整 URI（含搜尋字串），所以選手寫 middleware</td></tr>
+<tr><td>07</td><td>PowerShell 找不到 <code>cargo</code></td><td>改用 Git Bash 並把 <code>~/.cargo/bin</code> 加進 PATH</td></tr>
+<tr><td>07</td><td>clippy 警告數量翻倍</td><td><code>--all-targets</code> 時同一位置在 lib 與 test 各報一次；以 (lint, 檔案, 行, 欄) 去重</td></tr>
+<tr><td>07</td><td>估計複雜度把 <code>error.rs::as_str</code> 算成 73</td><td>每個 match arm 都算一次；只用來排序</td></tr>
+<tr><td>07</td><td>其他 session 同時在編譯</td><td>用獨立 <code>CARGO_TARGET_DIR</code> 避免搶鎖</td></tr>
+<tr><td>07</td><td>「<code>review_queue.rs</code> 很大」的前提</td><td>實際 778 行，不在熱點內</td></tr>
+<tr><td>08</td><td>G21 實測數字</td><td>來自協調者轉述的後端 session，08 沒有重現</td></tr>
+<tr><td>08</td><td><code>fsync=off</code> 後 DROP 停頓降到毫秒級</td><td>依原始碼推論，沒有實測</td></tr>
+</table></div>
+<p class="small" style="margin-top:20px">本頁由四份 Markdown 彙整；數字與結論以原文為準，衝突時以 08 為準。</p>
+</main></body></html>
