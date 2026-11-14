@@ -1057,6 +1057,18 @@ async fn t_m1_80_132_unread_count() {
     .await;
     dispatch(w).await;
     assert_eq!(rows(w, w.alice).await, 100);
+    // The cap and `capped` are what these counts check, not the 2 s
+    // budget: counting 100 rows takes ~560 statements, which a loaded
+    // machine does not finish in 2 s (then the answer is stale). The
+    // budget gets the bounded-wait limit here; the stale cases below use
+    // the product's 2 s with a gate that never opens.
+    let generous = || {
+        notifications::COUNT_BUDGET_MS.store(
+            common::WAIT_TIMEOUT.as_millis() as u64,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+    };
+    generous();
     let c = notifications::unread_count(&w.app, w.alice_ctx)
         .await
         .unwrap();
@@ -1066,6 +1078,7 @@ async fn t_m1_80_132_unread_count() {
         .await
         .unwrap();
     assert_eq!((c.count, c.capped, c.stale), (Some(99), false, false));
+    notifications::COUNT_BUDGET_MS.store(0, std::sync::atomic::Ordering::SeqCst);
     // Slow count, same reach: the last value, stale.
     let gate = Arc::new(Gate::default());
     faults::arm("notify.count", Action::Block(gate.clone()));
@@ -1084,6 +1097,7 @@ async fn t_m1_80_132_unread_count() {
         .unwrap();
     faults::clear();
     assert_eq!((c.count, c.capped, c.stale), (None, false, true));
+    generous();
     let c = notifications::unread_count(&w.app, w.alice_ctx)
         .await
         .unwrap();
@@ -1659,14 +1673,80 @@ async fn v_read_all_before_marks_row_committed_after_list() {
     assert_eq!(left.items[0].issue.as_ref().unwrap().key, kx);
 }
 
+/// Counts the sqlx statements (`sqlx::query` events) `fut` runs on this
+/// thread. The subscriber is this thread's default only while counting
+/// (`set_default`), so no global subscriber is installed or replaced.
+///
+/// Assumes a current-thread runtime (`#[tokio::test]`): sqlx logs where the
+/// query stream is polled, and tasks sqlx spawns (the `after_release` check
+/// of `db::pool_options` when a connection goes back) run on this thread
+/// too. Under `multi_thread`, or for statements in a task `fut` spawns, some
+/// events would be missed. So that every count holds exactly its own
+/// releases, the pool is idle before counting starts (the previous step's
+/// release check is not counted) and again before it ends (this step's is).
+async fn statements<T>(
+    pool: &sqlx::PgPool,
+    fut: impl std::future::Future<Output = T>,
+) -> (T, usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing_subscriber::layer::SubscriberExt;
+    struct Count(Arc<AtomicUsize>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+        fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let n = Arc::new(AtomicUsize::new(0));
+    let only_sqlx = tracing_subscriber::filter::filter_fn(|m| m.target() == "sqlx::query");
+    let subscriber = tracing_subscriber::registry().with(tracing_subscriber::Layer::with_filter(
+        Count(n.clone()),
+        only_sqlx,
+    ));
+    pool_idle(pool).await;
+    let guard = tracing::subscriber::set_default(subscriber);
+    let out = fut.await;
+    pool_idle(pool).await;
+    drop(guard);
+    (out, n.load(Ordering::SeqCst))
+}
+
+/// Waits until every open connection of `pool` is back and idle (its
+/// release check done).
+async fn pool_idle(pool: &sqlx::PgPool) {
+    common::poll_until("pool idle", common::WAIT_TIMEOUT, async || {
+        if pool.num_idle() >= pool.size() as usize {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(format!(
+                "{} of {} connections idle",
+                pool.num_idle(),
+                pool.size()
+            ))
+        }
+    })
+    .await
+}
+
 /// Verification D2: watcher_count is one statement; 1000 watchers who
-/// cannot see the issue cost little.
+/// cannot see the issue do not add statements to `GET /issues/{key}`.
+/// Counted, not timed: on a loaded machine every round trip is ~40x
+/// slower, so a time limit failed without any change in the code
+/// (testing-playbook "效能不用 wall-clock 上限").
 #[tokio::test]
 async fn v_watcher_count_with_many_invisible_watchers() {
     let pool = test_pool().await;
     let f = setup(&pool).await;
     let w = &f.w;
     let (i, key) = create(w, f.bob_ctx, w.web, json!({"subject": "crowd"})).await;
+    // Warm up once (lazily loaded settings, statement caches), then count
+    // with bob as the only watcher.
+    service::get(&w.app, f.bob_ctx, &key).await.unwrap();
+    let (d, alone) = statements(&w.app.pool, service::get(&w.app, f.bob_ctx, &key)).await;
+    assert_eq!(d.unwrap().watch.unwrap().watcher_count, 1);
+    assert!(
+        alone > 0,
+        "no sqlx::query events seen: the count measures nothing"
+    );
     exec(
         &pool,
         &format!(
@@ -1677,18 +1757,17 @@ async fn v_watcher_count_with_many_invisible_watchers() {
         ),
     )
     .await;
-    // Warm up once (plans, caches), then measure.
-    service::get(&w.app, f.bob_ctx, &key).await.unwrap();
-    let t = Instant::now();
-    let d = service::get(&w.app, f.bob_ctx, &key).await.unwrap();
-    let took = t.elapsed();
-    let wi = d.watch.unwrap();
+    let (d, crowd) = statements(&w.app.pool, service::get(&w.app, f.bob_ctx, &key)).await;
+    let wi = d.unwrap().watch.unwrap();
     assert_eq!(
         (wi.watcher_count, wi.watcher_count_capped),
         (1, false),
         "bob only"
     );
-    assert!(took < Duration::from_millis(500), "GET took {took:?}");
+    assert_eq!(
+        crowd, alone,
+        "1000 invisible watchers changed the number of statements of GET /issues/{{key}}"
+    );
     let (sql, rust) = notifications::watcher_count_both(&pool, i).await.unwrap();
     assert_eq!(sql, rust);
 }

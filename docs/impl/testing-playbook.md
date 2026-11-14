@@ -147,11 +147,27 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 | 位置 | 理由 |
 |---|---|
 | 刻意的短時間窗：`p2_api_gaps` 的 5 秒、`m1_5_forms` 的 700 ms、`m1_9_ai_team` 的 400 ms「不能提早完成」檢查、`s8_search_consistency` 的等待者時間窗 | 這些是斷言（「這段時間內不能發生」），逾時是預期結果，不是卡住。時間窗之後真正等完成的那一步已改用 `wait_for`／`join` |
-| `p2_tx_cancel` 的 `idle` 輪詢（200 µs 間隔、10 秒上限） | 已有自己的上限；它要抓很短的狀態，20 ms 的 `POLL_EVERY` 太粗 |
+| `p2_tx_cancel` 的 `idle` 輪詢（200 µs 間隔、10 秒上限）與 `began`（1 ms 間隔、1 秒上限，逾時回 `false` 不 panic） | 已有自己的上限；它要抓很短的狀態，20 ms 的 `POLL_EVERY` 太粗。`began` 逾時代表「`BEGIN` 還沒送出」，呼叫端會再 poll 一次，最多試 10 次才 panic |
 | `m1_8_notifications` 的效能寫入 task | 用 `wait_for(…, WAIT_TIMEOUT * 5, …)`：大量寫入本來就要數十秒，60 秒在滿載時太緊 |
 | `s8_gate_extra` 的背景 task | 用 `wait_for(…, 120 s, …)`，理由同上 |
 | `m1_11_e5` 的 harness（等 run 結束的迴圈） | 已有自己的輪數上限（每輪 100 ms），到上限回 `Err("run did not end")` 給 harness 計分，不 panic；`e5_live` 接真的模型，時間由外部服務決定 |
 - nextest 的 `slow-timeout`（60 秒標示、10 分鐘砍）是最後一道防線，數值等 D3 量測後再定；有了 `WAIT_TIMEOUT`，卡住的測試會在 60 秒左右自己失敗並印出狀態，不會等到被砍。
+
+## 效能不用 wall-clock 上限（T1b）
+
+測試**不要用「花了多久」判斷效能**（`assert!(t.elapsed() < 500ms)`、產品的時間預算剛好夠用之類）。這台 Windows 主機 CPU 被吃滿時（全套 12 平行、或旁邊有編譯），每次 DB 往返從約 0.7 ms 變成約 31 ms，
+一個 33 條 SQL 的請求就超過 500 ms，產品沒變、測試卻失敗（`m1_8_notifications` 的兩個測試就是這樣時好時壞；用 12 個忙迴圈壓 CPU 可以穩定重現）。
+
+| 要驗的事 | 改用 |
+|---|---|
+| 「N 筆資料不會讓成本暴增」「這段是一條 SQL」 | 數 statement：`m1_8_notifications` 的 `statements(fut)` 在 `fut` 執行期間用 `tracing::subscriber::set_default` 掛一個只收 `sqlx::query` 事件的計數 layer（只影響這個執行緒，不換全域 subscriber），比較有、沒有那 N 筆時的數字（`v_watcher_count_with_many_invisible_watchers`） |
+| 查詢計畫不會退化（全表掃描、巢狀迴圈） | `EXPLAIN (FORMAT JSON)` 檢查計畫節點或 cost 上限 |
+| 產品有時間預算（例如 unread-count 的 2 秒），但測試要驗的是預算內的結果（上限、capped） | `test-support` 下的旋鈕把預算調大：`views::COUNT_BUDGET_MS`、`notifications::COUNT_BUDGET_MS`（0 = 正式值）。旋鈕只在 `#[cfg(feature = "test-support")]` 下存在，正式 build 的常數不變 |
+| 要驗「逾時後怎樣」（stale、取消） | 用 `faults::Gate` 擋住，讓逾時一定發生，不要靠機器慢 |
+| 取消要落在某個時間窗（例如 `BEGIN` 已送出、回應還沒讀） | 觀察狀態決定時機，不要掃時間點：`p2_tx_cancel::cancel_after_server_began` 在兩次 poll 之間從另一條連線看 `pg_stat_activity` 到 `idle in transaction` 才丟掉 future |
+
+真的需要時間上限（例如量 p95）時，放進單獨跑的群組（`threads-required = 'num-test-threads'`，或 `#[ignore]` 另外跑），並在測試與 `.config/nextest.toml` 註明為什麼需要時間。
+「這段時間內不能發生」的時間窗斷言（見上面的例外表）不是效能上限，不在此限。
 
 ## 連線數（D10）
 

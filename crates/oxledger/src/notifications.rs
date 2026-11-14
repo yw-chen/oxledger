@@ -92,6 +92,21 @@ pub const MAX_ISSUE_FAILURES: u32 = 5;
 const COUNTS_CAP: usize = 10_000;
 /// `unread-count` answers within this; afterwards the last value (§3.11.3).
 const COUNT_BUDGET: Duration = Duration::from_secs(2);
+/// Tests: the `unread-count` budget in ms (0 = [`COUNT_BUDGET`]), so a test
+/// about the cap does not depend on how fast the machine runs ~560
+/// statements (as `views::COUNT_BUDGET_MS`).
+#[cfg(feature = "test-support")]
+pub static COUNT_BUDGET_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The `unread-count` budget: [`COUNT_BUDGET`], or [`COUNT_BUDGET_MS`] when a
+/// test set it.
+fn count_budget() -> Duration {
+    #[cfg(feature = "test-support")]
+    if let ms @ 1.. = COUNT_BUDGET_MS.load(std::sync::atomic::Ordering::SeqCst) {
+        return Duration::from_millis(ms);
+    }
+    COUNT_BUDGET
+}
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 100;
 /// Rows one list request examines at most; the cursor then continues after
@@ -1628,7 +1643,7 @@ pub async fn unread_count(app: &App, caller: AuthContext) -> Result<UnreadCount>
         let mut conn = app.pool.acquire().await?;
         fingerprint(&mut conn, caller).await?
     };
-    match tokio::time::timeout(COUNT_BUDGET, count_now(app, caller)).await {
+    match tokio::time::timeout(count_budget(), count_now(app, caller)).await {
         Ok(r) => {
             let (count, capped) = r?;
             if let Ok(mut g) = COUNTS.lock() {
