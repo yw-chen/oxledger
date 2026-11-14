@@ -96,6 +96,16 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 - [ ] `p2_strategy` 的 2 個、`m1_2_views` 的 2 個：把一次寫上萬筆的交易拆小，或改用 `COPY`／分批 commit，讓 xid 不要一次持有 20–40 秒。
 - 完成一項就把它從 `.config/nextest.toml` 的 override 拿掉，平行跑全套三次都過才算。
 
+## 可觀測性（T2）
+
+- `OXLEDGER_LOG_FORMAT=json` 讓 `oxledger serve`／`stdio` 的 log 改成一行一個 JSON 物件（預設 `text`）；本機要用 `jq` 過濾時再開。規格見設計 02 §4.3、部署說明見 `upgrade-notes.md`「T2 可觀測性」。
+- `tests/t2_observability.rs` 的指標斷言（`HTTP.count(...)`、`POOL_ACQUIRE_TIMEOUTS`、worker 計數）讀的是**程序內**的計數器。nextest 每個測試一個程序，所以計數只來自那個測試；
+  用 `cargo test` 跑時同一個 binary 的測試共用計數器，`route_labels_are_templates_without_values`、`pool_acquire_timeouts_are_counted` 的精確數字會對不上。請用 nextest，或 `cargo test --test t2_observability <測試名>` 一次跑一個。
+- `readyz_reports_database_migrations_and_workers` 的「migration 落後」用一個不存在的版本號模擬（`api::readyz_routes` 吃預期的版本清單），不動 slot DB 的 `_sqlx_migrations`，所以不需要暫時 DB，也不在 `drop-database` 群組。
+- `s8_gate_extra::hidden_content_stays_out_of_logs_and_audit` 也走 HTTP 與 MCP（`http_probe`），文字與 JSON 兩種格式各跑一次。新增 log 欄位時要讓它繼續涵蓋。它用的是產品的 `telemetry::subscriber`（`RUST_LOG=trace`、rmcp 上限開著）；不要在測試裡自己組 subscriber 或加 `rmcp=info` 繞過，`t2_observability::rmcp_debug_logs_are_capped_unless_allowed` 才會一起守住 rmcp 的上限。
+- 需要「沒有 oxledger 資料表的資料庫」的測試（500、migration 讀不到）連測試伺服器的 `postgres` 資料庫，用 `t2_observability` 的 `tiny_admin_pool`：它**不跑 migration**。不要對 `admin_url()` 呼叫 `db::connect_with`，那會把 migration 套進 `postgres`。
+- `readyz_gives_up_after_two_seconds` 在本機開一個只 accept、不回話的 TCP 埠當資料庫，量 `/readyz` 在 2 秒左右回 503（上限 5 秒，`/readyz` 池自己的 acquire timeout 是 10 秒）。
+
 ## 逾時時印出是誰壓住 horizon（D1(d)）
 
 `SearchIndex::sync_all` 與 `notifications::dispatch_all` 等 20 秒還追不上 outbox 時，錯誤訊息後面會附上 `metrics::describe_xid_holders()` 的輸出：

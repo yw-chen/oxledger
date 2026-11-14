@@ -1687,6 +1687,11 @@ impl SearchIndex {
         let started = Instant::now();
         let r = self.sync_round_locked(pool).await;
         self.metrics.round(started.elapsed(), r.is_ok());
+        crate::metrics::worker_round(
+            crate::metrics::Worker::Search,
+            started.elapsed(),
+            r.as_ref().map(|_| ()),
+        );
         r
     }
 

@@ -512,6 +512,20 @@ INSERT INTO project_catalog VALUES (true);
 - 不回 SQLSTATE、constraint 名稱、SQL 原文。
 - **涉及目標是否存在、內容是什麼的細節，一定在可見性檢查之後才放進 `details`**（設計 01 §15.7）。
 
+**可觀測性（T2，2026-11-14；依據 08 §6 D9、D11 與 06 I-1～I-6）**
+
+- **request id**：每個 HTTP 請求由伺服器產生一個 UUIDv7。同一個 id 出現在回應標頭 `X-Request-Id`、`meta.request_id`／`error.request_id`，以及這個請求執行期間的每一行 log（`http` span 的 `request_id` 欄位）。T2 之前 `meta.request_id` 是每次回應新產、和 log 對不上；現在一個請求只有一個 id。
+- **客戶端送來的 id**：只接受 W3C `traceparent`（version `00`、小寫 hex、trace-id 和 parent-id 都不能全 0、長度剛好 55）。格式正確時，trace-id 記在 span 的 `trace_id` 欄位；request id 仍由伺服器產生。格式錯誤就整個忽略。`X-Request-Id`、`X-Correlation-Id` 等其他自訂 id 標頭一律忽略，不進 log，避免 log 注入。
+- **span 欄位**：`http` span 只有 `request_id`、`method`（8 個固定值，其他方法記 `OTHER`）、`route`（axum 比對到的路由樣板，例如 `/api/v1/issues/{key}`；沒比對到的一律 `unmatched`）、`trace_id`、`status`、`latency_ms`。不記實際路徑、query string、標頭或本文。請求結束時在 DEBUG 等級記一行 `request finished`（預設 `info` 看不到，預設 log 量不變）。
+- **MCP**：每次 tool call 有一個 `mcp_tool` span（`request_id`、`tool`；`tool` 只在是已登記的工具名稱時才記，否則 `unknown`），結束時在 DEBUG 記一行 `tool call finished`（欄位 `ok`）。HTTP 上的 tool 錯誤（領域錯誤的 `request_id`、internal error 訊息裡的 id）就是帶這個 call 的 POST 的 `X-Request-Id`；stdio 每次 call 產一個新的 id。
+- **`GET /readyz`**：資料庫連得上（2 秒內）、這個 build 的 migration 都已套用、這個程序負責的 worker 都已啟動，回 200 `{"status":"ready","checks":{"database":"ok","migrations":"ok","workers":"ok"}}`；否則回 503 `{"status":"not_ready","checks":{…}}`，各項只會是固定字：`database` 為 `ok`／`unavailable`，`migrations` 為 `ok`／`pending`／`unknown`，`workers` 為 `ok`／`not_started`。本文不含錯誤原文、連線字串、主機。worker 停滯**不算** not ready（06 A4(a)），交給指標告警。`/healthz` 維持 liveness（不碰資料庫）。資料庫檢查不向主連線池借連線（主池忙不等於沒準備好）：`/readyz` 有自己只有一條連線的池（第一次探測時才連，設定同主池，`application_name` 為 `oxledger-readyz`），整個檢查 2 秒逾時；同一時間只跑一次檢查，結果沿用 1 秒，所以大量同時探測只會打一次資料庫。一次檢查失敗就回 503，不做「連續 N 次失敗才算」。
+- **指標**（`/metrics`，沿用既有的 bearer token 與文字格式）：`http_requests_total{route,method,status_class}`、`http_request_errors_total{route,method}`（5xx）、`http_request_duration_seconds{route,method}`（固定 bucket）；`db_pool_connections{state="idle|in_use"}`、`db_pool_max_connections`、`db_pool_acquire_timeouts_total`、`db_pool_released_in_transaction_total`（G20）；`worker_started`、`worker_rounds_total{worker,result}`、`worker_last_success_timestamp_seconds`、`worker_round_duration_seconds`、`worker_backlog`，`worker` 是 `search`、`notify`、`field_index`、`login_sweeper`、`github`、`ai_jobs`、`ai_run`。label 只有路由樣板與固定列舉，數量由程式決定。
+- **log 格式**：環境變數 `OXLEDGER_LOG_FORMAT`，`text`（預設，和 T2 之前相同）或 `json`（一行一個 JSON 物件：`timestamp`、`level`、`target`、`fields`、`spans`）；其他值啟動時報錯。JSON 裡的 U+2028、U+2029、U+0085 一律輸出成 JSON 的 `\u` 跳脫（反斜線加 `u2028` 等），一行就是一筆。
+- **`RUST_LOG` 與 request id**：`request_id` 掛在 INFO 等級的 `http` span 上。`RUST_LOG=warn`（或更嚴）時這個 span 被濾掉，WARN／ERROR 的 log 行就不帶 `request_id`；例外是 500：那行 `request failed` 自己帶 `request_id` 欄位，任何等級都對得上回應。
+- **rmcp 的 log 上限**：rmcp 在 DEBUG／TRACE 會記整個 JSON-RPC 請求與 tool 結果（議題內容）。程式在 `RUST_LOG` 之外另加一道上限，rmcp 最多到 INFO；只有明確設 `OXLEDGER_ALLOW_RMCP_DEBUG=1` 才放行（除錯用，log 會含議題內容）。
+- **連線的 `application_name`**：主連線池是 `oxledger`（連線字串自己有 `application_name` 時以連線字串為準），`/readyz` 的連線是 `oxledger-readyz`，在 `pg_stat_activity` 可分辨（06 I-4）。sqlx 的 `acquire_slow_threshold` 設 500 ms：取連線超過 500 ms 會在 WARN 記一行。
+- 新增的 log 欄位都在 `s8_gate_extra::hidden_content_stays_out_of_logs_and_audit`（E4w-7）的涵蓋範圍內：測試走 HTTP 與 MCP，把秘密字串放在路徑、query、本文、留言、偽造的 `X-Request-Id`、錯誤的 `traceparent`，在文字與 JSON 兩種格式下都斷言 log 不含秘密與 agent token。
+
 ### 4.4 錯誤碼表
 
 | HTTP | code | 何時 | retryable |

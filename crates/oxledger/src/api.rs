@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! HTTP: the SPA API under `/api/v1` (contract 02 §4), MCP at `/mcp`, and
-//! `/healthz`.
+//! HTTP: the SPA API under `/api/v1` (contract 02 §4), MCP at `/mcp`,
+//! `/healthz` (liveness) and `/readyz` (readiness, T2). Every route runs
+//! under [`crate::telemetry::observe`]: one request id per request, in the
+//! `X-Request-Id` header, the body's `request_id` and the log span.
 //!
 //! Credentials (§3.2): `/api/v1` accepts only the session cookie, `/mcp` only
 //! a bearer token. A request with both is `invalid_request`
@@ -66,12 +68,216 @@ pub fn router_with_github(
     cfg: ApiConfig,
     github: Option<crate::github::GithubConfig>,
 ) -> Router {
+    server_router(app, cfg, github, None)
+}
+
+/// What `serve` runs: the router with the GitHub webhook and `/metrics`
+/// when configured, every route under the request middleware
+/// ([`observed`]).
+pub fn server_router(
+    app: Arc<App>,
+    cfg: ApiConfig,
+    github: Option<crate::github::GithubConfig>,
+    metrics_token: Option<String>,
+) -> Router {
     let hook = github.map(|g| crate::github::webhook::routes(app.clone(), g.webhook_secret));
-    let r = base_router(app, cfg);
-    match hook {
-        Some(h) => h.merge(r),
-        None => r,
+    let mut r = base_router(app.clone(), cfg);
+    if let Some(h) = hook {
+        r = h.merge(r);
     }
+    if let Some(t) = metrics_token {
+        r = r.merge(metrics_routes(app, t));
+    }
+    observed(r)
+}
+
+/// Puts [`crate::telemetry::observe`] (request id, span, HTTP metrics) on
+/// every route of `r` and on its fallback. Applied once, after all routes
+/// are in: axum layers only the routes that exist when `layer` is called,
+/// and only there is the matched route template known.
+pub fn observed(r: Router) -> Router {
+    r.layer(middleware::from_fn(crate::telemetry::observe))
+}
+
+// ---------------------------------------------------------------- readiness
+
+/// How long `/readyz` waits for the database before answering 503.
+pub const READY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What `/readyz` found. Only these fixed words reach the response; error
+/// text goes to the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Readiness {
+    /// `ok` or `unavailable`.
+    pub database: &'static str,
+    /// `ok`, `pending` (a migration of this build is not applied) or
+    /// `unknown` (could not be read).
+    pub migrations: &'static str,
+    /// `ok` or `not_started` (a worker this process runs has not started).
+    pub workers: &'static str,
+}
+
+impl Readiness {
+    pub fn ready(&self) -> bool {
+        self.database == "ok" && self.migrations == "ok" && self.workers == "ok"
+    }
+}
+
+/// The up-migration versions of this build.
+pub fn expected_migrations() -> Vec<i64> {
+    crate::db::MIGRATOR
+        .iter()
+        .filter(|m| m.migration_type.is_up_migration())
+        .map(|m| m.version)
+        .collect()
+}
+
+/// How long a database check result is reused: many probes at once (one
+/// per load balancer node, say) run one check per this window.
+pub const READY_CACHE: Duration = Duration::from_secs(1);
+
+/// The readiness pool's own acquire timeout: longer than
+/// [`READY_TIMEOUT`], so the 2 s limit is the one that applies.
+const READY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Database checks `/readyz` actually ran (tests: the cache and the
+/// single flight bound them).
+pub static READY_DB_CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Checks the database (one connection, two queries, [`READY_TIMEOUT`]),
+/// that every version in `expected` is applied, and
+/// [`crate::metrics::workers_ready`]. No cache: see [`readyz_routes`].
+pub async fn readiness(pool: &sqlx::PgPool, expected: &[i64]) -> Readiness {
+    let (database, migrations) = check_database(pool, expected).await;
+    Readiness {
+        database,
+        migrations,
+        workers: workers_state(),
+    }
+}
+
+fn workers_state() -> &'static str {
+    if crate::metrics::workers_ready() {
+        "ok"
+    } else {
+        "not_started"
+    }
+}
+
+/// (`database`, `migrations`) of [`Readiness`].
+async fn check_database(pool: &sqlx::PgPool, expected: &[i64]) -> (&'static str, &'static str) {
+    READY_DB_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let checked = tokio::time::timeout(READY_TIMEOUT, async {
+        let mut conn = match pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => return Err(("unavailable", "unknown", anyhow::Error::from(e))),
+        };
+        if let Err(e) = sqlx::query("SELECT 1").execute(&mut *conn).await {
+            return Err(("unavailable", "unknown", e.into()));
+        }
+        let applied: Vec<i64> =
+            match sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success")
+                .fetch_all(&mut *conn)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return Err(("ok", "unknown", e.into())),
+            };
+        Ok(expected.iter().all(|v| applied.contains(v)))
+    })
+    .await;
+    match checked {
+        Ok(Ok(true)) => ("ok", "ok"),
+        Ok(Ok(false)) => ("ok", "pending"),
+        Ok(Err((d, m, e))) => {
+            crate::metrics::note_error(&e);
+            tracing::warn!("readiness check failed: {e:#}");
+            (d, m)
+        }
+        Err(_) => {
+            tracing::warn!("readiness check timed out");
+            ("unavailable", "unknown")
+        }
+    }
+}
+
+/// The state behind one `/readyz` route: its own one-connection pool and
+/// the last database result.
+struct ReadyProbe {
+    pool: sqlx::PgPool,
+    expected: Arc<[i64]>,
+    /// When the last check finished and what it found. Held across a
+    /// check, so concurrent probes wait for that one (single flight).
+    last: tokio::sync::Mutex<Option<(std::time::Instant, &'static str, &'static str)>>,
+}
+
+impl ReadyProbe {
+    async fn readiness(&self) -> Readiness {
+        let (database, migrations) = {
+            let mut last = self.last.lock().await;
+            match *last {
+                Some((at, d, m)) if at.elapsed() < READY_CACHE => (d, m),
+                _ => {
+                    let (d, m) = check_database(&self.pool, &self.expected).await;
+                    *last = Some((std::time::Instant::now(), d, m));
+                    (d, m)
+                }
+            }
+        };
+        Readiness {
+            database,
+            migrations,
+            workers: workers_state(),
+        }
+    }
+}
+
+/// `GET /readyz` (T2, research 06 I-6 / A4(a)): 200 when the database
+/// answers, this build's migrations are applied and the workers this
+/// process runs have started; 503 otherwise. A stalled worker does not
+/// make it fail (that is an alert on its metrics). The body has only
+/// fixed words, never an error text, a URL or a host. `/healthz` stays the
+/// liveness check (no database).
+///
+/// The check never borrows from the main pool (a busy pool is not "not
+/// ready"): it has its own pool of one connection, opened on first use
+/// with the main pool's settings and `application_name` `oxledger-readyz`.
+/// Results are reused for [`READY_CACHE`] and one check runs at a time.
+/// One failed check is enough for 503 (no "N failures in a row").
+pub fn readyz_routes(app: Arc<App>, expected: Arc<[i64]>) -> Router {
+    let options = (*app.pool.connect_options())
+        .clone()
+        .application_name("oxledger-readyz");
+    let probe = Arc::new(ReadyProbe {
+        pool: sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(READY_ACQUIRE_TIMEOUT)
+            .connect_lazy_with(options),
+        expected,
+        last: tokio::sync::Mutex::new(None),
+    });
+    Router::new().route(
+        "/readyz",
+        get(move || {
+            let probe = probe.clone();
+            async move {
+                let r = probe.readiness().await;
+                let status = if r.ready() {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                };
+                let body = json!({
+                    "status": if r.ready() { "ready" } else { "not_ready" },
+                    "checks": r,
+                });
+                let mut resp = (status, Json(body)).into_response();
+                resp.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                resp
+            }
+        }),
+    )
 }
 
 /// `GET /metrics` (03 §4.6, P2-D10): Prometheus text, only with
@@ -106,6 +312,7 @@ pub fn metrics_routes(app: Arc<App>, token: String) -> Router {
                     )
                         .into_response(),
                     Err(e) => {
+                        crate::metrics::note_error(&e);
                         tracing::error!("metrics: {e:#}");
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
                     }
@@ -402,15 +609,17 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .nest("/api/v1", v1)
         .merge(mcp)
         .route("/healthz", get(|| async { "ok" }))
+        .merge(readyz_routes(app, expected_migrations().into()))
 }
 
 // ---------------------------------------------------------------- responses
 
-/// `{"data": …, "meta": {…}}` (§4.3).
+/// `{"data": …, "meta": {…}}` (§4.3). `request_id` is the request's
+/// (`X-Request-Id`, the log lines), T2.
 fn ok(data: impl serde::Serialize) -> Response {
     Json(json!({
         "data": data,
-        "meta": {"request_id": Uuid::now_v7(), "observed_at": Utc::now()},
+        "meta": {"request_id": crate::telemetry::request_id(), "observed_at": Utc::now()},
     }))
     .into_response()
 }
@@ -435,7 +644,10 @@ impl<E: Into<anyhow::Error>> From<E> for ApiFailure {
 
 impl IntoResponse for ApiFailure {
     fn into_response(self) -> Response {
-        let request_id = Uuid::now_v7();
+        let request_id = crate::telemetry::request_id();
+        // Before classify: a pool timeout is the domain error
+        // `temporarily_unavailable` (503), not a 500.
+        crate::metrics::note_error(&self.0);
         match error::classify(&self.0) {
             Some(e) => {
                 let status = StatusCode::from_u16(e.code.http_status())
@@ -1361,7 +1573,7 @@ fn apply_response(out: crate::changesets::ApplyOutcome) -> Response {
         Json(json!({
             "data": {"execution_id": out.execution_id, "status": "queued",
                      "client_action": "retry_same_request", "can_cancel_apply": false},
-            "meta": {"request_id": Uuid::now_v7(), "observed_at": Utc::now()},
+            "meta": {"request_id": crate::telemetry::request_id(), "observed_at": Utc::now()},
         })),
     )
         .into_response();

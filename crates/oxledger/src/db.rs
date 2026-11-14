@@ -18,10 +18,26 @@ pub async fn connect(url: &str) -> Result<PgPool> {
     connect_with(pool_options(), url).await
 }
 
+/// The `application_name` every pooled connection reports (T2, research
+/// 06 I-4): `pg_stat_activity`, the long-transaction warnings and
+/// `describe_xid_holders` show who holds a transaction. An
+/// `application_name` in the URL wins.
+pub const APPLICATION_NAME: &str = "oxledger";
+
+/// `url` parsed, with [`APPLICATION_NAME`] unless the URL names one.
+pub fn connect_options(url: &str) -> Result<sqlx::postgres::PgConnectOptions> {
+    let o: sqlx::postgres::PgConnectOptions = url.parse().context("parse the PostgreSQL URL")?;
+    Ok(if o.get_application_name().is_some() {
+        o
+    } else {
+        o.application_name(APPLICATION_NAME)
+    })
+}
+
 /// [`connect`] with explicit pool options (tests size their pools).
 pub async fn connect_with(options: sqlx::postgres::PgPoolOptions, url: &str) -> Result<PgPool> {
     let pool = options
-        .connect(url)
+        .connect_with(connect_options(url)?)
         .await
         .context("connect to PostgreSQL")?;
     MIGRATOR.run(&pool).await.context("run migrations")?;
@@ -42,6 +58,9 @@ pub fn parse_max_connections(value: Option<&str>) -> Result<Option<u32>> {
         },
     }
 }
+
+/// Acquires slower than this are logged by sqlx at WARN (T2).
+pub const ACQUIRE_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How many connections [`pool_options`]'s release check found inside a
 /// transaction and closed, since the process started (G20).
@@ -80,7 +99,10 @@ pub fn pool_options() -> sqlx::postgres::PgPoolOptions {
 /// [`pool_options`] with [`MAX_CONNECTIONS_ENV`]'s value passed in, so the
 /// cap is tested without touching the process environment (G3).
 fn pool_options_from(max_connections: Option<&str>) -> sqlx::postgres::PgPoolOptions {
-    let options = sqlx::postgres::PgPoolOptions::new();
+    // T2 (research 06 I-4): sqlx warns on `sqlx::pool::acquire` when a
+    // connection took this long to get (default 2 s).
+    let options =
+        sqlx::postgres::PgPoolOptions::new().acquire_slow_threshold(ACQUIRE_SLOW_THRESHOLD);
     let options = match parse_max_connections(max_connections) {
         Ok(Some(n)) => options.max_connections(n),
         Ok(None) => options,
@@ -779,5 +801,25 @@ mod tests {
         assert_eq!(pool_options_from(Some(" 37 ")).get_max_connections(), 37);
         let bad = std::panic::catch_unwind(|| pool_options_from(Some("0")));
         assert!(bad.is_err(), "an invalid cap stops the process");
+    }
+
+    /// T2: slow acquires are logged after 500 ms.
+    #[test]
+    fn pool_options_log_slow_acquires_after_500ms() {
+        assert_eq!(
+            pool_options_from(None).get_acquire_slow_threshold(),
+            ACQUIRE_SLOW_THRESHOLD
+        );
+        assert_eq!(ACQUIRE_SLOW_THRESHOLD.as_millis(), 500);
+    }
+
+    /// T2: connections name themselves `oxledger` unless the URL says
+    /// otherwise.
+    #[test]
+    fn connect_options_set_the_application_name() {
+        let o = connect_options("postgres://u:p@127.0.0.1:5432/db").unwrap();
+        assert_eq!(o.get_application_name(), Some(APPLICATION_NAME));
+        let o = connect_options("postgres://u:p@127.0.0.1:5432/db?application_name=mine").unwrap();
+        assert_eq!(o.get_application_name(), Some("mine"));
     }
 }

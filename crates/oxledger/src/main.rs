@@ -20,13 +20,16 @@
 //! Configuration (environment): DATABASE_URL, OXLEDGER_INDEX_DIR (default ./data/index),
 //! OXLEDGER_BIND (default 127.0.0.1:8080), OXLEDGER_API_KEY (stdio),
 //! OXLEDGER_SPA_ORIGIN (default http://<OXLEDGER_BIND>; non-GET /api/v1 requests must come from it),
-//! OXLEDGER_METRICS_TOKEN (enables GET /metrics with `Authorization: Bearer <token>`).
+//! OXLEDGER_METRICS_TOKEN (enables GET /metrics with `Authorization: Bearer <token>`),
+//! OXLEDGER_LOG_FORMAT (`text`, the default, or `json`), OXLEDGER_DB_MAX_CONNECTIONS.
+//! `serve` also answers GET /readyz (database, migrations, workers started).
 
 use anyhow::{Context, Result, bail};
 use oxledger::api::{self, ApiConfig};
 use oxledger::auth::{self, SessionPolicy};
 use oxledger::db;
 use oxledger::mcp::OxServer;
+use oxledger::metrics::{Worker, timed_round, worker_expected, worker_round, worker_started};
 use oxledger::search::SearchIndex;
 use oxledger::service::App;
 use rmcp::ServiceExt;
@@ -74,7 +77,9 @@ fn spawn_indexer(app: Arc<App>) {
         .metrics
         .loop_running
         .store(true, std::sync::atomic::Ordering::SeqCst);
+    worker_expected(Worker::Search);
     tokio::spawn(async move {
+        worker_started(Worker::Search);
         let mut last_gc = std::time::Instant::now();
         let mut last_check = std::time::Instant::now();
         loop {
@@ -146,20 +151,35 @@ fn spawn_indexer(app: Arc<App>) {
 /// builds pending/broken per-field indexes and finishes interrupted drops.
 /// Only `serve` runs it, so stdio processes never race on the same DDL.
 fn spawn_field_indexer(app: Arc<App>) {
+    worker_expected(Worker::FieldIndex);
     tokio::spawn(async move {
+        worker_started(Worker::FieldIndex);
         loop {
+            let started = std::time::Instant::now();
+            let mut round: Result<()> = Ok(());
             match oxledger::custom_fields::reconcile_indexes(&app.pool).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(fixed = n, "custom field indexes reconciled"),
-                Err(e) => tracing::warn!("custom field index job failed: {e:#}"),
+                Err(e) => {
+                    tracing::warn!("custom field index job failed: {e:#}");
+                    round = Err(e);
+                }
             }
             // Contract 05 §3.7: conversions a restart interrupted (each
             // batch is idempotent, so a second runner is harmless).
             match oxledger::field_admin::resume_conversions(&app.pool).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(resumed = n, "custom field conversions resumed"),
-                Err(e) => tracing::warn!("custom field conversion job failed: {e:#}"),
+                Err(e) => {
+                    tracing::warn!("custom field conversion job failed: {e:#}");
+                    round = round.and(Err(e));
+                }
             }
+            worker_round(
+                Worker::FieldIndex,
+                started.elapsed(),
+                round.as_ref().map(|_| ()),
+            );
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
@@ -169,7 +189,9 @@ fn spawn_field_indexer(app: Arc<App>) {
 /// consumer `notify` (target: on the bell within 10 s of the event, B-26)
 /// and removes notifications past their retention once an hour (B-25).
 fn spawn_notifier(app: Arc<App>) {
+    worker_expected(Worker::Notify);
     tokio::spawn(async move {
+        worker_started(Worker::Notify);
         let mut last_purge: Option<std::time::Instant> = None;
         loop {
             let more = match oxledger::notifications::dispatch_round(&app.pool).await {
@@ -196,12 +218,18 @@ fn spawn_notifier(app: Arc<App>) {
 
 /// Deletes expired login challenges.
 fn spawn_sweeper(app: Arc<App>) {
+    worker_expected(Worker::LoginSweeper);
     tokio::spawn(async move {
+        worker_started(Worker::LoginSweeper);
         loop {
-            if let Err(e) = sqlx::query("DELETE FROM login_challenges WHERE expires_at < now()")
-                .execute(&app.pool)
-                .await
-            {
+            let swept = timed_round(Worker::LoginSweeper, async {
+                sqlx::query("DELETE FROM login_challenges WHERE expires_at < now()")
+                    .execute(&app.pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            })
+            .await;
+            if let Err(e) = swept {
                 tracing::warn!("login challenge sweep failed: {e:#}");
             }
             tokio::time::sleep(Duration::from_secs(600)).await;
@@ -251,14 +279,13 @@ async fn serve() -> Result<()> {
         }
         None => None,
     };
-    let mut router = api::router_with_github(app.clone(), cfg, hook);
-    if let Some(t) = std::env::var("OXLEDGER_METRICS_TOKEN")
+    let metrics_token = std::env::var("OXLEDGER_METRICS_TOKEN")
         .ok()
-        .filter(|t| !t.is_empty())
-    {
-        router = router.merge(api::metrics_routes(app, t));
+        .filter(|t| !t.is_empty());
+    if metrics_token.is_some() {
         tracing::info!("metrics at /metrics (bearer token)");
     }
+    let router = api::server_router(app, cfg, hook, metrics_token);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("listening on http://{bind} (SPA API at /api/v1, MCP at /mcp)");
     axum::serve(
@@ -335,13 +362,22 @@ async fn admin(args: &[String]) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Logs go to stderr so stdio MCP stays clean.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+    // Logs go to stderr so stdio MCP stays clean; OXLEDGER_LOG_FORMAT=json
+    // switches to one JSON object per line (T2). rmcp stays at info unless
+    // OXLEDGER_ALLOW_RMCP_DEBUG=1: its debug logs carry tool results.
+    {
+        use oxledger::telemetry;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        let env = |k: &str| std::env::var(k).ok();
+        let format = telemetry::parse_log_format(env(telemetry::LOG_FORMAT_ENV).as_deref())?;
+        telemetry::subscriber(
+            format,
+            telemetry::env_filter(env("RUST_LOG").as_deref()),
+            telemetry::allow_rmcp_debug(env(telemetry::ALLOW_RMCP_DEBUG_ENV).as_deref()),
+            std::io::stderr,
         )
-        .with_writer(std::io::stderr)
         .init();
+    }
     match std::env::args().nth(1).as_deref() {
         Some("serve") => serve().await,
         Some("stdio") => stdio().await,

@@ -41,6 +41,7 @@ pub mod search;
 #[cfg(feature = "test-support")]
 pub mod seed;
 pub mod service;
+pub mod telemetry;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod time_entries;

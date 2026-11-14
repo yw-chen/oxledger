@@ -260,7 +260,8 @@ impl NotifyMetrics {
         }
     }
 
-    async fn render(&self, out: &mut String, pool: &PgPool) -> Result<()> {
+    /// Renders, and returns the outbox events after the notify cursor.
+    async fn render(&self, out: &mut String, pool: &PgPool) -> Result<i64> {
         {
             let h = self
                 .delay
@@ -338,7 +339,7 @@ impl NotifyMetrics {
             "Age of the oldest event the notify consumer has not passed",
             oldest.unwrap_or(0.0).max(0.0),
         );
-        Ok(())
+        Ok(pending)
     }
 }
 
@@ -495,6 +496,451 @@ fn gauge(out: &mut String, name: &str, help: &str, v: f64) {
     let _ = writeln!(out, "{name} {v}");
 }
 
+/// A label value as the text format wants it (`\`, `"` and newlines
+/// escaped). Label values here are route templates and fixed names.
+fn label(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------- HTTP (T2)
+
+const STATUS_CLASSES: [&str; 5] = ["1xx", "2xx", "3xx", "4xx", "5xx"];
+
+/// The status class index of `status` (anything outside 100–499 counts as
+/// a server error).
+fn status_class(status: u16) -> usize {
+    match status {
+        100..=199 => 0,
+        200..=299 => 1,
+        300..=399 => 2,
+        400..=499 => 3,
+        _ => 4,
+    }
+}
+
+struct RouteStats {
+    by_class: [u64; STATUS_CLASSES.len()],
+    duration: Histogram,
+}
+
+/// HTTP RED metrics by route template × method (T2, research 06 I-3).
+/// Keys come from the router's own route table plus
+/// [`crate::telemetry::UNMATCHED_ROUTE`], and the method is one of eight
+/// labels, so the number of series is bounded by the code, not by clients.
+pub struct HttpMetrics {
+    /// route template → method → counts.
+    routes: Mutex<RouteMap>,
+}
+
+type RouteMap =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<&'static str, RouteStats>>;
+
+pub static HTTP: HttpMetrics = HttpMetrics {
+    routes: Mutex::new(std::collections::BTreeMap::new()),
+};
+
+/// Every (route, method, stats), in label order.
+fn each(m: &RouteMap) -> impl Iterator<Item = (&String, &'static str, &RouteStats)> {
+    m.iter()
+        .flat_map(|(r, by)| by.iter().map(move |(me, s)| (r, *me, s)))
+}
+
+impl HttpMetrics {
+    /// One finished request. The route string is copied only the first
+    /// time that route is seen.
+    pub fn observe(&self, route: &str, method: &'static str, status: u16, took: Duration) {
+        let Ok(mut m) = self.routes.lock() else {
+            return;
+        };
+        if !m.contains_key(route) {
+            m.insert(route.to_string(), std::collections::BTreeMap::new());
+        }
+        let Some(by_method) = m.get_mut(route) else {
+            return;
+        };
+        let s = by_method.entry(method).or_insert_with(|| RouteStats {
+            by_class: [0; STATUS_CLASSES.len()],
+            duration: Histogram::default(),
+        });
+        s.by_class[status_class(status)] += 1;
+        s.duration.observe(took.as_secs_f64());
+    }
+
+    /// Requests counted for `route` × `method` × status class (tests).
+    pub fn count(&self, route: &str, method: &str, class: &str) -> u64 {
+        let Some(i) = STATUS_CLASSES.iter().position(|c| *c == class) else {
+            return 0;
+        };
+        self.routes
+            .lock()
+            .map(|m| {
+                each(&m)
+                    .filter(|(r, me, _)| *r == route && *me == method)
+                    .map(|(_, _, s)| s.by_class[i])
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// The route labels seen so far (tests: no path values among them).
+    pub fn routes(&self) -> Vec<String> {
+        self.routes
+            .lock()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn render(&self, out: &mut String) -> Result<()> {
+        let m = self
+            .routes
+            .lock()
+            .map_err(|_| anyhow::anyhow!("metrics lock poisoned"))?;
+        let _ = writeln!(
+            out,
+            "# HELP http_requests_total HTTP requests by route template, method and status class"
+        );
+        let _ = writeln!(out, "# TYPE http_requests_total counter");
+        for (route, method, s) in each(&m) {
+            for (i, class) in STATUS_CLASSES.iter().enumerate() {
+                if s.by_class[i] > 0 {
+                    let _ = writeln!(
+                        out,
+                        "http_requests_total{{route=\"{}\",method=\"{method}\",status_class=\"{class}\"}} {}",
+                        label(route),
+                        s.by_class[i]
+                    );
+                }
+            }
+        }
+        let _ = writeln!(
+            out,
+            "# HELP http_request_errors_total HTTP requests answered with a 5xx status"
+        );
+        let _ = writeln!(out, "# TYPE http_request_errors_total counter");
+        for (route, method, s) in each(&m) {
+            let _ = writeln!(
+                out,
+                "http_request_errors_total{{route=\"{}\",method=\"{method}\"}} {}",
+                label(route),
+                s.by_class[4]
+            );
+        }
+        let _ = writeln!(
+            out,
+            "# HELP http_request_duration_seconds Time from the request reaching the router to the response head"
+        );
+        let _ = writeln!(out, "# TYPE http_request_duration_seconds histogram");
+        for (route, method, s) in each(&m) {
+            s.duration.render(
+                out,
+                "http_request_duration_seconds",
+                &format!("route=\"{}\",method=\"{method}\"", label(route)),
+            );
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------- pool (T2)
+
+/// `sqlx::Error::PoolTimedOut` seen on a request or a worker round, since
+/// the process started: the pool had no free connection within
+/// `acquire_timeout` (sqlx has no wait-time API, research 06 §2.4).
+pub static POOL_ACQUIRE_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+
+/// Counts `e` in [`POOL_ACQUIRE_TIMEOUTS`] when its chain holds a pool
+/// timeout. Called where errors end: the 500 of a request, the internal
+/// error of an MCP tool, a failed worker round.
+pub fn note_error(e: &anyhow::Error) {
+    if e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::PoolTimedOut)
+        )
+    }) {
+        POOL_ACQUIRE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn render_pool(out: &mut String, pool: &PgPool) {
+    let size = pool.size();
+    let idle = u32::try_from(pool.num_idle()).unwrap_or(u32::MAX).min(size);
+    let _ = writeln!(
+        out,
+        "# HELP db_pool_connections Open pool connections by state"
+    );
+    let _ = writeln!(out, "# TYPE db_pool_connections gauge");
+    let _ = writeln!(out, "db_pool_connections{{state=\"idle\"}} {idle}");
+    let _ = writeln!(
+        out,
+        "db_pool_connections{{state=\"in_use\"}} {}",
+        size - idle
+    );
+    gauge(
+        out,
+        "db_pool_max_connections",
+        "The pool's connection cap",
+        pool.options().get_max_connections() as f64,
+    );
+    counter(
+        out,
+        "db_pool_acquire_timeouts_total",
+        "Requests and worker rounds that failed waiting for a pool connection",
+        POOL_ACQUIRE_TIMEOUTS.load(Ordering::Relaxed),
+    );
+    counter(
+        out,
+        "db_pool_released_in_transaction_total",
+        "Connections returned inside a transaction and closed (G20)",
+        crate::db::RELEASED_IN_TRANSACTION.load(Ordering::Relaxed),
+    );
+}
+
+// ---------------------------------------------------------------- workers (T2)
+
+/// The background workers, one label each (research 06 §2.5, I-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Worker {
+    /// Search index sync (`serve` and `stdio`).
+    Search,
+    /// Notification dispatch.
+    Notify,
+    /// Custom field index reconcile and conversion resume.
+    FieldIndex,
+    /// Expired login challenges.
+    LoginSweeper,
+    /// GitHub jobs and scheduled passes (only with GitHub configured).
+    Github,
+    /// The built-in AI's lease sweep and retention.
+    AiJobs,
+    /// One built-in AI run (one round per run).
+    AiRun,
+}
+
+impl Worker {
+    pub const ALL: [Worker; 7] = [
+        Worker::Search,
+        Worker::Notify,
+        Worker::FieldIndex,
+        Worker::LoginSweeper,
+        Worker::Github,
+        Worker::AiJobs,
+        Worker::AiRun,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Worker::Search => "search",
+            Worker::Notify => "notify",
+            Worker::FieldIndex => "field_index",
+            Worker::LoginSweeper => "login_sweeper",
+            Worker::Github => "github",
+            Worker::AiJobs => "ai_jobs",
+            Worker::AiRun => "ai_run",
+        }
+    }
+
+    fn stats(self) -> &'static WorkerStats {
+        &WORKERS[self as usize]
+    }
+}
+
+struct WorkerStats {
+    /// The process runs this worker, so `/readyz` waits for it.
+    expected: AtomicBool,
+    started: AtomicBool,
+    ok: AtomicU64,
+    failed: AtomicU64,
+    last_success_unix: AtomicU64,
+    duration: Mutex<Histogram>,
+}
+
+impl WorkerStats {
+    const fn new() -> Self {
+        WorkerStats {
+            expected: AtomicBool::new(false),
+            started: AtomicBool::new(false),
+            ok: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
+            last_success_unix: AtomicU64::new(0),
+            duration: Mutex::new(Histogram {
+                counts: [0; BUCKETS.len()],
+                count: 0,
+                sum: 0.0,
+            }),
+        }
+    }
+}
+
+static WORKERS: [WorkerStats; Worker::ALL.len()] =
+    [const { WorkerStats::new() }; Worker::ALL.len()];
+
+/// This process is going to run `w`: `/readyz` is not ready until it has
+/// started. Called before the task is spawned.
+pub fn worker_expected(w: Worker) {
+    w.stats().expected.store(true, Ordering::SeqCst);
+}
+
+/// `w`'s task is running (first thing inside the spawned task).
+pub fn worker_started(w: Worker) {
+    w.stats().started.store(true, Ordering::SeqCst);
+}
+
+/// One round of `w`: how long it took and whether it succeeded. A failure
+/// also goes through [`note_error`].
+pub fn worker_round(w: Worker, took: Duration, outcome: std::result::Result<(), &anyhow::Error>) {
+    let s = w.stats();
+    match outcome {
+        Ok(()) => {
+            s.ok.fetch_add(1, Ordering::Relaxed);
+            s.last_success_unix.store(unix_now(), Ordering::Relaxed);
+        }
+        Err(e) => {
+            s.failed.fetch_add(1, Ordering::Relaxed);
+            note_error(e);
+        }
+    }
+    if let Ok(mut h) = s.duration.lock() {
+        h.observe(took.as_secs_f64());
+    }
+}
+
+/// Runs one round of `w` and records it ([`worker_round`]).
+pub async fn timed_round<T>(
+    w: Worker,
+    f: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let started = Instant::now();
+    let r = f.await;
+    worker_round(w, started.elapsed(), r.as_ref().map(|_| ()));
+    r
+}
+
+/// Every worker this process expects has started (`/readyz`).
+pub fn workers_ready() -> bool {
+    Worker::ALL.iter().all(|w| {
+        let s = w.stats();
+        !s.expected.load(Ordering::SeqCst) || s.started.load(Ordering::SeqCst)
+    })
+}
+
+/// Rounds of `w` so far: (ok, failed). For tests.
+pub fn worker_rounds(w: Worker) -> (u64, u64) {
+    let s = w.stats();
+    (
+        s.ok.load(Ordering::Relaxed),
+        s.failed.load(Ordering::Relaxed),
+    )
+}
+
+/// Whether `w` has started. For tests.
+pub fn worker_is_started(w: Worker) -> bool {
+    w.stats().started.load(Ordering::SeqCst)
+}
+
+/// Tests: forget that `w` is expected or started.
+#[cfg(feature = "test-support")]
+pub fn reset_worker(w: Worker) {
+    let s = w.stats();
+    s.expected.store(false, Ordering::SeqCst);
+    s.started.store(false, Ordering::SeqCst);
+}
+
+async fn render_workers(out: &mut String, pool: &PgPool, search: i64, notify: i64) -> Result<()> {
+    let _ = writeln!(
+        out,
+        "# HELP worker_started Whether the worker's task is running in this process"
+    );
+    let _ = writeln!(out, "# TYPE worker_started gauge");
+    for w in Worker::ALL {
+        let _ = writeln!(
+            out,
+            "worker_started{{worker=\"{}\"}} {}",
+            w.name(),
+            u8::from(w.stats().started.load(Ordering::SeqCst))
+        );
+    }
+    let _ = writeln!(out, "# HELP worker_rounds_total Worker rounds by result");
+    let _ = writeln!(out, "# TYPE worker_rounds_total counter");
+    for w in Worker::ALL {
+        let (ok, failed) = worker_rounds(w);
+        let n = w.name();
+        let _ = writeln!(
+            out,
+            "worker_rounds_total{{worker=\"{n}\",result=\"ok\"}} {ok}"
+        );
+        let _ = writeln!(
+            out,
+            "worker_rounds_total{{worker=\"{n}\",result=\"failed\"}} {failed}"
+        );
+    }
+    let _ = writeln!(
+        out,
+        "# HELP worker_last_success_timestamp_seconds Unix time of the worker's last successful round (0: none yet)"
+    );
+    let _ = writeln!(out, "# TYPE worker_last_success_timestamp_seconds gauge");
+    for w in Worker::ALL {
+        let _ = writeln!(
+            out,
+            "worker_last_success_timestamp_seconds{{worker=\"{}\"}} {}",
+            w.name(),
+            w.stats().last_success_unix.load(Ordering::Relaxed)
+        );
+    }
+    let _ = writeln!(
+        out,
+        "# HELP worker_round_duration_seconds How long one worker round took"
+    );
+    let _ = writeln!(out, "# TYPE worker_round_duration_seconds histogram");
+    for w in Worker::ALL {
+        let h = w
+            .stats()
+            .duration
+            .lock()
+            .map_err(|_| anyhow::anyhow!("metrics lock poisoned"))?;
+        h.render(
+            out,
+            "worker_round_duration_seconds",
+            &format!("worker=\"{}\"", w.name()),
+        );
+    }
+    // Work waiting for a worker: outbox events (search, notify), due GitHub
+    // jobs, AI runs not finished.
+    let (github, ai): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM github_event_jobs
+                  WHERE payload IS NOT NULL AND next_at <= clock_timestamp()),
+                (SELECT count(*) FROM ai_runs WHERE state IN ('queued','running'))",
+    )
+    .fetch_one(pool)
+    .await?;
+    let _ = writeln!(out, "# HELP worker_backlog Items waiting for the worker");
+    let _ = writeln!(out, "# TYPE worker_backlog gauge");
+    for (w, n) in [
+        (Worker::Search, search),
+        (Worker::Notify, notify),
+        (Worker::Github, github),
+        (Worker::AiRun, ai),
+    ] {
+        let _ = writeln!(out, "worker_backlog{{worker=\"{}\"}} {n}", w.name());
+    }
+    Ok(())
+}
+
+fn counter(out: &mut String, name: &str, help: &str, v: u64) {
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} counter");
+    let _ = writeln!(out, "{name} {v}");
+}
+
 /// The `/metrics` body (Prometheus text format 0.0.4).
 pub async fn render(pool: &PgPool, index: &SearchIndex) -> Result<String> {
     let m = &index.metrics;
@@ -633,6 +1079,9 @@ pub async fn render(pool: &PgPool, index: &SearchIndex) -> Result<String> {
         "Age of the oldest transaction holding an xid, instance-wide",
         oldest_xid.max(0.0),
     );
-    NOTIFY.render(&mut out, pool).await?;
+    let notify_pending = NOTIFY.render(&mut out, pool).await?;
+    HTTP.render(&mut out)?;
+    render_pool(&mut out, pool);
+    render_workers(&mut out, pool, pending, notify_pending).await?;
     Ok(out)
 }

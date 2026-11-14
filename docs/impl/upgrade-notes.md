@@ -245,3 +245,20 @@
 - 不動權限、角色與成員，`security_epoch` 不變，agent 工作脈絡不受影響。
 - 同一階段沒有 migration 的 API 變更（G38–G47）見 `docs/impl/p1-backend-gaps.md`；其中要注意的：用 key 指定議題的 `log_time` 命令，升級前送出、升級後用同一個 Idempotency-Key 重送，會回 `idempotency_key_reused`（請求的正規化雜湊改了）。
 
+## T2 可觀測性（沒有 migration）
+
+規格見設計 02 §4.3「可觀測性」。部署要知道的：
+
+- **新的環境變數 `OXLEDGER_LOG_FORMAT`**：`text`（預設，格式和以前一樣）或 `json`（一行一個 JSON 物件，欄位 `timestamp`、`level`、`target`、`fields`、`spans`）。大小寫不分；設成其他值時程式啟動就失敗，不會默默用預設值。log 一樣寫到 stderr，`RUST_LOG` 照舊。
+- **新端點 `GET /readyz`**（不需認證）：資料庫、migration、worker 都好回 200，否則 503；本文只有固定字（`database`、`migrations`、`workers` 三項）。反向代理或部署腳本要判斷「能不能接流量」請改用它；`/healthz` 仍是 liveness（不碰資料庫），E2E 也還是用 `/healthz`。
+  - 每次檢查用 `/readyz` 自己的一條連線（`application_name` 為 `oxledger-readyz`，不佔主連線池）跑兩個查詢（`SELECT 1` 與讀 `_sqlx_migrations`），2 秒逾時。同時來的探測共用一次檢查，結果沿用 1 秒，所以多個探測端不會放大資料庫負載。一次失敗就回 503；要「連續幾次失敗才摘除」請在反向代理或 orchestrator 設（例如 Kubernetes 的 `failureThreshold`）。
+  - 因為這條獨立連線，`max_connections` 規劃時每個 `serve` 程序要多算 1。
+  - worker 停滯不會讓 `/readyz` 失敗；請用 `worker_last_success_timestamp_seconds` 告警（例如 `time() - x > 120`）。
+- **回應標頭 `X-Request-Id`**：每個回應都有，和本文的 `request_id`、log 的 `request_id` 是同一個。使用者回報問題時附上這個 id，就能在 log 裡找到同一個請求的所有行。客戶端送來的 `X-Request-Id` 會被忽略；只接受 W3C `traceparent`，它的 trace-id 會記在 log 的 `trace_id`。
+- **`/metrics` 多了**：HTTP（`http_requests_total`、`http_request_errors_total`、`http_request_duration_seconds`，依路由樣板 × 方法 × 狀態類別）、連線池（`db_pool_connections{state}`、`db_pool_max_connections`、`db_pool_acquire_timeouts_total`、`db_pool_released_in_transaction_total`）、worker（`worker_started`、`worker_rounds_total`、`worker_last_success_timestamp_seconds`、`worker_round_duration_seconds`、`worker_backlog`）。原有的 `search_*`、`notify_*` 不改名。建議告警：`db_pool_released_in_transaction_total` 有增加（G20 復發）、`db_pool_acquire_timeouts_total` 有增加、5xx 比率、worker 停滯。
+- 連線池等待時間 sqlx 沒有提供 API，只記「等不到連線而逾時」的次數（`acquire_timeout`，sqlx 預設 30 秒）。另外取連線超過 500 ms 時 sqlx 會在 WARN 記一行（`acquire_slow_threshold`）。
+- **`application_name`**：主連線池的連線在 `pg_stat_activity` 顯示為 `oxledger`（連線字串若已帶 `application_name` 就用連線字串的）。
+- **`RUST_LOG=warn` 時 log 沒有 `request_id`**：`request_id` 在 INFO 等級的 `http` span 上，`warn` 以上會把 span 濾掉，WARN／ERROR 行就不帶 id。例外是 500，那行 `request failed` 自己帶 `request_id`。要用 id 查 log，`RUST_LOG` 至少開到 `info`。
+- **新的環境變數 `OXLEDGER_ALLOW_RMCP_DEBUG`**：rmcp（MCP 函式庫）的 DEBUG／TRACE log 含整個 MCP 請求與 tool 結果，也就是議題內容。現在不論 `RUST_LOG` 怎麼設，rmcp 最多記到 INFO；只有設成 `1` 才放行。只在本機除錯時開，正式環境不要設。以前用 `RUST_LOG=debug` 看得到的 rmcp 細節，升級後要加這個變數才看得到。
+- JSON log 裡的 U+2028、U+2029、U+0085 會寫成 JSON 的 `\u` 跳脫（反斜線加 `u2028` 等），按行切不會切壞。
+

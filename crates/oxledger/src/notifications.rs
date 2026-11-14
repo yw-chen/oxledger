@@ -509,6 +509,11 @@ pub async fn dispatch_round(pool: &PgPool) -> Result<Round> {
     let started = Instant::now();
     let r = dispatch_round_inner(pool).await;
     crate::metrics::NOTIFY.round(started.elapsed(), r.as_ref().ok());
+    crate::metrics::worker_round(
+        crate::metrics::Worker::Notify,
+        started.elapsed(),
+        r.as_ref().map(|_| ()),
+    );
     r
 }
 

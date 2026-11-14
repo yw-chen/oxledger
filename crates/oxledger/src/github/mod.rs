@@ -123,8 +123,11 @@ pub fn spawn_worker(
     app: std::sync::Arc<crate::service::App>,
     api: std::sync::Arc<dyn client::GithubApi>,
 ) {
+    use crate::metrics::{Worker, worker_expected, worker_round, worker_started};
     use std::time::{Duration, Instant};
+    worker_expected(Worker::Github);
     tokio::spawn(async move {
+        worker_started(Worker::Github);
         let start = Instant::now();
         let every = |last: &mut Option<Instant>, d: Duration| {
             let due = last.is_none_or(|l| l.elapsed() >= d);
@@ -136,6 +139,7 @@ pub fn spawn_worker(
         let (mut open, mut redeliver, mut full) = (None, None, None);
         let mut asked = std::collections::HashSet::new();
         loop {
+            let round_started = Instant::now();
             let r: anyhow::Result<()> = async {
                 // Jobs are shared through SKIP LOCKED; the scheduled passes
                 // run in one process at a time (B22).
@@ -178,6 +182,11 @@ pub fn spawn_worker(
                 r
             }
             .await;
+            worker_round(
+                Worker::Github,
+                round_started.elapsed(),
+                r.as_ref().map(|_| ()),
+            );
             if let Err(e) = r {
                 tracing::warn!("github worker: {}", e.root_cause());
             }

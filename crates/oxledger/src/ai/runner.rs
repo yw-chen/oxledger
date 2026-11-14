@@ -175,7 +175,17 @@ pub(crate) fn start(app: Arc<App>, run: Uuid, spa_origin: String) {
         m.insert(run, h.clone());
     }
     tokio::spawn(async move {
-        if let Err(e) = execute(&app, run, &spa_origin, &h).await {
+        // `ai_run` has no long-lived task: "started" means a run has
+        // started in this process. Never expected, so /readyz ignores it.
+        crate::metrics::worker_started(crate::metrics::Worker::AiRun);
+        let started = Instant::now();
+        let r = execute(&app, run, &spa_origin, &h).await;
+        crate::metrics::worker_round(
+            crate::metrics::Worker::AiRun,
+            started.elapsed(),
+            r.as_ref().map(|_| ()),
+        );
+        if let Err(e) = r {
             let request_id = Uuid::now_v7();
             tracing::error!(%request_id, %run, "AI run failed: {e:#}");
             let _ = finish(
@@ -1287,21 +1297,33 @@ pub async fn sweep(pool: &sqlx::PgPool) -> anyhow::Result<u64> {
 /// The background jobs of the built-in AI: the lease sweeper every 15 s
 /// and the retention job every hour.
 pub fn spawn_jobs(pool: sqlx::PgPool) {
+    use crate::metrics::{Worker, worker_expected, worker_round, worker_started};
     let every = config::current().limits.sweep_every;
+    worker_expected(Worker::AiJobs);
     tokio::spawn(async move {
+        worker_started(Worker::AiJobs);
         let mut t = tokio::time::interval(every);
         let mut last_retention: Option<Instant> = None;
         loop {
             t.tick().await;
+            let started = Instant::now();
+            let mut round: anyhow::Result<()> = Ok(());
             if let Err(e) = sweep(&pool).await {
                 tracing::warn!("AI lease sweep failed: {e:#}");
+                round = Err(e);
             }
             if last_retention.is_none_or(|l| l.elapsed().as_secs() >= 3600) {
                 last_retention = Some(Instant::now());
                 if let Err(e) = chat::retention(&pool).await {
                     tracing::warn!("AI conversation retention failed: {e:#}");
+                    round = round.and(Err(e));
                 }
             }
+            worker_round(
+                Worker::AiJobs,
+                started.elapsed(),
+                round.as_ref().map(|_| ()),
+            );
         }
     });
 }
