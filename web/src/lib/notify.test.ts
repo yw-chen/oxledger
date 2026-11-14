@@ -26,6 +26,7 @@ describe('notification lines (§6.15)', () => {
 	});
 	it('keeps only the five reason labels', () => {
 		expect(reasonLabels(['assigned', 'watching', 'ai_budget'])).toEqual(['指派給你', '關注中']);
+		expect(reasonLabels(['mentioned'])).toEqual(['提及你']);
 	});
 });
 

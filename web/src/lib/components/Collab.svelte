@@ -4,7 +4,8 @@
 	// shows what agents wrote and what waits for you, scoped to the issue
 	// open in the middle (or everything).
 	import { page } from '$app/state';
-	import type { ActivityItem, AiStatus } from '$api/types';
+	import type { ActivityItem } from '$api/types';
+	import { closeDrawer, collabUi, loadAiStatus } from '$lib/collab.svelte';
 	import AiChat from './AiChat.svelte';
 	import { api } from '$lib/api';
 	import { counts, myRoles } from '$lib/counts.svelte';
@@ -72,16 +73,25 @@
 	const KIND: Record<string, string> = { direct: '直接寫入', proposal: '核准後套用', blocked: '被擋', undo: '回復' };
 
 	// §6.19: `enabled = false` shows no AI tab at all.
-	let ai = $state<AiStatus | null>(null);
-	async function loadAi() {
-		try {
-			ai = await api('GET /ai/status');
-		} catch {
-			ai = null;
-		}
-	}
+	const ai = $derived(collabUi.ai);
+	const loadAi = loadAiStatus;
 	$effect(() => {
 		if (session.user?.user_id) loadAi();
+	});
+	function keydown(e: KeyboardEvent) {
+		if (e.key !== 'Escape' || !collabUi.narrow || !collabUi.drawer || e.defaultPrevented) return;
+		// A dialog opened from the drawer (step-up, a confirmation) takes this Esc.
+		if (document.querySelector('[aria-modal="true"]:not([data-testid="collab"])')) return;
+		closeDrawer();
+	}
+	// Opening moves focus into the drawer; closing gives it back (collab.svelte.ts).
+	let drawerEl = $state<HTMLElement | null>(null);
+	$effect(() => {
+		if (!collabUi.narrow || !collabUi.drawer || !drawerEl) return;
+		const el = drawerEl;
+		queueMicrotask(() => {
+			if (!el.contains(document.activeElement)) el.querySelector<HTMLElement>('[data-testid="drawer-close"]')?.focus();
+		});
 	});
 	const aiOn = $derived(!!ai?.enabled);
 	const showAi = $derived(aiOn && prefs.collabTab === 'ai');
@@ -96,19 +106,33 @@
 	}
 </script>
 
-{#if prefs.collabHidden || (!hasContent && !aiOn && !loading)}
+<svelte:window onkeydown={keydown} />
+
+{#if collabUi.narrow}
+	<!-- Below 1280 px: a drawer the top bar opens. It stays mounted while
+	     closed, so a reply keeps streaming. -->
+	{#if collabUi.drawer}<div class="drawer-bg" onclick={() => closeDrawer()} aria-hidden="true"></div>{/if}
+	<div class="collab drawer" class:open={collabUi.drawer} bind:this={drawerEl} role="dialog" aria-modal={collabUi.drawer ? 'true' : undefined} aria-label="協作欄" aria-hidden={!collabUi.drawer} inert={!collabUi.drawer} data-testid="collab">
+		{@render body()}
+	</div>
+{:else if prefs.collabHidden || (!hasContent && !aiOn && !loading)}
 	<aside class="collab rail" aria-label="協作欄（已收合）">
 		<button class="btn sm ghost" title="展開協作欄" onclick={() => { hide(false); tab(hasContent || !aiOn ? 'activity' : 'ai'); }} data-testid="collab-open">«</button>
 		<span class="vlabel">{hasContent ? '動態' : aiOn ? 'AI 助理' : '沒有 agent 動態'}</span>
 	</aside>
 {:else}
 	<aside class="collab" aria-label="協作欄" data-testid="collab">
+		{@render body()}
+	</aside>
+{/if}
+
+{#snippet body()}
 		<div class="ch">
 			{#if aiOn}<button class="ctab" class:on={showAi} onclick={() => tab('ai')} data-testid="tab-ai">AI 助理</button>{/if}
 			<button class="ctab" class:on={!showAi} onclick={() => tab('activity')} data-testid="tab-activity">動態</button>
 			<span class="dim" style="font-size:12px">{issueKey ?? '全部'}</span>
 			<span style="flex:1"></span>
-			<button class="btn sm ghost" title="收合" onclick={() => hide(true)}>»</button>
+			{#if collabUi.narrow}<button class="btn sm ghost" title="關閉（Esc）" aria-label="關閉協作欄" onclick={() => closeDrawer()} data-testid="drawer-close">×</button>{:else}<button class="btn sm ghost" title="收合" onclick={() => hide(true)}>»</button>{/if}
 		</div>
 		{#if showAi && ai}
 			<AiChat status={ai} onstatus={loadAi} />
@@ -147,5 +171,4 @@
 				{/if}
 			</div>
 		{/if}
-	</aside>
-{/if}
+{/snippet}

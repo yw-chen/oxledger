@@ -117,6 +117,13 @@
 	const isDate = (f: FilterFieldInfo | undefined) => !!f && ['date', 'datetime'].includes(f.type);
 	const isRel = (v: unknown): v is { rel: string; offset: number } => !!v && typeof v === 'object' && 'rel' in (v as object);
 	const md = (iso: string) => `${Number(iso.slice(5, 7))}/${iso.slice(8, 10)}`;
+	/** 相對日期 shortcuts: offset days from today (negative = before). */
+	const REL_QUICK = [
+		{ off: 0, label: '今天' },
+		{ off: -7, label: '7 天前' },
+		{ off: -30, label: '30 天前' },
+		{ off: 7, label: '7 天後' }
+	];
 
 	// Preview: 300 ms after the last change, only when every condition is complete.
 	let pv = $state<{ titles: string[] } | null>(null);
@@ -212,7 +219,12 @@
 					<button class="btn sm ghost" onclick={() => remove(grp, i)} aria-label="移除條件組">移除組</button>
 				</div>
 				{@render groupItems(item, false)}
-				<button class="btn sm" onclick={() => addCond(item)} disabled={total >= MAX_CONDS}>＋ 條件</button>
+				<div class="row" style="gap:6px">
+					<button class="btn sm" onclick={() => addCond(item)} disabled={total >= MAX_CONDS}>＋ 條件</button>
+					<!-- §6.2: a third level is not allowed; the button stays, disabled, with the reason in words. -->
+					<button class="btn sm" disabled aria-describedby="fe-depth-{i}" data-testid="fe-add-subgroup">＋ 條件組</button>
+					<span class="depth-note" id="fe-depth-{i}" data-testid="fe-depth-limit">最多兩層</span>
+				</div>
 			</div>
 		{:else}
 			{@render condRow(grp, item, i)}
@@ -316,15 +328,20 @@
 		</div>
 	{:else}
 		{@const rel = isRel(c.value)}
-		<div class="r" style="margin-top:6px">
-			<select value={rel ? 'rel' : 'abs'} onchange={(e) => (c.value = e.currentTarget.value === 'rel' ? { rel: 'today', offset: 0 } : today)} aria-label="日期種類">
-				<option value="abs">指定日期</option>
-				{#if dynamic(f, 'rel')}<option value="rel">相對今天</option>{/if}
-			</select>
+		{#if dynamic(f, 'rel')}
+			<div class="dtabs" role="tablist" aria-label="日期種類" style="margin-top:6px">
+				<button role="tab" type="button" class:on={!rel} aria-selected={!rel} onclick={() => rel && (c.value = today)} data-testid="fe-date-abs">日期</button>
+				<button role="tab" type="button" class:on={rel} aria-selected={rel} onclick={() => !rel && (c.value = { rel: 'today', offset: 0 })} data-testid="fe-date-rel">相對日期</button>
+			</div>
+		{/if}
+		<div class="r" style="margin-top:6px" role={dynamic(f, 'rel') ? 'tabpanel' : undefined}>
 			{#if isRel(c.value)}
 				{@const off = Number(c.value.offset ?? 0)}
-				<input type="number" min="-3650" max="3650" value={off} oninput={(e) => (c.value = { rel: 'today', offset: Math.max(-3650, Math.min(3650, Math.trunc(Number(e.currentTarget.value) || 0))) })} style="width:80px" aria-label="相對天數" />
-				<span class="hint">天（{off === 0 ? '今天' : off < 0 ? `${-off} 天前` : `${off} 天後`}，{md(addDays(today, off))}）</span>
+				{#each REL_QUICK as q (q.off)}
+					<button type="button" class="btn sm" class:on={off === q.off} onclick={() => (c.value = { rel: 'today', offset: q.off })}>{q.label}</button>
+				{/each}
+				<input type="number" min="-3650" max="3650" value={off} oninput={(e) => (c.value = { rel: 'today', offset: Math.max(-3650, Math.min(3650, Math.trunc(Number(e.currentTarget.value) || 0))) })} style="width:80px" aria-label="相對天數" data-testid="fe-rel-days" />
+				<span class="hint" data-testid="fe-rel-text">天（{off === 0 ? '今天' : off < 0 ? `${-off} 天前` : `${off} 天後`}，{md(addDays(today, off))}）</span>
 			{:else}
 				<input type="date" value={String(c.value ?? '')} oninput={(e) => (c.value = e.currentTarget.value)} aria-label="日期" />
 			{/if}

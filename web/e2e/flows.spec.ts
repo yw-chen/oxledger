@@ -67,6 +67,8 @@ async function papiOnce(page: Page, method: string, path: string, body?: unknown
 }
 
 const uuid = () => crypto.randomUUID();
+/** The database playwright.config.ts resets for this run. */
+const E2E_DB = process.env.OX_E2E_DB ?? 'oxledger_fe_e2e';
 const ref = (key: string) => ({ type: 'issue', key });
 async function lockOf(key: string): Promise<number> {
 	return (await agent.call('get', { key, fields: ['lock_version'] })).lock_version;
@@ -110,6 +112,8 @@ test('AI 團隊：精靈建立自訂角色（新執行環境、AUTH 全部需要
 	await expect(page.getByTestId('team-empty')).toContainText('還沒有 AI 團隊成員。');
 	await page.goto('/agents/new');
 	await page.waitForURL('**/ai-team/new');
+	// §6.18: the wizard opens after a step-up (signing in just now counts as one).
+	await maybeStepUp(page);
 	await page.getByTestId('tpl-custom').click();
 	await page.getByTestId('next').click();
 	await page.getByTestId('role-key').fill('e2e');
@@ -133,6 +137,10 @@ test('AI 團隊：精靈建立自訂角色（新執行環境、AUTH 全部需要
 	await page.getByTestId('next').click();
 	await expect(page.getByTestId('confirm-project')).toContainText('AUTH');
 	await expect(page.getByTestId('confirm-project')).toContainText(/直接寫入 —；需要核准 .*建立 issue/);
+	// §6.18 ⑥: the final full table, read-only.
+	const full = page.locator('[data-testid=confirm-table][data-project=AUTH]');
+	await expect(full).toBeVisible();
+	await expect(full.getByTestId('policy-table').locator('input[type=radio]:checked').first()).toBeDisabled();
 	await page.getByTestId('create-role').click();
 	if (await page.getByTestId('step-up').isVisible().catch(() => false)) {
 		await page.getByTestId('step-up-password').fill(PASSWORD);
@@ -155,6 +163,9 @@ test('AI 團隊：精靈建立自訂角色（新執行環境、AUTH 全部需要
 	await expect(page.getByTestId('cred')).toHaveCount(1);
 	await expect(page.getByTestId('cred')).toContainText('有效');
 	await expect(page.getByTestId('safety-row')).toContainText('AUTH');
+	// §6.18 ②: direct / review in two columns (everything needs review here).
+	await expect(page.getByTestId('safety-direct')).toHaveText('—');
+	await expect(page.getByTestId('safety-review')).toContainText('建立 issue');
 	await expect(page.getByTestId('runtime')).toContainText('E2E 執行環境');
 	// The project frame lists the roles delegated there.
 	await page.goto('/project/AUTH/ai-team');
@@ -271,6 +282,49 @@ test('暫停：人暫停後 agent 寫入被擋，恢復後可以再提案', asyn
 	expect(ok.changeset_id).toBeTruthy();
 });
 
+test('待審與委派：工時提案的摘要可讀；舊委派提示「有 N 個新操作可以加入」並可加入', async ({ browser }) => {
+	// §6.14: a time proposal reads as a sentence, never as JSON.
+	// G47: the backend only turns `issue.key` into an id for target/source/duplicate_of, so a
+	// time proposal sent by key has no target and no summary row. Send it by id until that is fixed.
+	const page = await alice(browser, '/');
+	// The human API has no issue ids, so read it from the E2E database.
+	const issueId = sqlValue("SELECT issue_id FROM issue_keys WHERE key = 'AUTH-2' AND is_current;");
+	expect(issueId).toMatch(/^[0-9a-f-]{36}$/);
+	const r = await propose('記工時', [{ kind: 'log_time', op_id: uuid(), issue: { type: 'issue', id: issueId }, fields: { hours: '1.5', spent_on: '2026-11-12', comments: '修 SSO' } }], []);
+	expect(r.changeset_id ?? r.id).toBeTruthy();
+	await page.goto('/review');
+	const sum = page.locator('[data-testid=diff-summary][data-field=time]').first();
+	await expect(sum).toContainText('記工時 1.50 小時（2026-11-12');
+	await expect(sum).toContainText('說明：修 SSO');
+	await expect(page.locator('main')).not.toContainText('"hours"');
+
+	// §6.14: a delegation made with only some operations offers the newer ones.
+	const role = (await papi(page, 'GET', '/ai-team?handle=e2e%40alice')).json.data.items[0];
+	const web = ((await papi(page, 'GET', '/projects')).json.data as { key: string; id: string }[]).find((p) => p.key === 'WEB')!;
+	const made = await papi(page, 'POST', '/delegations', {
+		agent_principal_id: role.id,
+		project_id: web.id,
+		proposal_ops: ['update_fields'],
+		writable_fields: [],
+		expires_in_days: 7,
+		policies: { commands: { update_fields: 'review' }, fields: {} }
+	});
+	expect(made.status).toBeLessThan(300);
+	await page.goto('/ai-team/e2e%40alice');
+	const box = page.locator('[data-testid=policy][data-project=WEB]').getByTestId('new-ops');
+	await expect(box).toContainText('個新操作可以加入');
+	await expect(box.locator('[data-testid=new-op][data-op=log_time]')).toContainText('預設需要核准');
+	for (const op of ['create_version', 'update_version']) {
+		const cb = box.locator(`[data-testid=new-op][data-op=${op}] input[type=checkbox]`);
+		if (await cb.count()) await cb.uncheck();
+	}
+	await box.getByTestId('new-ops-add').click();
+	await maybeStepUp(page);
+	const row = page.locator('[data-testid=policy][data-project=WEB] [data-testid=policy-row][data-op=log_time]');
+	await expect(row).toBeVisible();
+	await expect(row.getByLabel('記工時：需要核准')).toBeChecked();
+});
+
 test('回復：活動頁把 agent 套用的到期日改回去', async ({ browser }) => {
 	const page = await alice(browser, '/ai-team/e2e%40alice');
 	await expect(page.getByTestId('role-activity-list').getByTestId('activity').first()).toBeVisible();
@@ -302,6 +356,83 @@ test('人直接回報與編輯：/new 建單、議題頁改欄位、加 note', a
 	await expect(page.getByTestId('note').last()).toContainText('人自己補的 note');
 });
 
+test('M2.0 Markdown 編輯器：/new 的說明、純文字說明改寫後轉 Markdown、note 的提及清單／預覽／字數上限／草稿', async ({ browser }) => {
+	const fmt = (k: string) => sqlValue(`SELECT i.description_format FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current WHERE k.key = '${k}';`);
+	const page = await alice(browser, '/new');
+	await page.getByTestId('new-project').selectOption('AUTH');
+	const subject = `Markdown 單 ${Date.now()}`;
+	await page.getByTestId('new-form').getByLabel(/^標題/).fill(subject);
+	// The toolbar wraps the selection (06 §6.2).
+	const desc = page.getByTestId('md-description-input');
+	await desc.fill('重現步驟');
+	await desc.selectText();
+	await page.getByTestId('md-description').getByRole('button', { name: '粗體（Ctrl+B）' }).click();
+	await expect(desc).toHaveValue('**重現步驟**');
+	await page.getByTestId('md-description-help').click();
+	await expect(page.getByTestId('md-description-cheat')).toContainText('語法小抄');
+	await page.getByTestId('new-submit').click();
+	await page.waitForURL(/\/issue\/AUTH-\d+/);
+	const k = page.url().split('/issue/')[1];
+	// A new description is Markdown (R-M9: create omits `format`).
+	expect(fmt(k)).toBe('markdown');
+	await expect(page.getByTestId('description')).toContainText('重現步驟');
+
+	// A description written before M2 stays plain until a person rewrites it.
+	sql(`UPDATE issues SET description_format = 'plain' WHERE id = (SELECT issue_id FROM issue_keys WHERE key = '${k}' AND is_current);`);
+	await page.reload();
+	await page.getByTestId('edit').click();
+	await expect(page.getByTestId('md-description-plain')).toContainText('原本是純文字');
+	await page.getByLabel(/^標題/).fill(`${subject} 改`);
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('issue-subject')).toHaveText(`${subject} 改`);
+	expect(fmt(k)).toBe('plain');
+	await page.getByTestId('edit').click();
+	await page.getByTestId('md-description-input').fill('改寫成 **Markdown**');
+	await page.getByTestId('save').click();
+	await expect(page.getByTestId('description')).toContainText('改寫成');
+	await expect.poll(() => fmt(k)).toBe('markdown');
+
+	// Note: the mention list comes from the project's assignable people. Until the
+	// server sends logins (G48) they show but cannot be picked.
+	await page.getByTestId('add-note').click();
+	const body = page.getByTestId('note-body');
+	await body.fill('請 @Bo');
+	await body.press('End');
+	await body.pressSequentially('b');
+	const ac = page.getByTestId('note-md-ac');
+	await expect(ac).toBeVisible();
+	await expect(ac.getByTestId('note-md-ac-item').first()).toContainText('Bob');
+	await body.press('Escape');
+	await expect(ac).toHaveCount(0);
+	// The preview needs the server's /markdown/preview (M2.1); without it the text is kept.
+	await body.fill('預覽 **這段**');
+	await page.getByTestId('note-md-tab-preview').click();
+	await expect(page.getByTestId('note-md-preview')).toBeVisible();
+	await expect(page.getByTestId('note-md-preview-failed').or(page.getByTestId('note-md-preview').locator('strong'))).toBeVisible({ timeout: 10_000 });
+	await page.getByTestId('note-md-tab-write').click();
+	await expect(body).toHaveValue('預覽 **這段**');
+	// Over 64 KiB: the count turns red and the button is disabled.
+	await body.fill('中'.repeat(22_000));
+	await expect(page.getByTestId('note-md-count')).toContainText('超過上限');
+	await expect(page.getByTestId('note-submit')).toBeDisabled();
+	// A draft survives a reload and comes back on request.
+	await body.fill('還沒送出的 note');
+	await page.waitForTimeout(600);
+	page.once('dialog', (d) => d.accept());
+	await page.reload();
+	await page.getByTestId('add-note').click();
+	await expect(page.getByTestId('note-md-draft')).toBeVisible();
+	await page.getByTestId('note-md-draft-restore').click();
+	await expect(page.getByTestId('note-body')).toHaveValue('還沒送出的 note');
+	await page.getByTestId('note-submit').click();
+	await expect(page.getByTestId('note').last()).toContainText('還沒送出的 note');
+	// Sent: no draft left.
+	await page.reload();
+	await page.getByTestId('add-note').click();
+	await expect(page.getByTestId('note-md-input').or(page.getByTestId('note-body'))).toBeVisible();
+	await expect(page.getByTestId('note-md-draft')).toHaveCount(0);
+});
+
 test('帳號：另一個瀏覽器被登出後要重新登入', async ({ browser }) => {
 	const a = await alice(browser);
 	const b = await alice(browser, '/account');
@@ -321,7 +452,7 @@ test('不存在的網址顯示找不到頁面', async ({ browser }) => {
 
 /** SQL on the E2E database only (GitHub data cannot come from GitHub here). */
 function sql(text: string) {
-	execFileSync('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-v', 'ON_ERROR_STOP=1', '-q', '-U', 'oxledger', '-d', 'oxledger_fe_e2e'], { input: text });
+	execFileSync('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-v', 'ON_ERROR_STOP=1', '-q', '-U', 'oxledger', '-d', E2E_DB], { input: text });
 }
 
 test('里程碑：改日期前先看影響，儲存後更新', async ({ browser }) => {
@@ -407,7 +538,7 @@ test('登入的 next 只接受本站路徑', async ({ browser }) => {
 });
 
 function sqlValue(text: string): string {
-	return execFileSync('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-q', '-t', '-A', '-U', 'oxledger', '-d', 'oxledger_fe_e2e'], { input: text }).toString().trim();
+	return execFileSync('docker', ['exec', '-i', 'oxledger-pg', 'psql', '-q', '-t', '-A', '-U', 'oxledger', '-d', E2E_DB], { input: text }).toString().trim();
 }
 
 test('議題頁衝突：載入最新後只送我改的欄位，不蓋掉別人的修改', async ({ browser }) => {
@@ -544,6 +675,72 @@ test('搜尋：把查詢存成視圖，條件變成 chip', async ({ browser }) =
 	await page.waitForURL(/\/project\/AUTH\/views\//);
 	await expect(page.getByTestId('chips')).toContainText('狀態分類：待處理、進行中');
 	await expect(page.getByTestId('view-scope')).toHaveText('個人');
+});
+
+test('列表與看板：骨架、排序只套用這次、搜尋頁條件、條件組最多兩層、看板複製成個人並改卡片欄位與泳道', async ({ browser }) => {
+	test.setTimeout(120_000);
+	const page = await alice(browser, '/');
+	// §6 共通: a slow list shows 8 skeleton rows (after 400 ms) and then 「還在載入…」.
+	await page.route(/\/api\/v1\/views\/.*\/run/, async (r) => {
+		await new Promise((x) => setTimeout(x, 2500));
+		await r.continue();
+	});
+	await page.goto('/project/AUTH/issues');
+	await expect(page.getByTestId('view-skeleton')).toBeVisible();
+	await expect(page.getByTestId('view-skeleton').locator('tr')).toHaveCount(8);
+	await expect(page.getByTestId('view-slow')).toContainText('還在載入');
+	await page.unrouteAll({ behavior: 'ignoreErrors' });
+	await expect(page.getByTestId('view-table').or(page.getByTestId('view-empty'))).toBeVisible();
+
+	// §6.1: sorting is for now only — no unsaved-conditions banner, and it can be reset.
+	await page.getByTestId('sort-due_date').click();
+	await expect(page.getByTestId('view-sorted')).toBeVisible();
+	await expect(page.getByTestId('view-dirty')).toHaveCount(0);
+	await page.getByTestId('view-sort-reset').click();
+	await expect(page.getByTestId('view-sorted')).toHaveCount(0);
+
+	// §6.2: the condition editor shows its two-level limit in words.
+	await page.getByTestId('edit-conditions').click();
+	await page.getByTestId('fe-add-group').click();
+	await expect(page.getByTestId('fe-add-subgroup')).toBeDisabled();
+	await expect(page.getByTestId('fe-depth-limit')).toHaveText('最多兩層');
+
+	// §6.14: the search page has the condition editor too; the conditions ride in the URL.
+	await page.goto(`/search?q=${encodeURIComponent('project:AUTH')}`);
+	await page.getByTestId('search-conditions').click();
+	await page.getByTestId('fe-add').click();
+	const cond = page.getByTestId('fe-cond').last();
+	await cond.getByTestId('fe-field').selectOption('assignee');
+	await cond.getByTestId('fe-options').getByLabel('我').check();
+	await page.getByTestId('fe-apply').click();
+	await expect(page).toHaveURL(/where=/);
+	await expect(page.getByTestId('search-chips')).toContainText('指派：我');
+
+	// §6.3: the built-in board copies to a personal one; card fields and swimlanes save with it.
+	await page.goto('/project/AUTH/board');
+	await page.getByTestId('board-settings').click();
+	await expect(page.getByTestId('board-copy')).toBeVisible();
+	await page.getByTestId('board-copy-personal').click();
+	const name = `E2E 我的看板 ${Date.now()}`;
+	await page.getByTestId('save-as-name').fill(name);
+	await page.getByTestId('save-as-submit').click();
+	await expect(page.getByTestId('view-name')).toHaveText(name);
+	await expect(page.getByTestId('view-scope')).toHaveText('個人');
+	await page.getByTestId('board-settings').click();
+	await page.getByTestId('bs-card-assignee').uncheck();
+	await page.getByTestId('bs-card-status').check();
+	await page.getByTestId('bs-apply').click();
+	await page.getByTestId('board-swim').selectOption({ label: '優先權' });
+	await expect(page.getByTestId('view-dirty')).toBeVisible();
+	await page.getByTestId('view-save').click();
+	await expect(page.getByTestId('view-dirty')).toHaveCount(0);
+	const id = new URL(page.url()).pathname.split('/').pop()!;
+	const v = (await papi(page, 'GET', `/views/${id}`)).json.data;
+	expect(v.def.card_fields).toContain('status');
+	expect(v.def.card_fields).not.toContain('assignee');
+	expect(v.def.swimlanes?.by).toBeTruthy();
+	await expect(page.locator('[data-testid=card] [data-testid=card-assignee]')).toHaveCount(0);
+	await expect(page.locator('[data-testid=card] [data-testid=card-status]').first()).toBeVisible();
 });
 
 /** The first card in a lane of the AUTH board. */
@@ -740,7 +937,7 @@ test('Triage：議題頁橫條稍後與取消稍後；別人先處理時說明�
 	const page = await alice(browser, '/');
 	const k = await newIssue(page, 'E2E 分流 D：稍後處理');
 	await page.goto(`/issue/${k}`);
-	await expect(page.getByTestId('triage-bar')).toContainText('這張單在 Triage 收件匣等待分流');
+	await expect(page.getByTestId('triage-bar')).toContainText('這張單在 Triage 收件匣（AUTH）');
 	await page.getByTestId('tb-snooze').click();
 	await page.getByTestId('triage-panel').getByLabel('下週一 9 點').check();
 	await page.getByTestId('tp-submit').click();
@@ -876,6 +1073,10 @@ test('工時：管理員設每日上限，超過時就地說明還能記多少�
 	await page.goto('/project/AUTH/time');
 	await expect(page.getByTestId('tr-row').filter({ hasText: 'Alice Lin' })).toBeVisible();
 	await expect(page.getByTestId('tr-note')).toHaveText('只包含你看得到的工時。');
+	await expect(page.getByTestId('tr-nodrill')).toHaveCount(0);
+	// By tracker there is no drill-down yet (backend gap G44), and it says so.
+	await page.getByTestId('tr-group').selectOption({ label: '類型' });
+	await expect(page.getByTestId('tr-nodrill')).toBeVisible();
 	// Module off (confirmed), then the report and the issue card say so.
 	await page.goto('/project/AUTH/settings/time');
 	await page.getByTestId('tm-toggle').click();
@@ -1001,6 +1202,7 @@ test('表單設計器：規則草稿→影響→擋下或發布並標記；版�
 	await admin.getByTestId('fd-publish-confirm').click();
 	await expect(admin.getByTestId('fd-versions')).toContainText('規則 v1');
 	await expect(admin.getByTestId('fd-version').first()).toContainText('發布並標記不符的議題');
+	await expect(admin.getByTestId('fd-version').first().getByTestId('fd-version-who')).toHaveText('你');
 
 	// Layout: Severity in the first section; a section shown only when Severity is High holds Root cause.
 	await admin.getByTestId('fd-tab-layout').click();
@@ -1020,7 +1222,10 @@ test('表單設計器：規則草稿→影響→擋下或發布並標記；版�
 	await expect(admin.getByTestId('fd-versions')).toContainText('版面 v1');
 
 	// Try-fill: both doors give the same answer (an empty subject is refused).
-	await admin.getByTestId('fd-try').locator('summary').click();
+	// 「預覽」 at the top opens it (§6.10).
+	await expect(admin.getByTestId('fd-try')).not.toHaveAttribute('open', '');
+	await admin.getByTestId('fd-preview').click();
+	await expect(admin.getByTestId('fd-try')).toHaveAttribute('open', '');
 	await admin.getByTestId('fd-try-ui').click();
 	await admin.getByTestId('fd-try-mcp').click();
 	await expect(admin.getByTestId('fd-try-result').nth(0)).toContainText('會被擋下');
@@ -1447,6 +1652,47 @@ test('AI 助理：管理員設定服務（測試、預算、啟用），使用�
 	const order = await page.getByTestId('ai-messages').evaluate((el) => [...el.querySelectorAll('[data-testid=ai-notice],[data-testid=ai-text]')].slice(-2).map((x) => x.getAttribute('data-testid')));
 	expect(order).toEqual(['ai-notice', 'ai-text']);
 	await expect(page.getByTestId('ai-send')).toBeVisible();
+
+	// The ⋯ menu: the full conversation history opens an older conversation.
+	await page.getByTestId('ai-menu').click();
+	await page.getByTestId('ai-history').click();
+	await expect(page.getByTestId('ai-history-item')).toHaveCount(1);
+	await page.getByTestId('ai-history-item').first().click();
+	await expect(page.getByTestId('ai-text').first()).toContainText('你好，我是 AI 助理。');
+
+	// The admin's audit list says what changed (§6.20).
+	await admin.reload();
+	await expect(admin.getByTestId('ai-event').first()).toBeVisible();
+	await expect(admin.getByTestId('ai-events')).toContainText('月預算 未設定 → 50');
+	await expect(admin.getByTestId('ai-events')).toContainText('本機假模型');
+
+	// Below 1280 px the column is a drawer the top bar's 「AI」 opens; Esc closes it,
+	// and a link followed from it shows its page.
+	await page.setViewportSize({ width: 1100, height: 800 });
+	await expect(page.getByTestId('collab')).toBeHidden();
+	await expect(page.getByTestId('top-ai')).toHaveText('AI');
+	await page.getByTestId('top-ai').click();
+	await expect(page.getByTestId('collab')).toBeVisible();
+	await expect(page.getByTestId('tab-ai')).toBeVisible();
+	await expect(page.getByTestId('ai-text').first()).toBeVisible();
+	// Focus moves into the drawer, and back to the button when it closes.
+	await expect(page.getByTestId('drawer-close')).toBeFocused();
+	await expect(page.getByRole('dialog', { name: '協作欄' })).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(page.getByTestId('collab')).toBeHidden();
+	await expect(page.getByTestId('top-ai')).toBeFocused();
+	await page.getByTestId('top-ai').click();
+	await page.getByTestId('ai-text').first().getByRole('link', { name: 'AUTH-1' }).click();
+	await page.waitForURL('**/issue/AUTH-1');
+	await expect(page.getByTestId('collab')).toBeHidden();
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await expect(page.getByTestId('top-ai')).toHaveCount(0);
+	await expect(page.getByTestId('collab')).toBeVisible();
+
+	// §6.14: the assistant reads alice's time (on by default), and its activity page says so.
+	const assistant = (await papi(page, 'GET', '/ai/status')).json.data.assistant.principal;
+	await page.goto(`/agents/${assistant}/activity`);
+	await expect(page.getByTestId('reads-my-time')).toContainText('這個 agent 可讀你的工時');
 
 	// Turning the AI off hides the tab.
 	await admin.getByTestId('ai-enabled').uncheck();

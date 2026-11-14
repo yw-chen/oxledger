@@ -23,6 +23,9 @@
 	import TimeCard from '$lib/components/TimeCard.svelte';
 	import LogTime from '$lib/components/LogTime.svelte';
 	import FormSections from '$lib/components/FormSections.svelte';
+	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
+	import RichText from '$lib/components/RichText.svelte';
+	import { draftKey, dropDraft, formatFor, LIMIT, utf8Bytes, type Mentionable } from '$lib/markdown';
 	import type { FormDescription } from '$api/types';
 	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
 	import { RULE_KIND } from '$lib/formdesign';
@@ -43,6 +46,7 @@
 	let start = $state<Record<string, unknown>>({});
 	let form = $state<Record<string, unknown>>({});
 	let note = $state({ body: '', private: false });
+	let noteOver = $state(false);
 	let dupKey = $state('');
 	let actionError = $state<unknown>(null);
 	let conflict = $state(false);
@@ -179,6 +183,20 @@
 	);
 	const editMissing = $derived(editEntries.filter((e) => e.required && !editHidden.has(e.f.key) && (form[e.f.key] === undefined || form[e.f.key] === null || String(form[e.f.key]).trim() === '')));
 
+	// §6.2 / R-M9: the description is edited as Markdown; a plain one shows the
+	// conversion notice, an agent's one the link warning (R-M3).
+	const editMd = $derived(
+		issue
+			? {
+					context: { issue: issue.key },
+					notice: issue.description_format === 'plain' ? ('plain' as const) : (issue as { description_by_agent?: boolean | null }).description_by_agent ? ('agent' as const) : null,
+					draft: session.user ? draftKey(session.user.user_id, `edit:${issue.key}`) : null,
+					// After a conflict reload `start` is the newer version: compare to it.
+					base: String(start.description ?? '')
+				}
+			: null
+	);
+	const descOver = $derived(mode === 'edit' && utf8Bytes(String(form.description ?? '')) > LIMIT.description);
 	function openEdit() {
 		if (!issue) return;
 		start = currentValues(issue);
@@ -209,6 +227,8 @@
 			await submit(d, op);
 			last = null;
 			toast(done, 'ok');
+			// What was just sent is no longer a draft (§6.2).
+			if (session.user && (mode === 'note' || mode === 'edit')) dropDraft(draftKey(session.user.user_id, `${mode}:${issue?.key ?? key}`));
 			mode = null;
 			conflict = false;
 			note = { body: '', private: false };
@@ -257,7 +277,9 @@
 			return;
 		}
 		const lock = issue.lock_version ?? 0;
-		const ops = Object.keys(set).length ? [{ kind: 'update_fields' as const, op_id: op(), target: issueRef(key), set }] : [];
+		// R-M9: rewriting a description written before M2 (plain) converts it to Markdown.
+		const fmt = formatFor(issue.description_format, 'description' in set);
+		const ops = Object.keys(set).length ? [{ kind: 'update_fields' as const, op_id: op(), target: issueRef(key), set, ...(fmt ? { format: fmt } : {}) }] : [];
 		if (withTime) ops.push(logTimeOp(withTime) as never);
 		const done = withTime ? (ops.length > 1 ? `已儲存，並記了 ${showHours(withTime.hours)} 小時` : `已記 ${showHours(withTime.hours)} 小時`) : '已儲存';
 		const d = ops.length > 1 || !withTime ? doc(ops, [{ key, lock }]) : logTimeDoc(withTime);
@@ -379,6 +401,7 @@
 	</div>
 {:else if issue}
 	{@const v = issue}
+	{@const vx = v as typeof v & { description_html?: string | null; description_by_agent?: boolean | null }}
 	<ProjectFrame projectKey={v.project_key} issuePage>
 		{#if v.requested_key && v.requested_key !== v.key}
 			<div class="banner i">{v.requested_key} 已搬到 {v.key}。</div>
@@ -425,7 +448,7 @@
 
 		{#if triage && (triage.state === 'pending' || triage.state === 'snoozed')}
 			<div class="banner i triagebar" data-testid="triage-bar">
-				<b>這張單在 Triage 收件匣等待分流</b>{#if triage.snoozed_until}・稍後處理到 {fmtTime(triage.snoozed_until)}{/if}
+				<b>這張單在 Triage 收件匣（{v.project_key}）</b>{#if triage.snoozed_until}・稍後處理到 {fmtTime(triage.snoozed_until)}{/if}
 				<span class="sp"></span>
 				{#if triage.can_decide}
 					{#if triage.snoozed_until}
@@ -469,7 +492,7 @@
 				{#if kept.length}
 					<div class="hint" data-testid="kept">已載入最新內容；只保留你改過的欄位：{kept.map((k) => labelOf(k, lookups)).join('、')}。其他欄位是別人剛改的最新值。</div>
 				{/if}
-				<FormSections fields={editEntries} layout={describe?.layout} bind:form values={editValues} {assignees} {versions} marks={markedKeys} />
+				<FormSections fields={editEntries} layout={describe?.layout} bind:form values={editValues} {assignees} {versions} marks={markedKeys} md={editMd} />
 				{#if editMissing.length}<div class="hint" data-testid="edit-missing">還要填：{editMissing.map((e) => e.f.name ?? fieldLabel(e.f.key)).join('、')}</div>{/if}
 				{#if v.spent_hours != null}
 					<details class="withtime" bind:open={logWith} data-testid="edit-with-time">
@@ -479,7 +502,7 @@
 					</details>
 				{/if}
 				<div class="row">
-					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
+					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain || descOver} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -497,11 +520,24 @@
 		{:else if mode === 'note'}
 			<div class="card">
 				<h3>新增 note</h3>
-				<textarea bind:value={note.body} disabled={uncertain} placeholder="寫給專案成員看的補充" data-testid="note-body"></textarea>
+				<MarkdownEditor
+					bind:value={note.body}
+					bind:over={noteOver}
+					people={assignees as Mentionable[]}
+					context={{ issue: v.key }}
+					limit={LIMIT.note}
+					draft={session.user ? draftKey(session.user.user_id, `note:${v.key}`) : null}
+					disabled={uncertain}
+					placeholder="寫給專案成員看的補充"
+					label="note 內容"
+					testid="note-md"
+					inputTestid="note-body"
+					base=""
+				/>
 				<div class="row" style="margin-top:6px">
 					{#if v.actions?.notes?.can_set_private}<label><input type="checkbox" bind:checked={note.private} /> 私有（只有能看私有 note 的人看得到）</label>{/if}
 					<span style="flex:1"></span>
-					<button class="btn pri" onclick={addNote} disabled={busy || !note.body.trim() || conflict || uncertain} data-testid="note-submit">新增</button>
+					<button class="btn pri" onclick={addNote} disabled={busy || !note.body.trim() || noteOver || conflict || uncertain} data-testid="note-submit">新增</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -522,7 +558,7 @@
 		<div class="grid2">
 			<div>
 				<h2>描述</h2>
-				<div class="card pre" data-testid="description">{v.description || '（沒有描述）'}</div>
+				<div class="card"><RichText html={vx.description_html} text={v.description} agent={!!vx.description_by_agent} empty="（沒有描述）" testid="description" /></div>
 				{#if v.children?.length}
 					<h2>子議題</h2>
 					{#each v.children as c (c.key)}<div><a class="key" href="/issue/{c.key}">{c.key}</a> {c.subject} <span class="dim">{c.status}</span></div>{/each}
@@ -533,7 +569,7 @@
 						<div class="h">{n.author}・{fmtTime(n.created_at)} {#if n.is_private}<span class="chip c-warn">私有</span>{/if}</div>
 						{#if n.redacted}<div class="dim">（內容已遮蔽）</div>
 						{:else if n.retracted}<div class="dim">（已由 {n.retracted_by ?? '委派者'} 撤回）</div>
-						{:else}<div class="pre">{n.body}</div>{/if}
+						{:else}{@const nx = n as typeof n & { body_html?: string | null }}<RichText html={nx.body_html} text={n.body} testid="note-text" />{/if}
 					</div>
 				{:else}
 					<div class="empty">還沒有 note。</div>

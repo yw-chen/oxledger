@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, addHours, dayLabel, deleteTimeDoc, isoWeek, logTimeDoc, logTimeOp, parseHours, period, shiftWeek, showHours, snoozePreset, updateTimeDoc, weekMonday } from './hours';
+import { addDays, addHours, dayLabel, deleteTimeDoc, hoursEcho, isoWeek, logTimeDoc, logTimeOp, parseHours, period, shiftWeek, showHours, snoozePreset, updateTimeDoc, weekMonday } from './hours';
 import { ApiError } from './api';
 import { describeError } from './errors';
 
@@ -24,6 +24,22 @@ describe('parseHours', () => {
 		['1.5h', '1.50']
 	])('%s → %s', (i, o) => expect(parseHours(i)).toBe(o));
 	it.each(['', 'abc', '1.234', '1:75', '-1', 'h', '1.', '.'])('rejects %j', (i) => expect(parseHours(i)).toBeNull());
+});
+
+describe('hoursEcho', () => {
+	it.each([
+		['1.5', '＝1.50 小時'],
+		['1:30', '＝1.50 小時'],
+		['1h30m', '＝1.50 小時'],
+		['2', '＝2.00 小時'],
+		['.5', '＝0.50 小時'],
+		['1:20', '＝1.33 小時']
+	])('%s → %s', (i, o) => expect(hoursEcho(i)).toBe(o));
+	it('is empty while nothing is typed', () => {
+		expect(hoursEcho('')).toBe('');
+		expect(hoursEcho('  ')).toBe('');
+	});
+	it('says when it cannot read the hours', () => expect(hoursEcho('abc')).toBe('看不懂這個時數'));
 });
 
 describe('hour sums and display', () => {

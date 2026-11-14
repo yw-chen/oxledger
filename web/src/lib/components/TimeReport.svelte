@@ -181,6 +181,10 @@
 					<tfoot><tr><th>合計</th><th data-testid="tr-total">{showHours(data.total)}</th></tr></tfoot>
 				</table>
 				<p class="hint" data-testid="tr-note">只包含你看得到的工時。</p>
+				{#if groupBy === 'tracker' || groupBy === 'fixed_version'}
+					<!-- GET /time-entries has no tracker / fixed_version filter yet, so these rows cannot drill down. -->
+					<p class="hint" data-testid="tr-nodrill">依類型或里程碑分組時，還不能點開看明細。</p>
+				{/if}
 			</div>
 		{/if}
 		{#if drill}

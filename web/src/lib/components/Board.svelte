@@ -7,7 +7,7 @@
 	import type { IssueActions, LaneOut, RunInput, RunItem, ViewRun, FieldSchema, Assignee, VersionView } from '$api/types';
 	import { api, ApiError, newOperationId } from '$lib/api';
 	import { doc, issueRef, submit, wireFields } from '$lib/commands';
-	import { cellText, countText } from '$lib/filter';
+	import { cardFieldLabel, cellText, countText } from '$lib/filter';
 	import { toast } from '$lib/toast.svelte';
 	import { goto } from '$app/navigation';
 	import ErrorBox from './ErrorBox.svelte';
@@ -24,6 +24,9 @@
 		createHref = '/new',
 		fieldType,
 		doneDays = 14,
+		cardFields = null,
+		fieldLabels = [],
+		onnarrow,
 		onerror
 	}: {
 		run: (i: RunInput) => Promise<ViewRun>;
@@ -39,6 +42,12 @@
 		/** Type of a custom field `by` (`cf:N`), for the value's wrapper. */
 		fieldType?: string;
 		doneDays?: number;
+		/** `def.card_fields`: what each card shows, in this order (`key` is always shown). */
+		cardFields?: string[] | null;
+		/** Filter fields, to name custom card fields. */
+		fieldLabels?: { field: string; label: string }[];
+		/** 「縮小範圍」 after `query_timeout` (§6). */
+		onnarrow?: () => void;
 		/** Called with the error, or null after a successful run. */
 		onerror?: (e: unknown) => void;
 	} = $props();
@@ -48,6 +57,8 @@
 	let error = $state<unknown>(null);
 	let loading = $state(false);
 	let slow = $state(false);
+	/** §6: no loading sign in the first 400 ms. */
+	let skeleton = $state(false);
 	let seq = 0;
 
 	async function load(retried = false) {
@@ -55,6 +66,7 @@
 		loading = true;
 		error = null;
 		const t = setTimeout(() => n === seq && (slow = true), 2000);
+		const t0 = setTimeout(() => n === seq && (skeleton = true), 400);
 		try {
 			const r = await run({ limit: 50 });
 			if (n !== seq) return;
@@ -68,9 +80,11 @@
 			onerror?.(e);
 		} finally {
 			clearTimeout(t);
+			clearTimeout(t0);
 			if (n === seq) {
 				loading = false;
 				slow = false;
+				skeleton = false;
 			}
 		}
 	}
@@ -289,15 +303,39 @@
 		return out;
 	}
 	const isDone = (l: LaneOut) => l.values.includes('done') || (by === 'status' && l.values.every((v) => statusCategory[String(v)] === 'done') && l.values.length > 0);
+	// Card body: the definition's card fields in order; without them, whatever
+	// the server sent (its defaults).
+	const SPECIAL = new Set(['key', 'subject', 'assignee', 'priority', 'due_date', 'overdue']);
+	function extras(c: Record<string, unknown>): [string, unknown][] {
+		const keys = cardFields?.length ? cardFields.filter((k) => !SPECIAL.has(k)) : Object.keys(c).filter((k) => !SPECIAL.has(k));
+		return keys.map((k) => [k, c[k]] as [string, unknown]);
+	}
+	const shows = (c: Record<string, unknown>, k: string) => (cardFields?.length ? cardFields.includes(k) : c[k] !== undefined);
 	export function reload() {
 		load();
 	}
 </script>
 
 {#if loading && !data}
-	{#if slow}<div class="sync"><span class="spin"></span>還在載入…</div>{:else}<div class="sync" style="opacity:.6"><span class="spin"></span></div>{/if}
+	{#if skeleton}
+		<div data-testid="board-skeleton" aria-busy="true" aria-label="載入中">
+			{#if slow}<div class="hint" data-testid="board-slow">還在載入…</div>{/if}
+			<div class="board">
+				{#each { length: lanes.length || 3 } as _, li (li)}
+					<div class="lane" data-testid="skel-lane">
+						<div class="lh"><span class="skel" style="width:40%"></span></div>
+						<div class="lb">
+							{#each { length: 3 } as _, ci (ci)}
+								<div class="skel-card" data-testid="skel-card"><span class="skel" style="width:30%"></span><span class="skel" style="width:85%"></span><span class="skel" style="width:50%"></span></div>
+							{/each}
+						</div>
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
 {:else if error}
-	<ErrorBox {error} onaction={() => load()} />
+	<ErrorBox {error} onaction={(a) => (a === 'narrow' && onnarrow ? onnarrow() : load())} />
 {:else if data}
 	{#if data.unmapped?.status_count}
 		<div class="banner w" data-testid="unmapped">
@@ -359,13 +397,13 @@
 								onkeydown={(e) => onCardKey(e, it, lane.id)}
 							>
 								<div class="row" style="gap:6px"><a class="key" href="/issue/{it.key}" draggable="false">{it.key}</a>{#if busy[it.id]}<span class="spin"></span>{/if}</div>
-								{#if c.subject !== undefined}<div class="st">{cellText(c.subject)}</div>{/if}
+								{#if shows(c, 'subject')}<div class="st" data-testid="card-subject">{cellText(c.subject)}</div>{/if}
 								<div class="row" style="gap:6px;flex-wrap:wrap;font-size:12px;margin-top:2px">
-									{#if c.assignee !== undefined}<span class="hint">{c.assignee ? cellText(c.assignee) : '未指派'}</span>{/if}
-									{#if c.priority}<span class="chip c-dim">{cellText(c.priority)}</span>{/if}
-									{#if c.due_date}<span class:overdue={c.overdue}>{cellText(c.due_date)}{#if c.overdue} <span class="chip c-bad">逾期</span>{/if}</span>{/if}
-									{#each Object.entries(c).filter(([k]) => !['subject', 'assignee', 'priority', 'due_date', 'overdue'].includes(k)) as [k, v] (k)}
-										{#if v !== null && v !== undefined}<span class="hint">{cellText(v)}</span>{/if}
+									{#if shows(c, 'assignee')}<span class="hint" data-testid="card-assignee">{c.assignee ? cellText(c.assignee) : '未指派'}</span>{/if}
+									{#if shows(c, 'priority') && c.priority}<span class="chip c-dim" data-testid="card-priority">{cellText(c.priority)}</span>{/if}
+									{#if shows(c, 'due_date') && c.due_date}<span class:overdue={c.overdue} data-testid="card-due_date">{cellText(c.due_date)}{#if c.overdue} <span class="chip c-bad">逾期</span>{/if}</span>{/if}
+									{#each extras(c) as [k, v] (k)}
+										{#if v !== null && v !== undefined}<span class="hint" data-testid="card-{k}" title={cardFieldLabel(k, fieldLabels)}>{cardFields?.length ? `${cardFieldLabel(k, fieldLabels)}：` : ''}{cellText(v)}</span>{/if}
 									{/each}
 								</div>
 							</div>

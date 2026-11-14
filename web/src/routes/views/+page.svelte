@@ -12,11 +12,14 @@
 	let items = $state<ViewSummary[]>([]);
 	let error = $state<unknown>(null);
 	let loading = $state(true);
+	/** §6: no loading sign in the first 400 ms, then 8 skeleton rows. */
+	let skeleton = $state(false);
 	let seq = 0;
 	async function load() {
 		const n = ++seq;
 		loading = true;
 		error = null;
+		const t = setTimeout(() => n === seq && (skeleton = true), 400);
 		try {
 			const mine = await api('GET /views', { query: { scope: 'all' } });
 			const perProject = await Promise.all(session.projects.map((p) => api('GET /views', { query: { scope: 'all', project: p.key } }).then((r) => r.items).catch(() => [])));
@@ -26,7 +29,11 @@
 		} catch (e) {
 			if (n === seq) error = e;
 		} finally {
-			if (n === seq) loading = false;
+			clearTimeout(t);
+			if (n === seq) {
+				loading = false;
+				skeleton = false;
+			}
 		}
 	}
 	$effect(() => {
@@ -73,7 +80,11 @@
 	</div>
 	<ErrorBox {error} onaction={load} />
 	{#if loading && !items.length}
-		<div class="sync" style="opacity:.6"><span class="spin"></span></div>
+		{#if skeleton}
+			<div data-testid="views-skeleton" aria-busy="true" aria-label="載入中">
+				{#each { length: 8 } as _, i (i)}<span class="skel" style="width:{40 + ((i * 29) % 45)}%;margin:10px 0"></span>{/each}
+			</div>
+		{/if}
 	{:else}
 		{#each SECTIONS as s (s.scope)}
 			{@const list = items.filter((v) => v.scope === s.scope)}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linkTarget, pageRef, quotaText, renderMd, sseParser, stopTail, writeLine } from './aichat';
+import { appendPage, expiringProjects, linkTarget, pageRef, quotaText, renderMd, sseParser, stopTail, withConv, writeLine } from './aichat';
 
 const O = 'http://localhost:5174';
 
@@ -117,5 +117,30 @@ describe('page context and texts', () => {
 		expect(quotaText('ai_user_hour', '2026-11-13T06:30:00Z')).toBe('這小時的使用次數已用完，14:30 後可再用。');
 		expect(quotaText('ai_user_day', undefined)).toBe('今天的 AI 額度已用完。');
 		expect(quotaText('org_month', undefined)).toBe('本月 AI 額度已用完，請洽管理員。');
+	});
+});
+
+describe('conversation list', () => {
+	const c = (id: string) => ({ id });
+	it('appends pages without repeating a conversation', () => {
+		expect(appendPage([c('a'), c('b')], [c('b'), c('c'), c('c')])).toEqual([c('a'), c('b'), c('c')]);
+		expect(appendPage([], [c('x')])).toEqual([c('x')]);
+	});
+	it('puts an older opened conversation into the dropdown once', () => {
+		expect(withConv([c('a'), c('b')], c('z'))).toEqual([c('z'), c('a'), c('b')]);
+		expect(withConv([c('a'), c('b')], c('b'))).toEqual([c('a'), c('b')]);
+	});
+});
+
+describe('expiry banner', () => {
+	it('skips delegations that already expired, soonest first', () => {
+		const now = Date.parse('2026-11-13T00:00:00Z');
+		const ps = [
+			{ project: 'OPS', expires_at: '2026-11-16T00:00:00Z' },
+			{ project: 'AUTH', expires_at: '2026-11-12T00:00:00Z' },
+			{ project: 'WEB', expires_at: '2026-11-15T00:00:00+08:00' }
+		];
+		expect(expiringProjects(ps, now)).toEqual(['WEB', 'OPS']);
+		expect(expiringProjects([{ project: 'AUTH', expires_at: '2026-11-13T00:00:00Z' }], now)).toEqual([]);
 	});
 });

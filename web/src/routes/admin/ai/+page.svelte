@@ -7,6 +7,7 @@
 	import type { EndpointList, ProviderEvent, ProviderView, SettingsView, Usage } from '$api/types';
 	import { api, ApiError, newOperationId } from '$lib/api';
 	import { describeError } from '$lib/errors';
+	import { describeEvents } from '$lib/aievents';
 	import { fmtShort, fmtTime } from '$lib/format';
 	import { stepped } from '$lib/stepup.svelte';
 	import { toast } from '$lib/toast.svelte';
@@ -147,6 +148,7 @@
 		return `${fmtShort(p.last_test_at)} ${r.ok ? '成功' : `失敗：${r.kind === 'http_status' ? `HTTP ${r.status}` : (TEST_KIND[r.kind ?? ''] ?? r.kind ?? '')}`}`;
 	}
 	const ADDR: Record<string, string> = { public: '公網', private: '私有網段', loopback: '本機', blocked: '不允許' };
+	const eventText = $derived(describeEvents(events, (id) => providers.find((p) => p.id === id)?.name ?? ''));
 	const EVENT: Record<string, string> = { created: '新增服務', updated: '修改服務', retired: '退役服務', activated: '設為使用中', settings_updated: '修改設定', test_run: '測試連線' };
 
 	const pct = (a: string, b: string | null) => (b && Number(b) > 0 ? Math.min(100, (Number(a) / Number(b)) * 100) : 0);
@@ -291,8 +293,8 @@
 
 		<h2>稽核</h2>
 		<div class="card" data-testid="ai-events">
-			{#each events as ev (ev.id)}
-				<div class="row hint" style="gap:6px"><span class="mono">{fmtTime(ev.at)}</span><span>{ev.actor_name}</span><span>{EVENT[ev.kind] ?? ev.kind}</span>{#if ev.provider_id}<span>{providers.find((p) => p.id === ev.provider_id)?.name ?? ''}</span>{/if}</div>
+			{#each events as ev, i (ev.id)}
+				<div class="row hint" style="gap:6px" data-testid="ai-event"><span class="mono">{fmtTime(ev.at)}</span><span>{ev.actor_name}</span><span>{EVENT[ev.kind] ?? ev.kind}</span>{#if ev.provider_id && ev.kind !== 'activated' && ev.kind !== 'settings_updated'}<span>{providers.find((p) => p.id === ev.provider_id)?.name ?? ''}</span>{/if}{#if eventText[i]}<span data-testid="ai-event-change">{ev.kind === 'activated' ? '：' : ''}{eventText[i]}</span>{/if}</div>
 			{:else}
 				<div class="empty">沒有紀錄。</div>
 			{/each}

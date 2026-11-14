@@ -1,8 +1,21 @@
+<script lang="ts" module>
+	export type MdOpts = {
+		context?: { issue: string } | { project: string } | null;
+		notice?: 'plain' | 'agent' | null;
+		draft?: string | null;
+		guard?: boolean;
+		/** The saved text (dirty and drafts compare to it); moves on a reload. */
+		base?: string;
+	};
+</script>
+
 <script lang="ts">
 	// One editable field, driven by the static schema (§5.1). Values are what
 	// a command document carries: ids for references, YYYY-MM-DD for dates.
 	import type { Assignee, FieldSchema, VersionView } from '$api/types';
 	import { fieldLabel } from '$lib/format';
+	import { LIMIT, type Mentionable } from '$lib/markdown';
+	import MarkdownEditor from './MarkdownEditor.svelte';
 
 	let {
 		field,
@@ -10,7 +23,8 @@
 		assignees = [],
 		versions = [],
 		required = false,
-		disabled = false
+		disabled = false,
+		md = null
 	}: {
 		field: FieldSchema;
 		value: unknown;
@@ -18,6 +32,8 @@
 		versions?: VersionView[];
 		required?: boolean;
 		disabled?: boolean;
+		/** The description as Markdown (design 06 §6.2): the editor instead of a textarea. */
+		md?: MdOpts | null;
 	} = $props();
 
 	const label = $derived(field.name ?? fieldLabel(field.key));
@@ -35,7 +51,22 @@
 
 <label class="f" for={id}>
 	<span>{label}{#if required}<em> *</em>{/if}</span>
-	{#if field.type === 'text'}
+	{#if field.type === 'text' && field.key === 'description' && md}
+		<MarkdownEditor
+			bind:value={() => str(value), (v) => set(v)}
+			people={assignees as Mentionable[]}
+			context={md.context ?? null}
+			limit={LIMIT.description}
+			notice={md.notice ?? null}
+			draft={md.draft ?? null}
+			guard={md.guard ?? true}
+			base={md.base}
+			{disabled}
+			{id}
+			{label}
+			testid="md-description"
+		/>
+	{:else if field.type === 'text'}
 		<textarea {id} {disabled} value={str(value)} oninput={(e) => set(e.currentTarget.value)}></textarea>
 	{:else if field.type === 'date'}
 		<input {id} {disabled} type="date" value={str(value)} oninput={(e) => set(e.currentTarget.value || null)} style="background:var(--bg2);border:1px solid var(--line2);border-radius:7px;padding:4px 8px" />

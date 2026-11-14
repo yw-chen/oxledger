@@ -27,6 +27,18 @@ export function parseHours(input: string): string | null {
 	return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
 }
 
+/**
+ * The live echo under the hours box (§6.6): "＝1.50 小時", always two decimals,
+ * so people see what will be stored; "" while empty; a hint when unreadable.
+ */
+export function hoursEcho(input: string): string {
+	if (input.trim() === '') return '';
+	const h = parseHours(input);
+	if (h === null) return '看不懂這個時數';
+	const [i, f = ''] = h.split('.');
+	return `＝${i}.${f.padEnd(2, '0').slice(0, 2)} 小時`;
+}
+
 /** "1.50" → "1.5"; "8.00" → "8"; null/"" → "". */
 export function showHours(h: string | null | undefined): string {
 	if (h === null || h === undefined || h === '') return '';

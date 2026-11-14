@@ -5,13 +5,15 @@
 import type { NotificationEvent, NotificationItem, UnreadCount } from '$api/types';
 import { fieldLabel, fmtValue } from './format';
 
-/** The five fixed reason labels (§6.15 文案). */
+/** The fixed reason labels (05 §6.15 文案; `mentioned` from 06 §6.13). */
 export const REASON: Record<string, string> = {
 	watching: '關注中',
 	assigned: '指派給你',
 	author: '你建立的',
 	agent_on_behalf: '你的 agent',
-	triage_decided: '分流結果'
+	triage_decided: '分流結果',
+	// Design 06 §6.13 / R-MN5 (from M2.1).
+	mentioned: '提及你'
 };
 export const reasonLabels = (rs: string[]) => rs.map((r) => REASON[r]).filter(Boolean);
 

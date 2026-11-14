@@ -15,6 +15,7 @@
 	import { toast } from '$lib/toast.svelte';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 	import FormSections from '$lib/components/FormSections.svelte';
+	import { draftKey, dropDraft, LIMIT, utf8Bytes } from '$lib/markdown';
 	import type { FormDescription } from '$api/types';
 	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
 	import { statusCategories } from '$lib/triage';
@@ -34,6 +35,11 @@
 	let loadError = $state<unknown>(null);
 	let error = $state<unknown>(null);
 	let busy = $state(false);
+	/** Sent: leaving for the new issue needs no "unsent text" question. */
+	let created = $state(false);
+	// §6.2: the description as Markdown, with a draft per person.
+	const newDraft = $derived(session.user ? draftKey(session.user.user_id, 'new') : null);
+	const descOver = $derived(utf8Bytes(String(form.description ?? '')) > LIMIT.description);
 	// Same document + Idempotency-Key when retrying a transient failure (§8.7).
 	// While it is set the outcome is unknown: the form is locked so the only way
 	// on is the same request again (a second 建立 would create a second issue,
@@ -128,6 +134,8 @@
 			rememberCreated({ key: e.key, subject: String(form.subject ?? ''), after: r.search.consistent_after });
 			toast(`已建立 ${e.key}`, 'ok');
 			refreshCounts();
+			created = true;
+			if (newDraft) dropDraft(newDraft);
 			goto(`/issue/${e.key}`);
 		} catch (e) {
 			error = e;
@@ -163,7 +171,7 @@
 			<div class="banner w" data-testid="cannot-create">你在 {project?.key} 不能建立「{trackers.find((t) => t.id === trackerId)?.name}」類型的單。換一個專案或類型試試。</div>
 		{:else if schema}
 			<div class="card" data-testid="new-form">
-				<FormSections fields={entries} layout={describe?.layout} bind:form {values} {assignees} {versions} disabled={busy || uncertain} />
+				<FormSections fields={entries} layout={describe?.layout} bind:form {values} {assignees} {versions} disabled={busy || uncertain} md={{ context: project ? { project: project.id } : null, draft: newDraft, guard: !busy && !created }} />
 				{#if privateChoice.length > 1}
 					<label class="row" style="gap:6px;margin-top:6px"><input type="checkbox" bind:checked={isPrivate} disabled={busy || uncertain} data-testid="new-private" />私有（只有有權看私有單的成員看得到）</label>
 				{:else if privateChoice[0] === true}
@@ -177,7 +185,7 @@
 					<div class="hint" data-testid="new-uncertain">還不確定剛才那筆有沒有建立：按「重試」會用同一筆內容確認，不會重複建立。要改內容請先重試確認結果。</div>
 				{/if}
 				<div class="row" style="gap:8px;margin-top:10px">
-					<button class="btn pri" onclick={() => create()} disabled={busy || uncertain || !!missing.length} data-testid="new-submit">{busy ? '建立中…' : '建立'}</button>
+					<button class="btn pri" onclick={() => create()} disabled={busy || uncertain || !!missing.length || descOver} data-testid="new-submit">{busy ? '建立中…' : '建立'}</button>
 					<a class="btn" href="/">取消</a>
 				</div>
 			</div>

@@ -23,6 +23,24 @@
 	const isPaused = $derived(role?.status === 'paused');
 	const mine = $derived(!!role && role.sponsor.id === session.user?.user_id);
 
+	/**
+	 * §6.14: 「這個 agent 可讀你的工時」 when one of its delegations has
+	 * `read_own_time` and the viewer is the sponsor. `GET /ai-team/{id}` gives
+	 * the sponsor every delegation; anyone else gets no tag.
+	 */
+	let readsMyTime = $state(false);
+	$effect(() => {
+		const id = agentId;
+		const me = session.user?.user_id;
+		readsMyTime = false;
+		if (!id || !me) return;
+		api('GET /ai-team/{id}', { path: { id } })
+			.then((t) => {
+				if (id === agentId) readsMyTime = t.sponsor.id === me && t.policies.some((p) => p.read_own_time);
+			})
+			.catch(() => {});
+	});
+
 	let items = $state<ActivityItem[]>([]);
 	/** G24: the server filters by time and issue and pages with a cursor. */
 	let next = $state<string | null>(null);
@@ -240,6 +258,7 @@
 		<h1 style="margin:0"><span class="agname">{label}</span> 的活動</h1>
 		<span class="agent-label">agent</span>
 		{#if isPaused}<span class="chip c-warn">寫入已暫停</span>{/if}
+		{#if readsMyTime}<span class="chip c-warn" style="border:1px solid var(--warn)" title="這個 agent 可讀你的工時（含說明）。說明可能被抄到專案成員看得到的地方。" data-testid="reads-my-time">⚠ 這個 agent 可讀你的工時</span>{/if}
 	</div>
 
 	<div class="row" style="gap:8px;margin:8px 0">

@@ -2,16 +2,21 @@
 	// Issue search (design 03 §3, §6): matched fields and highlights, a mark
 	// for "only some characters matched", no total, "還有更多", truncated,
 	// and search_lagging shown as "剛建立・同步中" rather than "nothing found".
+	// Conditions (contract 05 §6.2, §6.14) come from the shared editor, live
+	// in the URL (`where=`), go to SearchParams.where and into 「存成視圖」.
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import type { SearchItem, SearchParams, SearchResult } from '$api/types';
+	import type { FilterFields, FilterOption, SearchItem, SearchParams, SearchResult, WhereInput } from '$api/types';
 	import { api } from '$lib/api';
 	import { parse, toParams, SyntaxError_ } from '$lib/query';
 	import { splitHighlights } from '$lib/highlight';
 	import ErrorBox from '$lib/components/ErrorBox.svelte';
 	import { pendingCreated, type JustCreated } from '$lib/created.svelte';
 	import { projectByKey } from '$lib/session.svelte';
-	import { searchToWhere } from '$lib/filter';
+	import { andWhere, chips, fromGroup, searchToWhere, toGroup, whereFromParam, type Group, type Where } from '$lib/filter';
+	import { sourceOptions } from '$lib/filterOptions';
+	import { session } from '$lib/session.svelte';
+	import FilterEditor from './FilterEditor.svelte';
 
 	let { scopeProject = null }: { scopeProject?: string | null } = $props();
 
@@ -56,6 +61,8 @@
 		if (u.searchParams.get('overdue') === 'true') p.overdue = true;
 		const after = u.searchParams.get('after');
 		if (after) p.consistent_after = after;
+		const w = whereFromParam(u.searchParams.get('where'));
+		if (w) p.where = w as WhereInput;
 		p.fields = FIELDS;
 		p.explain = 'full';
 		p.limit = 25;
@@ -126,7 +133,8 @@
 		}
 		const def = {
 			kind: 'list',
-			query: { where: searchToWhere(params, proj?.id ?? null), q: params.q || null },
+			// The typed filters AND the editor's conditions.
+			query: { where: andWhere(searchToWhere(params, proj?.id ?? null), (params.where ?? null) as Where), q: params.q || null },
 			columns: ['key', 'subject', 'status', 'assignee', 'priority', 'due_date'],
 			sort: [{ field: 'updated_at', dir: 'desc' }]
 		};
@@ -139,6 +147,69 @@
 		} finally {
 			saveBusy = false;
 		}
+	}
+	// ---- conditions (§6.2)
+	const where = $derived(whereFromParam(url.searchParams.get('where')));
+	const group = $derived(toGroup(where));
+	let ff = $state<FilterFields | null>(null);
+	let ffFor: string | null | undefined = undefined;
+	let editing = $state(false);
+	let ffError = $state<unknown>(null);
+	/** Fields for the project being searched (custom fields differ per project). */
+	async function loadFields() {
+		const proj = scopeProject ?? params.project ?? null;
+		if (ff && ffFor === proj) return;
+		ffError = null;
+		try {
+			ff = await api('GET /filter-fields', { query: { project: proj ?? undefined } });
+			ffFor = proj;
+		} catch (e) {
+			ffError = e;
+		}
+	}
+	async function openEditor() {
+		await loadFields();
+		if (ff) editing = true;
+	}
+	// Chips need field names.
+	$effect(() => {
+		if (where && !ff) loadFields();
+	});
+	let names = $state<Record<string, FilterOption[]>>({});
+	$effect(() => {
+		if (!ff || !where) return;
+		const used = new Set<string>();
+		const walk = (w: unknown) => {
+			if (!w || typeof w !== 'object') return;
+			const o = w as Record<string, unknown>;
+			if (Array.isArray(o.and)) o.and.forEach(walk);
+			else if (Array.isArray(o.or)) o.or.forEach(walk);
+			else if (typeof o.field === 'string') used.add(o.field);
+		};
+		walk(where);
+		for (const f of ff.fields)
+			if (used.has(f.field) && !f.options?.length && f.options_source && !names[f.field]) {
+				names[f.field] = [];
+				sourceOptions(f).then((o) => (names[f.field] = o));
+			}
+	});
+	const label = (field: string, id: string) => names[field]?.find((o) => o.id === id)?.label ?? (field === 'project' ? session.projects.find((p) => p.id === id)?.key : undefined);
+	const chipList = $derived(ff && where ? chips(group, ff.fields, ff.today, label, ff.week_start) : []);
+	function setWhere(w: Where) {
+		const u = new URL(url);
+		if (w) u.searchParams.set('where', JSON.stringify(w));
+		else u.searchParams.delete('where');
+		u.searchParams.delete('after');
+		goto(u.pathname + u.search, { keepFocus: true });
+	}
+	function applyWhere(g: Group) {
+		editing = false;
+		setWhere(fromGroup(g));
+	}
+	/** The editor's preview: the first five titles of this search with those conditions. */
+	async function previewWhere(w: Where) {
+		const r = await api('POST /issues/search', { body: { ...params, where: (w ?? null) as WhereInput | null, cursor: null, limit: 5, fields: ['key', 'subject'], explain: 'none' } });
+		return { titles: r.items.map((x) => `${x.key} ${x.subject ?? ''}`) };
 	}
 	function toggle(k: string, v: string) {
 		const u = new URL(url);
@@ -161,15 +232,23 @@
 		{/each}
 		<span class="hint">語法：project: status: tracker: assignee: version:，其他字是全文。</span>
 		<span style="flex:1"></span>
+		<button class="btn sm" onclick={openEditor} disabled={!!syntax} data-testid="search-conditions">條件{where ? `（${chipList.length || '…'}）` : ''}</button>
 		{#if !syntax}<button class="btn sm" onclick={() => ((saving = { name: text.trim().slice(0, 60) || '新視圖' }), (saveError = null))} data-testid="save-as-view">存成視圖</button>{/if}
 	</div>
+	{#if where}
+		<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px" data-testid="search-chips">
+			{#each chipList as c, i (i)}<button class="fchip" onclick={openEditor}>{c}</button>{:else}<span class="hint">條件載入中…</span>{/each}
+			<button class="btn sm ghost" onclick={() => setWhere(null)} data-testid="search-clear-conditions">清除條件</button>
+		</div>
+	{/if}
+	<ErrorBox error={ffError} onaction={openEditor} />
 	{#if syntax}
 		<div class="err" role="alert" data-testid="syntax-error">
 			<b>查詢語法有誤（第 {syntax.position + 1} 個字）：{syntax.message}</b>
 			<div class="mono" style="margin-top:4px">{Array.from(text).slice(0, syntax.position).join('')}<mark>{Array.from(text)[syntax.position] ?? '␣'}</mark>{Array.from(text).slice(syntax.position + 1).join('')}</div>
 		</div>
 	{/if}
-	<ErrorBox {error} onaction={() => run()} />
+	<ErrorBox {error} onaction={(a) => (a === 'narrow' ? openEditor() : run())} />
 	{#if loading && slow}
 		<div class="sync" data-testid="search-slow"><span class="spin"></span>搜尋中…（條件很多時可以縮小範圍：加上 project: 或 status:）</div>
 	{/if}
@@ -227,7 +306,7 @@
 		<div class="modal" role="dialog" aria-modal="true" aria-label="存成視圖" data-testid="save-view-form">
 			<h3>存成視圖</h3>
 			<label class="f"><span>名稱</span><input type="text" bind:value={saving.name} maxlength="60" data-testid="sv-name" /></label>
-			<div class="hint">存成只有你看得到的個人列表視圖；之後可以在視圖裡改條件、欄位與排序。</div>
+			<div class="hint">存成只有你看得到的個人列表視圖；{where ? '「條件」裡的條件也會一起存。' : ''}之後可以在視圖裡改條件、欄位與排序。</div>
 			{#if saveMsg}<div class="err" role="alert" data-testid="sv-msg">{saveMsg}</div>{/if}
 			<ErrorBox error={saveError} />
 			<div class="row" style="gap:8px;margin-top:10px">
@@ -236,4 +315,8 @@
 			</div>
 		</div>
 	</div>
+{/if}
+
+{#if editing && ff}
+	<FilterEditor fields={ff.fields} today={ff.today} weekStart={ff.week_start} initial={group} preview={previewWhere} onapply={applyWhere} oncancel={() => (editing = false)} />
 {/if}
