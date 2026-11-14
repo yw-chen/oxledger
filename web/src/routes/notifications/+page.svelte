@@ -4,12 +4,12 @@
 	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import type { NotificationItem } from '$api/types';
-	import { api, newOperationId } from '$lib/api';
-	import { ago, budgetLine, eventLine, moreCount, reasonLabels } from '$lib/notify';
-	import { refreshUnread, unread } from '$lib/notifs.svelte';
-	import { session } from '$lib/session.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, newOperationId } from '#lib/api.js';
+	import { ago, budgetLine, eventLine, moreCount, reasonLabels } from '#lib/notify.js';
+	import { refreshUnread, unread } from '#lib/notifs.svelte.js';
+	import { session } from '#lib/session.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let filter = $state<'unread' | 'all'>('unread');
 	let project = $state('');

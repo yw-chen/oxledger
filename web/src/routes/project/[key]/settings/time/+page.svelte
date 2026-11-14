@@ -5,10 +5,10 @@
 	// contexts on it must be started again, so the person confirms first.
 	import { page } from '$app/state';
 	import type { ProjectTimeSettings } from '$api/types';
-	import { api, ApiError } from '$lib/api';
-	import { toast } from '$lib/toast.svelte';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError } from '#lib/api.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	let s = $state<ProjectTimeSettings | null>(null);

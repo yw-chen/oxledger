@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import ViewPage from '$lib/components/ViewPage.svelte';
+	import ViewPage from '#lib/components/ViewPage.svelte';
 	const id = $derived(decodeURIComponent(page.params.id ?? ''));
 </script>
 

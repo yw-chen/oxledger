@@ -5,8 +5,8 @@
 	// see (`scope_note = only_visible`).
 	import { page } from '$app/state';
 	import type { Summary, SummaryRow, TimeEntryView } from '$api/types';
-	import { api, ApiError } from '$lib/api';
-	import { addDays, period, showHours, todayLocal, weekMonday } from '$lib/hours';
+	import { api, ApiError } from '#lib/api.js';
+	import { addDays, period, showHours, todayLocal, weekMonday } from '#lib/hours.js';
 	import ErrorBox from './ErrorBox.svelte';
 	import Actor from './Actor.svelte';
 

@@ -1,11 +1,11 @@
 <script lang="ts">
 	// Layout B, left: navigation, collapsible to icons.
 	import { page } from '$app/state';
-	import { session } from '$lib/session.svelte';
-	import { prefs, savePrefs } from '$lib/prefs.svelte';
-	import { counts, awaitingLabel, attentionRoles, triageLabel } from '$lib/counts.svelte';
-	import { current } from '$lib/current.svelte';
-	import { me, shortcutHref, SHORTCUT_ICON, SHORTCUT_LABEL } from '$lib/me.svelte';
+	import { session } from '#lib/session.svelte.js';
+	import { prefs, savePrefs } from '#lib/prefs.svelte.js';
+	import { counts, awaitingLabel, attentionRoles, triageLabel } from '#lib/counts.svelte.js';
+	import { current } from '#lib/current.svelte.js';
+	import { me, shortcutHref, SHORTCUT_ICON, SHORTCUT_LABEL } from '#lib/me.svelte.js';
 
 	const path = $derived(page.url.pathname as string);
 	const search = $derived(page.url.search);

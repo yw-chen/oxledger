@@ -5,15 +5,15 @@
 	// open in the middle (or everything).
 	import { page } from '$app/state';
 	import type { ActivityItem } from '$api/types';
-	import { closeDrawer, collabUi, loadAiStatus } from '$lib/collab.svelte';
+	import { closeDrawer, collabUi, loadAiStatus } from '#lib/collab.svelte.js';
 	import AiChat from './AiChat.svelte';
-	import { api } from '$lib/api';
-	import { counts, myRoles } from '$lib/counts.svelte';
-	import { prefs, savePrefs } from '$lib/prefs.svelte';
-	import { fmtShort } from '$lib/format';
-	import { session } from '$lib/session.svelte';
-	import { labelOf, show, type Lookups } from '$lib/render';
-	import { projectLookups } from '$lib/trackers';
+	import { api } from '#lib/api.js';
+	import { counts, myRoles } from '#lib/counts.svelte.js';
+	import { prefs, savePrefs } from '#lib/prefs.svelte.js';
+	import { fmtShort } from '#lib/format.js';
+	import { session } from '#lib/session.svelte.js';
+	import { labelOf, show, type Lookups } from '#lib/render.js';
+	import { projectLookups } from '#lib/trackers.js';
 
 	// `ActivityItem.agent` (only on GET /ai-team/activity, G42) is replaced by the label.
 	type Row = Omit<ActivityItem, 'agent'> & { agent: string; agentId: string };

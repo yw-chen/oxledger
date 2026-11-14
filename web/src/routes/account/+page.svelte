@@ -4,12 +4,12 @@
 	// Agent tokens live under 「我的 agent 委派」, not here.
 	import { goto } from '$app/navigation';
 	import type { SessionItem } from '$api/types';
-	import { api } from '$lib/api';
-	import { fmtShort } from '$lib/format';
-	import { prefs, savePrefs } from '$lib/prefs.svelte';
-	import { session, signOut } from '$lib/session.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api } from '#lib/api.js';
+	import { fmtShort } from '#lib/format.js';
+	import { prefs, savePrefs } from '#lib/prefs.svelte.js';
+	import { session, signOut } from '#lib/session.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let items = $state<SessionItem[] | null>(null);
 	let error = $state<unknown>(null);

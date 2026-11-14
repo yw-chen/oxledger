@@ -5,10 +5,10 @@
 	// by status / category) or update_fields (other lanes) with the card's
 	// lock_version. `M` on a focused card opens 「移到…」 (no mouse needed).
 	import type { IssueActions, LaneOut, RunInput, RunItem, ViewRun, FieldSchema, Assignee, VersionView } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { doc, issueRef, submit, wireFields } from '$lib/commands';
-	import { cardFieldLabel, cellText, countText } from '$lib/filter';
-	import { toast } from '$lib/toast.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { doc, issueRef, submit, wireFields } from '#lib/commands.js';
+	import { cardFieldLabel, cellText, countText } from '#lib/filter.js';
+	import { toast } from '#lib/toast.svelte.js';
 	import { goto } from '$app/navigation';
 	import ErrorBox from './ErrorBox.svelte';
 	import FieldInput from './FieldInput.svelte';

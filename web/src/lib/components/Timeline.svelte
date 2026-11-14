@@ -3,8 +3,8 @@
 	// milestone; bars from start to due date; dates and health come from the
 	// server (the org time zone's "today"). Only issues the viewer can see.
 	import type { Timeline } from '$api/types';
-	import { api } from '$lib/api';
-	import { FLAG, HEALTH, HEALTH_REASON } from '$lib/health';
+	import { api } from '#lib/api.js';
+	import { FLAG, HEALTH, HEALTH_REASON } from '#lib/health.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let { projectId }: { projectId: string } = $props();

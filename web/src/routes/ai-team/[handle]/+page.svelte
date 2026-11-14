@@ -7,19 +7,19 @@
 	// (stricter only).
 	import { page } from '$app/state';
 	import type { ActivityItem, CredentialSummary, IssuedCredential, PolicyMode, ProjectPolicy, SafetySummary, TeamDetail, TemplateSpec } from '$api/types';
-	import { api, ApiError } from '$lib/api';
-	import { commandLabel, isStricter, STATUS_LABEL, TEMPLATE_LABEL, type Policies } from '$lib/aiteam';
-	import { refreshCounts } from '$lib/counts.svelte';
-	import { defaultModeFor, newOperations, withNewOperations } from '$lib/review';
-	import { fieldLabel, fmtShort, fmtTime, MODE_LABELS } from '$lib/format';
-	import { labelOf, show, type Lookups } from '$lib/render';
-	import { session } from '$lib/session.svelte';
-	import { stepped } from '$lib/stepup.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import { customFieldNames, projectLookups } from '$lib/trackers';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import PolicyTable from '$lib/components/PolicyTable.svelte';
-	import TokenOnce from '$lib/components/TokenOnce.svelte';
+	import { api, ApiError } from '#lib/api.js';
+	import { commandLabel, isStricter, STATUS_LABEL, TEMPLATE_LABEL, type Policies } from '#lib/aiteam.js';
+	import { refreshCounts } from '#lib/counts.svelte.js';
+	import { defaultModeFor, newOperations, withNewOperations } from '#lib/review.js';
+	import { fieldLabel, fmtShort, fmtTime, MODE_LABELS } from '#lib/format.js';
+	import { labelOf, show, type Lookups } from '#lib/render.js';
+	import { session } from '#lib/session.svelte.js';
+	import { stepped } from '#lib/stepup.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import { customFieldNames, projectLookups } from '#lib/trackers.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import PolicyTable from '#lib/components/PolicyTable.svelte';
+	import TokenOnce from '#lib/components/TokenOnce.svelte';
 
 	const handle = $derived(decodeURIComponent(page.params.handle ?? ''));
 	let d = $state<TeamDetail | null>(null);

@@ -3,9 +3,9 @@
 	// sit inside it; "← 回到〈分頁〉" when the person came from one of them.
 	import type { Snippet } from 'svelte';
 	import type { TabSettings } from '$api/types';
-	import { api } from '$lib/api';
-	import { projectByKey } from '$lib/session.svelte';
-	import { current, fromTab, rememberTab } from '$lib/current.svelte';
+	import { api } from '#lib/api.js';
+	import { projectByKey } from '#lib/session.svelte.js';
+	import { current, fromTab, rememberTab } from '#lib/current.svelte.js';
 
 	let {
 		projectKey,

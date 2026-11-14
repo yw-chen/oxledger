@@ -3,7 +3,7 @@
 	// settings next to it. It lives only in this component's memory: never
 	// in the URL, logs or browser storage.
 	import type { IssuedCredential } from '$api/types';
-	import { fmtShort } from '$lib/format';
+	import { fmtShort } from '#lib/format.js';
 
 	let { token, onclose }: { token: IssuedCredential; onclose: () => void } = $props();
 	const url = $derived(`${location.origin}/mcp`);

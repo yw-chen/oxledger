@@ -5,8 +5,8 @@
 	// lock_version). A built-in board is copied first (R-VD5): a project board
 	// needs manage_public_views, otherwise a personal board.
 	import type { FilterFieldInfo, FilterOption } from '$api/types';
-	import { CARD_FIELD_KEYS, CATEGORY_LABEL, DEFAULT_CARD_FIELDS, MAX_CARD_FIELDS, cardFieldLabel, toggleCardField, withCardKey } from '$lib/filter';
-	import { FORBIDDEN } from '$lib/errors';
+	import { CARD_FIELD_KEYS, CATEGORY_LABEL, DEFAULT_CARD_FIELDS, MAX_CARD_FIELDS, cardFieldLabel, toggleCardField, withCardKey } from '#lib/filter.js';
+	import { FORBIDDEN } from '#lib/errors.js';
 
 	type Lane = { id: string; title: string; values: unknown[]; wip_max?: number | null };
 	let {

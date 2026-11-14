@@ -4,8 +4,8 @@
 	// form yet gets one on 「設計」 (POST /admin/forms is idempotent).
 	import { goto } from '$app/navigation';
 	import type { Candidate, FormSummary } from '$api/types';
-	import { api, newOperationId } from '$lib/api';
-	import { listTrackers } from '$lib/trackers';
+	import { api, newOperationId } from '#lib/api.js';
+	import { listTrackers } from '#lib/trackers.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let { projectKey = null }: { projectKey?: string | null } = $props();

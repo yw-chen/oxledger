@@ -2,7 +2,7 @@
 	// A saved query tab (R-T6): run as an ordinary search with the viewer's
 	// own visibility; no stored results, no total.
 	import type { SearchItem, SearchResult, Tab } from '$api/types';
-	import { api } from '$lib/api';
+	import { api } from '#lib/api.js';
 	import ErrorBox from './ErrorBox.svelte';
 	import IssueList from './IssueList.svelte';
 

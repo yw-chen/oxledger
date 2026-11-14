@@ -5,13 +5,13 @@
 	// the company-account confirmation), budgets, usage (counts and costs only)
 	// and the audit trail. Changes to providers need a step-up.
 	import type { EndpointList, ProviderEvent, ProviderView, SettingsView, Usage } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { describeError } from '$lib/errors';
-	import { describeEvents } from '$lib/aievents';
-	import { fmtShort, fmtTime } from '$lib/format';
-	import { stepped } from '$lib/stepup.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { describeError } from '#lib/errors.js';
+	import { describeEvents } from '#lib/aievents.js';
+	import { fmtShort, fmtTime } from '#lib/format.js';
+	import { stepped } from '#lib/stepup.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let settings = $state<SettingsView | null>(null);
 	let endpoints = $state<EndpointList | null>(null);

@@ -5,10 +5,10 @@
 	// `embedded`: the fields only, for 「同時記工時」 in the issue edit form.
 	import { untrack } from 'svelte';
 	import type { Named } from '$api/types';
-	import { session } from '$lib/session.svelte';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { submit } from '$lib/commands';
-	import { hoursEcho, logTimeDoc, parseHours, showHours, todayLocal, type LogInput } from '$lib/hours';
+	import { session } from '#lib/session.svelte.js';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { submit } from '#lib/commands.js';
+	import { hoursEcho, logTimeDoc, parseHours, showHours, todayLocal, type LogInput } from '#lib/hours.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let {

@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { safeHref } from '$lib/format';
+	import { safeHref } from '#lib/format.js';
 	// 開發（GitHub）分頁 (§19.7): issues with PRs, newest PR activity first,
 	// only issues the viewer can see, never a total. GitHub's text is shown
 	// as written; a repository the App lost shows data "as of" its last sync.
 	import type { ProjectDev } from '$api/types';
-	import { api } from '$lib/api';
-	import { fmtShort } from '$lib/format';
-	import { toast } from '$lib/toast.svelte';
+	import { api } from '#lib/api.js';
+	import { fmtShort } from '#lib/format.js';
+	import { toast } from '#lib/toast.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let { projectId }: { projectId: string } = $props();

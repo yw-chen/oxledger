@@ -5,7 +5,7 @@
 	// chips of who will be mentioned, a byte limit, drafts and a leave guard.
 	import { onMount, untrack } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
-	import { api, type Route } from '$lib/api';
+	import { api, type Route } from '#lib/api.js';
 	import RichText from './RichText.svelte';
 	import {
 		bytesText,
@@ -23,7 +23,7 @@
 		writeDraft,
 		type Edit,
 		type Mentionable
-	} from '$lib/markdown';
+	} from '#lib/markdown.js';
 
 	let {
 		value = $bindable(''),

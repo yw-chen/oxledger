@@ -3,17 +3,17 @@
 	// (a tracker at the site or in a project). Edits are drafts until
 	// published; publishing rules shows the impact first and needs step-up.
 	import type { Assignee, FieldSchema, FormDescription, FormDetail, FormImpact, FormVersionView, ValidateResult, VersionView } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { session } from '$lib/session.svelte';
-	import { stepped } from '$lib/stepup.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import { fmtTime } from '$lib/format';
-	import { wireFields } from '$lib/commands';
-	import { condValues, evalWhen, whenProblem, type Group } from '$lib/formcond';
-	import { RULE_KIND, cleanLayout, kindsFor, layoutOf, libName, loadLibrary, nextId, ruleSentence, rulesOf, type LField, type LayoutBody, type Library, type Rule, type Section } from '$lib/formdesign';
-	import { describeError } from '$lib/errors';
-	import { statusCategories } from '$lib/triage';
-	import { whoName } from '$lib/who';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
+	import { stepped } from '#lib/stepup.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import { fmtTime } from '#lib/format.js';
+	import { wireFields } from '#lib/commands.js';
+	import { condValues, evalWhen, whenProblem, type Group } from '#lib/formcond.js';
+	import { RULE_KIND, cleanLayout, kindsFor, layoutOf, libName, loadLibrary, nextId, ruleSentence, rulesOf, type LField, type LayoutBody, type Library, type Rule, type Section } from '#lib/formdesign.js';
+	import { describeError } from '#lib/errors.js';
+	import { statusCategories } from '#lib/triage.js';
+	import { whoName } from '#lib/who.js';
 	import ErrorBox from './ErrorBox.svelte';
 	import CondEditor from './CondEditor.svelte';
 	import FormSections from './FormSections.svelte';

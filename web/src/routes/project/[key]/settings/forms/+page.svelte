@@ -1,8 +1,8 @@
 <script lang="ts">
 	// 專案表單（contract 05 §6.10, manage_project）.
 	import { page } from '$app/state';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import FormList from '$lib/components/FormList.svelte';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import FormList from '#lib/components/FormList.svelte';
 	const key = $derived((page.params.key ?? '').toUpperCase());
 </script>
 

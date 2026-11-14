@@ -6,16 +6,16 @@
 	// its own result; items that need a choice are listed to do one by one.
 	import { page } from '$app/state';
 	import type { ActivityItem, IncidentPreview, UndoPreview, UndoResult } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { fullIssueKey } from '$lib/aiteam';
-	import { describeError } from '$lib/errors';
-	import { fmtTime, fmtValue, fieldLabel } from '$lib/format';
-	import { counts, refreshCounts } from '$lib/counts.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import { labelOf, show, type Lookups } from '$lib/render';
-	import { projectLookups } from '$lib/trackers';
-	import { session } from '$lib/session.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { fullIssueKey } from '#lib/aiteam.js';
+	import { describeError } from '#lib/errors.js';
+	import { fmtTime, fmtValue, fieldLabel } from '#lib/format.js';
+	import { counts, refreshCounts } from '#lib/counts.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import { labelOf, show, type Lookups } from '#lib/render.js';
+	import { projectLookups } from '#lib/trackers.js';
+	import { session } from '#lib/session.svelte.js';
 
 	const agentId = $derived(page.params.id ?? '');
 	const role = $derived(counts.team.find((m) => m.id === agentId) ?? null);

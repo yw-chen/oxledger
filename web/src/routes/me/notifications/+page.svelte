@@ -3,10 +3,10 @@
 	// automatically, muted projects. Saved with the button; `conflict` loads the
 	// latest settings and says so.
 	import type { NotificationPreferences } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { session } from '$lib/session.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	type Flags = Omit<NotificationPreferences, 'lock_version' | 'muted_projects'>;
 	let saved = $state<NotificationPreferences | null>(null);

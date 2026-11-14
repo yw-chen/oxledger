@@ -3,10 +3,10 @@
 	// the same thing; search expands a label to the concept's other active
 	// labels. Labels are never deleted: set them to staging (not expanded).
 	import type { ConceptView, Expansion } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { session } from '$lib/session.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	const admin = $derived(!!session.user?.is_admin);
 	let items = $state<ConceptView[]>([]);

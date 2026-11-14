@@ -5,10 +5,10 @@
 	// caller (remove the row / reload it), anything else stays here.
 	import { untrack } from 'svelte';
 	import type { Assignee, InboxSettings, TransitionAction, TriageDecision } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { submit } from '$lib/commands';
-	import { DECLINE_PREFIX, dupNote, noteText, statusCategories, triageDoc } from '$lib/triage';
-	import { snoozePreset } from '$lib/hours';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { submit } from '#lib/commands.js';
+	import { DECLINE_PREFIX, dupNote, noteText, statusCategories, triageDoc } from '#lib/triage.js';
+	import { snoozePreset } from '#lib/hours.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let {

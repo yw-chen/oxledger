@@ -5,12 +5,12 @@
 	// manage_project / manage_versions; this page only hides what it can.
 	import { page } from '$app/state';
 	import type { LinkableRepos, RepoLinks, ScheduleSettings, TabInput, TabSettings, ViewSummary } from '$api/types';
-	import { api, ApiError } from '$lib/api';
-	import { projectByKey } from '$lib/session.svelte';
-	import { fmtShort } from '$lib/format';
-	import { toast } from '$lib/toast.svelte';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError } from '#lib/api.js';
+	import { projectByKey } from '#lib/session.svelte.js';
+	import { fmtShort } from '#lib/format.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	const projectId = $derived(projectByKey(key)?.id ?? key);

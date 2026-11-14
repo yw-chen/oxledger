@@ -5,8 +5,8 @@
 // needs to know whether the built-in AI is on.
 
 import type { AiStatus } from '$api/types';
-import { api } from '$lib/api';
-import { prefs, savePrefs } from '$lib/prefs.svelte';
+import { api } from '#lib/api.js';
+import { prefs, savePrefs } from '#lib/prefs.svelte.js';
 
 export const NARROW_QUERY = '(max-width: 1279.98px)';
 

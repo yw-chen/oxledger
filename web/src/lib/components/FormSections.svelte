@@ -4,7 +4,7 @@
 	// (§9 B-10; only a hint, the server decides). Fields the layout does not
 	// place go last under 「其他」.
 	import type { Assignee, FieldSchema, VersionView } from '$api/types';
-	import { evalWhen, type LayoutLike } from '$lib/formcond';
+	import { evalWhen, type LayoutLike } from '#lib/formcond.js';
 	import FieldInput, { type MdOpts } from './FieldInput.svelte';
 
 	let {

@@ -3,7 +3,6 @@
 // 依測試規則只對改到的檔案跑：npx eslint <檔案…>
 import ts from 'typescript-eslint';
 import svelte from 'eslint-plugin-svelte';
-import svelteConfig from './svelte.config.js';
 
 export default ts.config(
 	{ ignores: ['.svelte-kit/', 'build/', 'node_modules/', 'test-results/', 'playwright-report/', 'src/api/'] },
@@ -11,14 +10,14 @@ export default ts.config(
 	...svelte.configs.recommended,
 	{
 		files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
-		languageOptions: { parserOptions: { parser: ts.parser, extraFileExtensions: ['.svelte'], svelteConfig } }
+		languageOptions: { parserOptions: { parser: ts.parser, extraFileExtensions: ['.svelte'] } }
 	},
 	// R-M10：{@html} 只准出現在 RichText（伺服器的 *_html）與 AiChat（自己的子集，一律 escape）。
 	// 「只能傳 *_html」由 src/lib/html-guard.test.ts 檢查。
 	{
 		rules: {
 			'svelte/no-at-html-tags': 'error',
-			// SPA 沒有 paths.base（svelte.config.js），連結不需要 resolve()。
+			// SPA 沒有設 paths.base，連結不需要 resolve()。
 			'svelte/no-navigation-without-resolve': 'off',
 			// 會誤報 $derived 裡算完就回傳的區域 Map／Set。
 			'svelte/prefer-svelte-reactivity': 'off'

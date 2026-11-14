@@ -3,21 +3,21 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto, afterNavigate } from '$app/navigation';
-	import { session, loadSession, signOut } from '$lib/session.svelte';
-	import { loadPrefs, prefs, THEME_LABEL } from '$lib/prefs.svelte';
-	import { loadMe, me, setPrefs } from '$lib/me.svelte';
+	import { session, loadSession, signOut } from '#lib/session.svelte.js';
+	import { loadPrefs, prefs, THEME_LABEL } from '#lib/prefs.svelte.js';
+	import { loadMe, me, setPrefs } from '#lib/me.svelte.js';
 	import { untrack } from 'svelte';
-	import Bell from '$lib/components/Bell.svelte';
-	import Onboarding from '$lib/components/Onboarding.svelte';
-	import { refreshCounts } from '$lib/counts.svelte';
-	import { toasts } from '$lib/toast.svelte';
-	import LeftNav from '$lib/components/LeftNav.svelte';
-	import Collab from '$lib/components/Collab.svelte';
-	import { closeDrawer, collabUi, openDrawer, watchNarrow } from '$lib/collab.svelte';
-	import Palette from '$lib/components/Palette.svelte';
-	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
-	import LoginForm from '$lib/components/LoginForm.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import Bell from '#lib/components/Bell.svelte';
+	import Onboarding from '#lib/components/Onboarding.svelte';
+	import { refreshCounts } from '#lib/counts.svelte.js';
+	import { toasts } from '#lib/toast.svelte.js';
+	import LeftNav from '#lib/components/LeftNav.svelte';
+	import Collab from '#lib/components/Collab.svelte';
+	import { closeDrawer, collabUi, openDrawer, watchNarrow } from '#lib/collab.svelte.js';
+	import Palette from '#lib/components/Palette.svelte';
+	import StepUpDialog from '#lib/components/StepUpDialog.svelte';
+	import LoginForm from '#lib/components/LoginForm.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let { children } = $props();
 	let loadError = $state<unknown>(null);
@@ -45,7 +45,7 @@
 	$effect(() => {
 		if (session.ready && !session.user && !session.expired && !onLogin && !loadError) {
 			const next = page.url.pathname + page.url.search;
-			goto(`/login?next=${encodeURIComponent(next)}`, { replaceState: true });
+			goto(`/login?next=${encodeURIComponent(next)}`, { replace: true });
 		}
 	});
 

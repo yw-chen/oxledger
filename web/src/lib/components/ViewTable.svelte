@@ -3,8 +3,8 @@
 	// counts, overdue marked in words, totals over every visible match, and
 	// 「載入更多」. Rows open the issue.
 	import type { RunInput, ViewRun } from '$api/types';
-	import { ApiError } from '$lib/api';
-	import { cellText, countText } from '$lib/filter';
+	import { ApiError } from '#lib/api.js';
+	import { cellText, countText } from '#lib/filter.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let {

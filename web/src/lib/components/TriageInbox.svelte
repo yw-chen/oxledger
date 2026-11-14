@@ -3,11 +3,11 @@
 	// accepts, declines, marks as duplicate or snoozes them. One project
 	// (`projectKey`) or every project the person may triage in (`/triage`).
 	import type { SpaIssue, TriageDecision, TriageItem, TriageList } from '$api/types';
-	import { api, ApiError } from '$lib/api';
-	import { fmtTime } from '$lib/format';
-	import { ago } from '$lib/triage';
-	import { refreshTriageCounts } from '$lib/counts.svelte';
-	import { toast } from '$lib/toast.svelte';
+	import { api, ApiError } from '#lib/api.js';
+	import { fmtTime } from '#lib/format.js';
+	import { ago } from '#lib/triage.js';
+	import { refreshTriageCounts } from '#lib/counts.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 	import Actor from './Actor.svelte';
 	import TriageDecide from './TriageDecide.svelte';

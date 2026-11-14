@@ -13,8 +13,8 @@
 	// One editable field, driven by the static schema (§5.1). Values are what
 	// a command document carries: ids for references, YYYY-MM-DD for dates.
 	import type { Assignee, FieldSchema, VersionView } from '$api/types';
-	import { fieldLabel } from '$lib/format';
-	import { LIMIT, type Mentionable } from '$lib/markdown';
+	import { fieldLabel } from '#lib/format.js';
+	import { LIMIT, type Mentionable } from '#lib/markdown.js';
 	import MarkdownEditor from './MarkdownEditor.svelte';
 
 	let {

@@ -3,11 +3,11 @@
 	// the project views of the projects I can see. 「＋ 新視圖」 makes a
 	// personal list or board.
 	import type { ViewSummary } from '$api/types';
-	import { api } from '$lib/api';
+	import { api } from '#lib/api.js';
 	import { goto } from '$app/navigation';
-	import { session } from '$lib/session.svelte';
-	import { fmtShort } from '$lib/format';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { session } from '#lib/session.svelte.js';
+	import { fmtShort } from '#lib/format.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let items = $state<ViewSummary[]>([]);
 	let error = $state<unknown>(null);

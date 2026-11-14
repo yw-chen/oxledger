@@ -3,20 +3,20 @@
 	// saved queries (run with the viewer's own visibility, R-T6) and links.
 	import { page } from '$app/state';
 	import type { TabSettings } from '$api/types';
-	import { api } from '$lib/api';
-	import { projectByKey } from '$lib/session.svelte';
-	import { me } from '$lib/me.svelte';
-	import { myDefaults, personalTab } from '$lib/home';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import Timeline from '$lib/components/Timeline.svelte';
-	import Milestones from '$lib/components/Milestones.svelte';
-	import DevTab from '$lib/components/DevTab.svelte';
-	import QueryTab from '$lib/components/QueryTab.svelte';
-	import ViewPage from '$lib/components/ViewPage.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import TriageInbox from '$lib/components/TriageInbox.svelte';
-	import TimeReport from '$lib/components/TimeReport.svelte';
-	import AiTeamList from '$lib/components/AiTeamList.svelte';
+	import { api } from '#lib/api.js';
+	import { projectByKey } from '#lib/session.svelte.js';
+	import { me } from '#lib/me.svelte.js';
+	import { myDefaults, personalTab } from '#lib/home.js';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import Timeline from '#lib/components/Timeline.svelte';
+	import Milestones from '#lib/components/Milestones.svelte';
+	import DevTab from '#lib/components/DevTab.svelte';
+	import QueryTab from '#lib/components/QueryTab.svelte';
+	import ViewPage from '#lib/components/ViewPage.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import TriageInbox from '#lib/components/TriageInbox.svelte';
+	import TimeReport from '#lib/components/TimeReport.svelte';
+	import AiTeamList from '#lib/components/AiTeamList.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	const project = $derived(projectByKey(key));

@@ -2,7 +2,7 @@
 	// ⌘K intent bar (design 01 §15.11). Routes only on Enter or click, never
 	// while typing; ignores Enter during IME composition.
 	import { goto } from '$app/navigation';
-	import { route, type Intent } from '$lib/intent';
+	import { route, type Intent } from '#lib/intent.js';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 	let text = $state('');

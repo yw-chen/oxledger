@@ -2,9 +2,9 @@
 	// 關注 (contract 05 §6.16): optimistic toggle; on failure the old state
 	// comes back with a toast. People only (agents never watch).
 	import type { WatchInfo } from '$api/types';
-	import { api } from '$lib/api';
-	import { toast } from '$lib/toast.svelte';
-	import { describeError } from '$lib/errors';
+	import { api } from '#lib/api.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import { describeError } from '#lib/errors.js';
 
 	let { issueKey, watch }: { issueKey: string; watch: WatchInfo } = $props();
 	// svelte-ignore state_referenced_locally

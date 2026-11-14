@@ -7,20 +7,21 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import type { FilterFields, FilterOption, SearchItem, SearchParams, SearchResult, WhereInput } from '$api/types';
-	import { api } from '$lib/api';
-	import { parse, toParams, SyntaxError_ } from '$lib/query';
-	import { splitHighlights } from '$lib/highlight';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import { pendingCreated, type JustCreated } from '$lib/created.svelte';
-	import { projectByKey } from '$lib/session.svelte';
-	import { andWhere, chips, fromGroup, searchToWhere, toGroup, whereFromParam, type Group, type Where } from '$lib/filter';
-	import { sourceOptions } from '$lib/filterOptions';
-	import { session } from '$lib/session.svelte';
+	import { api } from '#lib/api.js';
+	import { parse, toParams, SyntaxError_ } from '#lib/query.js';
+	import { splitHighlights } from '#lib/highlight.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import { pendingCreated, type JustCreated } from '#lib/created.svelte.js';
+	import { projectByKey } from '#lib/session.svelte.js';
+	import { andWhere, chips, fromGroup, searchToWhere, toGroup, whereFromParam, type Group, type Where } from '#lib/filter.js';
+	import { sourceOptions } from '#lib/filterOptions.js';
+	import { session } from '#lib/session.svelte.js';
 	import FilterEditor from './FilterEditor.svelte';
 
 	let { scopeProject = null }: { scopeProject?: string | null } = $props();
 
-	const url = $derived(page.url);
+	// Kit 3: page.url is read-only; a copy can be read and changed like any URL.
+	const url = $derived(new URL(page.url.href));
 	let text = $state('');
 	let items = $state<SearchItem[]>([]);
 	let result = $state<SearchResult | null>(null);
@@ -100,12 +101,22 @@
 		run();
 	});
 
+	/** Keep focus (the search box or the chip just clicked) but go to the top,
+	 *  as SvelteKit 2's `{ keepFocus: true }` did; Kit 3's `reset: false`
+	 *  keeps the scroll position too, so scroll here. */
+	function go(u: URL) {
+		// A newer search (typing on) aborts this navigation; nothing to do then.
+		goto(u.pathname + u.search, { reset: false }).then(
+			() => window.scrollTo(0, 0),
+			() => {}
+		);
+	}
 	function submit(e: SubmitEvent) {
 		e.preventDefault();
 		const u = new URL(url);
 		u.searchParams.set('q', text);
 		u.searchParams.delete('after');
-		goto(u.pathname + u.search, { keepFocus: true });
+		go(u);
 	}
 	const FIELD: Record<string, string> = { subject: '標題', description: '描述' };
 	const quick = $derived([
@@ -200,7 +211,7 @@
 		if (w) u.searchParams.set('where', JSON.stringify(w));
 		else u.searchParams.delete('where');
 		u.searchParams.delete('after');
-		goto(u.pathname + u.search, { keepFocus: true });
+		go(u);
 	}
 	function applyWhere(g: Group) {
 		editing = false;
@@ -215,7 +226,7 @@
 		const u = new URL(url);
 		if (u.searchParams.get(k) === v) u.searchParams.delete(k);
 		else u.searchParams.set(k, v);
-		goto(u.pathname + u.search, { keepFocus: true });
+		go(u);
 	}
 </script>
 

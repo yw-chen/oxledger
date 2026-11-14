@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Password + one submit (§15.1); works with password managers.
-	import { signIn } from '$lib/session.svelte';
+	import { signIn } from '#lib/session.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 	let { done }: { done: () => void } = $props();
 	let login = $state('');

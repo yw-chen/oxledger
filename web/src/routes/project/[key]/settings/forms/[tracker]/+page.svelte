@@ -2,11 +2,11 @@
 	// 專案層表單設計器（contract 05 §6.10, manage_project）: the form of
 	// (project, tracker), created on first visit (POST /admin/forms is idempotent).
 	import { page } from '$app/state';
-	import { api, newOperationId } from '$lib/api';
-	import { session } from '$lib/session.svelte';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import FormDesigner from '$lib/components/FormDesigner.svelte';
+	import { api, newOperationId } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import FormDesigner from '#lib/components/FormDesigner.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	const tracker = $derived(page.params.tracker ?? '');

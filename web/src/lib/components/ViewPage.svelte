@@ -6,15 +6,15 @@
 	// it is not in the draft, and 「另存變更」 offers to keep it. Built-in views
 	// are copied before editing.
 	import type { FilterFields, FilterOption, RunInput, ViewDetail, ViewEvent } from '$api/types';
-	import { api, ApiError } from '$lib/api';
+	import { api, ApiError } from '#lib/api.js';
 	import { goto } from '$app/navigation';
-	import { chips, fromGroup, nextSort, sameSort, toGroup, type Group, type SortKey, type Where } from '$lib/filter';
-	import { FORBIDDEN, isForbidden } from '$lib/errors';
-	import { listTrackers } from '$lib/trackers';
-	import { sourceOptions } from '$lib/filterOptions';
-	import { fmtTime } from '$lib/format';
-	import { toast } from '$lib/toast.svelte';
-	import { session } from '$lib/session.svelte';
+	import { chips, fromGroup, nextSort, sameSort, toGroup, type Group, type SortKey, type Where } from '#lib/filter.js';
+	import { FORBIDDEN, isForbidden } from '#lib/errors.js';
+	import { listTrackers } from '#lib/trackers.js';
+	import { sourceOptions } from '#lib/filterOptions.js';
+	import { fmtTime } from '#lib/format.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import { session } from '#lib/session.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 	import FilterEditor from './FilterEditor.svelte';
 	import ViewTable from './ViewTable.svelte';

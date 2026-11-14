@@ -1,7 +1,7 @@
 <script lang="ts">
 	// 表單設計器清單（contract 05 §6.10）: the site forms, one per tracker.
-	import { session } from '$lib/session.svelte';
-	import FormList from '$lib/components/FormList.svelte';
+	import { session } from '#lib/session.svelte.js';
+	import FormList from '#lib/components/FormList.svelte';
 	const admin = $derived(!!session.user?.is_admin);
 </script>
 

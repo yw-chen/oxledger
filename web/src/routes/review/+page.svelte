@@ -6,12 +6,12 @@
 	// in flight. 401 / CSRF / service errors stop what has not been sent;
 	// "停止" only affects rows not yet sent. Partial success is shown per row.
 	import type { ChangesetSummary } from '$api/types';
-	import { api, ApiError, newOperationId, pool } from '$lib/api';
-	import { describeError, describeFailure } from '$lib/errors';
-	import { fieldLabel, fmtShort, fmtValue } from '$lib/format';
-	import { refreshCounts } from '$lib/counts.svelte';
-	import { agentChainReason, AGENT_CHAIN_TIP, diffLines, neverTickable, RULES_CHANGED, whyNotQueue as whyNot } from '$lib/review';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId, pool } from '#lib/api.js';
+	import { describeError, describeFailure } from '#lib/errors.js';
+	import { fieldLabel, fmtShort, fmtValue } from '#lib/format.js';
+	import { refreshCounts } from '#lib/counts.svelte.js';
+	import { agentChainReason, AGENT_CHAIN_TIP, diffLines, neverTickable, RULES_CHANGED, whyNotQueue as whyNot } from '#lib/review.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	type RowResult = { state: 'sending' | 'ok' | 'failed' | 'pending' | 'not_sent'; text?: string; keys?: string[]; op?: string };
 

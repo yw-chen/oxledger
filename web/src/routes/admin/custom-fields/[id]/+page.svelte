@@ -5,13 +5,13 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import type { Candidate, FieldAdminView, FieldDetail, FieldSet, RequiredImpact } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { session } from '$lib/session.svelte';
-	import { listTrackers } from '$lib/trackers';
-	import { fieldState, ftypeLabel } from '$lib/fieldadmin';
-	import { stepped } from '$lib/stepup.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
+	import { listTrackers } from '#lib/trackers.js';
+	import { fieldState, ftypeLabel } from '#lib/fieldadmin.js';
+	import { stepped } from '#lib/stepup.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	const admin = $derived(!!session.user?.is_admin);
 	const id = $derived(page.params.id ?? '');

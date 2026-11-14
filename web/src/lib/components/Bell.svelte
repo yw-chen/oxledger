@@ -3,9 +3,9 @@
 	// ten unread rows, 「查看全部」 to /notifications.
 	import { goto } from '$app/navigation';
 	import type { NotificationItem } from '$api/types';
-	import { api } from '$lib/api';
-	import { ago, badge, bellLabel, budgetLine, eventLine, moreCount, reasonLabels } from '$lib/notify';
-	import { markRead, pollUnread, unread } from '$lib/notifs.svelte';
+	import { api } from '#lib/api.js';
+	import { ago, badge, bellLabel, budgetLine, eventLine, moreCount, reasonLabels } from '#lib/notify.js';
+	import { markRead, pollUnread, unread } from '#lib/notifs.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let open = $state(false);

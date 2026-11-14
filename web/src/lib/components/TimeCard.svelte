@@ -4,9 +4,9 @@
 	// The page shows the card only when `spent_hours` is present (module on
 	// and `view_time_entries`).
 	import type { TimeEntryView } from '$api/types';
-	import { api } from '$lib/api';
-	import { showHours } from '$lib/hours';
-	import { toast } from '$lib/toast.svelte';
+	import { api } from '#lib/api.js';
+	import { showHours } from '#lib/hours.js';
+	import { toast } from '#lib/toast.svelte.js';
 	import Actor from './Actor.svelte';
 	import ErrorBox from './ErrorBox.svelte';
 	import LogTime from './LogTime.svelte';

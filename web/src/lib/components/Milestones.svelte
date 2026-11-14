@@ -3,9 +3,9 @@
 	// never AI); create; change the date with an impact preview first; lock
 	// or close. Writes need manage_versions; the server decides.
 	import type { Impact, VersionList, VersionView } from '$api/types';
-	import { api, ApiError } from '$lib/api';
-	import { HEALTH, HEALTH_REASON, VERSION_STATUS } from '$lib/health';
-	import { toast } from '$lib/toast.svelte';
+	import { api, ApiError } from '#lib/api.js';
+	import { HEALTH, HEALTH_REASON, VERSION_STATUS } from '#lib/health.js';
+	import { toast } from '#lib/toast.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let { projectId, projectKey }: { projectId: string; projectKey: string } = $props();

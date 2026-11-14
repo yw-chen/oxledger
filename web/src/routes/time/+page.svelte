@@ -5,11 +5,11 @@
 	// lock_version); a cell with several opens a small panel. Clearing asks
 	// before deleting; 0 is a real entry only when the org accepts 0 hours.
 	import type { Named, ProjectRef, IssueRef, Timesheet, TimesheetRow, TimeEntryView, TimelogSettings } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { submit } from '$lib/commands';
-	import { addHours, dayLabel, deleteTimeDoc, isoWeek, logTimeDoc, parseHours, shiftWeek, showHours, todayLocal, updateTimeDoc } from '$lib/hours';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { submit } from '#lib/commands.js';
+	import { addHours, dayLabel, deleteTimeDoc, isoWeek, logTimeDoc, parseHours, shiftWeek, showHours, todayLocal, updateTimeDoc } from '#lib/hours.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	type Row = { project: ProjectRef; issue: IssueRef | null; activity: Named; cells: TimesheetRow['cells']; local?: boolean };
 

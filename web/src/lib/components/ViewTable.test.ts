@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import type { RunInput, ViewRun } from '$api/types';
-import { ApiError } from '$lib/api';
+import { ApiError } from '#lib/api.js';
 import ViewTable from './ViewTable.svelte';
 
 const cols = [

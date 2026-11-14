@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The step-up password dialog (stepup.svelte.ts); one for the whole app.
-	import { stepUp } from '$lib/stepup.svelte';
-	import { reauthenticate } from '$lib/session.svelte';
+	import { stepUp } from '#lib/stepup.svelte.js';
+	import { reauthenticate } from '#lib/session.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let password = $state('');

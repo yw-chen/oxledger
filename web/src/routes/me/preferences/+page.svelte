@@ -3,13 +3,13 @@
 	// 以角色預覽 (the template, read with your own permissions), theme,
 	// density and the order of the left-nav shortcuts.
 	import type { ShortcutInput, Template, ViewSummary, Widget } from '$api/types';
-	import { api, newOperationId } from '$lib/api';
-	import { adoptPrefs, loadMe, me, ROLE_LABEL, ROLES, setPrefs, SHORTCUT_LABEL } from '$lib/me.svelte';
-	import { DENSITY_LABEL, THEME_LABEL, THEMES, type Density, type Theme } from '$lib/prefs.svelte';
-	import { BUILTIN_VIEW, moveTo, widgetTitle } from '$lib/home';
-	import { toast } from '$lib/toast.svelte';
-	import HomeWidget from '$lib/components/HomeWidget.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, newOperationId } from '#lib/api.js';
+	import { adoptPrefs, loadMe, me, ROLE_LABEL, ROLES, setPrefs, SHORTCUT_LABEL } from '#lib/me.svelte.js';
+	import { DENSITY_LABEL, THEME_LABEL, THEMES, type Density, type Theme } from '#lib/prefs.svelte.js';
+	import { BUILTIN_VIEW, moveTo, widgetTitle } from '#lib/home.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import HomeWidget from '#lib/components/HomeWidget.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	$effect(() => {
 		loadMe();

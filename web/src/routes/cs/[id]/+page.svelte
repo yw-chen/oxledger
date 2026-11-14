@@ -8,16 +8,16 @@
 	// "建立修訂版並核准套用" (or "只儲存修訂版").
 	import { page } from '$app/state';
 	import type { Assignee, ChangesetView, ExecutionView, RevisionPreview, SpaIssue, Validation, VersionView } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { describeError, describeFailure } from '$lib/errors';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { describeError, describeFailure } from '#lib/errors.js';
 	import { goto } from '$app/navigation';
-	import { fmtShort, fmtTime, fmtValue } from '$lib/format';
-	import { refreshCounts, handleOf } from '$lib/counts.svelte';
-	import { session } from '$lib/session.svelte';
-	import { issueValues, labelOf, sameValue, show, type Lookups } from '$lib/render';
-	import { toast } from '$lib/toast.svelte';
-	import { projectLookups } from '$lib/trackers';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { fmtShort, fmtTime, fmtValue } from '#lib/format.js';
+	import { refreshCounts, handleOf } from '#lib/counts.svelte.js';
+	import { session } from '#lib/session.svelte.js';
+	import { issueValues, labelOf, sameValue, show, type Lookups } from '#lib/render.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import { projectLookups } from '#lib/trackers.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	type Op = Record<string, unknown> & { kind: string; op_id: string };
 	type Doc = { title?: string; ops: Op[]; preconditions?: { target: { id?: string; key?: string }; lock_version: number; field_values?: Record<string, unknown> }[]; evidence?: { citation_id: string; quote?: string; note?: string }[] };

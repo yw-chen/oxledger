@@ -3,8 +3,8 @@
 	// project frame, the ones delegated in that project. The numbers count
 	// only what the viewer can read (§3.12.5).
 	import type { TeamMember } from '$api/types';
-	import { api } from '$lib/api';
-	import { STATUS_LABEL, TEMPLATE_LABEL } from '$lib/aiteam';
+	import { api } from '#lib/api.js';
+	import { STATUS_LABEL, TEMPLATE_LABEL } from '#lib/aiteam.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let { projectId = null }: { projectId?: string | null } = $props();

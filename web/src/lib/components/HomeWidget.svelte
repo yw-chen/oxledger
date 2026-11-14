@@ -2,12 +2,12 @@
 	// One home widget's content (contract 05 §3.8 table). Everything is read
 	// with the signed-in person's own permissions, also in a role preview.
 	import type { AgentSummary, RunItem, Timesheet, TriageCount, VersionView, Widget } from '$api/types';
-	import { api } from '$lib/api';
-	import { counts, myRoles, refreshCounts } from '$lib/counts.svelte';
-	import { session, projectById } from '$lib/session.svelte';
-	import { HEALTH, HEALTH_REASON } from '$lib/health';
-	import { fmtValue } from '$lib/format';
-	import { showHours } from '$lib/hours';
+	import { api } from '#lib/api.js';
+	import { counts, myRoles, refreshCounts } from '#lib/counts.svelte.js';
+	import { session, projectById } from '#lib/session.svelte.js';
+	import { HEALTH, HEALTH_REASON } from '#lib/health.js';
+	import { fmtValue } from '#lib/format.js';
+	import { showHours } from '#lib/hours.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let { w }: { w: Widget } = $props();

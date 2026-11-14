@@ -24,8 +24,8 @@
 		type Cond,
 		type Group,
 		type Where
-	} from '$lib/filter';
-	import { sourceOptions } from '$lib/filterOptions';
+	} from '#lib/filter.js';
+	import { sourceOptions } from '#lib/filterOptions.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let {

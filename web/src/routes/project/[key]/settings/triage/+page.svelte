@@ -4,12 +4,12 @@
 	// and duplicate move to.
 	import { page } from '$app/state';
 	import type { Assignee, TriageSettings, TriageWarning } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { statusCategories } from '$lib/triage';
-	import { refreshTriageCounts } from '$lib/counts.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { statusCategories } from '#lib/triage.js';
+	import { refreshTriageCounts } from '#lib/counts.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	let s = $state<TriageSettings | null>(null);

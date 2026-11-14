@@ -5,8 +5,8 @@
 	// in place; the detail page saves); `canPick` greys out what this viewer
 	// may not choose (a project manager may only make it stricter).
 	import type { PolicyMode } from '$api/types';
-	import { MODE_LABELS } from '$lib/format';
-	import { commandLabel, MODES, type Policies } from '$lib/aiteam';
+	import { MODE_LABELS } from '#lib/format.js';
+	import { commandLabel, MODES, type Policies } from '#lib/aiteam.js';
 
 	let {
 		policies,

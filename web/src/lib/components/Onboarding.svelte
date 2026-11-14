@@ -1,8 +1,8 @@
 <script lang="ts">
 	// First sign-in (contract 05 §6.12): 「你主要做什麼？」 sets the interface
 	// roles and replaces the home with their template; 「略過」 uses the generic one.
-	import { api, newOperationId } from '$lib/api';
-	import { adoptPrefs, me, ROLE_LABEL, ROLES, setPrefs } from '$lib/me.svelte';
+	import { api, newOperationId } from '#lib/api.js';
+	import { adoptPrefs, me, ROLE_LABEL, ROLES, setPrefs } from '#lib/me.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
 
 	let picked = $state<string[]>([]);

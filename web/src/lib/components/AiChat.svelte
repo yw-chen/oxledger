@@ -7,15 +7,15 @@
 	import { goto } from '$app/navigation';
 	import { onDestroy } from 'svelte';
 	import type { AiStatus, ConversationView, MessageView, TemplateSpec } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { appendPage, expiringProjects, INPUT_HINT, MAX_INPUT, pageRef, pageRefLabel, quotaText, renderMd, sseParser, stopTail, UNAVAILABLE, WRITE_REASON, withConv, writeLine, type Part } from '$lib/aichat';
-	import { TIME_WARNING } from '$lib/aiteam';
-	import { refreshCounts } from '$lib/counts.svelte';
-	import { describeError } from '$lib/errors';
-	import { fmtShort } from '$lib/format';
-	import { session } from '$lib/session.svelte';
-	import { stepped } from '$lib/stepup.svelte';
-	import { toast } from '$lib/toast.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { appendPage, expiringProjects, INPUT_HINT, MAX_INPUT, pageRef, pageRefLabel, quotaText, renderMd, sseParser, stopTail, UNAVAILABLE, WRITE_REASON, withConv, writeLine, type Part } from '#lib/aichat.js';
+	import { TIME_WARNING } from '#lib/aiteam.js';
+	import { refreshCounts } from '#lib/counts.svelte.js';
+	import { describeError } from '#lib/errors.js';
+	import { fmtShort } from '#lib/format.js';
+	import { session } from '#lib/session.svelte.js';
+	import { stepped } from '#lib/stepup.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
 
 	let { status, onstatus }: { status: AiStatus; onstatus: () => Promise<void> } = $props();
 

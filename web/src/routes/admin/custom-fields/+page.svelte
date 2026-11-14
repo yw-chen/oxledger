@@ -2,12 +2,12 @@
 	// 自訂欄位（contract 05 §6.11）: the list and a new-field form.
 	import { goto } from '$app/navigation';
 	import type { Candidate, FieldAdminView } from '$api/types';
-	import { api, newOperationId } from '$lib/api';
-	import { session } from '$lib/session.svelte';
-	import { listTrackers } from '$lib/trackers';
-	import { FTYPES, fieldState, ftypeLabel } from '$lib/fieldadmin';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, newOperationId } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
+	import { listTrackers } from '#lib/trackers.js';
+	import { FTYPES, fieldState, ftypeLabel } from '#lib/fieldadmin.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	const admin = $derived(!!session.user?.is_admin);
 	let fields = $state<FieldAdminView[]>([]);

@@ -1,7 +1,7 @@
 <script lang="ts">
 	// AI 團隊 (contract 05 §6.18): the roles, their sponsor and safety state.
 	// Anyone signed in may create a role (and becomes its sponsor).
-	import AiTeamList from '$lib/components/AiTeamList.svelte';
+	import AiTeamList from '#lib/components/AiTeamList.svelte';
 </script>
 
 <svelte:head><title>AI 團隊・oxledger</title></svelte:head>

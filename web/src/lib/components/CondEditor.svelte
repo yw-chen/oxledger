@@ -3,7 +3,7 @@
 	// condition editor (§6.2) but only the form language's ops, at most two
 	// levels and 5 items per group, and no restricted fields. `group` is a
 	// deep $state object: edits mutate it in place.
-	import { CORE_COND, OPS, OP_LABEL, CATEGORY_LABEL, type CondCatalog, type Cond, type Group, type Item, isGroup, items, wrapValue } from '$lib/formcond';
+	import { CORE_COND, OPS, OP_LABEL, CATEGORY_LABEL, type CondCatalog, type Cond, type Group, type Item, isGroup, items, wrapValue } from '#lib/formcond.js';
 	import Self from './CondEditor.svelte';
 
 	let { group, cat, depth = 1, onremove }: { group: Group; cat: CondCatalog; depth?: number; onremove?: () => void } = $props();

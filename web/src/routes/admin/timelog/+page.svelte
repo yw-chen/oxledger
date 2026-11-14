@@ -3,11 +3,11 @@
 	// site's activities (order, rename, deactivate, default). An activity with
 	// entries can only be deactivated.
 	import type { Activity, TimelogSettings } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { parseHours, showHours } from '$lib/hours';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import { session } from '$lib/session.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { parseHours, showHours } from '#lib/hours.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import { session } from '#lib/session.svelte.js';
 
 	const admin = $derived(!!session.user?.is_admin);
 

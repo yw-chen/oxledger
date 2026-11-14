@@ -1,37 +1,37 @@
 <script lang="ts">
-	import { safeHref } from '$lib/format';
+	import { safeHref } from '#lib/format.js';
 	// One issue inside its project frame (§18.6), with direct operations
 	// (human_direct, §6.8): edit fields, move status (only allowed ones), add a
 	// note (optionally private), mark as duplicate. A conflict never
 	// overwrites and keeps what the person typed.
 	import { page } from '$app/state';
 	import type { Assignee, CommandDoc, FieldSchema, SpaIssue, TrackerSchema, VersionView } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { changedFields, doc, issueRef, submit, wireFields } from '$lib/commands';
-	import { fmtTime, fmtValue, fieldLabel } from '$lib/format';
-	import { refreshCounts } from '$lib/counts.svelte';
-	import { session } from '$lib/session.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import { FLAG } from '$lib/health';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import ProjectFrame from '$lib/components/ProjectFrame.svelte';
-	import { issueValues, labelOf, show } from '$lib/render';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { changedFields, doc, issueRef, submit, wireFields } from '#lib/commands.js';
+	import { fmtTime, fmtValue, fieldLabel } from '#lib/format.js';
+	import { refreshCounts } from '#lib/counts.svelte.js';
+	import { session } from '#lib/session.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import { FLAG } from '#lib/health.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import ProjectFrame from '#lib/components/ProjectFrame.svelte';
+	import { issueValues, labelOf, show } from '#lib/render.js';
 	import type { InboxSettings, IssueTriage, TimeEntryView, TriageDecision } from '$api/types';
-	import { logTimeDoc, logTimeOp, showHours, type LogInput } from '$lib/hours';
-	import { refreshTriageCounts } from '$lib/counts.svelte';
-	import TriageDecide from '$lib/components/TriageDecide.svelte';
-	import TimeCard from '$lib/components/TimeCard.svelte';
-	import LogTime from '$lib/components/LogTime.svelte';
-	import FormSections from '$lib/components/FormSections.svelte';
-	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-	import RichText from '$lib/components/RichText.svelte';
-	import { draftKey, dropDraft, formatFor, LIMIT, utf8Bytes, type Mentionable } from '$lib/markdown';
+	import { logTimeDoc, logTimeOp, showHours, type LogInput } from '#lib/hours.js';
+	import { refreshTriageCounts } from '#lib/counts.svelte.js';
+	import TriageDecide from '#lib/components/TriageDecide.svelte';
+	import TimeCard from '#lib/components/TimeCard.svelte';
+	import LogTime from '#lib/components/LogTime.svelte';
+	import FormSections from '#lib/components/FormSections.svelte';
+	import MarkdownEditor from '#lib/components/MarkdownEditor.svelte';
+	import RichText from '#lib/components/RichText.svelte';
+	import { draftKey, dropDraft, formatFor, LIMIT, utf8Bytes, type Mentionable } from '#lib/markdown.js';
 	import type { FormDescription } from '$api/types';
-	import { condValues, hiddenKeys, requiredNow } from '$lib/formcond';
-	import { RULE_KIND } from '$lib/formdesign';
+	import { condValues, hiddenKeys, requiredNow } from '#lib/formcond.js';
+	import { RULE_KIND } from '#lib/formdesign.js';
 	import type { WatchInfo } from '$api/types';
-	import WatchButton from '$lib/components/WatchButton.svelte';
-	import { markIssueRead } from '$lib/notifs.svelte';
+	import WatchButton from '#lib/components/WatchButton.svelte';
+	import { markIssueRead } from '#lib/notifs.svelte.js';
 
 	const key = $derived(decodeURIComponent(page.params.key ?? '').toUpperCase());
 	let issue = $state<SpaIssue | null>(null);

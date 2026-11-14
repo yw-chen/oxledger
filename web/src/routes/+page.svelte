@@ -3,13 +3,13 @@
 	// a 3-column grid; 「編輯首頁」 reorders (drag or ↑↓), widens 1–3, removes
 	// and adds. 「需要你決定」 cannot be removed (U22).
 	import type { HomeView, ViewSummary, Widget } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { ADDABLE, homeProblem, MAX_WIDGETS, moveTo, newWidget, PROTECTED, toInput, WIDGET_LABEL, widgetTitle } from '$lib/home';
-	import { me } from '$lib/me.svelte';
-	import { session } from '$lib/session.svelte';
-	import { toast } from '$lib/toast.svelte';
-	import HomeWidget from '$lib/components/HomeWidget.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { ADDABLE, homeProblem, MAX_WIDGETS, moveTo, newWidget, PROTECTED, toInput, WIDGET_LABEL, widgetTitle } from '#lib/home.js';
+	import { me } from '#lib/me.svelte.js';
+	import { session } from '#lib/session.svelte.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import HomeWidget from '#lib/components/HomeWidget.svelte';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let home = $state<HomeView | null>(null);
 	let error = $state<unknown>(null);

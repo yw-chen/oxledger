@@ -1,8 +1,8 @@
 <script lang="ts">
 	// 站台表單設計器（contract 05 §6.10）.
 	import { page } from '$app/state';
-	import { session } from '$lib/session.svelte';
-	import FormDesigner from '$lib/components/FormDesigner.svelte';
+	import { session } from '#lib/session.svelte.js';
+	import FormDesigner from '#lib/components/FormDesigner.svelte';
 	const admin = $derived(!!session.user?.is_admin);
 </script>
 

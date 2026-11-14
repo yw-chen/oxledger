@@ -1,8 +1,8 @@
 <script lang="ts">
 	// One error, said the §15.5 way: what happened, whether data changed, next step.
-	import { ApiError } from '$lib/api';
-	import { describeError, type Shown } from '$lib/errors';
-	import { session } from '$lib/session.svelte';
+	import { ApiError } from '#lib/api.js';
+	import { describeError, type Shown } from '#lib/errors.js';
+	import { session } from '#lib/session.svelte.js';
 	let { error, onaction }: { error: unknown; onaction?: (a: NonNullable<Shown['action']>) => void } = $props();
 	const shown = $derived(describeError(error));
 	// "登入已過期" stops being true once the person signed in again.

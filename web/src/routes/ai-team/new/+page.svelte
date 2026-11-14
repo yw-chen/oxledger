@@ -6,18 +6,18 @@
 	// ⑥ confirm → the token, once. One step-up and one Idempotency-Key for
 	// the whole wizard: pressing again after a failure replays, never doubles.
 	import type { AgentClientView, CreatedRole, DelegationView, IssuedCredential, PolicyMode, RuntimeView, TemplateSpec } from '$api/types';
-	import { api, ApiError, newOperationId } from '$lib/api';
-	import { anyAllowed, byMode, changesFrom, commandLabel, ROLE_KEY, setAll, sharedRuntimeText, TEMPLATE_DUTY, TEMPLATE_LABEL, TIME_WARNING, WIZARD_TEMPLATES, type Policies } from '$lib/aiteam';
-	import { refreshCounts } from '$lib/counts.svelte';
-	import { fieldLabel } from '$lib/format';
+	import { api, ApiError, newOperationId } from '#lib/api.js';
+	import { anyAllowed, byMode, changesFrom, commandLabel, ROLE_KEY, setAll, sharedRuntimeText, TEMPLATE_DUTY, TEMPLATE_LABEL, TIME_WARNING, WIZARD_TEMPLATES, type Policies } from '#lib/aiteam.js';
+	import { refreshCounts } from '#lib/counts.svelte.js';
+	import { fieldLabel } from '#lib/format.js';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { session, steppedUpRecently } from '$lib/session.svelte';
-	import { askPassword, stepped, stepUp } from '$lib/stepup.svelte';
-	import { customFieldNames } from '$lib/trackers';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
-	import PolicyTable from '$lib/components/PolicyTable.svelte';
-	import TokenOnce from '$lib/components/TokenOnce.svelte';
+	import { session, steppedUpRecently } from '#lib/session.svelte.js';
+	import { askPassword, stepped, stepUp } from '#lib/stepup.svelte.js';
+	import { customFieldNames } from '#lib/trackers.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import PolicyTable from '#lib/components/PolicyTable.svelte';
+	import TokenOnce from '#lib/components/TokenOnce.svelte';
 
 	const STEPS = ['範本', '名稱與軟體', '執行環境', '專案與政策', '讀取範圍', '確認'];
 	const DEFAULT_KEY: Record<string, string> = { triage: 'triage', pm_assistant: 'pm', design_review: 'design_review', qa: 'qa', release: 'release' };
@@ -62,7 +62,7 @@
 		asking.then((ok) => {
 			if (gone) return;
 			if (ok) unlocked = true;
-			else goto('/ai-team', { replaceState: true });
+			else goto('/ai-team', { replace: true });
 		});
 		// Leaving (back button) while the dialog is open closes it; it asked for this page.
 		return () => {

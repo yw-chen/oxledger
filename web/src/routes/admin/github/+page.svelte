@@ -3,9 +3,9 @@
 	// which repositories project managers may link. Installing the App itself
 	// happens on GitHub; this page only marks repositories linkable.
 	import type { AdminGithub, AdminRepo } from '$api/types';
-	import { api } from '$lib/api';
-	import { toast } from '$lib/toast.svelte';
-	import ErrorBox from '$lib/components/ErrorBox.svelte';
+	import { api } from '#lib/api.js';
+	import { toast } from '#lib/toast.svelte.js';
+	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	let data = $state<AdminGithub | null>(null);
 	let error = $state<unknown>(null);

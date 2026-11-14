@@ -448,6 +448,9 @@ test('不存在的網址顯示找不到頁面', async ({ browser }) => {
 	const page = await alice(browser, '/');
 	await page.goto('/no/such/page');
 	await expect(page.getByTestId('error-page')).toContainText('找不到這個頁面');
+	// Signing in with `next` pointing nowhere ends on the same page, not on /login.
+	const other = await alice(browser, '/no/such/page');
+	await expect(other.getByTestId('error-page')).toContainText('找不到這個頁面');
 });
 
 /** SQL on the E2E database only (GitHub data cannot come from GitHub here). */
@@ -517,6 +520,9 @@ WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
 test('登入的 next 只接受本站路徑', async ({ browser }) => {
 	for (const [next, want] of [
 		['//evil.example/x', '/'],
+		// Normalises to the path `//evil.example/x` (a protocol-relative URL).
+		['/.//evil.example/x', '/'],
+		['/a/..//evil.example/x', '/'],
 		['/%09/evil.example', '/'],
 		['/\\evil.example', '/'],
 		['https://evil.example', '/'],
