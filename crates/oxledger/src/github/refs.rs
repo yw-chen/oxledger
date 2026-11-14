@@ -63,7 +63,7 @@ pub fn scan(text: &str, source: Source) -> Vec<String> {
 }
 
 /// `[A-Z][A-Z0-9_]{1,9}-[1-9][0-9]{0,8}` at `i`, followed by a boundary.
-fn key_at(c: &[char], i: usize) -> Option<(String, usize)> {
+pub(crate) fn key_at(c: &[char], i: usize) -> Option<(String, usize)> {
     let mut j = i + 1;
     while j < c.len() && (c[j].is_ascii_uppercase() || c[j].is_ascii_digit() || c[j] == '_') {
         j += 1;

@@ -1144,3 +1144,136 @@ async fn t_m1_125_conversation_user_guard() {
     .await
     .unwrap();
 }
+
+// ---------------------------------------------------------------- P3 G45
+
+/// P3 gap G45: `updated` and `settings_updated` events carry the old and
+/// new value of each changed field; events from before carry none.
+#[tokio::test]
+async fn g45_settings_audit_names_old_and_new() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let (root, p) = on(&w).await;
+    let before = admin::providers(&w.app, root)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|x| x.id == p)
+        .unwrap();
+    admin::update_provider(
+        &w.app,
+        &w.policy,
+        root,
+        p,
+        &admin::ProviderPatch {
+            lock_version: before.lock_version,
+            name: Some("Renamed".into()),
+            endpoint_name: None,
+            model: Some("claude-opus-5-5".into()),
+            max_output_tokens: None,
+            input_usd_per_mtok: None,
+            output_usd_per_mtok: None,
+            d17_attested: true,
+            org_account_attested: false,
+        },
+    )
+    .await
+    .unwrap();
+    put(&w, root, |i| i.user_runs_per_hour += 1).await.unwrap();
+    let ev = admin::events(&w.app, root).await.unwrap();
+    let updated = ev.items.iter().find(|e| e.kind == "updated").unwrap();
+    assert!(updated.has_changes);
+    assert_eq!(
+        updated.payload["changes"],
+        json!({"name": {"old": "Anthropic", "new": "Renamed"},
+               "model": {"old": before.model, "new": "claude-opus-5-5"}})
+    );
+    // The model change turned the AI off: that is a change too.
+    let off = ev
+        .items
+        .iter()
+        .find(|e| e.kind == "settings_updated" && e.payload["reason"] == "provider_config_changed")
+        .unwrap();
+    assert_eq!(
+        off.payload["changes"],
+        json!({"enabled": {"old": true, "new": false}})
+    );
+    // The latest settings_updated changed one field.
+    let last = ev
+        .items
+        .iter()
+        .find(|e| e.kind == "settings_updated")
+        .unwrap();
+    assert!(last.has_changes);
+    let changes = last.payload["changes"].as_object().unwrap();
+    assert_eq!(changes.keys().collect::<Vec<_>>(), ["user_runs_per_hour"]);
+    let old = changes["user_runs_per_hour"]["old"].as_i64().unwrap();
+    assert_eq!(changes["user_runs_per_hour"]["new"].as_i64(), Some(old + 1));
+    // The organisation-account confirmation is audited too.
+    let mut np = new_provider("Local", "openai_compat", "VLLM", Some("llama-3.3-70b"));
+    np.org_account_attested = false;
+    let local = provider(&w, root, &np).await;
+    admin::update_provider(
+        &w.app,
+        &w.policy,
+        root,
+        local.id,
+        &admin::ProviderPatch {
+            lock_version: local.lock_version,
+            name: None,
+            endpoint_name: None,
+            model: None,
+            max_output_tokens: None,
+            input_usd_per_mtok: None,
+            output_usd_per_mtok: None,
+            d17_attested: true,
+            org_account_attested: true,
+        },
+    )
+    .await
+    .unwrap();
+    let ev2 = admin::events(&w.app, root).await.unwrap();
+    let attested = ev2
+        .items
+        .iter()
+        .find(|e| e.kind == "updated" && e.provider_id == Some(local.id))
+        .unwrap();
+    assert_eq!(
+        attested.payload["changes"],
+        json!({"org_account_attested": {"old": false, "new": true}})
+    );
+    // created has no changes.
+    assert!(
+        !ev.items
+            .iter()
+            .find(|e| e.kind == "created")
+            .unwrap()
+            .has_changes
+    );
+    // An event written before G45 (no changes) says so.
+    exec(
+        &pool,
+        &format!(
+            "INSERT INTO ai_provider_events (provider_id, actor_id, kind, payload)
+             VALUES ('{p}', '{}', 'updated', '{{\"name\": \"Old\"}}')",
+            root.principal_id().unwrap()
+        ),
+    )
+    .await;
+    let ev = admin::events(&w.app, root).await.unwrap();
+    let legacy = ev
+        .items
+        .iter()
+        .find(|e| e.kind == "updated" && e.payload["name"] == "Old")
+        .unwrap();
+    assert!(!legacy.has_changes);
+    // Hidden: not for other people; the key is nowhere.
+    let e = admin::events(&w.app, w.alice_ctx).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ForbiddenOp);
+    let dump = serde_json::to_string(&ev).unwrap() + &admin_dump(&w, root).await;
+    assert!(
+        !dump.contains(KEY) && !dump.contains("sk-test"),
+        "the key leaked"
+    );
+}

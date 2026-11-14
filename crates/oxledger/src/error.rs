@@ -183,6 +183,9 @@ pub enum ErrorCode {
     AiProviderChanged,
     /// The caller already has a run queued or running.
     AiRunInProgress,
+    /// Design 06 §5: the body is over a size limit (`POST /markdown/preview`
+    /// text, later uploads, imports and wiki pages); `details.limit` in bytes.
+    PayloadTooLarge,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -199,7 +202,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 72] = [
+    pub const ALL: [ErrorCode; 73] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -272,6 +275,7 @@ impl ErrorCode {
         Self::AiConversationReadOnly,
         Self::AiProviderChanged,
         Self::AiRunInProgress,
+        Self::PayloadTooLarge,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -348,6 +352,7 @@ impl ErrorCode {
             Self::AiConversationReadOnly => "ai_conversation_read_only",
             Self::AiProviderChanged => "ai_provider_changed",
             Self::AiRunInProgress => "ai_run_in_progress",
+            Self::PayloadTooLarge => "payload_too_large",
         }
     }
 
@@ -417,6 +422,7 @@ impl ErrorCode {
             Self::AiProviderError => 502,
             Self::AiModelDisallowed | Self::AiEndpointInvalid => 422,
             Self::AiConversationReadOnly | Self::AiProviderChanged | Self::AiRunInProgress => 409,
+            Self::PayloadTooLarge => 413,
         }
     }
 
@@ -505,6 +511,7 @@ impl ErrorCode {
             Self::AiConversationReadOnly => &[AskHuman, Stop],
             Self::AiProviderChanged => &[AskHuman],
             Self::AiRunInProgress => &[WaitAndRetry],
+            Self::PayloadTooLarge => &[FixInput],
         }
     }
 }

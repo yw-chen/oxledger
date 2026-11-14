@@ -75,6 +75,7 @@ async fn receive(State(h): State<Arc<Hook>>, headers: HeaderMap, body: Bytes) ->
         Ok(true) => StatusCode::ACCEPTED,
         Ok(false) => StatusCode::OK,
         Err(e) => {
+            crate::metrics::note_error(&e);
             tracing::warn!(%delivery, "github webhook not stored: {}", e.root_cause());
             StatusCode::INTERNAL_SERVER_ERROR
         }

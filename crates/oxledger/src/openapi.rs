@@ -364,7 +364,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/time-entries",
-            "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
+            "Time entries the caller may read (design 05 §3.5.2, §3.5.4), newest first by (spent_on, created_at, id). Query project (id or key), issue (id or key), user (id or me), activity, tracker and fixed_version (an id or none: the issue's current tracker / milestone as GET /time-entries/summary groups them; none also matches entries without an issue), from, to (YYYY-MM-DD), cursor, limit (1-200, default 50). Visibility: view_time_entries with time_entries_visibility all, or own and the entry is yours; an entry on an issue you cannot see is left out. Write with POST /commands (log_time, update_time_entry, delete_time_entry).",
             Session,
             None,
             s::<crate::time_reports::TimeEntryPage>,
@@ -420,7 +420,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/me/notification-preferences",
-            "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
+            "The caller's notification settings (design 05 §3.11.4): what to be notified about (on_watching, on_assigned, on_author, on_triage_decided, on_my_agents, on_self, on_mentioned — design 06 R-MN5) and what to watch automatically (auto_watch_author, auto_watch_assignee, auto_watch_note), plus muted project ids (only projects the caller can see now). The first read creates the defaults; no Idempotency-Key. No email in M1.",
             Session,
             None,
             s::<crate::notifications::NotificationPreferences>,
@@ -667,6 +667,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "POST",
+            "/markdown/preview",
+            "Design 06 §3.2, R-RF6: render text the way stored descriptions and notes render, references resolved for you; writes nothing, notifies nobody, no Idempotency-Key. context: exactly one of {issue: key}, {project: id or key}, {wiki_project} (not_found until the wiki exists, M2.2); a context you cannot see is not_found exactly like a missing one. format: markdown (default) or plain. text over the description limit (262144 bytes) is payload_too_large (details.limit). At most 60 previews a minute per person (rate_limited).",
+            Session,
+            Some(s::<crate::markdown::MarkdownPreviewInput>),
+            s::<crate::markdown::MarkdownPreviewResult>,
+        ),
+        r(
+            "POST",
             "/views/preview",
             "Run an unsaved definition with the checks of saving it as scope (personal or project) in project_id. Same result as run; not saved, no Idempotency-Key.",
             Session,
@@ -844,7 +852,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/issues/{key}/view",
-            "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). not_found for invisible and missing issues alike.",
+            "The issue page: every get field (priority, fixed_version, status_since…), the full detail (dates, author, children, custom fields, allowed statuses), the ids an edit form sends back, and the optional blocks. Query include (comma list of actions, recent_notes, recent_events, dev), note_limit (0-10), event_limit (0-20). Design 06 R-M10: description_html and each recent note's body_html are sanitized HTML with references resolved for the caller (the only fields to put in the page as HTML); description_by_agent marks an agent's description (stricter link rules). not_found for invisible and missing issues alike.",
             Session,
             None,
             s::<crate::issue_view::SpaIssue>,
@@ -1194,6 +1202,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
             Session,
             None,
             s::<crate::ai_team::TeamDetail>,
+        ),
+        r(
+            "GET",
+            "/ai-team/activity",
+            "The writes of every role you see on the AI team page, merged newest first; each item names its role (agent) and is filtered to what you can read, exactly as GET /ai-team/{id}/activity for that role. Query role (an agent principal id; a role you do not see gives an empty list), runtime (a runtime id; matches only roles whose runtime you may see: their sponsor and site admins), from, to, issue, cursor, limit. Your undos show under the role whose write they reverted. No totals.",
+            Session,
+            None,
+            s::<crate::undo::Activity>,
         ),
         r(
             "GET",
@@ -1576,6 +1592,19 @@ pub fn document() -> Value {
                 schemas.insert(name, schema);
             }
         }
+    }
+    // Design 06 R-M10: a note's `body_html` is the web app's alone. The field
+    // is `#[schemars(skip)]` so MCP's output schemas (`get`, `get_many`)
+    // never list it; this document, the web app's, does.
+    if let Some(p) = schemas
+        .get_mut("NoteView")
+        .and_then(|s| s.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    {
+        p.insert(
+            "body_html".into(),
+            json!({"description": crate::issue_view::NOTE_BODY_HTML_DOC, "type": ["string", "null"]}),
+        );
     }
     schemas.insert(
         "Meta".into(),

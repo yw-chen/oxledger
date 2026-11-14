@@ -32,9 +32,9 @@ echo 'another long one' | ./target/debug/oxledger user set-password alice   # �
 `GET /auth/login-context`（拿 `__Host-ox_login` cookie 與 csrf_token）→ `POST /auth/login`（帶 `X-CSRF-Token`）→
 之後非 GET 請求都要 `Content-Type: application/json`、`Origin: <OXLEDGER_SPA_ORIGIN>`、`X-CSRF-Token: <登入回傳的 csrf_token>`。
 
-測試：`cargo test`（整合測試透過 dev-dependency 自動開 `test-support`）。整合測試（E4 可見性、自訂欄位、S0）預設用同一台 PostgreSQL 上的 `oxledger_test`；
-`OXLEDGER_TEST_DATABASE_URL` 可以指到別的資料庫名稱，不存在會自動建（`tests/common/mod.rs`）。
-多條工作線同時跑測試時各用各的，例如 `.../oxledger_test_d14`：測試會 TRUNCATE 整個 schema，共用會互相清掉資料。
+測試：見 [`docs/impl/testing-playbook.md`](impl/testing-playbook.md)。後端整合測試跑在測試專用容器 `oxledger-pg-test`（127.0.0.1:55433，`scripts/test-pg.ps1` 建立），
+用 `cargo nextest run` 平行跑，每個同時在跑的測試用自己的 slot DB（`oxledger_test_<slot>`）；整合測試透過 dev-dependency 自動開 `test-support`。
+驗證子代理或另一條工作線同時跑時，設 `OXLEDGER_TEST_DB_PREFIX`（例如 `oxledger_verify`），兩邊就不會互相 TRUNCATE 或 DROP。
 
 ### 接到 MCP client
 
@@ -189,7 +189,7 @@ E2E（`web/playwright.config.ts`）自己起後端 127.0.0.1:18082 與 SPA http:
 | agent 提議建立私有 issue、人核准後，agent 的 `changeset_get`／`operation_get` 拿得到提案本文（標題、欄位值）（T-M12） | 讀取檢查只看本文裡的既有目標；`create_issue` 沒有目標，建出來的 issue 讀不到也被當成「全部讀得到」 | `filter_for_agent` 把該版本 execution 的 `item_results` 裡的 issue（`created_issues`）也算目標；讀不到就不回本文，items 只回 `{op_id, status}`（key 只在讀得到時給） |
 | 同一個脈絡委派 WEB 和 AUTH 後，WEB 的提案都被 `audience_expansion_forbidden`（cross_project） | 這是 §3.8 的規則：agent 可能讀過 AUTH，WEB 的讀者（carol）卻讀不到 AUTH | 測試要兩份委派時，先讓兩個專案讀者相同（carol 也加進 AUTH），再建脈絡；不是 bug |
 | 帶 `consistent_after` 的搜尋一直回 `search_lagging` | frontier F 只在 index worker 跑過一輪後前進；別的 database 有已分配 xid 的未結束交易也會擋住 H（03 §4.7） | 測試用 `sync`／`sync_round` 迴圈等 `frontier() > X`（`tests/s8_search_consistency.rs` 的 `catch_up`）；正式環境看已分配 xid 的最老交易 |
-| 兩個 session 同時跑測試，彼此的資料被清掉 | 測試開頭會 reset 整個測試 DB | 平行工作設 `OXLEDGER_TEST_DATABASE_URL` 指向各自的 DB（例如 `.../oxledger_test_main`），會自動建立 |
+| 兩個 session 同時跑測試，彼此的資料被清掉 | 測試開頭會 reset 整個測試 DB | 每套測試用自己的測試容器：主流程 `oxledger-pg-test`（55433），驗證子代理 `scripts/test-pg.ps1 -Name oxledger-pg-test-verify -Port 55434` 加 `OXLEDGER_TEST_DATABASE_URL` 指向它。只換 `OXLEDGER_TEST_DB_PREFIX` 不夠：DB 名稱不撞，但 horizon 是整個 cluster 共用，兩套會互相拖慢或卡住（testing-playbook.md） |
 | 測試想把 `agent_write_log` 的時間往前改，觸發 `agent_write_log is append-only` | 0012 的 trigger 禁止 UPDATE／DELETE | 直接 INSERT 帶過去的 `at`（`clock_timestamp() - make_interval(secs => …)`） |
 | 測試裡改了角色權限或成員之後，agent 的寫入回 `context_unavailable` | 0010 的 trigger 讓受影響專案 epoch +1，舊的工作脈絡失效（§3.8，正確行為） | 測試在權限／成員變更後重建脈絡：`new_context` → `delegate` → `token` |
 | 測試連續做 10 筆以上 agent 直接寫入，第 11 筆回 `rate_limited` | §16.6 每分鐘 10 筆直接寫入（`DIRECT_PER_MINUTE`） | 測試把部分寫入改成「提案＋人核准」（changeset execution 也能 undo），或分散到不同測試 |
@@ -204,7 +204,7 @@ E2E（`web/playwright.config.ts`）自己起後端 127.0.0.1:18082 與 SPA http:
 | 重抓（refetch）路徑的測試抓不到競態 | 假 API 回應前沒有並行寫入 | 假 API 的 `during_get` 在回應前送一筆較新的 webhook 並 drain，再回舊資料（T-G25／T-G35） |
 | check_suite 一直 queued，PR 的 CI 永遠 pending | 別的 App 建立但從不執行的 suite | 只有本 head 有 run 引用的 suite 才算 CI 單位（decisions S6b.7） |
 | `migration 16 was previously applied but has been modified` | 還沒發布的 migration 改過，測試 DB 存的是舊 checksum | 只在測試 DB：DROP 該 migration 建的表、`DELETE FROM _sqlx_migrations WHERE version = 16`，再跑測試；已發布的 migration 不可改，要另開新檔 |
-| 全套測試沒有跑到 `s6b_github_sync` | 檔頭 `#![cfg(feature = "github")]` | 另跑 `cargo test -p oxledger --features test-support,github --test s6b_github_sync`（第一次要下載 TLS crate；之後 `--offline`） |
+| 全套測試沒有跑到 `s6b_github_sync` | 檔頭 `#![cfg(feature = "github")]` | 另跑 `cargo nextest run -p oxledger --no-default-features --features test-support,github --test s6b_github_sync`（第一次要下載 TLS crate；之後加 `--offline`；跑法見 `docs/impl/testing-playbook.md`） |
 | mock 的 axum handler 編譯失敗（`Handler` not implemented） | `std::sync::MutexGuard` 跨 `.await`，future 不是 Send | 加鎖的部分寫成同步函式，回傳「要 await 的動作」，鎖放掉後才 await |
 | client 測試清掉 mock 的 token 後一直 401 | 快取的 token 還沒到期 | client 遇到 401 會丟掉快取（decisions S6b.8）；token 生命週期的測試另建 client |
 | 測試裡兩個 PR 的開發卡順序和預期相反 | 同 state、同 gh_updated_at 時依 PR id（uuidv7）排序 | 斷言照建立順序，或給 PR 不同的 updated_at |

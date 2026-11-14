@@ -831,7 +831,10 @@ async fn m1_3_triage_people() {
     // ------------------------------------------------ T-M1-24: two accepts at once
     let l24 = lv(w, i23).await;
     let d24 = doc(vec![decide(i23, "accept")], vec![pre(i23, l24)]);
-    let (r1, r2) = tokio::join!(cmd(w, a, &d24), cmd(w, t.dave_ctx, &d24));
+    let (r1, r2) = common::wait_for("two racing decisions", common::WAIT_TIMEOUT, async {
+        tokio::join!(cmd(w, a, &d24), cmd(w, t.dave_ctx, &d24))
+    })
+    .await;
     let err = match (r1, r2) {
         (Ok(_), Err(e)) | (Err(e), Ok(_)) => e,
         other => panic!("one wins: {other:?}"),

@@ -95,6 +95,9 @@ pub struct GetManyParams {
     pub event_limit: Option<u32>,
 }
 
+/// The web app's description of [`NoteView::body_html`] (its OpenAPI).
+pub const NOTE_BODY_HTML_DOC: &str = "Web app only (`GET /issues/{key}/view`; never over MCP, design 06\nR-M10): the body as sanitized HTML, references resolved for the\ncaller. The only note field to put in the page as HTML.";
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct NoteView {
     pub note_id: Uuid,
@@ -104,6 +107,16 @@ pub struct NoteView {
     pub body: String,
     /// `markdown`, or `plain` for notes written before M2 (design 06 R-M9).
     pub body_format: String,
+    /// Web app only (`GET /issues/{key}/view`; never over MCP, design 06
+    /// R-M10): the body as sanitized HTML, references resolved for the
+    /// caller. The only note field to put in the page as HTML. Not in the
+    /// type's schema (MCP's); the web app's OpenAPI document adds it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub body_html: Option<String>,
+    /// An agent wrote the note (R-M3: stricter links); rendering only.
+    #[serde(skip)]
+    pub(crate) by_agent: bool,
     /// The body was redacted (D12); there is no citation for it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
@@ -141,6 +154,27 @@ pub struct EventView {
     pub detail: Option<Json>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
+    /// `user`, `agent` or `system` (P3 gap G41; 02 §16.2).
+    pub actor_kind: String,
+    /// The person an agent acted for (`claude-code@alice〔agent〕`, tooltip
+    /// 「代表 Alice」; G41). Absent for people's own writes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<crate::time_reports::Named>,
+    /// Who approved the applied proposal (「Alice 核准」, 02 §16.10; G41).
+    /// Only when the viewer may know it: the approver is the person the
+    /// agent acted for (the delegator, who alone reviews proposals), or the
+    /// viewer is the approver or a site administrator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<crate::time_reports::Named>,
+    /// The agent's direct write extended this issue's chain to at least 2
+    /// agent writes with no person in between (「agent 連續寫入中」, §6.14;
+    /// G40). Only this issue's own chain (a write that also touched other
+    /// issues says nothing about theirs); writes from before migration 0033
+    /// show no flag. A flag,
+    /// never the count: the chain may hold writes the viewer cannot read
+    /// (appendix D V21).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent_chain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -462,6 +496,16 @@ pub async fn get(app: &App, caller: AuthContext, p: GetParams) -> Result<IssueVi
 pub struct SpaIssue {
     #[serde(flatten)]
     pub view: IssueView,
+    /// Web app only (never over MCP, design 06 R-M10): the description as
+    /// sanitized HTML, references resolved for the caller. The only
+    /// description field to put in the page as HTML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_html: Option<String>,
+    /// Web app only: the description is an agent's (its last writer was an
+    /// agent, or a person applied an agent's proposal; R-M3). The editor
+    /// warns before a person rewrites it (design 06 §6.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_by_agent: Option<bool>,
     /// The current project key (the key prefix).
     pub project_key: String,
     pub project_id: Uuid,
@@ -497,6 +541,11 @@ pub async fn spa_view(
     )
     .await?;
     let mut v = get_one(&mut tx, &mut reader, caller, &d.key, &plan).await?;
+    let project_id: Uuid = sqlx::query_scalar("SELECT project_id FROM issues WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let (description_html, by_agent) = render_html(&mut tx, caller, id, project_id, &mut v).await?;
     v.author = Some(d.author);
     v.parent = Some(d.parent);
     v.children = Some(d.children);
@@ -514,6 +563,8 @@ pub async fn spa_view(
     tx.commit().await?;
     Ok(SpaIssue {
         view: v,
+        description_html,
+        description_by_agent: Some(by_agent),
         project_key: ids.0,
         project_id: ids.1,
         tracker_id: ids.2,
@@ -521,6 +572,54 @@ pub async fn spa_view(
         assigned_to_id: ids.4,
         priority_id: ids.5,
     })
+}
+
+/// Design 06 R-M10: the `*_html` fields of the web app's issue page (the
+/// description and the notes read), one reference lookup for all of them.
+/// Fills the notes' `body_html`; returns the description's HTML and
+/// whether it is an agent's.
+async fn render_html(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    issue: Uuid,
+    project: Uuid,
+    v: &mut IssueView,
+) -> Result<(Option<String>, bool)> {
+    use crate::commands::TextFormat;
+    use crate::markdown::{Source, Text};
+    let by_agent = crate::markdown::description_by_agent(&mut *conn, issue).await?;
+    let desc = v.description.clone().unwrap_or_default();
+    let desc_format = TextFormat::from_db(v.description_format.as_deref().unwrap_or("plain"));
+    let mut texts = vec![Text {
+        text: &desc,
+        src: Source {
+            format: desc_format,
+            agent: by_agent,
+            container: issue,
+        },
+    }];
+    if let Some(notes) = &v.recent_notes {
+        for n in &notes.items {
+            texts.push(Text {
+                text: &n.body,
+                src: Source {
+                    format: TextFormat::from_db(&n.body_format),
+                    agent: n.by_agent,
+                    container: n.note_id,
+                },
+            });
+        }
+    }
+    let mut html = crate::markdown::render_for(&mut *conn, caller, project, &texts)
+        .await?
+        .into_iter();
+    let description_html = html.next();
+    if let Some(notes) = &mut v.recent_notes {
+        for n in &mut notes.items {
+            n.body_html = html.next();
+        }
+    }
+    Ok((description_html, by_agent))
 }
 
 /// One `get_many` result: the issue, or the error for that key alone.
@@ -940,6 +1039,7 @@ struct NoteRow {
     redacted: bool,
     retracted_by: Option<String>,
     retracted: bool,
+    by_agent: bool,
 }
 
 /// Readable notes, newest first: the private-note rule is applied before the
@@ -956,7 +1056,11 @@ async fn recent_notes(
         let rows: Vec<NoteRow> = sqlx::query_as(
             "SELECT n.id, p.name AS author, n.author_id, n.created_on_behalf_of_id, n.created_at,
                     n.is_private, n.body, n.body_format, n.redacted_at IS NOT NULL AS redacted,
-                    rp.name AS retracted_by, n.retracted_at IS NOT NULL AS retracted
+                    rp.name AS retracted_by, n.retracted_at IS NOT NULL AS retracted,
+                    (p.kind = 'agent' OR EXISTS (
+                        SELECT 1 FROM issue_events e JOIN principals pp ON pp.id = e.proposer_id
+                        WHERE e.issue_id = n.issue_id AND e.note_id = n.id
+                          AND e.kind = 'note_added' AND pp.kind = 'agent')) AS by_agent
              FROM issue_notes n JOIN principals p ON p.id = n.author_id
              LEFT JOIN command_executions rx ON rx.id = n.retracted_by_execution_id
              LEFT JOIN principals rp ON rp.id = rx.actor_id
@@ -1012,6 +1116,8 @@ async fn recent_notes(
                 }),
                 body: if r.retracted { String::new() } else { r.body },
                 body_format: r.body_format,
+                body_html: None,
+                by_agent: r.by_agent,
                 redacted: r.redacted,
                 retracted: r.retracted,
                 retracted_by: r.retracted_by,
@@ -1029,7 +1135,7 @@ async fn recent_notes(
 
 // ---------------------------------------------------------------- events
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Default)]
 pub(crate) struct EventRow {
     pub(crate) id: Uuid,
     pub(crate) seq: i64,
@@ -1039,7 +1145,31 @@ pub(crate) struct EventRow {
     pub(crate) payload: Json,
     pub(crate) note_id: Option<Uuid>,
     pub(crate) redacted: bool,
+    /// The attribution columns ([`EVENT_BY_COLS`]); readers that only ask
+    /// whether an event is readable leave them out.
+    #[sqlx(default)]
+    pub(crate) actor_kind: String,
+    #[sqlx(default)]
+    pub(crate) obo_id: Option<Uuid>,
+    #[sqlx(default)]
+    pub(crate) obo_name: Option<String>,
+    #[sqlx(default)]
+    pub(crate) approver_id: Option<Uuid>,
+    #[sqlx(default)]
+    pub(crate) approver_name: Option<String>,
+    #[sqlx(default)]
+    pub(crate) chain_writes: Option<i32>,
 }
+
+/// The attribution columns of [`EventRow`] for `issue_events e` (P3 gaps
+/// G40, G41): who the agent acted for, who approved an applied proposal,
+/// and the agent chain of this event's issue after the direct write (its
+/// own chain, migration 0033: never another issue's of the same write).
+pub(crate) const EVENT_BY_COLS: &str = "e.actor_kind, e.on_behalf_of_id AS obo_id,
+    (SELECT name FROM principals WHERE id = e.on_behalf_of_id) AS obo_name,
+    e.approver_id, (SELECT name FROM principals WHERE id = e.approver_id) AS approver_name,
+    (SELECT c.writes FROM command_execution_chains c
+      WHERE c.execution_id = e.command_execution_id AND c.issue_id = e.issue_id) AS chain_writes";
 
 /// What [`event_view`] looks up once per reader and issue.
 #[derive(Default)]
@@ -1047,6 +1177,8 @@ pub(crate) struct EventCache {
     /// Readable custom field ids in the issue's project (loaded on first use).
     pub(crate) readable_cf: Option<Vec<i32>>,
     notes: HashMap<Uuid, bool>,
+    /// The reader is a site administrator (a person; loaded on first use).
+    admin: Option<bool>,
 }
 
 /// Names for ids in event payloads (contract 02 §7.3: shown as names).
@@ -1208,13 +1340,13 @@ async fn visible_events(
     let mut out = Vec::new();
     let mut before: Option<i64> = None;
     loop {
-        let rows: Vec<EventRow> = sqlx::query_as(
+        let rows: Vec<EventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT e.id, e.seq, e.kind, e.at, p.name AS actor, e.payload, e.note_id,
-                    e.redaction_id IS NOT NULL AS redacted
+                    e.redaction_id IS NOT NULL AS redacted, {EVENT_BY_COLS}
              FROM issue_events e JOIN principals p ON p.id = e.actor_id
              WHERE e.issue_id = $1 AND ($2::bigint IS NULL OR e.seq < $2)
-             ORDER BY e.seq DESC LIMIT $3",
-        )
+             ORDER BY e.seq DESC LIMIT $3"
+        )))
         .bind(issue.id)
         .bind(before)
         .bind(PAGE)
@@ -1318,6 +1450,30 @@ pub(crate) async fn event_view(
             _ => None,
         }
     };
+    let named = |id: Option<Uuid>, name: Option<String>| match (id, name) {
+        (Some(id), Some(name)) => Some(crate::time_reports::Named { id, name }),
+        _ => None,
+    };
+    // G41: the approver only where the viewer may know it (see EventView).
+    let approved_by = match r.approver_id {
+        None => None,
+        Some(a) if r.obo_id == Some(a) || caller.user_id() == Some(a) => {
+            named(Some(a), r.approver_name.clone())
+        }
+        Some(a) => {
+            if cache.admin.is_none() {
+                cache.admin = Some(
+                    caller.user_id().is_some() && crate::db::is_admin(&mut *conn, caller).await?,
+                );
+            }
+            if cache.admin == Some(true) {
+                named(Some(a), r.approver_name.clone())
+            } else {
+                None
+            }
+        }
+    };
+    let agent = r.actor_kind == "agent";
     Ok(Some(EventView {
         event_id: r.id,
         kind: r.kind,
@@ -1325,5 +1481,14 @@ pub(crate) async fn event_view(
         actor: r.actor,
         detail,
         redacted: r.redacted,
+        on_behalf_of: if agent {
+            named(r.obo_id, r.obo_name)
+        } else {
+            None
+        },
+        approved_by,
+        // G40: the chain the direct write extended (agent writes only).
+        agent_chain: agent && r.chain_writes.is_some_and(|w| w >= 2),
+        actor_kind: r.actor_kind,
     }))
 }

@@ -1114,7 +1114,10 @@ async fn t_m1_96_97_chain_reads_and_concurrency() {
     // T-M1-97: two agents at once on one issue: serialized, counted right.
     let l = lv(&w, i).await;
     let (da, db) = (note_doc(i, l, "a"), note_doc(i, l, "b"));
-    let (ra, rb) = tokio::join!(submit(&w, a, &da), submit(&w, b, &db));
+    let (ra, rb) = common::wait_for("two racing submits", common::WAIT_TIMEOUT, async {
+        tokio::join!(submit(&w, a, &da), submit(&w, b, &db))
+    })
+    .await;
     let ok = [&ra, &rb]
         .iter()
         .filter(|r| matches!(r, Ok(SubmitResult::Applied { .. })))
@@ -1196,6 +1199,60 @@ async fn t_m1_99_templates() {
 
 // ---------------------------------------------------------------- T-M1-121
 
+/// T1b regression (T-M1-121 under contention): two creates of the same new
+/// client's role in two new runtimes, held at the start of their
+/// transactions and released together, 20 times. One wins and the other
+/// gets `runtime_client_taken`, never a deadlock (the sponsor lock used to
+/// come after the operation request's FOR KEY SHARE on the sponsor row).
+#[tokio::test]
+async fn t1b_concurrent_creates_never_deadlock() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    faults::clear();
+    for n in 0..20 {
+        let client = new_client(&w, &format!("Race {n}")).await;
+        let a = role(new_rt(&format!("RA{n}")), client, "c", "personal", &[w.web]);
+        let b = role(new_rt(&format!("RB{n}")), client, "c", "personal", &[w.web]);
+        let (ga, gb) = (Arc::new(Gate::default()), Arc::new(Gate::default()));
+        faults::arm("ai_team.create.begun", Action::Block(ga.clone()));
+        faults::arm("ai_team.create.begun", Action::Block(gb.clone()));
+        // The barrier: both requests are inside their transactions before
+        // either goes on.
+        let barrier = async {
+            ga.reached.notified().await;
+            gb.reached.notified().await;
+            ga.release.notify_one();
+            gb.release.notify_one();
+        };
+        let (x, y, ()) = common::wait_for("two racing creates", common::WAIT_TIMEOUT, async {
+            tokio::join!(
+                create(&w, w.alice_ctx, &a),
+                create(&w, w.alice_ctx, &b),
+                barrier
+            )
+        })
+        .await;
+        let (won, lost) = match (x, y) {
+            (Ok(r), Err(e)) | (Err(e), Ok(r)) => (r, e),
+            (x, y) => panic!(
+                "round {n}: exactly one create wins: {:?} / {:?}",
+                x.map(|r| r.runtime.id),
+                y.map(|r| r.runtime.id)
+            ),
+        };
+        assert_eq!(
+            classify(&lost).map(|a| a.code),
+            Some(ErrorCode::RuntimeClientTaken),
+            "round {n}: {lost:#}"
+        );
+        // Free the role slot for the next round.
+        ai_team::retire_runtime(&w.app, &w.policy, w.alice_ctx, won.runtime.id)
+            .await
+            .unwrap();
+    }
+    faults::clear();
+}
+
 #[tokio::test]
 async fn t_m1_121_one_runtime_per_client() {
     let pool = test_pool().await;
@@ -1224,7 +1281,10 @@ async fn t_m1_121_one_runtime_per_client() {
     let cursor = new_client(&w, "Cursor").await;
     let i1 = role(new_rt("C1"), cursor, "c", "personal", &[w.web]);
     let i2 = role(new_rt("C2"), cursor, "c", "personal", &[w.web]);
-    let (x, y) = tokio::join!(create(&w, w.alice_ctx, &i1), create(&w, w.alice_ctx, &i2));
+    let (x, y) = common::wait_for("two creates for one client", common::WAIT_TIMEOUT, async {
+        tokio::join!(create(&w, w.alice_ctx, &i1), create(&w, w.alice_ctx, &i2))
+    })
+    .await;
     assert_eq!([x.is_ok(), y.is_ok()].iter().filter(|o| **o).count(), 1);
     let loser = x.err().or(y.err()).unwrap();
     assert_eq!(code(&loser), ErrorCode::RuntimeClientTaken, "{loser:#}");
@@ -1856,7 +1916,10 @@ async fn v_chain_concurrent_at_limit() {
     assert_eq!(chain(&w, i).await, Some((19, 0)));
     let l = lv(&w, i).await;
     let (d1, d2) = (note_doc(i, l, "x"), note_doc(i, l, "y"));
-    let (r1, r2) = tokio::join!(submit(&w, a, &d1), submit(&w, a, &d2));
+    let (r1, r2) = common::wait_for("two submits by one agent", common::WAIT_TIMEOUT, async {
+        tokio::join!(submit(&w, a, &d1), submit(&w, a, &d2))
+    })
+    .await;
     let outcomes = [&r1, &r2]
         .iter()
         .map(|r| match r {
@@ -1894,9 +1957,7 @@ async fn v_q2_trigger_concurrent_sql() {
             .await,
         );
     }
-    let url = std::env::var("OXLEDGER_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oxledger:oxledger_dev@127.0.0.1:55432/oxledger_test".into()
-    });
+    let url = common::test_db().url();
     let insert = |n: usize, rt: Uuid| {
         format!(
             "WITH p AS (INSERT INTO principals (kind, name) VALUES ('agent', 'r{n}') RETURNING id)
@@ -1932,7 +1993,7 @@ async fn v_q2_trigger_concurrent_sql() {
         "the second insert must wait for the first"
     );
     sqlx::raw_sql("COMMIT").execute(&mut c1).await.unwrap();
-    let (ok, msg) = h.await.unwrap();
+    let (ok, msg) = common::join("the concurrent statement", h).await;
     assert!(!ok, "both runtimes got the client");
     assert!(msg.contains("runtime_client_taken"), "{msg}");
     assert_eq!(
@@ -2359,9 +2420,16 @@ async fn v_pause_waits_for_running_write() {
             "the pause did not wait for the running write"
         );
         gate.release.notify_one();
-        p.await.unwrap();
+        common::wait_for("the pause after the release", common::WAIT_TIMEOUT, p)
+            .await
+            .unwrap();
     };
-    let (written, ()) = tokio::join!(write, pausing);
+    let (written, ()) = common::wait_for(
+        "the running write and the pause",
+        common::WAIT_TIMEOUT,
+        async { tokio::join!(write, pausing) },
+    )
+    .await;
     applied(&written.unwrap());
     let e = note(&w, a, i, "after").await.unwrap_err();
     assert_eq!(reason(&e), "agent_paused");

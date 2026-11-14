@@ -382,7 +382,17 @@ async fn t_m2_14a_format() {
     .unwrap();
     assert_eq!(desc(&w, i1).await, ("agent md".into(), "markdown".into()));
 
+    let by_agent = |i: Uuid| {
+        let pool = w.pool.clone();
+        async move {
+            let mut c = pool.acquire().await.unwrap();
+            oxledger::markdown::description_by_agent(&mut c, i)
+                .await
+                .unwrap()
+        }
+    };
     // Undo restores the text and the format.
+    assert!(!by_agent(q).await, "a person's description");
     let ex = agent_submit(
         &w,
         agent,
@@ -394,6 +404,8 @@ async fn t_m2_14a_format() {
     .await
     .unwrap();
     assert_eq!(desc(&w, q).await, ("converted".into(), "markdown".into()));
+    // R-M3: an agent's direct write (agent_direct, no proposal) is agent text.
+    assert!(by_agent(q).await, "agent_direct description");
     let pv = undo::preview(&w.app, a, ex).await.unwrap();
     let pv = serde_json::to_value(&pv).unwrap();
     assert!(
@@ -405,6 +417,44 @@ async fn t_m2_14a_format() {
         .unwrap();
     assert_eq!(u.fields_restored, 1);
     assert_eq!(desc(&w, q).await, ("legacy".into(), "plain".into()));
+
+    // Design 06 R-M3 (decisions M2.1): an undo keeps the restored version's
+    // author. The person's text back: a person's; the undo undone (the
+    // agent's text back): the agent's again.
+    assert!(!by_agent(q).await);
+    let u2 = undo::apply(
+        &w.app,
+        a,
+        Uuid::now_v7(),
+        u.execution_id,
+        &UndoInput::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(u2.fields_restored, 1);
+    assert_eq!(desc(&w, q).await, ("converted".into(), "markdown".into()));
+    assert!(by_agent(q).await, "the agent's text back is the agent's");
+    // Two agent writes, the second undone by the person: the first agent
+    // version is back, and it is still the agent's.
+    for t in ["agent one", "agent two"] {
+        let ex = agent_submit(
+            &w,
+            agent,
+            &doc(vec![set_desc(i1, t, None)], vec![(i1, lv(&w, i1).await)]),
+        )
+        .await
+        .unwrap();
+        if t == "agent two" {
+            undo::apply(&w.app, a, Uuid::now_v7(), ex, &UndoInput::default())
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(desc(&w, i1).await.0, "agent one");
+    assert!(
+        by_agent(i1).await,
+        "an undo back to agent text keeps the agent"
+    );
 }
 
 #[tokio::test]

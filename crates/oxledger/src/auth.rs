@@ -266,11 +266,68 @@ pub const AGENT_TOKEN_PREFIX: &str = "oxa_";
 
 // ---------------------------------------------------------------- passwords
 
-/// Argon2id with the crate defaults (m = 19 MiB, t = 2, p = 1, the OWASP
-/// minimum). The parameters are stored in each PHC string, so changing them
-/// later only affects new hashes.
+/// Production Argon2id cost: the crate defaults (m = 19 MiB, t = 2, p = 1,
+/// the OWASP minimum). The parameters are stored in each PHC string, so
+/// changing them later only affects new hashes.
+const PRODUCTION_PARAMS: argon2::Params = argon2::Params::DEFAULT;
+
+// Production builds keep m = 19 MiB, t = 2, p = 1 whatever the crate's
+// default becomes (fails to compile otherwise).
+const _: () = assert!(
+    PRODUCTION_PARAMS.m_cost() == 19 * 1024
+        && PRODUCTION_PARAMS.t_cost() == 2
+        && PRODUCTION_PARAMS.p_cost() == 1
+);
+
+/// `test-support` builds (integration tests, `seed-demo`, the E2E backend)
+/// hash with the cheapest Argon2id parameters the crate accepts.
+/// 測試不驗證正式環境的雜湊成本: tests check that hashing and verifying
+/// work, not how expensive a hash is. Verifying reads the parameters from
+/// the PHC string, so either kind of hash verifies in either build.
+#[cfg(feature = "test-support")]
+const TEST_PARAMS: argon2::Params = match argon2::Params::new(
+    argon2::Params::MIN_M_COST,
+    argon2::Params::MIN_T_COST,
+    argon2::Params::MIN_P_COST,
+    None,
+) {
+    Ok(p) => p,
+    Err(_) => panic!("minimum Argon2 parameters"),
+};
+
+/// The parameters new hashes use in this build.
+const fn hash_params() -> argon2::Params {
+    #[cfg(feature = "test-support")]
+    {
+        TEST_PARAMS
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        PRODUCTION_PARAMS
+    }
+}
+
+// G1: what a build without `test-support` actually hashes with is checked
+// at compile time. Every `cargo test` turns `test-support` on (the crate's
+// dev-dependency on itself), so no test ever runs the branch above; a
+// change to it fails `cargo check`/`cargo build` without the feature.
+#[cfg(not(feature = "test-support"))]
+const _: () = assert!(
+    hash_params().m_cost() == PRODUCTION_PARAMS.m_cost()
+        && hash_params().t_cost() == PRODUCTION_PARAMS.t_cost()
+        && hash_params().p_cost() == PRODUCTION_PARAMS.p_cost()
+        && hash_params().m_cost() == 19 * 1024
+        && hash_params().t_cost() == 2
+        && hash_params().p_cost() == 1,
+    "production builds hash with m = 19 MiB, t = 2, p = 1"
+);
+
 fn argon2() -> Argon2<'static> {
-    Argon2::default()
+    Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        hash_params(),
+    )
 }
 
 pub fn hash_password(password: &str) -> Result<String> {
@@ -902,6 +959,42 @@ mod tests {
         assert!(!verify_password("garbage", "x"));
         assert!(check_password_policy("short").is_err());
         assert!(check_password_policy("twelve chars").is_ok());
+    }
+
+    /// D4: production hashes keep m = 19 MiB, t = 2, p = 1 (Argon2id v19);
+    /// only `test-support` builds use cheaper ones, and a hash made with
+    /// either set verifies, because verification reads the PHC string.
+    #[test]
+    fn argon2_production_params_are_unchanged() {
+        assert_eq!(
+            (
+                PRODUCTION_PARAMS.m_cost(),
+                PRODUCTION_PARAMS.t_cost(),
+                PRODUCTION_PARAMS.p_cost()
+            ),
+            (19 * 1024, 2, 1)
+        );
+        assert_eq!(Argon2::default().params(), &PRODUCTION_PARAMS);
+        #[cfg(not(feature = "test-support"))]
+        assert_eq!(hash_params(), PRODUCTION_PARAMS);
+        #[cfg(feature = "test-support")]
+        assert_eq!(hash_params(), TEST_PARAMS);
+
+        let salt = SaltString::encode_b64(&[7u8; 16]).unwrap();
+        let prod = Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            PRODUCTION_PARAMS,
+        )
+        .hash_password(b"correct horse battery", &salt)
+        .unwrap()
+        .to_string();
+        assert!(
+            prod.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "{prod}"
+        );
+        assert!(verify_password(&prod, "correct horse battery"));
+        assert!(!verify_password(&prod, "correct horse batterY"));
     }
 
     #[test]

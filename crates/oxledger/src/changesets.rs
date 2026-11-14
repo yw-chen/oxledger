@@ -71,13 +71,77 @@ const LIST_LIMIT: i64 = 200;
 #[cfg(feature = "test-support")]
 pub mod faults {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tokio::sync::Notify;
 
     /// A barrier: `reached` fires when the request gets there, and it waits for `release`.
     #[derive(Default)]
     pub struct Gate {
-        pub reached: Notify,
+        pub reached: Reached,
         pub release: Notify,
+    }
+
+    impl Gate {
+        /// A gate whose `reached.notified()` gives up after `timeout`
+        /// instead of [`crate::test_support::WAIT_TIMEOUT`].
+        pub fn with_timeout(timeout: Duration) -> Gate {
+            let g = Gate::default();
+            if let Ok(mut t) = g.reached.timeout.lock() {
+                *t = Some(timeout);
+            }
+            g
+        }
+    }
+
+    /// `reached` of a [`Gate`]: a `Notify` whose wait is bounded (T1b). A
+    /// gate that is never reached (the work skipped the point, G21) panics
+    /// with the point's name, the outbox backlog and the xid holders
+    /// instead of hanging the test.
+    #[derive(Default)]
+    pub struct Reached {
+        notify: Notify,
+        /// The point the gate was armed at (set by [`arm`]).
+        point: Mutex<Option<String>>,
+        timeout: Mutex<Option<Duration>>,
+    }
+
+    impl Reached {
+        pub fn notify_one(&self) {
+            self.notify.notify_one();
+        }
+
+        /// How long [`Self::notified`] waits:
+        /// [`crate::test_support::WAIT_TIMEOUT`] unless the gate was made
+        /// with [`Gate::with_timeout`].
+        pub fn timeout(&self) -> Duration {
+            self.timeout
+                .lock()
+                .ok()
+                .and_then(|t| *t)
+                .unwrap_or(crate::test_support::WAIT_TIMEOUT)
+        }
+
+        /// The point [`arm`] armed this gate at.
+        pub fn point(&self) -> Option<String> {
+            self.point.lock().ok().and_then(|p| p.clone())
+        }
+
+        /// Waits until the armed point is hit; panics after
+        /// [`Self::timeout`] with the point, the caller's line and the state.
+        #[track_caller]
+        pub fn notified(&self) -> impl std::future::Future<Output = ()> + '_ {
+            let at = std::panic::Location::caller();
+            async move {
+                let point = self.point().unwrap_or_else(|| "(not armed)".into());
+                crate::test_support::wait_at(
+                    &format!("fault gate {point} to be reached"),
+                    self.timeout(),
+                    self.notify.notified(),
+                    at,
+                )
+                .await;
+            }
+        }
     }
 
     pub enum Action {
@@ -103,6 +167,11 @@ pub mod faults {
 
     /// Arms `point` for its next hit only.
     pub fn arm(point: &str, a: Action) {
+        if let Action::Block(g) = &a
+            && let Ok(mut p) = g.reached.point.lock()
+        {
+            *p = Some(point.to_string());
+        }
         ARMED.lock().unwrap().push((point.to_string(), a));
     }
 
@@ -1901,10 +1970,7 @@ async fn agent_direct(
             "consistent_after": consistent_after,
             "versions": versions,
             "time_entries": time_entries,
-            "effects": effects.iter().map(|e| json!({
-                "issue_id": e.issue_id, "lock_version": e.lock_version,
-                "changed": e.changed, "created": e.created,
-            })).collect::<Vec<_>>(),
+            "effects": effects.iter().map(commands::stored_effect).collect::<Vec<_>>(),
             "items": sim.items,
         }),
     )
@@ -2011,6 +2077,15 @@ async fn chain_record(
         .bind(execution)
         .bind(agent)
         .fetch_one(&mut *conn)
+        .await?;
+        // P3 gap G40: each issue's own chain, for its history (migration 0033).
+        sqlx::query(
+            "INSERT INTO command_execution_chains (execution_id, issue_id, writes) VALUES ($1, $2, $3)",
+        )
+        .bind(execution)
+        .bind(issue)
+        .bind(w)
+        .execute(&mut *conn)
         .await?;
         max = Some(match max {
             None => (w, d),
@@ -2822,13 +2897,7 @@ pub async fn agent_operation(
             .iter()
             .filter_map(|x| {
                 let id: Uuid = x["issue_id"].as_str()?.parse().ok()?;
-                Some(Effect {
-                    issue_id: id,
-                    key: keys.get(&id)?.clone(),
-                    lock_version: x["lock_version"].as_i64()? as i32,
-                    changed: x["changed"].as_bool()?,
-                    created: x["created"].as_bool()?,
-                })
+                commands::effect_from_stored(x, id, keys.get(&id)?.clone())
             })
             .collect();
         out.versions = serde_json::from_value(r["versions"].clone()).unwrap_or_default();
@@ -2879,13 +2948,7 @@ async fn exec_view(
         .iter()
         .filter_map(|e| {
             let id: Uuid = e["issue_id"].as_str()?.parse().ok()?;
-            Some(Effect {
-                issue_id: id,
-                key: visible.get(&id)?.clone(),
-                lock_version: e["lock_version"].as_i64()? as i32,
-                changed: e["changed"].as_bool()?,
-                created: e["created"].as_bool()?,
-            })
+            commands::effect_from_stored(e, id, visible.get(&id)?.clone())
         })
         .collect();
     let items = items
@@ -4396,9 +4459,7 @@ async fn apply_tx(
             "version_id": i.version_id, "time_entry_id": i.time_entry_id})).collect::<Vec<_>>(),
         "versions": sim.version.iter().map(|p| p.effect()).collect::<Vec<_>>(),
         "time_entries": sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
-        "effects": effects.iter().map(|e| json!({
-            "issue_id": e.issue_id, "lock_version": e.lock_version,
-            "changed": e.changed, "created": e.created})).collect::<Vec<_>>(),
+        "effects": effects.iter().map(commands::stored_effect).collect::<Vec<_>>(),
     });
     sqlx::query(
         "INSERT INTO changeset_applications (changeset_id, version, execution_id, effect_count)

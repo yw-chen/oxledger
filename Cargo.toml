@@ -14,3 +14,13 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# SCRAM-SHA-256 (sqlx's Postgres login: 4096 HMAC-SHA-256 rounds per connection).
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3

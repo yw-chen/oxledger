@@ -187,7 +187,7 @@
   - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
   - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 
-## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0033–0037）
+## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0038）
 
 - **不會讓 agent 工作脈絡失效**：授予新權限時暫停了 `role_permissions_epoch` trigger（契約 06 B-37），每個專案的 `security_epoch` 不變。理由：新權限不改既有議題內容的讀者集合，升級前也沒有任何 wiki 內容。
 - **新權限與自動授予**（之後管理者可以自己調整；調整會照常讓 epoch 加一）：
@@ -222,5 +222,43 @@
   - `ContextView.changed_projects`（來源專案的權限已變更、脈絡已不能用）改由 `RuntimeView.changed_projects` 提供：目前脈絡中 epoch 已變的來源專案 id，沒有目前脈絡時是空陣列。前端的「需要注意」徽章可以用它；以角色為單位的狀態仍可用 `/ai-team` 的 `state = quarantined`。
   - **這個分支上的 `web/` 與 `scripts/e2e_s1.py` 暫時不能用**：它們還呼叫 `/agent-contexts*`（`web/src/lib/counts.svelte.ts`、`web/src/routes/agents/` 三個頁面、`e2e_s1.py` 第 68–79 行），要等前端 F12 改成上表的新路由；M2.0 後端沒有改它們，以免和前端 session 衝突。
 - **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）已建好，**派送從 M2.1 開始**；升級前的內容不回溯。
-- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0037）。目前不會寫出這些值。
+- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0038）。目前不會寫出這些值。
+
+## M2.1（Markdown，沒有 migration）
+
+- **搜尋索引會自動重建一次**：索引 schema 從 3 升到 4（說明與公開留言改成索引 Markdown 的純文字：去掉語法與連結網址，保留連結文字與程式碼；`plain` 內容照原樣）。升級後第一次啟動，舊索引（schema 3）照舊服務，背景藍綠重建完才切換，搜尋不中斷。重建期間搜尋得到 Markdown 語法或網址裡的字（例如網域名稱），切換後就不會。
+- **新欄位（只給網頁）**：
+  - `GET /issues/{key}` 與 `GET /issues/{key}/view`：`description_html`（消毒過的 HTML，參照依呼叫者權限解析）與 `description_by_agent`（說明是 agent 寫的，或人核准了 agent 的提案）。
+  - `GET /issues/{key}/view` 的 `recent_notes.items[].body_html`。
+  - MCP 的 `get`、`get_many` 沒有這些欄位，輸出 schema 也不列（契約 06 R-M10）。
+  - `GET /projects/{id}/assignees` 的 `assignees[]` 與 `resolve` 的 `candidates[]`：user 項目多了 `login`（群組沒有；名單不變，G48）。
+- **渲染有時間與大小上限**：一段內容的渲染超過 800 ms，或輸出超過輸入 8 倍＋64 KiB 時，改顯示跳脫過的純文字（不做連結與參照）；註腳參照超過 500 個時改用 plain 渲染；標題超過 200 個時不產生標題 id。正常內容不受影響。
+- **undo 還原說明**時沿用被還原版本的作者：還原到 agent 寫的內容，`description_by_agent` 仍為 true。
+- **`POST /markdown/preview`**：編輯器預覽，不寫入、不通知；每人每分鐘 60 次（`rate_limited`，`details.kind = "markdown_preview"`）；文字超過 262144 bytes 回新錯誤碼 `payload_too_large`（HTTP 413，`details.limit`）。看不到的議題或專案與不存在的回同一個 `not_found`。
+- **@提及開始派送**：被提及的人收到通知（原因 `mentioned`），前提是他用自己的權限讀得到那個事件；被提及不會自動關注。通知讀取時再驗一次：留言被遮蔽或撤回、或說明的那次修改被遮蔽後，只因提及而來的通知不再顯示。偏好 `on_mentioned`（預設開）可以關；`PUT /me/notification-preferences` 沒帶 `on_mentioned` 時維持原值，舊用戶端的重送仍會比對成同一個請求。升級前寫的提及不補發（派送從升級後的新事件開始）。
+- **通知摘錄**：`note_excerpt` 改成留言的純文字（Markdown 語法去掉）。
+
+## 0033_p3_backend_gaps（P3 後端缺口）
+
+- **新表 `command_execution_chains`**（只增不改）：agent 直接寫入時，每個寫到的議題各記一列「寫入後該議題的 agent chain 長度」。議題歷史的 `agent_chain` 旗標改讀這裡，只看事件所在議題自己的 chain。
+- **升級前的 agent 寫入不顯示 `agent_chain`**：舊寫入沒有這些列，升級後的新寫入才有。不回填（舊的 `command_executions.agent_chain_writes` 是整份寫入的最大值，拿來回填會把別的議題的 chain 標到這個議題上）。
+- 不動權限、角色與成員，`security_epoch` 不變，agent 工作脈絡不受影響。
+- 同一階段沒有 migration 的 API 變更（G38–G47）見 `docs/impl/p1-backend-gaps.md`；其中要注意的：用 key 指定議題的 `log_time` 命令，升級前送出、升級後用同一個 Idempotency-Key 重送，會回 `idempotency_key_reused`（請求的正規化雜湊改了）。
+
+## T2 可觀測性（沒有 migration）
+
+規格見設計 02 §4.3「可觀測性」。部署要知道的：
+
+- **新的環境變數 `OXLEDGER_LOG_FORMAT`**：`text`（預設，格式和以前一樣）或 `json`（一行一個 JSON 物件，欄位 `timestamp`、`level`、`target`、`fields`、`spans`）。大小寫不分；設成其他值時程式啟動就失敗，不會默默用預設值。log 一樣寫到 stderr，`RUST_LOG` 照舊。
+- **新端點 `GET /readyz`**（不需認證）：資料庫、migration、worker 都好回 200，否則 503；本文只有固定字（`database`、`migrations`、`workers` 三項）。反向代理或部署腳本要判斷「能不能接流量」請改用它；`/healthz` 仍是 liveness（不碰資料庫），E2E 也還是用 `/healthz`。
+  - 每次檢查用 `/readyz` 自己的一條連線（`application_name` 為 `oxledger-readyz`，不佔主連線池）跑兩個查詢（`SELECT 1` 與讀 `_sqlx_migrations`），2 秒逾時。同時來的探測共用一次檢查，結果沿用 1 秒，所以多個探測端不會放大資料庫負載。一次失敗就回 503；要「連續幾次失敗才摘除」請在反向代理或 orchestrator 設（例如 Kubernetes 的 `failureThreshold`）。
+  - 因為這條獨立連線，`max_connections` 規劃時每個 `serve` 程序要多算 1。
+  - worker 停滯不會讓 `/readyz` 失敗；請用 `worker_last_success_timestamp_seconds` 告警（例如 `time() - x > 120`）。
+- **回應標頭 `X-Request-Id`**：每個回應都有，和本文的 `request_id`、log 的 `request_id` 是同一個。使用者回報問題時附上這個 id，就能在 log 裡找到同一個請求的所有行。客戶端送來的 `X-Request-Id` 會被忽略；只接受 W3C `traceparent`，它的 trace-id 會記在 log 的 `trace_id`。
+- **`/metrics` 多了**：HTTP（`http_requests_total`、`http_request_errors_total`、`http_request_duration_seconds`，依路由樣板 × 方法 × 狀態類別）、連線池（`db_pool_connections{state}`、`db_pool_max_connections`、`db_pool_acquire_timeouts_total`、`db_pool_released_in_transaction_total`）、worker（`worker_started`、`worker_rounds_total`、`worker_last_success_timestamp_seconds`、`worker_round_duration_seconds`、`worker_backlog`）。原有的 `search_*`、`notify_*` 不改名。建議告警：`db_pool_released_in_transaction_total` 有增加（G20 復發）、`db_pool_acquire_timeouts_total` 有增加、5xx 比率、worker 停滯。
+- 連線池等待時間 sqlx 沒有提供 API，只記「等不到連線而逾時」的次數（`acquire_timeout`，sqlx 預設 30 秒）。另外取連線超過 500 ms 時 sqlx 會在 WARN 記一行（`acquire_slow_threshold`）。
+- **`application_name`**：主連線池的連線在 `pg_stat_activity` 顯示為 `oxledger`（連線字串若已帶 `application_name` 就用連線字串的）。
+- **`RUST_LOG=warn` 時 log 沒有 `request_id`**：`request_id` 在 INFO 等級的 `http` span 上，`warn` 以上會把 span 濾掉，WARN／ERROR 行就不帶 id。例外是 500，那行 `request failed` 自己帶 `request_id`。要用 id 查 log，`RUST_LOG` 至少開到 `info`。
+- **新的環境變數 `OXLEDGER_ALLOW_RMCP_DEBUG`**：rmcp（MCP 函式庫）的 DEBUG／TRACE log 含整個 MCP 請求與 tool 結果，也就是議題內容。現在不論 `RUST_LOG` 怎麼設，rmcp 最多記到 INFO；只有設成 `1` 才放行。只在本機除錯時開，正式環境不要設。以前用 `RUST_LOG=debug` 看得到的 rmcp 細節，升級後要加這個變數才看得到。
+- JSON log 裡的 U+2028、U+2029、U+0085 會寫成 JSON 的 `\u` 跳脫（反斜線加 `u2028` 等），按行切不會切壞。
 

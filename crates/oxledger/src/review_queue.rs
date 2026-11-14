@@ -650,10 +650,29 @@ async fn time_row(
     op: &Json,
     keys: &std::collections::BTreeMap<Uuid, String>,
 ) -> Result<Option<DiffRow>> {
-    let Some(id) = op["issue"]["id"]
+    let id = match op["issue"]["id"]
         .as_str()
         .and_then(|s| s.parse::<Uuid>().ok())
-    else {
+    {
+        Some(id) => Some(id),
+        // P3 gap G47: proposals stored before the fix kept log_time's issue
+        // as a key (normalize_refs did not convert it). Resolve it as the
+        // command engine does (current or old key); visibility is checked
+        // below either way.
+        None => match op["issue"]["key"].as_str() {
+            Some(k) => {
+                sqlx::query_scalar(
+                    "SELECT k.issue_id FROM issue_keys k JOIN issues i ON i.id = k.issue_id
+                     WHERE k.key = $1 AND i.archived_at IS NULL",
+                )
+                .bind(k.trim().to_uppercase())
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            None => None,
+        },
+    };
+    let Some(id) = id else {
         return Ok(None);
     };
     type Row = (String, String, Uuid, Uuid, bool, Uuid, Option<Uuid>);

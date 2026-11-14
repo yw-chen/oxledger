@@ -574,21 +574,16 @@ async fn s6_epoch() {
         "the all-project bump waits for the apply's FOR SHARE"
     );
     g.release.notify_one();
-    let o = tokio::time::timeout(Duration::from_secs(20), applying)
+    // No deadlock: both finish (bounded, the timeout reports the state).
+    let o = common::join("the applying request", applying)
         .await
-        .expect("no deadlock")
-        .unwrap()
         .unwrap();
     assert_eq!(
         o.execution.unwrap().status,
         "succeeded",
         "finished before the bump"
     );
-    tokio::time::timeout(Duration::from_secs(20), locking)
-        .await
-        .expect("no deadlock")
-        .unwrap()
-        .unwrap();
+    common::join("the locking request", locking).await.unwrap();
     let e = service::search(&w.app, agent, SearchParams::default())
         .await
         .unwrap_err();
@@ -639,7 +634,9 @@ async fn s6_epoch() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!delegating.is_finished(), "waits for WEB's row");
     holder.commit().await.unwrap();
-    let e = delegating.await.unwrap().unwrap_err();
+    let e = common::join("the delegation", delegating)
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), ErrorCode::ContextUnavailable, "{e:#}");
     assert_eq!(
         count(&pool, &format!("SELECT count(*) FROM agent_context_source_projects WHERE context_id = '{}' AND project_id = '{auth_p}'", d.context_id)).await,
@@ -682,7 +679,7 @@ async fn s6_epoch() {
         "adding the group waits for the group's lock"
     );
     t1.commit().await.unwrap();
-    t2.await.unwrap();
+    common::join("the waiting bump", t2).await;
     assert!(epoch(&pool, auth_p).await > before);
 
     // ---------------------------------------------- T-X24: creating a project waits for an all-project bump
@@ -711,7 +708,7 @@ async fn s6_epoch() {
         "project creation waits for project_catalog"
     );
     t1.commit().await.unwrap();
-    let np = t2.await.unwrap();
+    let np = common::join("the project creation", t2).await;
     assert_eq!(
         epoch(&pool, np).await,
         1,
@@ -806,20 +803,16 @@ async fn s6_epoch() {
             "{label}: the bump waits for the apply"
         );
         g.release.notify_one();
-        let o = tokio::time::timeout(Duration::from_secs(20), applying)
+        // No deadlock: both finish (bounded, the timeout reports the state).
+        let o = common::join(&format!("{label}: the applying request"), applying)
             .await
-            .expect("no deadlock")
-            .unwrap()
             .unwrap();
         assert_eq!(
             o.execution.unwrap().status,
             "succeeded",
             "{label}: the accepted window"
         );
-        tokio::time::timeout(Duration::from_secs(20), changing)
-            .await
-            .expect("no deadlock")
-            .unwrap();
+        common::join(&format!("{label}: the epoch bump"), changing).await;
     }
     faults::clear();
 }

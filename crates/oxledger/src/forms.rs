@@ -40,7 +40,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use sqlx::PgConnection;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uuid::Uuid;
 
 /// §3.6.2: a group holds at most 5 conditions.
@@ -2225,6 +2225,60 @@ pub struct FormVersionView {
     pub created_at: DateTime<Utc>,
     pub published_by: Option<Uuid>,
     pub published_at: Option<DateTime<Utc>>,
+    /// `created_by`'s display name (P3 gap G43), or null when the viewer may
+    /// not see it: shown to site administrators, for the viewer themselves,
+    /// and for members (directly or through a group) of the form's project.
+    #[sqlx(default)]
+    pub created_by_name: Option<String>,
+    /// `published_by`'s display name, under the same rule (G43).
+    #[sqlx(default)]
+    pub published_by_name: Option<String>,
+}
+
+/// G43: the names `caller` may see among `views`' creators and publishers
+/// (site administrators: all; anyone else: themselves and the members of
+/// the form's project, directly or through a group; a site form has no
+/// members, so only the viewer's own name).
+async fn name_versions(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    project: Option<Uuid>,
+    views: &mut [&mut FormVersionView],
+) -> Result<()> {
+    let mut ids: Vec<Uuid> = views
+        .iter()
+        .flat_map(|v| [Some(v.created_by), v.published_by])
+        .flatten()
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let admin = db::is_admin(&mut *conn, caller).await?;
+    let names: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT p.id, p.name FROM principals p
+         WHERE p.id = ANY($1)
+           AND ($2 OR p.id = $3
+                OR EXISTS (SELECT 1 FROM members m
+                           WHERE m.project_id = $4
+                             AND (m.principal_id = p.id
+                                  OR m.principal_id IN (SELECT group_id FROM group_members
+                                                        WHERE user_id = p.id))))",
+    )
+    .bind(&ids)
+    .bind(admin)
+    .bind(caller.user_id())
+    .bind(project)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    for v in views.iter_mut() {
+        v.created_by_name = names.get(&v.created_by).cloned();
+        v.published_by_name = v.published_by.and_then(|p| names.get(&p).cloned());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2450,16 +2504,26 @@ async fn summary(conn: &mut PgConnection, f: &FormRow) -> Result<FormSummary> {
     })
 }
 
-async fn detail(conn: &mut PgConnection, f: &FormRow) -> Result<FormDetail> {
+async fn detail(conn: &mut PgConnection, caller: AuthContext, f: &FormRow) -> Result<FormDetail> {
     let s = summary(&mut *conn, f).await?;
-    let rules = PartView {
+    let mut rules = PartView {
         published: version_row(&mut *conn, Part::Rules, f.id, "published").await?,
         draft: version_row(&mut *conn, Part::Rules, f.id, "draft").await?,
     };
-    let layout = PartView {
+    let mut layout = PartView {
         published: version_row(&mut *conn, Part::Layout, f.id, "published").await?,
         draft: version_row(&mut *conn, Part::Layout, f.id, "draft").await?,
     };
+    let mut views: Vec<&mut FormVersionView> = [
+        &mut rules.published,
+        &mut rules.draft,
+        &mut layout.published,
+        &mut layout.draft,
+    ]
+    .into_iter()
+    .filter_map(Option::as_mut)
+    .collect();
+    name_versions(&mut *conn, caller, f.project_id, &mut views).await?;
     let (rv, lv) = layer_versions(&mut *conn, f).await?;
     Ok(FormDetail {
         summary: s,
@@ -2557,7 +2621,7 @@ pub async fn ensure(app: &App, caller: AuthContext, input: &NewForm) -> Result<F
     .bind(project)
     .fetch_one(&mut *tx)
     .await?;
-    let d = detail(&mut tx, &f).await?;
+    let d = detail(&mut tx, caller, &f).await?;
     tx.commit().await?;
     Ok(d)
 }
@@ -2566,7 +2630,7 @@ pub async fn ensure(app: &App, caller: AuthContext, input: &NewForm) -> Result<F
 pub async fn get(app: &App, caller: AuthContext, id: Uuid) -> Result<FormDetail> {
     let mut tx = read_tx(app).await?;
     let (f, _) = managed_form(&mut tx, caller, id, false).await?;
-    let d = detail(&mut tx, &f).await?;
+    let d = detail(&mut tx, caller, &f).await?;
     tx.commit().await?;
     Ok(d)
 }
@@ -2579,14 +2643,16 @@ pub async fn versions(
     part: Part,
 ) -> Result<Vec<FormVersionView>> {
     let mut tx = read_tx(app).await?;
-    managed_form(&mut tx, caller, id, false).await?;
-    let rows: Vec<FormVersionView> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let (f, _) = managed_form(&mut tx, caller, id, false).await?;
+    let mut rows: Vec<FormVersionView> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {VERSION_COLS} FROM {} WHERE form_id = $1 ORDER BY version DESC",
         part.table()
     )))
     .bind(id)
     .fetch_all(&mut *tx)
     .await?;
+    let mut views: Vec<&mut FormVersionView> = rows.iter_mut().collect();
+    name_versions(&mut tx, caller, f.project_id, &mut views).await?;
     tx.commit().await?;
     Ok(rows)
 }
@@ -2817,7 +2883,7 @@ pub async fn put_draft(
     .bind(id)
     .execute(&mut *tx)
     .await?;
-    let v: FormVersionView = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let mut v: FormVersionView = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO {t} (form_id, version, state, body, created_by)
          VALUES ($1, (SELECT COALESCE(max(version), 0) + 1 FROM {t} WHERE form_id = $1), 'draft', $2, $3)
          RETURNING {VERSION_COLS}",
@@ -2828,6 +2894,7 @@ pub async fn put_draft(
     .bind(user)
     .fetch_one(&mut *tx)
     .await?;
+    name_versions(&mut tx, caller, f.project_id, &mut [&mut v]).await?;
     sqlx::query("UPDATE form_defs SET lock_version = lock_version + 1 WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
@@ -2856,7 +2923,7 @@ pub async fn discard(app: &App, caller: AuthContext, id: Uuid, part: Part) -> Re
         .execute(&mut *tx)
         .await?;
     let f = load_form(&mut tx, id, false).await?;
-    let d = detail(&mut tx, &f).await?;
+    let d = detail(&mut tx, caller, &f).await?;
     tx.commit().await?;
     Ok(d)
 }

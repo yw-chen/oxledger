@@ -48,6 +48,9 @@ enum Reply {
     /// More than 8 MiB.
     Huge,
     Redirect(String),
+    /// Holds the request until the test releases it, then answers with the
+    /// next reply: a turn the test can only script once an earlier one ran.
+    Hold(Arc<tokio::sync::Notify>),
 }
 
 #[derive(Clone, Debug)]
@@ -101,14 +104,26 @@ async fn handle(State(f): State<Arc<Fake>>, uri: Uri, headers: HeaderMap, body: 
         body: serde_json::from_str(&raw).unwrap_or(Value::Null),
         raw,
     });
-    let reply = f.replies.lock().unwrap().pop_front().unwrap_or_else(|| {
-        let p = if path.ends_with("/chat/completions") {
-            P::Oai
-        } else {
-            P::Anth
-        };
-        turn(p, &[text("ok")], Some((10, 2)))
-    });
+    let next = || {
+        f.replies.lock().unwrap().pop_front().unwrap_or_else(|| {
+            let p = if path.ends_with("/chat/completions") {
+                P::Oai
+            } else {
+                P::Anth
+            };
+            turn(p, &[text("ok")], Some((10, 2)))
+        })
+    };
+    let mut reply = next();
+    if let Reply::Hold(release) = reply {
+        common::wait_for(
+            "the test to release a held model turn",
+            common::WAIT_TIMEOUT,
+            release.notified(),
+        )
+        .await;
+        reply = next();
+    }
     let sse = |s: String| ([(header::CONTENT_TYPE, "text/event-stream")], s).into_response();
     match reply {
         Reply::Sse(s) => sse(s),
@@ -126,6 +141,7 @@ async fn handle(State(f): State<Arc<Fake>>, uri: Uri, headers: HeaderMap, body: 
             sse(line.repeat(9 * 1024))
         }
         Reply::Redirect(to) => (StatusCode::FOUND, [(header::LOCATION, to)], "").into_response(),
+        Reply::Hold(_) => panic!("two held turns in a row"),
     }
 }
 
@@ -361,12 +377,12 @@ async fn events(
     last: Option<u64>,
 ) -> Vec<(u64, String, Value)> {
     let r = runner::stream(&w.app, who, run, last).await.unwrap();
-    let body = tokio::time::timeout(
-        Duration::from_secs(30),
+    let body = common::wait_for(
+        &format!("the event stream of run {run} to end with the run"),
+        common::WAIT_TIMEOUT,
         axum::body::to_bytes(r.into_body(), usize::MAX),
     )
     .await
-    .expect("the stream ends with the run")
     .unwrap();
     parse(&String::from_utf8_lossy(&body))
 }
@@ -750,7 +766,9 @@ async fn t_m1_102_103_writes_follow_the_policies() {
     assert_eq!(
         (state.as_str(), stop.as_str()),
         ("succeeded", "end_turn"),
-        "the run continues"
+        "the run continues; {} requests, tool results {:?}",
+        t.fake.requests().len(),
+        tool_results(w, run).await
     );
     let names = tool_names(&t.fake.requests()[0].body);
     for absent in ["changeset_approve", "changeset_propose", "changeset_revise"] {
@@ -772,6 +790,19 @@ async fn t_m1_102_103_writes_follow_the_policies() {
         .collect();
     assert_eq!(outcomes, ["applied", "review_required"]);
     assert_eq!(r.writes[1]["reason"], "policy");
+    // P3 gap G38: the write card names what was recorded (§3.13.4).
+    let key: String =
+        sqlx::query_scalar("SELECT key FROM issue_keys WHERE issue_id = $1 AND is_current")
+            .bind(i)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        r.writes[0]["effects"],
+        json!([{"key": key, "kind": "note_added"}]),
+        "{:?}",
+        r.writes
+    );
     assert_eq!(
         count(
             &pool,
@@ -911,18 +942,33 @@ async fn t_m1_122_time_taint() {
         &[call("c2", "time_list", time.clone())],
         Some((10, 5)),
     ));
-    // The note's precondition is checked at submit; read it then.
+    // The note's precondition is checked at submit; read it then. The
+    // third turn is held until it is scripted: without the hold, the run
+    // could ask for it before the test pushed it and end on the default
+    // "ok" (T1b: the missing review_required under load).
+    let third = Arc::new(tokio::sync::Notify::new());
+    t.fake.push(Reply::Hold(third.clone()));
     let (run2, _, _) = {
         let r = send(w, w.alice_ctx, c2, "記、看、記", vec![], None)
             .await
             .unwrap();
-        // Third turn: queued after the first write landed.
-        for _ in 0..100 {
-            if count(&pool, &format!("SELECT count(*) FROM issue_notes WHERE issue_id = '{i}' AND body = 'before time'")).await == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        // Third turn: scripted after the first write landed.
+        let landed = format!(
+            "SELECT count(*) FROM issue_notes WHERE issue_id = '{i}' AND body = 'before time'"
+        );
+        common::poll_until(
+            "the run's first note to land",
+            common::WAIT_TIMEOUT,
+            async || {
+                let n = count(&pool, &landed).await;
+                if n == 1 {
+                    common::Break(())
+                } else {
+                    common::Continue(format!("{n} notes"))
+                }
+            },
+        )
+        .await;
         let n3 = note("after time 2").await;
         t.fake.push(turn(
             P::Anth,
@@ -930,6 +976,7 @@ async fn t_m1_122_time_taint() {
             Some((10, 5)),
         ));
         t.fake.push(turn(P::Anth, &[text("ok")], Some((10, 5))));
+        third.notify_one();
         let (s, st) = wait_run(w, r.run_id).await;
         (r.run_id, s, st)
     };
@@ -1047,7 +1094,7 @@ async fn t_m1_109_budget_reservations_and_notifications() {
     }
     let mut ok = Vec::new();
     for h in handles {
-        match h.await.unwrap() {
+        match common::join("a racing send", h).await {
             Ok(a) => ok.push(a.run_id),
             Err(e) => {
                 assert_eq!(code(&e), ErrorCode::QuotaExceeded);
@@ -1161,12 +1208,19 @@ async fn t_m1_110_stream_reconnect_resync_cancel() {
     let r = send(w, w.alice_ctx, c, "寫了再等", vec![], None)
         .await
         .unwrap();
-    for _ in 0..200 {
-        if t.fake.requests().len() >= 3 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    common::poll_until(
+        "the run's second model call to reach the fake provider",
+        common::WAIT_TIMEOUT,
+        async || {
+            let n = t.fake.requests().len();
+            if n >= 3 {
+                common::Break(())
+            } else {
+                common::Continue(format!("{n} requests"))
+            }
+        },
+    )
+    .await;
     assert_eq!(
         t.fake.requests().len(),
         3,
@@ -1368,12 +1422,18 @@ async fn t_m1_129_lease_sweep() {
     t.fake
         .push(Reply::Slow(Duration::from_secs(120), String::new()));
     let r = send(w, w.alice_ctx, c, "hi", vec![], None).await.unwrap();
-    for _ in 0..100 {
-        if !t.fake.requests().is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    common::poll_until(
+        "the hanging run to reach the fake provider",
+        common::WAIT_TIMEOUT,
+        async || {
+            if t.fake.requests().is_empty() {
+                common::Continue(String::new())
+            } else {
+                common::Break(())
+            }
+        },
+    )
+    .await;
     let e = send(w, w.alice_ctx, c, "again", vec![], None)
         .await
         .unwrap_err();
@@ -1974,9 +2034,8 @@ async fn write_after(t: &T, i: Uuid, body: &str, change: &str) -> Uuid {
     t.fake.push(turn(P::Anth, &[text("ok")], Some((10, 5))));
     let c = conversation(w, w.alice_ctx, body).await;
     let r = send(w, w.alice_ctx, c, "寫", vec![], None).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(30), gate.reached.notified())
-        .await
-        .expect("the run reaches its tool call");
+    // The run reaches its tool call (bounded: the gate panics with the state).
+    gate.reached.notified().await;
     exec(&w.pool, &change.replace("{run}", &r.run_id.to_string())).await;
     gate.release.notify_one();
     wait_run(w, r.run_id).await;

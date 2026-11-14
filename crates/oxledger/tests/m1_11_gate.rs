@@ -2556,6 +2556,9 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         "DELETE /projects/{id}/dev/prs/{pr_id}/hide",
         "POST /agent-credentials/{id}/revoke",
         "POST /agents/{id}/incident-recovery/preview",
+        // M2.1: a read sent as POST; m2_1_markdown T-M2-09 checks its
+        // not_found answers and that it writes nothing.
+        "POST /markdown/preview",
     ];
     let mut tested: BTreeSet<String> = rows
         .iter()

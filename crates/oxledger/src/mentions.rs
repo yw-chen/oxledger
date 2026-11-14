@@ -20,10 +20,10 @@
 
 use crate::commands::TextFormat;
 use anyhow::Result;
-use comrak::nodes::NodeValue;
+use comrak::nodes::{AstNode, NodeValue};
 use comrak::{Arena, Options, parse_document};
 use sqlx::PgConnection;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 /// Users one event may record (R-MN3); the rest are not recorded.
@@ -46,74 +46,149 @@ pub fn markdown_options() -> Options<'static> {
 pub fn candidates(text: &str, format: TextFormat) -> Vec<String> {
     let mut out = Vec::new();
     match format {
-        TextFormat::Plain => scan(text, None, &mut out),
+        TextFormat::Plain => out.extend(spans(text, None).into_iter().map(|s| s.login)),
         TextFormat::Markdown => {
             let arena = Arena::new();
             let root = parse_document(&arena, text, &markdown_options());
-            // Runs of text between other inline nodes; code, links, images
-            // and raw HTML are skipped with everything inside them. `prev`
-            // is the visible character just before the run within the same
-            // block, so R-MN1's "what precedes the @" holds across inline
-            // boundaries (`**x**@bob`, `[x](u)@bob` are not mentions).
-            let mut buf = String::new();
-            let mut prev: Option<char> = None;
-            let mut skip_until: Option<&comrak::nodes::AstNode> = None;
-            let mut skipped_last: Option<char> = None;
-            for edge in root.traverse() {
-                match edge {
-                    comrak::arena_tree::NodeEdge::Start(node) => {
-                        let value = &node.data().value;
-                        if skip_until.is_some() {
-                            if let Some(c) = last_char(value) {
-                                skipped_last = Some(c);
-                            }
-                            continue;
-                        }
-                        match value {
-                            NodeValue::Text(t) => buf.push_str(t),
-                            NodeValue::SoftBreak | NodeValue::LineBreak => buf.push('\n'),
-                            NodeValue::Code(_) | NodeValue::HtmlInline(_) => {
-                                flush(&mut buf, &mut prev, &mut out);
-                                prev = last_char(value).or(prev);
-                            }
-                            NodeValue::Link(_) | NodeValue::Image(_) | NodeValue::WikiLink(_) => {
-                                flush(&mut buf, &mut prev, &mut out);
-                                skip_until = Some(node);
-                                skipped_last = None;
-                            }
-                            v if v.block() => {
-                                // Code and HTML blocks have no children: nothing scanned.
-                                flush(&mut buf, &mut prev, &mut out);
-                                prev = None;
-                            }
-                            _ => flush(&mut buf, &mut prev, &mut out),
-                        }
-                    }
-                    comrak::arena_tree::NodeEdge::End(node) => {
-                        if let Some(s) = skip_until {
-                            if std::ptr::eq(s, node) {
-                                skip_until = None;
-                                prev = skipped_last.or(prev);
-                            }
-                            continue;
-                        }
-                        match &node.data().value {
-                            NodeValue::Text(_) | NodeValue::SoftBreak | NodeValue::LineBreak => {}
-                            v if v.block() => {
-                                flush(&mut buf, &mut prev, &mut out);
-                                prev = None;
-                            }
-                            _ => flush(&mut buf, &mut prev, &mut out),
-                        }
-                    }
+            for item in runs(root) {
+                if let Item::Run(r) = item {
+                    out.extend(spans(&r.text(), r.prev).into_iter().map(|s| s.login));
                 }
             }
-            flush(&mut buf, &mut prev, &mut out);
         }
     }
     let mut seen = BTreeSet::new();
     out.retain(|l| seen.insert(l.clone()));
     out
+}
+
+/// A run of text between other inline nodes (design 06 R-M5): consecutive
+/// sibling `Text`, `SoftBreak` and `LineBreak` nodes. Rendering
+/// (`markdown.rs`) finds issue keys and mentions in exactly these runs, so
+/// a mention shows as a chip exactly when it could be recorded.
+pub(crate) struct Run<'a> {
+    pub(crate) nodes: Vec<&'a AstNode<'a>>,
+    /// The visible character just before the run within the same block
+    /// (`None` at the start of a block).
+    pub(crate) prev: Option<char>,
+}
+
+impl Run<'_> {
+    /// The run's text, a line break as `\n`.
+    pub(crate) fn text(&self) -> String {
+        let mut s = String::new();
+        for n in &self.nodes {
+            match &n.data().value {
+                NodeValue::Text(t) => s.push_str(t),
+                _ => s.push('\n'),
+            }
+        }
+        s
+    }
+}
+
+/// What [`runs`] finds, in document order.
+pub(crate) enum Item<'a> {
+    Run(Run<'a>),
+    /// A `[[…]]` link (its content is not scanned).
+    Wiki(&'a AstNode<'a>),
+}
+
+/// The text runs of a parsed Markdown document, and its wiki links, in
+/// document order. Code spans and blocks, links, images, wiki links and raw
+/// HTML are skipped with everything inside them; what precedes an `@`
+/// counts across inline boundaries (R-MN1: `**x**@bob`, `[x](u)@bob` are not
+/// mentions), a new block starts fresh.
+pub(crate) fn runs<'a>(root: &'a AstNode<'a>) -> Vec<Item<'a>> {
+    struct W<'a> {
+        out: Vec<Item<'a>>,
+        cur: Vec<&'a AstNode<'a>>,
+        /// The last character of `cur`.
+        cur_last: Option<char>,
+        prev: Option<char>,
+    }
+    impl<'a> W<'a> {
+        fn flush(&mut self) {
+            let nodes = std::mem::take(&mut self.cur);
+            if let Some(c) = self.cur_last.take() {
+                self.out.push(Item::Run(Run {
+                    nodes,
+                    prev: self.prev,
+                }));
+                self.prev = Some(c);
+            }
+        }
+    }
+    let mut w = W {
+        out: Vec::new(),
+        cur: Vec::new(),
+        cur_last: None,
+        prev: None,
+    };
+    let mut skip_until: Option<&AstNode> = None;
+    let mut skipped_last: Option<char> = None;
+    for edge in root.traverse() {
+        match edge {
+            comrak::arena_tree::NodeEdge::Start(node) => {
+                let value = &node.data().value;
+                if skip_until.is_some() {
+                    if let Some(c) = last_char(value) {
+                        skipped_last = Some(c);
+                    }
+                    continue;
+                }
+                match value {
+                    NodeValue::Text(t) => {
+                        w.cur.push(node);
+                        if let Some(c) = t.chars().last() {
+                            w.cur_last = Some(c);
+                        }
+                    }
+                    NodeValue::SoftBreak | NodeValue::LineBreak => {
+                        w.cur.push(node);
+                        w.cur_last = Some('\n');
+                    }
+                    NodeValue::Code(_) | NodeValue::HtmlInline(_) => {
+                        w.flush();
+                        w.prev = last_char(value).or(w.prev);
+                    }
+                    NodeValue::Link(_) | NodeValue::Image(_) | NodeValue::WikiLink(_) => {
+                        w.flush();
+                        if matches!(value, NodeValue::WikiLink(_)) {
+                            w.out.push(Item::Wiki(node));
+                        }
+                        skip_until = Some(node);
+                        skipped_last = None;
+                    }
+                    v if v.block() => {
+                        // Code and HTML blocks have no children: nothing scanned.
+                        w.flush();
+                        w.prev = None;
+                    }
+                    _ => w.flush(),
+                }
+            }
+            comrak::arena_tree::NodeEdge::End(node) => {
+                if let Some(s) = skip_until {
+                    if std::ptr::eq(s, node) {
+                        skip_until = None;
+                        w.prev = skipped_last.or(w.prev);
+                    }
+                    continue;
+                }
+                match &node.data().value {
+                    NodeValue::Text(_) | NodeValue::SoftBreak | NodeValue::LineBreak => {}
+                    v if v.block() => {
+                        w.flush();
+                        w.prev = None;
+                    }
+                    _ => w.flush(),
+                }
+            }
+        }
+    }
+    w.flush();
+    w.out
 }
 
 fn login_char(c: char) -> bool {
@@ -130,17 +205,8 @@ fn last_char(v: &NodeValue) -> Option<char> {
     }
 }
 
-/// Scans `buf` (preceded by `prev`) and starts a new run after it.
-fn flush(buf: &mut String, prev: &mut Option<char>, out: &mut Vec<String>) {
-    if let Some(c) = buf.chars().last() {
-        scan(buf, *prev, out);
-        *prev = Some(c);
-    }
-    buf.clear();
-}
-
 /// `http://` or `https://` (any case) at `i`.
-fn url_at(chars: &[char], i: usize) -> bool {
+pub(crate) fn url_at(chars: &[char], i: usize) -> bool {
     ["http://", "https://"].iter().any(|s| {
         let n = s.chars().count();
         i + n <= chars.len()
@@ -155,7 +221,8 @@ fn url_at(chars: &[char], i: usize) -> bool {
 /// at the start of a block). A web address is skipped up to the next
 /// whitespace (R-M8: `https://x.test/@bob` in plain text is not a mention;
 /// Markdown turns it into an autolink, which is skipped anyway).
-fn scan(text: &str, prev: Option<char>, out: &mut Vec<String>) {
+pub(crate) fn spans(text: &str, prev: Option<char>) -> Vec<Span> {
+    let mut out = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -189,7 +256,11 @@ fn scan(text: &str, prev: Option<char>, out: &mut Vec<String>) {
                     login.pop();
                 }
                 if !login.is_empty() {
-                    out.push(login);
+                    out.push(Span {
+                        start: i,
+                        end: start + login.chars().count(),
+                        login,
+                    });
                 }
             }
         }
@@ -199,6 +270,16 @@ fn scan(text: &str, prev: Option<char>, out: &mut Vec<String>) {
             i += 1;
         }
     }
+    out
+}
+
+/// One mention in a run: `@login` from character `start` (the `@`) to `end`
+/// (exclusive; trailing dots are not part of it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Span {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) login: String,
 }
 
 /// The users `logins` name in `project`'s assignable list (R-RF3, R-MN1),
@@ -208,19 +289,47 @@ pub async fn resolve(
     project: Uuid,
     logins: &[String],
 ) -> Result<Vec<Uuid>> {
+    let named = resolve_named(&mut *conn, project, logins).await?;
+    let mut out: Vec<Uuid> = Vec::new();
+    for l in logins {
+        if let Some(u) = named.get(l)
+            && !out.contains(&u.id)
+        {
+            out.push(u.id);
+        }
+    }
+    Ok(out)
+}
+
+/// A user a mention names.
+#[derive(Debug, Clone)]
+pub(crate) struct Named {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) login: String,
+}
+
+/// [`resolve`] keeping who each written login names (rendering, R-RF3):
+/// written login → user, only for logins that name one.
+pub(crate) async fn resolve_named(
+    conn: &mut PgConnection,
+    project: Uuid,
+    logins: &[String],
+) -> Result<HashMap<String, Named>> {
+    let mut out = HashMap::new();
     if logins.is_empty() {
-        return Ok(Vec::new());
+        return Ok(out);
     }
     let lower: Vec<String> = logins.iter().map(|l| l.to_ascii_lowercase()).collect();
     // The same set as describe::assignable (users only, no author).
-    let users: Vec<(Uuid, String)> = sqlx::query_as(
+    let users: Vec<(Uuid, String, String)> = sqlx::query_as(
         "WITH assignable_members AS (
              SELECT m.principal_id FROM members m
              JOIN member_roles mr ON mr.member_id = m.id
              JOIN roles r ON r.id = mr.role_id AND r.assignable
              WHERE m.project_id = $1
          )
-         SELECT p.id, p.login FROM principals p
+         SELECT p.id, p.login, p.name FROM principals p
          WHERE p.status = 'active' AND p.kind = 'user' AND p.login IS NOT NULL
            AND lower(p.login) = ANY($2)
            AND (p.id IN (SELECT principal_id FROM assignable_members)
@@ -233,23 +342,29 @@ pub async fn resolve(
     .bind(&lower)
     .fetch_all(&mut *conn)
     .await?;
-    let mut out: Vec<Uuid> = Vec::new();
     for (login, low) in logins.iter().zip(&lower) {
-        let exact = users.iter().find(|(_, l)| l == login);
-        let id = match exact {
-            Some((id, _)) => Some(*id),
+        let exact = users.iter().find(|(_, l, _)| l == login);
+        let hit = match exact {
+            Some(u) => Some(u),
             None => {
-                let mut ci = users.iter().filter(|(_, l)| l.to_ascii_lowercase() == *low);
+                let mut ci = users
+                    .iter()
+                    .filter(|(_, l, _)| l.to_ascii_lowercase() == *low);
                 match (ci.next(), ci.next()) {
-                    (Some((id, _)), None) => Some(*id),
+                    (Some(u), None) => Some(u),
                     _ => None, // none, or more than one: not a mention
                 }
             }
         };
-        if let Some(id) = id
-            && !out.contains(&id)
-        {
-            out.push(id);
+        if let Some((id, l, name)) = hit {
+            out.insert(
+                login.clone(),
+                Named {
+                    id: *id,
+                    name: name.clone(),
+                    login: l.clone(),
+                },
+            );
         }
     }
     Ok(out)

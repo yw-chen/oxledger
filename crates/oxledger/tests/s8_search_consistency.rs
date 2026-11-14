@@ -21,14 +21,20 @@ use world::*;
 /// The index worker, by hand: rounds until F passes `x` (another
 /// database's open transaction can hold H back for a while; playbook).
 async fn catch_up(w: &World, x: u64) {
-    for _ in 0..500 {
-        w.app.index.sync(&w.pool).await.unwrap();
-        if x < w.app.index.frontier() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("frontier did not pass {x} within 10 s");
+    common::poll_until(
+        &format!("the frontier to pass xid {x}"),
+        common::WAIT_TIMEOUT,
+        async || {
+            w.app.index.sync(&w.pool).await.unwrap();
+            let f = w.app.index.frontier();
+            if x < f {
+                common::Break(())
+            } else {
+                common::Continue(format!("F={f}"))
+            }
+        },
+    )
+    .await
 }
 
 async fn lv(pool: &sqlx::PgPool, i: Uuid) -> i32 {
@@ -145,7 +151,7 @@ async fn search_waits_for_its_write() {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     catch_up(&w, x).await;
-    let s = waiting.await.unwrap().unwrap();
+    let s = common::join("the waiting search", waiting).await.unwrap();
     assert_eq!(s.outcome, "ok");
     assert_eq!(s.consistency.status, "satisfied");
     assert_eq!(s.items.len(), 1);
@@ -275,7 +281,7 @@ async fn token_checks_and_waiter_limits() {
     }
     assert_eq!(w.app.index.waiting(), MAX_WAITERS_PER_CALLER - 1);
     for h in held {
-        let s = h.await.unwrap().unwrap();
+        let s = common::join("a held waiter", h).await.unwrap();
         assert_eq!(s.outcome, "search_lagging");
         assert!(s.consistency.waited_ms.unwrap() >= 1500);
     }
@@ -306,10 +312,17 @@ async fn frontier_never_passes_a_partly_applied_xid() {
         .unwrap();
         tx.commit().await.unwrap();
         let x: u64 = x.parse().unwrap();
+        // Bounded by time, not by a round count: under horizon load a round
+        // may apply nothing (G21), so a count says nothing about progress.
+        // The F <= x check inside is the assertion under test; a failure
+        // there is reported together with the state.
         let mut rounds = 0;
-        loop {
+        let w = &w;
+        let pool = &pool;
+        let label = format!("xid {x} (n = {n}) to be applied and passed by F");
+        common::poll_until(&label, common::WAIT_TIMEOUT, async || {
             // One round at a time, so a partly applied xid is observable.
-            w.app.index.sync_round(&pool).await.unwrap();
+            w.app.index.sync_round(pool).await.unwrap();
             rounds += 1;
             let left: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM outbox o, outbox_cursors c
@@ -317,19 +330,17 @@ async fn frontier_never_passes_a_partly_applied_xid() {
                    AND o.xid = $1::text::xid8",
             )
             .bind(x.to_string())
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .unwrap();
+            let f = w.app.index.frontier();
             if left > 0 {
-                assert!(
-                    w.app.index.frontier() <= x,
-                    "F passed xid {x} with {left} rows of it left (n = {n})"
-                );
-            } else if x < w.app.index.frontier() {
-                break;
+                assert!(f <= x, "F passed xid {x} with {left} rows of it left (n = {n})");
+            } else if x < f {
+                return common::Break(());
             }
-            assert!(rounds < 500, "stuck at n = {n}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+            common::Continue(format!("round {rounds}, {left} rows left, F={f}"))
+        })
+        .await;
     }
 }

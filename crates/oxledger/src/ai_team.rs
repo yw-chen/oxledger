@@ -649,6 +649,11 @@ pub struct SafetySummary {
     pub project: String,
     /// Commands not `off` in this project (no fields, no duties).
     pub allowed_commands: Vec<String>,
+    /// Of `allowed_commands`, the ones written directly (§6.18 ②; P3 gap
+    /// G39). Only the command modes, never the field policies.
+    pub direct: Vec<String>,
+    /// Of `allowed_commands`, the ones sent for review (§6.18 ②; G39).
+    pub review: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
@@ -824,14 +829,22 @@ pub async fn detail(app: &App, ctx: AuthContext, id: Uuid) -> Result<TeamDetail>
             continue; // not even its name (看不到＝不存在)
         }
         let (commands, fields) = modes(&mut tx, did).await?;
+        let with = |mode: Option<PolicyMode>| -> Vec<String> {
+            commands
+                .iter()
+                .filter(|(_, m)| match mode {
+                    Some(x) => **m == x,
+                    None => **m != PolicyMode::Off,
+                })
+                .map(|(c, _)| c.clone())
+                .collect()
+        };
         safety.push(SafetySummary {
             project_id: pid,
             project: key.clone(),
-            allowed_commands: commands
-                .iter()
-                .filter(|(_, m)| **m != PolicyMode::Off)
-                .map(|(c, _)| c.clone())
-                .collect(),
+            allowed_commands: with(None),
+            direct: with(Some(PolicyMode::Direct)),
+            review: with(Some(PolicyMode::Review)),
         });
         let manager = s == Seen::Member && manages(&mut tx, ctx, pid).await?;
         can_pause_project |= manager;
@@ -939,6 +952,72 @@ pub async fn activity_page(
         )
     };
     crate::undo::activity_of(app, ctx, id, sponsor, q, view).await
+}
+
+/// `GET /ai-team/activity?role=&runtime=` (§6.14 Agent 活動頁; P3 gap
+/// G42): the writes of every role the caller sees on the AI team page,
+/// merged newest first, each role exactly as its own
+/// `GET /ai-team/{id}/activity` (the same reading filter per item, the same
+/// signed cursor; no totals).
+///
+/// `role`: one agent principal; a role the caller does not see gives an
+/// empty list (看不到＝不存在, no `not_found` oracle). `runtime`: the roles
+/// on one execution environment, among the roles whose runtime the caller
+/// may see (their sponsor and site admins, as `TeamDetail.runtime`); other
+/// roles never match it.
+pub async fn activity_all(
+    app: &App,
+    ctx: AuthContext,
+    role: Option<Uuid>,
+    runtime: Option<Uuid>,
+    q: &crate::undo::ActivityQuery,
+) -> Result<crate::undo::Activity> {
+    let roles = {
+        let mut tx = crate::service::read_tx(app).await?;
+        let v = viewer(&mut tx, ctx).await?;
+        let sql = format!(
+            "{ROLE_SELECT}
+             WHERE ($1::uuid IS NULL OR p.agent_principal_id = $1)
+               AND (p.delegator_user_id = $2 OR $4
+                    OR EXISTS (SELECT 1 FROM delegations d WHERE d.agent_principal_id = p.agent_principal_id
+                                 AND d.revoked_at IS NULL AND d.project_id = ANY($3)))
+             ORDER BY p.handle, p.agent_principal_id"
+        );
+        let projects: Vec<Uuid> = v.projects.iter().copied().collect();
+        let rows: Vec<RoleTuple> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(role)
+            .bind(v.user)
+            .bind(&projects)
+            .bind(v.is_admin)
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut roles = Vec::new();
+        for r in rows.into_iter().map(role_row) {
+            let Some(s) = seen(&mut tx, &v, &r).await? else {
+                continue;
+            };
+            if runtime.is_some_and(|rt| s == Seen::Member || r.runtime != rt) {
+                continue;
+            }
+            roles.push(crate::undo::ActivityRole {
+                agent: r.id,
+                handle: r.handle,
+                sponsor: r.sponsor,
+                view: match s {
+                    Seen::Sponsor => crate::undo::ActivityView::Sponsor,
+                    Seen::Admin => crate::undo::ActivityView::Admin,
+                    Seen::Member => crate::undo::ActivityView::Member,
+                },
+            });
+        }
+        tx.commit().await?;
+        roles
+    };
+    let qhash = crate::cursor::query_hash(&json!({
+        "ai_team_activity": true, "role": role, "runtime": runtime,
+        "from": q.from, "to": q.to, "issue": q.issue,
+    }));
+    crate::undo::activity_list(app, ctx, &roles, q, &qhash, true).await
 }
 
 // ---------------------------------------------------------------- create a role
@@ -1134,6 +1213,14 @@ pub async fn create(
     );
 
     let mut tx = app.pool.begin().await?;
+    fault("ai_team.create.begun").await?;
+    // The sponsor lock comes first, before any row lock (T1b). The
+    // operation request's FK takes FOR KEY SHARE on the sponsor's
+    // `principals` row, and `agent_principals_runtime_guard` later takes
+    // FOR UPDATE on that row: with the request inserted first, a second
+    // create holding its KEY SHARE and waiting here for the advisory lock
+    // deadlocked with the first one waiting in the trigger for its UPDATE.
+    agents::serialize_sponsor(&mut tx, user).await?;
     let Some(request) =
         commands::open_request(&mut tx, user, operation_id, ACTION_CREATE, &fp).await?
     else {
@@ -1142,7 +1229,6 @@ pub async fn create(
         tx.commit().await?;
         return Ok(out);
     };
-    agents::serialize_sponsor(&mut tx, user).await?;
     check_role_limit(&mut tx, user, "role_key").await?;
     agents::external_client(&mut tx, input.client_id).await?;
 

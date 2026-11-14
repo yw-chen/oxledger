@@ -16,9 +16,8 @@
 //! with `me` and groups; eq/ne/in/not_in/is_null/not_null; and/or), with
 //! and without `q`, against `reference_visible` AND a reference evaluator.
 //!
-//! Needs PostgreSQL 18. Uses OXLEDGER_TEST_DATABASE_URL, or database
-//! `oxledger_test` next to DATABASE_URL / the local docker default (created if
-//! missing, see `common::test_pool`).
+//! Needs PostgreSQL 18; see `common::test_pool` (the test container, one
+//! database per nextest slot, created if missing).
 
 mod common;
 

@@ -346,8 +346,13 @@ pub fn query_terms(text: &str) -> Vec<(String, f32)> {
 /// Index schema version (design 03 §4.8 payload `schema_version`):
 /// 2 added `search_rev` and the §17.15 fast fields; 3 (design 05 M1.7
 /// §3.9) added the `key_text`, `cf_text` and `notes` text fields and the
-/// `status` / `priority` pre-filter fields, and `search_rev` v2.
-pub const SCHEMA_VERSION: u32 = 3;
+/// `status` / `priority` pre-filter fields, and `search_rev` v2; 4 (design
+/// 06 R-M11, §3.14) indexes the plain text of Markdown descriptions and
+/// notes instead of their source (the same tantivy schema as 3).
+pub const SCHEMA_VERSION: u32 = 4;
+/// The versions of an M1.7 generation (schema 3: Markdown source indexed
+/// as it is). It serves until the upgrade rebuild replaces it.
+const RAW_TEXT_VERSIONS: (u32, u32, u32) = (3, 1, 2);
 /// Bump when the lexer changes what it emits.
 pub const ANALYZER_VERSION: u32 = 1;
 /// Bump when query weights or field boosts change: 2 is the M1.7 BM25F
@@ -376,7 +381,11 @@ pub enum Layout {
     /// Before M1.7: subject and description only, `search_rev` v1, the
     /// M0 query (subject ×3, description ×1), no alias expansion.
     Legacy,
-    /// M1.7: the §3.9 BM25F fields, `search_rev` v2, alias expansion.
+    /// M1.7: the §3.9 BM25F fields, `search_rev` v2, alias expansion; the
+    /// description and notes as written (Markdown syntax included).
+    RawText,
+    /// M2.1: as [`Layout::RawText`], but Markdown descriptions and notes are
+    /// indexed and re-checked as their plain text (design 06 R-M11).
     Current,
 }
 
@@ -384,14 +393,34 @@ impl Layout {
     fn versions(self) -> (u32, u32, u32) {
         match self {
             Layout::Legacy => LEGACY_VERSIONS,
+            Layout::RawText => RAW_TEXT_VERSIONS,
             Layout::Current => (SCHEMA_VERSION, ANALYZER_VERSION, QUERY_SEMANTICS_VERSION),
         }
     }
 
     fn of(versions: (u32, u32, u32)) -> Option<Layout> {
-        [Layout::Current, Layout::Legacy]
+        [Layout::Current, Layout::RawText, Layout::Legacy]
             .into_iter()
             .find(|l| l.versions() == versions)
+    }
+
+    /// The §3.9 fields (key_text, cf_text, notes, status, priority) exist.
+    pub fn extended(self) -> bool {
+        self != Layout::Legacy
+    }
+
+    /// Markdown texts go in as their plain text (R-M11).
+    pub fn plain_text(self) -> bool {
+        self == Layout::Current
+    }
+
+    /// The text this layout indexes for a description or note.
+    pub fn text(self, text: String, format: &str) -> String {
+        if self.plain_text() {
+            crate::markdown::plain_text(&text, crate::commands::TextFormat::from_db(format))
+        } else {
+            text
+        }
     }
 }
 /// Serialises lease registration, retirement and the outbox GC bound (03 §4.8 step 1, §4.9).
@@ -427,6 +456,8 @@ struct Fields {
     search_rev: Field,
     /// M1.7 fields; `None` in a [`Layout::Legacy`] generation.
     ext: Option<ExtFields>,
+    /// The layout (schemas 3 and 4 are the same tantivy schema).
+    layout: Layout,
 }
 
 /// The fields schema 3 adds (design 05 §3.9).
@@ -470,8 +501,9 @@ impl Fields {
             nulls: sb.add_text_field("nulls", STRING),
             search_rev: sb.add_bytes_field("search_rev", STORED),
             ext: None,
+            layout,
         };
-        if layout == Layout::Current {
+        if layout.extended() {
             let key_text = TextOptions::default().set_indexing_options(
                 TextFieldIndexing::default()
                     .set_tokenizer(KEY_TOKENIZER)
@@ -496,11 +528,7 @@ impl Fields {
     }
 
     fn layout(&self) -> Layout {
-        if self.ext.is_some() {
-            Layout::Current
-        } else {
-            Layout::Legacy
-        }
+        self.layout
     }
 }
 
@@ -562,19 +590,23 @@ pub fn search_rev_v2(subject: &str, description: &str, x: &Extras) -> [u8; 32] {
 }
 
 /// The `search_rev` a document of `layout` stores for this text.
+/// `description` and the notes in `x` are the texts the layout indexes
+/// ([`Layout::text`]).
 pub fn doc_rev(layout: Layout, subject: &str, description: &str, x: &Extras) -> [u8; 32] {
     match layout {
         Layout::Legacy => search_rev(subject, description),
-        Layout::Current => search_rev_v2(subject, description, x),
+        Layout::RawText | Layout::Current => search_rev_v2(subject, description, x),
     }
 }
 
 /// Reads [`Extras`] for `ids` (issues without any have an empty entry
 /// missing from the map). Three statements; the same rules the SQL
-/// re-check of a search uses, so index and re-check agree.
+/// re-check of a search uses, so index and re-check agree. Note bodies are
+/// the text `layout` indexes ([`Layout::text`]).
 pub async fn load_extras(
     conn: &mut sqlx::PgConnection,
     ids: &[Uuid],
+    layout: Layout,
 ) -> Result<HashMap<Uuid, Extras>> {
     let mut out: HashMap<Uuid, Extras> = HashMap::new();
     if ids.is_empty() {
@@ -608,16 +640,19 @@ pub async fn load_extras(
     for (i, f, v) in cf {
         out.entry(i).or_default().cf.push((f, v));
     }
-    let notes: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT issue_id, id, body FROM issue_notes
+    let notes: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
+        "SELECT issue_id, id, body, body_format FROM issue_notes
          WHERE issue_id = ANY($1) AND NOT is_private
            AND retracted_at IS NULL AND redacted_at IS NULL",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
     .await?;
-    for (i, n, b) in notes {
-        out.entry(i).or_default().notes.push((n, b));
+    for (i, n, b, f) in notes {
+        out.entry(i)
+            .or_default()
+            .notes
+            .push((n, layout.text(b, &f)));
     }
     for x in out.values_mut() {
         x.keys.sort();
@@ -881,10 +916,10 @@ impl Gen {
             tracing::warn!("search generation {id} has another schema; rebuilding");
             return Ok(None);
         };
-        if layout == Layout::Legacy {
+        if layout != Layout::Current {
             tracing::warn!(
                 "search generation {id} predates schema {SCHEMA_VERSION}: it serves with the old \
-                 query semantics until a blue-green rebuild replaces it"
+                 rules until a blue-green rebuild replaces it"
             );
         }
         if p.generation != id {
@@ -990,17 +1025,22 @@ impl Gen {
         })
     }
 
-    /// Reads the [`Extras`] of `docs` when this layout indexes them.
+    /// Reads the [`Extras`] of `docs` when this layout indexes them, and
+    /// turns descriptions into the text this layout indexes.
     async fn fill_extras(
         &self,
         conn: &mut sqlx::PgConnection,
         docs: &mut [IssueDoc],
     ) -> Result<()> {
-        if self.layout() == Layout::Legacy || docs.is_empty() {
+        let layout = self.layout();
+        for d in docs.iter_mut() {
+            d.description = layout.text(std::mem::take(&mut d.description), &d.description_format);
+        }
+        if !layout.extended() || docs.is_empty() {
             return Ok(());
         }
         let ids: Vec<Uuid> = docs.iter().map(|d| d.id).collect();
-        let mut x = load_extras(conn, &ids).await?;
+        let mut x = load_extras(conn, &ids, layout).await?;
         for d in docs {
             d.extras = x.remove(&d.id).unwrap_or_default();
         }
@@ -1334,21 +1374,23 @@ struct IssueDoc {
     author_id: Uuid,
     assigned_to_id: Option<Uuid>,
     subject: String,
+    /// As read, then the text the layout indexes ([`Gen::fill_extras`]).
     description: String,
+    description_format: String,
     fixed_version_id: Option<Uuid>,
     start_date: Option<NaiveDate>,
     due_date: Option<NaiveDate>,
     status_id: Uuid,
     priority_id: Uuid,
-    /// Filled by [`Gen::fill_extras`] (schema 3 only).
+    /// Filled by [`Gen::fill_extras`] (schema 3 and later only).
     #[sqlx(skip)]
     extras: Extras,
 }
 
 const DOC_SELECT: &str =
     "SELECT i.id, k.key, i.project_id, i.tracker_id, i.is_private, i.author_id,
-        i.assigned_to_id, i.subject, i.description, i.fixed_version_id, i.start_date, i.due_date,
-        i.status_id, i.priority_id
+        i.assigned_to_id, i.subject, i.description, i.description_format, i.fixed_version_id,
+        i.start_date, i.due_date, i.status_id, i.priority_id
  FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current";
 
 /// Result of a blue-green rebuild (03 §4.8).
@@ -1399,8 +1441,9 @@ pub struct SearchIndex {
     durable_interval: Mutex<Duration>,
     /// An upgrade rebuild (a legacy generation serves) was claimed.
     upgrading: std::sync::atomic::AtomicBool,
-    /// Tests: the first generation built at activation is legacy.
-    first_build_legacy: std::sync::atomic::AtomicBool,
+    /// Tests: the layout of the first generation built at activation
+    /// (`None`: [`Layout::Current`]).
+    first_build: Mutex<Option<Layout>>,
     pub metrics: crate::metrics::SearchMetrics,
 }
 
@@ -1429,7 +1472,7 @@ impl SearchIndex {
             rebuilding: tokio::sync::Mutex::new(()),
             durable_interval: Mutex::new(DURABLE_INTERVAL),
             upgrading: Default::default(),
-            first_build_legacy: Default::default(),
+            first_build: Mutex::new(None),
             metrics: Default::default(),
         })
     }
@@ -1439,7 +1482,16 @@ impl SearchIndex {
     /// release would. Rebuilds always build the current layout.
     #[cfg(feature = "test-support")]
     pub fn set_first_build_legacy(&self, on: bool) {
-        self.first_build_legacy.store(on, Ordering::SeqCst);
+        self.set_first_build(on.then_some(Layout::Legacy));
+    }
+
+    /// Tests: a generation built at activation has `layout` (`None`: the
+    /// current one), as an index written by an older release would.
+    #[cfg(feature = "test-support")]
+    pub fn set_first_build(&self, layout: Option<Layout>) {
+        if let Ok(mut f) = self.first_build.lock() {
+            *f = layout;
+        }
     }
 
     /// The serving generation predates this build's schema (a legacy
@@ -1450,7 +1502,7 @@ impl SearchIndex {
         self.active
             .read()
             .ok()
-            .and_then(|a| a.as_ref().map(|g| g.layout() == Layout::Legacy))
+            .and_then(|a| a.as_ref().map(|g| g.layout() != Layout::Current))
             .unwrap_or(false)
     }
 
@@ -1608,7 +1660,10 @@ impl SearchIndex {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        anyhow::bail!("search index did not catch up with the outbox within 20 s")
+        anyhow::bail!(
+            "{}",
+            crate::metrics::horizon_timeout_message(pool, "search index").await
+        )
     }
 
     /// Rounds of 03 §4.2 until the outbox below H is drained.
@@ -1632,6 +1687,11 @@ impl SearchIndex {
         let started = Instant::now();
         let r = self.sync_round_locked(pool).await;
         self.metrics.round(started.elapsed(), r.is_ok());
+        crate::metrics::worker_round(
+            crate::metrics::Worker::Search,
+            started.elapsed(),
+            r.as_ref().map(|_| ()),
+        );
         r
     }
 
@@ -1661,11 +1721,7 @@ impl SearchIndex {
         // `loaded` stays until the generation serves: a failed activation
         // (a transient DB error) retries it instead of rebuilding.
         let loaded = lock(&self.loaded)?.clone();
-        let first = if self.first_build_legacy.load(Ordering::SeqCst) {
-            Layout::Legacy
-        } else {
-            Layout::Current
-        };
+        let first = lock(&self.first_build)?.unwrap_or(Layout::Current);
         let g = match loaded {
             Some(g) if lock(&g.st)?.epoch == epoch => g,
             Some(g) => {
@@ -2644,12 +2700,15 @@ mod tests {
         };
         let issues = lines(include_str!("../../../experiments/e1/data/issues.jsonl"));
         let queries = lines(include_str!("../../../experiments/e1/data/queries.jsonl"));
+        // As a Current generation indexes a Markdown description (R-M11,
+        // design 06 M2.1: E1 must still hold with the plain-text extraction).
         let docs: Vec<(String, String)> = issues
             .iter()
             .map(|i| {
                 (
                     i["subject"].as_str().unwrap().to_string(),
-                    i["description"].as_str().unwrap().to_string(),
+                    super::Layout::Current
+                        .text(i["description"].as_str().unwrap().to_string(), "markdown"),
                 )
             })
             .collect();

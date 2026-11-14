@@ -333,9 +333,10 @@ async fn mixed_version_and_issue_writes() {
     }
     let mut total: BTreeMap<String, usize> = BTreeMap::new();
     for h in workers {
-        let seen = tokio::time::timeout(Duration::from_secs(120), h)
+        // No deadlock: workers finish. The stress mix keeps its 120 s
+        // (twice WAIT_TIMEOUT); the timeout reports the state.
+        let seen = common::wait_for("a stress worker to finish", Duration::from_secs(120), h)
             .await
-            .expect("no deadlock: workers finish")
             .unwrap();
         for (k, n) in seen {
             *total.entry(k).or_default() += n;
@@ -385,6 +386,127 @@ impl std::io::Write for Captured {
     }
 }
 
+/// The log subscriber of E4w-7: the product's own (`main`'s), at TRACE for
+/// every crate, with the rmcp cap on (no `OXLEDGER_ALLOW_RMCP_DEBUG`).
+fn trace_subscriber(
+    format: oxledger::telemetry::LogFormat,
+    sink: Captured,
+) -> Box<dyn tracing::Subscriber + Send + Sync> {
+    use oxledger::telemetry;
+    telemetry::subscriber(
+        format,
+        telemetry::env_filter(Some("trace")),
+        telemetry::allow_rmcp_debug(None),
+        move || sink.clone(),
+    )
+}
+
+/// T2: alice and her agent go after the hidden issue over HTTP and MCP with
+/// the secret in the path, the query string, the body, a note, a forged
+/// `X-Request-Id` and a malformed `traceparent`. Returns the bodies of the
+/// answers whose request did not itself carry the secret.
+async fn http_probe(w: &World, i: Uuid, key: &str, secret: &str, token: &str) -> Vec<String> {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use http_body_util::BodyExt;
+    use oxledger::api::{self, ApiConfig, SESSION_COOKIE};
+    use oxledger::auth::{self, LoginInput};
+    use tower::ServiceExt;
+
+    let r = api::router(
+        w.app.clone(),
+        ApiConfig {
+            spa_origin: ORIGIN.into(),
+            session: w.policy.clone(),
+        },
+    );
+    let ch = auth::new_login_challenge(&w.pool, &w.policy).await.unwrap();
+    let s = auth::login(
+        &w.pool,
+        &w.policy,
+        LoginInput {
+            challenge_cookie: Some(&ch.cookie),
+            challenge_csrf: &ch.csrf_token,
+            login: "alice",
+            password: PW,
+        },
+    )
+    .await
+    .unwrap();
+    let cookie = format!("{SESSION_COOKIE}={}", s.token);
+    let browser = |method: &str, uri: String, body: Option<Value>| {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::COOKIE, &cookie)
+            .header("x-csrf-token", &s.csrf_token)
+            .header("x-request-id", secret)
+            .header("traceparent", format!("00-{secret}-00f067aa0ba902b7-01"));
+        if method != "GET" {
+            b = b
+                .header(header::ORIGIN, ORIGIN)
+                .header(header::CONTENT_TYPE, "application/json");
+        }
+        b.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+            .unwrap()
+    };
+    let mut bodies = Vec::new();
+    let mut run = async |req: Request<Body>, keep: bool| {
+        let resp = r.clone().oneshot(req).await.unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        if keep {
+            bodies.push(String::from_utf8_lossy(&bytes).to_string());
+        }
+    };
+    run(browser("GET", format!("/api/v1/issues/{key}"), None), true).await;
+    run(
+        browser(
+            "GET",
+            format!("/api/v1/issues/{key}?q={secret}&access_token={token}"),
+            None,
+        ),
+        false,
+    )
+    .await;
+    run(
+        browser("GET", format!("/api/v1/issues/{secret}-1"), None),
+        false,
+    )
+    .await;
+    run(
+        browser("GET", format!("/api/v1/{secret}/nowhere?x={secret}"), None),
+        false,
+    )
+    .await;
+    run(
+        browser(
+            "POST",
+            "/api/v1/issues/search".into(),
+            // U+2028 / U+2029: line breaks to JavaScript and some log tools.
+            Some(json!({"q": format!("{secret}\u{2028}\u{2029}x")})),
+        ),
+        false,
+    )
+    .await;
+    run(
+        browser(
+            "POST",
+            "/api/v1/commands".into(),
+            Some(json!({"command_schema_version": 1,
+                "ops": [{"op_id": op(), "kind": "add_note", "target": tgt(i),
+                         "body": format!("{secret} note")}]})),
+        ),
+        false,
+    )
+    .await;
+    // The agent over MCP (bearer token in the header).
+    let mut m = world::mcp_client::Mcp::connect(r.clone(), token.to_string()).await;
+    let e = m.call("get", json!({"key": key})).await.unwrap_err();
+    bodies.push(e.to_string());
+    let _ = m.call("search", json!({"q": secret})).await;
+    bodies
+}
+
 /// E4w-7: what a caller cannot read never reaches the logs (at TRACE, with
 /// every crate) or the audit rows, whatever the caller tries.
 #[tokio::test]
@@ -421,13 +543,12 @@ async fn hidden_content_stays_out_of_logs_and_audit() {
     let audit0 = count(&pool, "SELECT count(*) FROM auth_events").await;
 
     let buf = Captured::default();
-    let sink = buf.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || sink.clone())
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
+    // TRACE for every crate. rmcp logs whole JSON-RPC requests and tool
+    // results at DEBUG/TRACE; the product subscriber caps it at INFO (T2).
+    let guard = tracing::subscriber::set_default(trace_subscriber(
+        oxledger::telemetry::LogFormat::Text,
+        buf.clone(),
+    ));
     tracing::info!("capture on");
 
     let mut errors = Vec::new();
@@ -461,7 +582,7 @@ async fn hidden_content_stays_out_of_logs_and_audit() {
     // An agent of alice's tries the same.
     let ctx = w.new_context().await;
     w.delegate(w.auth_p).await.unwrap();
-    let (_, agent) = w.token(ctx).await;
+    let (token, agent) = w.token(ctx).await;
     errors.push(format!(
         "{:#}",
         issue_view::get(&w.app, agent, get(&key)).await.unwrap_err()
@@ -477,15 +598,58 @@ async fn hidden_content_stays_out_of_logs_and_audit() {
     .await
     .unwrap_err();
     errors.push(format!("{e:#} {e:?}"));
+    // T2: the same over HTTP and MCP, through the request middleware.
+    errors.extend(http_probe(&w, i, &key, secret, &token).await);
     tracing::info!("capture off");
     drop(guard);
 
+    // T2: and once more with the JSON log format.
+    let jbuf = Captured::default();
+    let jguard = tracing::subscriber::set_default(trace_subscriber(
+        oxledger::telemetry::LogFormat::Json,
+        jbuf.clone(),
+    ));
+    errors.extend(http_probe(&w, i, &key, secret, &token).await);
+    // The probe's U+2028 text never reaches the log (that is the point), so
+    // one line that does carries the three Unicode line breaks.
+    tracing::info!(
+        probe = "lb\u{2028}lb\u{2029}lb\u{0085}lb",
+        "line break probe"
+    );
+    drop(jguard);
+    let jlogs = String::from_utf8(jbuf.0.lock().unwrap().clone()).unwrap();
+
     let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     assert!(logs.contains("capture on") && logs.contains("capture off"));
+    for (name, l) in [("text", &logs), ("json", &jlogs)] {
+        assert!(
+            !l.contains(secret),
+            "tracing ({name}) leaked hidden content:\n{l}"
+        );
+        assert!(
+            !l.contains(&token),
+            "tracing ({name}) leaked the agent token"
+        );
+        // The probe ran under the middleware: the span names templates.
+        assert!(
+            l.contains("/api/v1/issues/{key}") && l.contains("request_id"),
+            "no request span in the {name} log:\n{l}"
+        );
+        assert!(l.contains("mcp_tool"), "no MCP tool span in the {name} log");
+    }
+    for line in jlogs.lines() {
+        serde_json::from_str::<Value>(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+    }
     assert!(
-        !logs.contains(secret),
-        "tracing leaked hidden content:\n{logs}"
+        !jlogs.contains(['\u{2028}', '\u{2029}', '\u{0085}']),
+        "raw Unicode line break in the JSON log"
     );
+    let probe = jlogs
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["fields"]["message"] == "line break probe")
+        .expect("the line break probe line");
+    assert_eq!(probe["fields"]["probe"], "lb\u{2028}lb\u{2029}lb\u{0085}lb");
     for e in &errors {
         assert!(!e.contains(secret), "error leaked: {e}");
     }

@@ -1460,7 +1460,10 @@ async fn field_lock_version_and_errors() {
     };
     let a = field_admin::patch(&w.app, w.alice_ctx, &key, &one);
     let b = field_admin::patch(&w.app, w.alice_ctx, &key, &two);
-    let (a, b) = tokio::join!(a, b);
+    let (a, b) = common::wait_for("two racing field patches", common::WAIT_TIMEOUT, async {
+        tokio::join!(a, b)
+    })
+    .await;
     let (ok, err) = match (a, b) {
         (Ok(x), Err(e)) | (Err(e), Ok(x)) => (x, e),
         (a, b) => panic!("one must win: {:?} {:?}", a.is_ok(), b.is_ok()),
@@ -1756,9 +1759,8 @@ async fn t58_conversion_with_failure_and_resume() {
     field_admin::start_conversion(&w.app, &w.policy, w.alice_ctx, p.conversion_id)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), gate.reached.notified())
-        .await
-        .expect("the second batch starts");
+    // The second batch starts (bounded: the gate panics with the state).
+    gate.reached.notified().await;
     let lv_sev = field_admin::get(
         &w.app,
         w.alice_ctx,
@@ -1794,16 +1796,21 @@ async fn t58_conversion_with_failure_and_resume() {
 }
 
 async fn wait_state(w: &World, id: Uuid, want: &str) -> field_admin::ConversionView {
-    for _ in 0..400 {
-        let v = field_admin::get_conversion(&w.app, w.alice_ctx, id)
-            .await
-            .unwrap();
-        if v.state == want {
-            return v;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("conversion {id} never reached {want}");
+    common::poll_until(
+        &format!("conversion {id} to reach {want}"),
+        common::WAIT_TIMEOUT,
+        async || {
+            let v = field_admin::get_conversion(&w.app, w.alice_ctx, id)
+                .await
+                .unwrap();
+            if v.state == want {
+                common::Break(v)
+            } else {
+                common::Continue(format!("state={}", v.state))
+            }
+        },
+    )
+    .await
 }
 
 #[tokio::test]
@@ -3029,11 +3036,23 @@ async fn g_publish_waits_for_write_in_flight() {
         gate.release.notify_one();
         let r = match early {
             Ok(r) => r,
-            Err(_) => pub_fut.await,
+            Err(_) => {
+                common::wait_for(
+                    "the publish after the release",
+                    common::WAIT_TIMEOUT,
+                    pub_fut,
+                )
+                .await
+            }
         };
         (finished_early, r)
     };
-    let (applied, (finished_early, published)) = tokio::join!(apply, racer);
+    let (applied, (finished_early, published)) = common::wait_for(
+        "the write holding the form and the racing publish",
+        common::WAIT_TIMEOUT,
+        async { tokio::join!(apply, racer) },
+    )
+    .await;
     faults::clear();
     applied.unwrap();
     assert!(
@@ -3396,9 +3415,8 @@ async fn g_conversion_guards() {
     field_admin::start_conversion(&w.app, &w.policy, w.alice_ctx, c1.conversion_id)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), gate.reached.notified())
-        .await
-        .expect("the second batch");
+    // The second batch (bounded: the gate panics with the state).
+    gate.reached.notified().await;
     let first = if i1 < i2 { i1 } else { i2 };
     let e = set(
         w,

@@ -1,0 +1,66 @@
+# cargo-nextest settings (docs/impl/testing-playbook.md).
+#
+# Every test runs in its own process. tests/common/mod.rs gives each running
+# test its own database, `<prefix>_<NEXTEST_TEST_GLOBAL_SLOT>`, on the test
+# container (scripts/test-pg.ps1), so tests run in parallel and keep the
+# usual TRUNCATE reset.
+
+[test-groups]
+# Tests that DROP DATABASE (D1(e)). A DROP holds an xid until its checkpoint
+# finishes, which holds back the cluster-wide snapshot horizon every
+# `sync_all` / `dispatch_all` waits on (G21). One at a time keeps that to a
+# single short stall on the fsync=off test container.
+drop-database = { max-threads = 1 }
+
+[profile.default]
+# D7: no automatic retries for now; a flaky test should show up as a failure
+# until G21-like causes are understood.
+retries = 0
+# Report tests slower than 60 s; kill one after 10 minutes (a gate that is
+# never reached would otherwise hang the run). m1_8_notifications has a
+# deliberate 120 s loop.
+slow-timeout = { period = "60s", terminate-after = 10 }
+fail-fast = false
+
+[[profile.default.overrides]]
+filter = 'binary(/_upgrade$/) | (binary(=s3_permissions) & test(=migration_0007_repairs_dates)) | (binary(=s5_changesets) & test(=s5_migrations_from_empty))'
+test-group = 'drop-database'
+
+# Horizon-sensitive tests run alone. They call `sync` / `sync_round` /
+# `dispatch_round` once (or wait at a fault gate) and expect their own row
+# to be below the cluster-wide snapshot horizon H; any other test's open
+# write transaction on the same cluster holds H back, so in parallel they
+# fail or hang (G21 inside the suite; T1 run 2026-11-14). The `_all`
+# helpers retry for 20 s and do not need this. t1_test_infra's horizon test
+# looks for its own transaction among the 5 oldest xid holders of the
+# cluster, which other tests' transactions would crowd out.
+#
+# Tests that drop a database, and every test(=…) named here, are checked by
+# tests/t1_test_infra.rs (G4): rename or add one and that test fails until
+# this file follows.
+[[profile.default.overrides]]
+filter = '''
+    binary(=p2_search) | binary(=s8_gate_probes) | binary(=s8_search_consistency)
+    | (binary(=s7_redaction) & test(=search_never_shows_redacted_text))
+    | (binary(=s8_gate) & test(=t_s2_outbox_consumed_twice))
+    | (binary(=m1_7_search) & test(=legacy_generation_on_disk_is_opened))
+    | (binary(=m1_8_notifications) & (test(=t_m1_77_at_least_once_is_exactly_once)
+        | test(=v_progress_lock_with_read_between) | test(=perf_dispatch_p95)
+        | test(=v_read_all_before_marks_row_committed_after_list)
+        | test(=v_poison_issue_is_skipped)
+        | test(=t_m1_71_private_note) | test(=t_m1_73_private_issue)))
+    | (binary(=t1_test_infra) & test(=horizon_timeout_message_names_the_holder))
+'''
+threads-required = 'num-test-threads'
+
+# Long xid holders also run alone: these write thousands of issues in one
+# transaction (20–40 s under load), which holds H back past the 20 s of
+# every `sync_all` running next to them (s1_identity timed out behind
+# p2_strategy's fixture in the T1 run; describe_xid_holders showed it).
+[[profile.default.overrides]]
+filter = '''
+    (binary(=p2_strategy) & (test(=strategy_selection_and_paging) | test(=deadline_switch_and_timeout)))
+    | (binary(=m1_2_views) & (test(=t_m1_14_counts_cap_and_time_out)
+        | test(=m1_2_people_lanes_do_not_depend_on_counting)))
+'''
+threads-required = 'num-test-threads'

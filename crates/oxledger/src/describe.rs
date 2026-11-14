@@ -186,6 +186,10 @@ pub struct Assignee {
     pub name: String,
     /// user | group
     pub kind: String,
+    /// A user's login (what `@login` mentions write, design 06 §6.2, gap
+    /// G48); absent for groups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -978,7 +982,8 @@ pub async fn assignable(
              JOIN roles r ON r.id = mr.role_id AND r.assignable
              WHERE m.project_id = $1
          )
-         SELECT p.id, p.name, p.kind FROM principals p
+         SELECT p.id, p.name, p.kind, CASE WHEN p.kind = 'user' THEN p.login END AS login
+         FROM principals p
          WHERE p.status = 'active' AND (
              (p.kind = 'user' AND (
                  p.id IN (SELECT principal_id FROM assignable_members)

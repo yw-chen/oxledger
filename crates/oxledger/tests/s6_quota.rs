@@ -310,11 +310,8 @@ async fn s6_quota() {
         }));
     }
     for t in ts {
-        let e = tokio::time::timeout(std::time::Duration::from_secs(20), t)
-            .await
-            .expect("no deadlock")
-            .unwrap()
-            .unwrap_err();
+        // No deadlock: every submit ends (bounded, the timeout reports the state).
+        let e = common::join("a concurrent submit", t).await.unwrap_err();
         assert_eq!(code(&e), ErrorCode::AgentSuspended);
     }
 

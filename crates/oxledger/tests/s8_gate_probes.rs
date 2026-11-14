@@ -9,7 +9,7 @@ mod common;
 #[path = "s6_world/mod.rs"]
 mod world;
 
-use common::test_pool;
+use common::{Break, Continue, WAIT_TIMEOUT, poll_until, test_pool, wait_for};
 use oxledger::changesets::faults::{self, Action, Gate};
 use oxledger::error::{ApiError, ErrorCode};
 use oxledger::search::{MAX_WAITERS, MAX_WAITERS_PER_CALLER, Wait};
@@ -190,21 +190,24 @@ async fn global_waiter_cap() {
     let pool = test_pool().await;
     let w = World::build(&pool).await;
     let mut held = Vec::new();
+    // The waiters outlive the bounded wait below; they are aborted at the end.
     for _ in 0..MAX_WAITERS {
         let app = w.app.clone();
         held.push(tokio::spawn(async move {
             app.index
-                .wait_for(Some(Uuid::now_v7()), u64::MAX / 2, Duration::from_secs(10))
+                .wait_for(Some(Uuid::now_v7()), u64::MAX / 2, WAIT_TIMEOUT * 2)
                 .await
         }));
     }
-    for _ in 0..400 {
-        if w.app.index.waiting() == MAX_WAITERS {
-            break;
+    poll_until("every waiter to hold a slot", WAIT_TIMEOUT, async || {
+        let n = w.app.index.waiting();
+        if n == MAX_WAITERS {
+            Break(())
+        } else {
+            Continue(format!("{n} waiting"))
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(w.app.index.waiting(), MAX_WAITERS);
+    })
+    .await;
     let r = w
         .app
         .index
@@ -293,13 +296,20 @@ async fn inflight_transactions() {
         "B satisfied while older A open"
     );
     ta.commit().await.unwrap();
-    for _ in 0..500 {
-        w.app.index.sync(&pool).await.unwrap();
-        if xb < w.app.index.frontier() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    poll_until(
+        &format!("the frontier to pass xid {xb}"),
+        WAIT_TIMEOUT,
+        async || {
+            w.app.index.sync(&pool).await.unwrap();
+            let f = w.app.index.frontier();
+            if xb < f {
+                Break(())
+            } else {
+                Continue(format!("F={f}"))
+            }
+        },
+    )
+    .await;
     let r = search(&w, s("quokkaalpha", xa)).await.unwrap();
     assert_eq!(r.consistency.status, "satisfied");
     assert_eq!(r.items.len(), 1, "A's event was skipped");
@@ -460,6 +470,12 @@ async fn no_waiter_passes_before_publish() {
     .await
     .unwrap();
     let x: u64 = x.parse().unwrap();
+    // The round below only reaches the gate if it applies this row, and it
+    // skips rows at or above H (03 §4.7): any open transaction on the
+    // cluster older than x would make it a no-op and leave the gate
+    // unreached (T1b; the 9-hour hang on main). Wait until H passes x
+    // first; H never moves back, so the round then sees the row.
+    common::wait_horizon_past(&pool, x).await;
     let g = Arc::new(Gate::default());
     faults::arm("search.before_publish", Action::Block(g.clone()));
     let (app, p2) = (w.app.clone(), pool.clone());
@@ -474,7 +490,10 @@ async fn no_waiter_passes_before_publish() {
         .await;
     assert!(matches!(r, Wait::Lagging { .. }), "{r:?}");
     g.release.notify_one();
-    worker.await.unwrap().unwrap();
+    wait_for("the released sync round to finish", WAIT_TIMEOUT, worker)
+        .await
+        .unwrap()
+        .unwrap();
     let r = w
         .app
         .index

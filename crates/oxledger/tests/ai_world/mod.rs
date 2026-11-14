@@ -85,10 +85,17 @@ pub fn install_with(
             .collect::<Vec<_>>(),
     );
     cfg.resolver = dns;
-    cfg.limits.first_byte = Duration::from_secs(5);
-    cfg.limits.chunk_gap = Duration::from_secs(5);
-    cfg.limits.request = Duration::from_secs(10);
-    cfg.limits.run = Duration::from_secs(20);
+    // Short next to production (30 / 30 / 120 / 180 s), but with room for a
+    // loaded machine: a run here normally ends within 2 s, and a fake
+    // provider answers in milliseconds. 5 s to the first byte and 20 s per
+    // run were close enough that a full parallel run could end a healthy run
+    // as `provider_error` / `deadline` (T1b). The run limit stays below
+    // `wait_run`'s bound (common::WAIT_TIMEOUT, 60 s), so a run always ends
+    // before the test gives up on it. Tests of the limits set their own.
+    cfg.limits.first_byte = Duration::from_secs(15);
+    cfg.limits.chunk_gap = Duration::from_secs(15);
+    cfg.limits.request = Duration::from_secs(30);
+    cfg.limits.run = Duration::from_secs(45);
     cfg.limits.ping_every = Duration::from_millis(200);
     tweak(&mut cfg.limits);
     config::install(cfg.clone());
@@ -273,21 +280,27 @@ pub async fn send(
     .await
 }
 
-/// Waits (≤ 30 s) until `run` ended; returns (state, stop_reason).
+/// Waits until `run` ended (bounded by `common::WAIT_TIMEOUT`, above the
+/// runs' own 45 s limit set in `install_with`); returns (state, stop_reason).
 pub async fn wait_run(w: &World, run: Uuid) -> (String, String) {
-    for _ in 0..300 {
-        let r: (String, Option<String>) =
-            sqlx::query_as("SELECT state, stop_reason FROM ai_runs WHERE id = $1")
-                .bind(run)
-                .fetch_one(&w.pool)
-                .await
-                .unwrap();
-        if !matches!(r.0.as_str(), "queued" | "running") {
-            return (r.0, r.1.unwrap_or_default());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("run {run} did not end");
+    crate::common::poll_until(
+        &format!("AI run {run} to end"),
+        crate::common::WAIT_TIMEOUT,
+        async || {
+            let r: (String, Option<String>) =
+                sqlx::query_as("SELECT state, stop_reason FROM ai_runs WHERE id = $1")
+                    .bind(run)
+                    .fetch_one(&w.pool)
+                    .await
+                    .unwrap();
+            if matches!(r.0.as_str(), "queued" | "running") {
+                crate::common::Continue(format!("state={}", r.0))
+            } else {
+                crate::common::Break((r.0, r.1.unwrap_or_default()))
+            }
+        },
+    )
+    .await
 }
 
 /// Everything readable that could hold a key: the whole AI admin API,

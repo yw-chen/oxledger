@@ -336,6 +336,8 @@ impl DispatchEvent {
             payload: self.payload.clone(),
             note_id: self.note_id,
             redacted: self.redacted,
+            // Notifications show their own attribution (only `detail` is used).
+            ..EventRow::default()
         }
     }
 
@@ -381,6 +383,7 @@ struct Switches {
     on_triage_decided: bool,
     on_my_agents: bool,
     on_self: bool,
+    on_mentioned: bool,
     auto_watch_author: bool,
     auto_watch_assignee: bool,
     auto_watch_note: bool,
@@ -395,9 +398,38 @@ impl Switches {
             "author" => self.on_author,
             "triage_decided" => self.on_triage_decided,
             "agent_on_behalf" => self.on_my_agents,
+            "mentioned" => self.on_mentioned,
             _ => false,
         }
     }
+}
+
+/// Who the readable content of these events still mentions (design 06
+/// R-MN5): the `issue_event_mentions` rows (written with the event, deleted
+/// with a D12 redaction), but none for a note that is retracted or
+/// redacted now: its text is no longer there to read.
+async fn live_mentions(
+    conn: &mut PgConnection,
+    events: &[Uuid],
+) -> Result<HashMap<Uuid, BTreeSet<Uuid>>> {
+    let mut out: HashMap<Uuid, BTreeSet<Uuid>> = HashMap::new();
+    if events.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT m.event_id, m.user_id FROM issue_event_mentions m
+         JOIN issue_events e ON e.id = m.event_id
+         LEFT JOIN issue_notes n ON n.id = e.note_id
+         WHERE m.event_id = ANY($1) AND e.redaction_id IS NULL
+           AND (e.note_id IS NULL OR (n.redacted_at IS NULL AND n.retracted_at IS NULL))",
+    )
+    .bind(events)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (e, u) in rows {
+        out.entry(e).or_default().insert(u);
+    }
+    Ok(out)
 }
 
 /// Active users among `ids` with their switches and whether they muted
@@ -415,6 +447,7 @@ async fn switches(
                 COALESCE(np.on_triage_decided, true) AS on_triage_decided,
                 COALESCE(np.on_my_agents, true) AS on_my_agents,
                 COALESCE(np.on_self, false) AS on_self,
+                COALESCE(np.on_mentioned, true) AS on_mentioned,
                 COALESCE(np.auto_watch_author, true) AS auto_watch_author,
                 COALESCE(np.auto_watch_assignee, true) AS auto_watch_assignee,
                 COALESCE(np.auto_watch_note, true) AS auto_watch_note,
@@ -476,6 +509,11 @@ pub async fn dispatch_round(pool: &PgPool) -> Result<Round> {
     let started = Instant::now();
     let r = dispatch_round_inner(pool).await;
     crate::metrics::NOTIFY.round(started.elapsed(), r.as_ref().ok());
+    crate::metrics::worker_round(
+        crate::metrics::Worker::Notify,
+        started.elapsed(),
+        r.as_ref().map(|_| ()),
+    );
     r
 }
 
@@ -719,10 +757,19 @@ async fn deliver_events(
             .await?;
     let author = issue.author_person();
     let mut groups: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    let ids: Vec<Uuid> = events.iter().map(|e| e.id).collect();
+    let mentioned = live_mentions(&mut *conn, &ids).await?;
     // Candidates per event: person → reasons.
     let mut cands: Vec<BTreeMap<Uuid, BTreeSet<&'static str>>> = Vec::with_capacity(n);
     for (i, ev) in events.iter().enumerate() {
         let mut c: BTreeMap<Uuid, BTreeSet<&'static str>> = BTreeMap::new();
+        // Design 06 R-MN5: the people the content mentions (recorded only
+        // for people's writes, R-MN4). Like every reason, each must read
+        // the event with their own permissions below; no automatic
+        // watching for a mention.
+        for u in mentioned.get(&ev.id).into_iter().flatten() {
+            c.entry(*u).or_default().insert("mentioned");
+        }
         for w in &watchers {
             c.entry(*w).or_default().insert("watching");
         }
@@ -1005,7 +1052,10 @@ pub async fn dispatch_all(pool: &PgPool) -> Result<Round> {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    anyhow::bail!("notification dispatch did not catch up with the outbox within 20 s")
+    anyhow::bail!(
+        "{}",
+        crate::metrics::horizon_timeout_message(pool, "notification dispatch").await
+    )
 }
 
 /// Retention (B-25): read rows 30 days after reading, unread rows 90 days
@@ -1059,7 +1109,8 @@ pub struct NotificationItem {
     /// `issue` or `ai_budget` (design 05 §3.13.4, site administrators only).
     pub kind: String,
     pub read: bool,
-    /// watching, assigned, author, agent_on_behalf, triage_decided; `ai_budget`.
+    /// watching, assigned, author, agent_on_behalf, triage_decided,
+    /// mentioned (design 06 R-MN5); `ai_budget`.
     pub reasons: Vec<String>,
     /// When the first and the latest event of this row arrived.
     pub first_at: DateTime<Utc>,
@@ -1236,18 +1287,45 @@ async fn render(
     .bind(&row.event_ids)
     .fetch_all(&mut *conn)
     .await?;
+    // Design 06 R-MN5 (05 §3.11.3): a mention counts only while the
+    // content still mentions the reader (a redaction deletes the mention,
+    // a retracted note no longer shows its text); an event that was sent
+    // only for such a mention is left out like an unreadable one.
+    let reason_of = |id: Uuid| -> Option<&String> {
+        row.event_ids
+            .iter()
+            .position(|e| *e == id)
+            .and_then(|i| row.event_reasons.get(i))
+    };
+    let with_mention: Vec<Uuid> = row
+        .event_ids
+        .iter()
+        .copied()
+        .filter(|e| reason_of(*e).is_some_and(|r| r.split(',').any(|x| x == "mentioned")))
+        .collect();
+    let live = live_mentions(&mut *conn, &with_mention).await?;
+    let me = rc.ctx.principal_id();
+    let mut kept: Vec<String> = Vec::new();
     let mut shown: Vec<NotificationEvent> = Vec::new();
     let mut visible = 0u32;
-    let mut reasons: Vec<&String> = Vec::new();
     for re in events {
+        let mut reason: Option<String> = reason_of(re.ev.id).cloned();
+        if let Some(r) = &reason
+            && r.split(',').any(|x| x == "mentioned")
+            && !me.is_some_and(|me| live.get(&re.ev.id).is_some_and(|s| s.contains(&me)))
+        {
+            let rest: Vec<&str> = r.split(',').filter(|x| *x != "mentioned").collect();
+            if rest.is_empty() {
+                continue;
+            }
+            reason = Some(rest.join(","));
+        }
         let Some(v) = rc.view(&mut *conn, &issue, re.ev.row()).await? else {
             continue;
         };
         visible += 1;
-        if let Some(i) = row.event_ids.iter().position(|e| *e == re.ev.id)
-            && let Some(r) = row.event_reasons.get(i)
-        {
-            reasons.push(r);
+        if let Some(r) = reason {
+            kept.push(r);
         }
         if !full {
             return Ok(Some(placeholder(row)));
@@ -1258,17 +1336,23 @@ async fn render(
         let mut summary = v.detail;
         if let (Some(s), Some(note), "note_added") = (&mut summary, re.ev.note_id, v.kind.as_str())
         {
-            let n: Option<(String, bool, bool, bool)> = sqlx::query_as(
-                "SELECT body, is_private, redacted_at IS NOT NULL, retracted_at IS NOT NULL
+            let n: Option<(String, String, bool, bool, bool)> = sqlx::query_as(
+                "SELECT body, body_format, is_private, redacted_at IS NOT NULL, retracted_at IS NOT NULL
                  FROM issue_notes WHERE id = $1 AND issue_id = $2",
             )
             .bind(note)
             .bind(issue.id)
             .fetch_optional(&mut *conn)
             .await?;
-            if let Some((body, private, redacted, retracted)) = n {
+            if let Some((body, format, private, redacted, retracted)) = n {
                 if !redacted && !retracted {
-                    s["note_excerpt"] = json!(body.chars().take(EXCERPT_CHARS).collect::<String>());
+                    // Design 06 R-M11, R-RF7: the text without Markdown
+                    // syntax, references left as written.
+                    let text = crate::markdown::plain_text(
+                        &body,
+                        crate::commands::TextFormat::from_db(&format),
+                    );
+                    s["note_excerpt"] = json!(text.chars().take(EXCERPT_CHARS).collect::<String>());
                 }
                 s["private"] = json!(private);
                 s["redacted"] = json!(redacted);
@@ -1311,7 +1395,7 @@ async fn render(
         kind: "issue".into(),
         read: row.read_at.is_some(),
         // Only the reasons of events the reader can still read.
-        reasons: union_reasons(reasons),
+        reasons: union_reasons(&kept),
         first_at: row.first_at,
         last_at: row.last_at,
         issue: Some(NotificationIssue {
@@ -2012,6 +2096,9 @@ pub struct NotificationPreferences {
     pub on_my_agents: bool,
     /// and my own changes (off by default).
     pub on_self: bool,
+    /// Someone @mentioned me in a description or note I can read (design 06
+    /// R-MN5; on by default). Mentions do not make me watch the issue.
+    pub on_mentioned: bool,
     /// Watch automatically what I create, what is assigned to me, where I
     /// write a note.
     pub auto_watch_author: bool,
@@ -2038,6 +2125,10 @@ pub struct PreferencesPut {
     pub on_my_agents: Option<bool>,
     #[serde(default)]
     pub on_self: Option<bool>,
+    /// Left out of the request fingerprint when absent, so a request sent
+    /// before M2.1 replays the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_mentioned: Option<bool>,
     #[serde(default)]
     pub auto_watch_author: Option<bool>,
     #[serde(default)]
@@ -2059,6 +2150,7 @@ struct PrefRow {
     on_triage_decided: bool,
     on_my_agents: bool,
     on_self: bool,
+    on_mentioned: bool,
     auto_watch_author: bool,
     auto_watch_assignee: bool,
     auto_watch_note: bool,
@@ -2077,7 +2169,7 @@ async fn ensure_prefs(conn: &mut PgConnection, user: Uuid) -> Result<()> {
 async fn load_prefs(conn: &mut PgConnection, user: Uuid, lock: bool) -> Result<PrefRow> {
     let sql = format!(
         "SELECT lock_version, on_watching, on_assigned, on_author, on_triage_decided, on_my_agents,
-                on_self, auto_watch_author, auto_watch_assignee, auto_watch_note
+                on_self, on_mentioned, auto_watch_author, auto_watch_assignee, auto_watch_note
          FROM notification_preferences WHERE user_id = $1{}",
         if lock { " FOR UPDATE" } else { "" }
     );
@@ -2118,6 +2210,7 @@ async fn render_prefs(
         on_triage_decided: r.on_triage_decided,
         on_my_agents: r.on_my_agents,
         on_self: r.on_self,
+        on_mentioned: r.on_mentioned,
         auto_watch_author: r.auto_watch_author,
         auto_watch_assignee: r.auto_watch_assignee,
         auto_watch_note: r.auto_watch_note,
@@ -2187,6 +2280,7 @@ pub async fn put_preferences(
             on_triage_decided: pick(input.on_triage_decided, cur.on_triage_decided),
             on_my_agents: pick(input.on_my_agents, cur.on_my_agents),
             on_self: pick(input.on_self, cur.on_self),
+            on_mentioned: pick(input.on_mentioned, cur.on_mentioned),
             auto_watch_author: pick(input.auto_watch_author, cur.auto_watch_author),
             auto_watch_assignee: pick(input.auto_watch_assignee, cur.auto_watch_assignee),
             auto_watch_note: pick(input.auto_watch_note, cur.auto_watch_note),
@@ -2199,6 +2293,7 @@ pub async fn put_preferences(
                 r.on_triage_decided,
                 r.on_my_agents,
                 r.on_self,
+                r.on_mentioned,
                 r.auto_watch_author,
                 r.auto_watch_assignee,
                 r.auto_watch_note,
@@ -2261,6 +2356,7 @@ pub async fn put_preferences(
                 "UPDATE notification_preferences SET on_watching = $2, on_assigned = $3,
                         on_author = $4, on_triage_decided = $5, on_my_agents = $6, on_self = $7,
                         auto_watch_author = $8, auto_watch_assignee = $9, auto_watch_note = $10,
+                        on_mentioned = $11,
                         lock_version = lock_version + 1, updated_at = now()
                  WHERE user_id = $1",
             )
@@ -2274,6 +2370,7 @@ pub async fn put_preferences(
             .bind(next.auto_watch_author)
             .bind(next.auto_watch_assignee)
             .bind(next.auto_watch_note)
+            .bind(next.on_mentioned)
             .execute(&mut *tx)
             .await?;
         }

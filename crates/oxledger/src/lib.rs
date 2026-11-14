@@ -23,6 +23,7 @@ pub mod forms;
 pub mod github;
 pub mod home;
 pub mod issue_view;
+pub mod markdown;
 pub mod mcp;
 pub mod mentions;
 pub mod metrics;
@@ -40,6 +41,7 @@ pub mod search;
 #[cfg(feature = "test-support")]
 pub mod seed;
 pub mod service;
+pub mod telemetry;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod time_entries;

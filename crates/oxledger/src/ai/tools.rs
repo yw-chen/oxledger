@@ -370,20 +370,48 @@ pub(crate) async fn sources_of(
     })
 }
 
+/// The write card's kind of one recorded issue event (§3.13.4, §6.19 ③;
+/// P3 gap G38): the history's event kind, except `triage_changed`, which
+/// the card calls `triage_decided` (the SPA's name for it).
+fn effect_kind(event: &str) -> &str {
+    match event {
+        "triage_changed" => "triage_decided",
+        k => k,
+    }
+}
+
+/// The SSE `effects` of one command effect: one `{key, kind}` per distinct
+/// event kind, in the order written; `created` / `changed` when the result
+/// carries no event kinds (results stored before G38).
+fn effect_parts(e: &Json) -> Vec<Json> {
+    let mut kinds: Vec<&str> = Vec::new();
+    for k in e["events"].as_array().into_iter().flatten() {
+        if let Some(k) = k.as_str().map(effect_kind)
+            && !kinds.contains(&k)
+        {
+            kinds.push(k);
+        }
+    }
+    if kinds.is_empty() {
+        kinds.push(if e["created"] == true {
+            "created"
+        } else {
+            "changed"
+        });
+    }
+    kinds
+        .into_iter()
+        .map(|k| json!({"key": e["key"], "kind": k}))
+        .collect()
+}
+
 /// The SSE `write` data of a `command_submit` result (§3.13.4).
 fn write_event(result: &Json) -> Option<Json> {
     match result["outcome"].as_str()? {
         "applied" => {
             let effects: Vec<Json> = result["effects"]
                 .as_array()
-                .map(|a| {
-                    a.iter()
-                        .map(|e| {
-                            json!({"key": e["key"],
-                                   "kind": if e["created"] == true { "created" } else { "changed" }})
-                        })
-                        .collect()
-                })
+                .map(|a| a.iter().flat_map(effect_parts).collect())
                 .unwrap_or_default();
             let exec = result["execution_id"].clone();
             Some(
@@ -505,6 +533,39 @@ mod tests {
         assert!(!is_issue_key("auth-12"));
         assert!(!is_issue_key("AUTH-"));
         assert!(!is_issue_key("2026-11"));
+    }
+
+    /// P3 gap G38: the write card's kinds come from the recorded events.
+    #[test]
+    fn write_event_names_the_recorded_events() {
+        let r = json!({"outcome": "applied", "execution_id": "e1", "effects": [
+            {"key": "AUTH-1", "created": false, "changed": true,
+             "events": ["fields_changed", "status_changed", "note_added", "note_added"]},
+            {"key": "AUTH-2", "created": true, "changed": true, "events": ["created"]},
+            {"key": "AUTH-3", "created": false, "changed": true, "events": ["triage_changed"]},
+            {"key": "AUTH-4", "created": false, "changed": true, "events": ["duplicate_added"]},
+        ]});
+        let w = write_event(&r).unwrap();
+        assert_eq!(
+            w["effects"],
+            json!([
+                {"key": "AUTH-1", "kind": "fields_changed"},
+                {"key": "AUTH-1", "kind": "status_changed"},
+                {"key": "AUTH-1", "kind": "note_added"},
+                {"key": "AUTH-2", "kind": "created"},
+                {"key": "AUTH-3", "kind": "triage_decided"},
+                {"key": "AUTH-4", "kind": "duplicate_added"},
+            ])
+        );
+        // A result without event kinds (stored before G38) keeps the old pair.
+        let old = json!({"outcome": "applied", "execution_id": "e1", "effects": [
+            {"key": "AUTH-1", "created": false, "changed": true},
+            {"key": "AUTH-2", "created": true, "changed": true},
+        ]});
+        assert_eq!(
+            write_event(&old).unwrap()["effects"],
+            json!([{"key": "AUTH-1", "kind": "changed"}, {"key": "AUTH-2", "kind": "created"}])
+        );
     }
 
     #[test]

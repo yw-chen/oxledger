@@ -344,6 +344,43 @@ pub struct ListQuery {
     pub to: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    /// A tracker id, or `none` (entries without an issue): the issue's
+    /// current tracker, as `summary` groups it (P3 gap G44).
+    pub tracker: Option<String>,
+    /// A version id, or `none` (no issue, or an issue without a milestone):
+    /// the issue's current fixed_version, as `summary` groups it (G44).
+    pub fixed_version: Option<String>,
+}
+
+/// A `tracker` / `fixed_version` filter (G44).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum IdOrNone {
+    Id(Uuid),
+    None,
+}
+
+fn id_or_none(path: &str, v: Option<&str>) -> Result<Option<IdOrNone>> {
+    match v.map(str::trim) {
+        None => Ok(None),
+        Some("none") => Ok(Some(IdOrNone::None)),
+        Some(s) => s
+            .parse::<Uuid>()
+            .map(|id| Some(IdOrNone::Id(id)))
+            .map_err(|_| invalid_arg(path, &format!("{path} is an id or none"))),
+    }
+}
+
+/// `column` (on the LEFT JOINed issue `i`) is `f`'s id, or NULL for `none`.
+fn push_id_or_none(qb: &mut QueryBuilder<Postgres>, column: &str, f: Option<IdOrNone>) {
+    match f {
+        None => {}
+        Some(IdOrNone::None) => {
+            qb.push(format!(" AND {column} IS NULL"));
+        }
+        Some(IdOrNone::Id(id)) => {
+            qb.push(format!(" AND {column} = ")).push_bind(id);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -462,10 +499,13 @@ async fn list_in(
         q.to.as_deref(),
     )
     .await?;
+    let tracker = id_or_none("tracker", q.tracker.as_deref())?;
+    let fixed_version = id_or_none("fixed_version", q.fixed_version.as_deref())?;
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let qhash = cursor::query_hash(&json!({
         "kind": "time_entries", "project": f.project, "issue": f.issue, "user": f.user,
         "activity": q.activity, "from": f.from, "to": f.to,
+        "tracker": tracker, "fixed_version": fixed_version,
     }));
     let after = match &q.cursor {
         None => None,
@@ -493,6 +533,10 @@ async fn list_in(
     if let Some(a) = q.activity {
         qb.push(" AND te.activity_id = ").push_bind(a);
     }
+    // G44: the summary's tracker / fixed_version groups (`i` is NULL for an
+    // entry without an issue, so `none` includes those, as the group does).
+    push_id_or_none(&mut qb, "i.tracker_id", tracker);
+    push_id_or_none(&mut qb, "i.fixed_version_id", fixed_version);
     if let Some((d, t, i)) = after {
         qb.push(" AND (te.spent_on, te.created_at, te.id) < (")
             .push_bind(d)

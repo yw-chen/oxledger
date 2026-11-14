@@ -2574,7 +2574,7 @@ async fn m1_2_concurrent_rename_is_name_taken() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     t.commit().await.unwrap();
-    let e = rename.await.unwrap().unwrap_err();
+    let e = common::join("the rename", rename).await.unwrap_err();
     assert_eq!(err(e).0, ErrorCode::ViewNameTaken);
     assert_eq!(views::get(&w.app, a, &v.id).await.unwrap().name, "v");
 }

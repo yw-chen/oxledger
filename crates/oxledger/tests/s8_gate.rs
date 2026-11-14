@@ -288,20 +288,25 @@ async fn invisible_version(w: &World) -> Uuid {
 
 /// Waits until `n` transactions of this database wait on a lock.
 async fn wait_blocked(pool: &PgPool, n: i64) {
-    for _ in 0..300 {
-        let c: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity
-             WHERE datname = current_database() AND wait_event_type = 'Lock'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        if c >= n {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("expected {n} transactions waiting on a lock");
+    common::poll_until(
+        &format!("{n} transactions to wait on a lock"),
+        common::WAIT_TIMEOUT,
+        async || {
+            let c: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if c >= n {
+                common::Break(())
+            } else {
+                common::Continue(format!("{c} waiting"))
+            }
+        },
+    )
+    .await
 }
 
 /// Holds `search_settings` FOR UPDATE: every write blocks on step 8b, after
@@ -634,7 +639,7 @@ async fn t_d4_counter_lock_and_deadline() {
     wait_blocked(&pool, 2).await;
     gate.commit().await.unwrap();
     for t in tasks {
-        applied(&t.await.unwrap().unwrap());
+        applied(&common::join("a queued write", t).await.unwrap());
     }
     let nums: Vec<i32> =
         sqlx::query_scalar("SELECT number FROM issue_keys WHERE project_id = $1 ORDER BY number")
@@ -675,7 +680,9 @@ async fn t_d4_counter_lock_and_deadline() {
     wait_blocked(&pool, 1).await;
     tokio::time::sleep(Duration::from_millis(2000)).await;
     gate.commit().await.unwrap();
-    let e = pending.await.unwrap().unwrap_err();
+    let e = common::join("the pending write", pending)
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), ErrorCode::DelegationUnavailable, "{e:#}");
     assert_eq!(counter(pool.clone(), w.web).await, c0, "no key taken");
     assert_eq!(count(&pool, "SELECT count(*) FROM issues").await, issues0);
@@ -767,7 +774,18 @@ async fn t_s2_outbox_consumed_twice() {
          INSERT INTO outbox (topic, entity_id) SELECT 'issue', id FROM issues;",
     )
     .await;
-    let (a, b) = tokio::join!(w.app.index.sync(&pool), w.app.index.sync(&pool));
+    // Both consumers must see the new rows: one `sync` skips rows at or
+    // above H, and an older transaction elsewhere on the cluster holds H
+    // back (G21). Wait until H passes them, then race the two.
+    let newest: String = sqlx::query_scalar("SELECT max(xid)::text FROM outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    common::wait_horizon_past(&pool, newest.parse().unwrap()).await;
+    let (a, b) = common::wait_for("two consumers at once", common::WAIT_TIMEOUT, async {
+        tokio::join!(w.app.index.sync(&pool), w.app.index.sync(&pool))
+    })
+    .await;
     assert!(a.unwrap() + b.unwrap() > 0);
     w.app.index.sync_all(&pool).await.unwrap();
     assert_eq!(hits("outboxprobe"), want, "one document per issue");
@@ -1597,7 +1615,7 @@ async fn t_v4_t_v27_close_vs_assign() {
         let close = close_task(&w, &closer, v).await;
         wait_blocked(&pool, 2).await;
         gate.commit().await.unwrap();
-        assign.await.unwrap().unwrap();
+        common::join("the assignment", assign).await.unwrap();
         close
             .await
             .unwrap()
@@ -1618,7 +1636,7 @@ async fn t_v4_t_v27_close_vs_assign() {
             .await
             .unwrap()
             .unwrap_or_else(|e| panic!("{tag} close first: {e:#}"));
-        let e = assign.await.unwrap().unwrap_err();
+        let e = common::join("the assignment", assign).await.unwrap_err();
         assert_eq!(code(&e), ErrorCode::VersionNotOpen, "{tag}: {e:#}");
         assert_eq!(
             (fixed_version(&pool, i).await, lv(&pool, i).await),
