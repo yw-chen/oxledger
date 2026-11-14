@@ -198,6 +198,8 @@ export function describeError(e: unknown): Shown {
 			return { title: '配額已用完', changed: NOTHING };
 		case 'rate_limited':
 			return { title: '操作太頻繁，請稍後再試', changed: NOTHING, next: '稍後重試', action: 'retry' };
+		case 'payload_too_large':
+			return { title: '內容太大，超過上限', changed: NOTHING };
 		case 'version_not_open':
 			return { title: '這個里程碑已鎖定或關閉，不能指定', changed: NOTHING };
 		case 'version_in_use':

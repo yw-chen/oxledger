@@ -15,7 +15,8 @@
 	import { labelOf, show, type Lookups } from '$lib/render';
 	import { projectLookups } from '$lib/trackers';
 
-	type Row = ActivityItem & { agent: string; agentId: string };
+	// `ActivityItem.agent` (only on GET /ai-team/activity, G42) is replaced by the label.
+	type Row = Omit<ActivityItem, 'agent'> & { agent: string; agentId: string };
 
 	const issueKey = $derived(page.url.pathname.startsWith('/issue/') ? decodeURIComponent(page.params.key ?? '').toUpperCase() : null);
 	let rows = $state<Row[]>([]);
