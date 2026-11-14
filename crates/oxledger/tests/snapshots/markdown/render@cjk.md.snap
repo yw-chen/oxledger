@@ -1,0 +1,24 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/cjk.md
+---
+=== markdown agent=false
+<p>中文段落，含全形標點：「引號」、（括號）。提到<span data-ox-ref="user" data-ox-v="bob">@bob</span>與AUTH-1。</p>
+<p>日本語のテキストと한국어 텍스트。</p>
+<p><strong>粗體</strong>緊接文字、<em>斜體</em>緊接文字。</p>
+issues={} logins={"bob"} truncated=false
+
+=== markdown agent=true
+<p>中文段落，含全形標點：「引號」、（括號）。提到<span data-ox-ref="user" data-ox-v="bob">@bob</span>與AUTH-1。</p>
+<p>日本語のテキストと한국어 텍스트。</p>
+<p><strong>粗體</strong>緊接文字、<em>斜體</em>緊接文字。</p>
+issues={} logins={"bob"} truncated=false
+
+=== plain agent=false
+<p>中文段落，含全形標點：「引號」、（括號）。提到<span data-ox-ref="user" data-ox-v="bob">@bob</span>與AUTH-1。<br>
+<br>
+日本語のテキストと한국어 텍스트。<br>
+<br>
+**粗體**緊接文字、*斜體*緊接文字。<br>
+</p>
+issues={} logins={"bob"} truncated=false

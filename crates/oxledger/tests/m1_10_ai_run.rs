@@ -424,6 +424,48 @@ fn tool_names(body: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// For the request snapshots: the tool list without the full JSON schemas
+/// (they come from the MCP registry, covered by s2_api's OpenAPI golden and
+/// registry tests). `full`: name, description and the parameter names;
+/// otherwise names only (the list is the same every turn).
+fn compact_tools(body: &mut Value, full: bool) {
+    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for t in tools.iter_mut() {
+        // Anthropic: {name, description, input_schema};
+        // OpenAI: {type: "function", function: {name, description, parameters}}.
+        let f = if t.get("function").is_some() {
+            &t["function"]
+        } else {
+            &*t
+        };
+        let name = f["name"].clone();
+        let description = f["description"].clone();
+        let schema = if f.get("input_schema").is_some() {
+            &f["input_schema"]
+        } else {
+            &f["parameters"]
+        };
+        let mut params: Vec<String> = schema["properties"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        let required: Vec<Value> = schema["required"].as_array().cloned().unwrap_or_default();
+        params.iter_mut().for_each(|p| {
+            if required.contains(&Value::String(p.clone())) {
+                p.push('*');
+            }
+        });
+        let kind = t.get("type").cloned();
+        *t = if full {
+            json!({"type": kind, "name": name, "description": description, "params": params})
+        } else {
+            name
+        };
+    }
+}
+
 async fn tool_results(w: &World, run: Uuid) -> Vec<Value> {
     sqlx::query_scalar(
         "SELECT p FROM ai_messages m, jsonb_array_elements(m.parts) p
@@ -518,6 +560,41 @@ async fn t_m1_117_both_protocols_same_events() {
             reqs[1].raw.contains("login page broken"),
             "the tool result goes back"
         );
+        // Golden (09b G7 (2)): what goes to the provider — system prompt,
+        // tool list, history, budget — so a prompt change shows in review.
+        // The key is masked (and checked absent); the explicit header and
+        // key assertions above stay.
+        let proto = if p == P::Anth { "anthropic" } else { "openai" };
+        let mut n = common::snap::Normalizer::new();
+        n.secret(KEY)
+            .name(w.alice, "user:alice")
+            .name(w.bob, "user:bob")
+            .name(w.web, "project:web")
+            .name(i, "issue");
+        for (turn, rq) in reqs.iter().enumerate() {
+            let headers: BTreeMap<&str, String> = rq
+                .headers
+                .iter()
+                .filter(|(k, _)| {
+                    [
+                        "content-type",
+                        "accept",
+                        "anthropic-version",
+                        "x-api-key",
+                        "authorization",
+                    ]
+                    .contains(&k.as_str())
+                })
+                .map(|(k, v)| (k.as_str(), n.text(v)))
+                .collect();
+            let mut body = rq.body.clone();
+            compact_tools(&mut body, turn == 0);
+            let doc = json!({"path": rq.path, "headers": headers, "body": body});
+            let out = n.pretty(&doc);
+            common::snap::settings("ai").bind(|| {
+                insta::assert_snapshot!(format!("provider_request_{proto}_turn{}", turn + 1), out);
+            });
+        }
         let run = runner::get_run(&w.app, w.alice_ctx, r.run_id)
             .await
             .unwrap();

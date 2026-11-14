@@ -1,0 +1,111 @@
+- main:
+  - text: AUTH
+  - heading "登入系統" [level=1]
+  - link "AI 團隊":
+    - /url: /project/AUTH/ai-team
+  - link "工時":
+    - /url: /project/AUTH/time
+  - link "專案設定":
+    - /url: /project/AUTH/settings
+  - navigation "專案分頁":
+    - link "時程":
+      - /url: /project/AUTH/timeline
+    - link "里程碑":
+      - /url: /project/AUTH/milestones
+    - link "議題":
+      - /url: /project/AUTH/issues
+    - link "開發（GitHub）":
+      - /url: /project/AUTH/dev
+    - link "規劃（心智圖）":
+      - /url: /project/AUTH/plan
+    - link "看板":
+      - /url: /project/AUTH/board
+  - heading "議題" [level=2]
+  - text: 內建
+  - button "編輯條件"
+  - button "更多": ⋯
+  - button "專案：登入系統"
+  - button "狀態分類：待處理、進行中"
+  - searchbox "在這個視圖裡搜尋"
+  - table:
+    - rowgroup:
+      - row "單號 標題 類型 依狀態排序 指派 依優先權排序 依到期日排序 依更新時間排序":
+        - columnheader "單號"
+        - columnheader "標題"
+        - columnheader "類型"
+        - columnheader "依狀態排序":
+          - button "依狀態排序"
+        - columnheader "指派"
+        - columnheader "依優先權排序":
+          - button "依優先權排序"
+        - columnheader "依到期日排序":
+          - button "依到期日排序"
+        - columnheader "依更新時間排序":
+          - button "依更新時間排序": 更新時間 ↓
+    - rowgroup:
+      - row /AUTH-5 管理員帳號被暴力破解的跡象 Bug New Alice Lin Normal — \d+\/\d+ \d+:\d+/:
+        - cell "AUTH-5":
+          - link "AUTH-5":
+            - /url: /issue/AUTH-5
+        - cell "管理員帳號被暴力破解的跡象":
+          - link "管理員帳號被暴力破解的跡象":
+            - /url: /issue/AUTH-5
+        - cell "Bug"
+        - cell "New"
+        - cell "Alice Lin"
+        - cell "Normal"
+        - cell "—"
+        - cell /\d+\/\d+ \d+:\d+/
+      - row /AUTH-4 密碼重設信寄送失敗 Bug In Progress Alice Lin Normal — \d+\/\d+ \d+:\d+/:
+        - cell "AUTH-4":
+          - link "AUTH-4":
+            - /url: /issue/AUTH-4
+        - cell "密碼重設信寄送失敗":
+          - link "密碼重設信寄送失敗":
+            - /url: /issue/AUTH-4
+        - cell "Bug"
+        - cell "In Progress"
+        - cell "Alice Lin"
+        - cell "Normal"
+        - cell "—"
+        - cell /\d+\/\d+ \d+:\d+/
+      - row /AUTH-3 登入後偶爾被登出 Bug New Backend（群組） Normal — \d+\/\d+ \d+:\d+/:
+        - cell "AUTH-3":
+          - link "AUTH-3":
+            - /url: /issue/AUTH-3
+        - cell "登入後偶爾被登出":
+          - link "登入後偶爾被登出":
+            - /url: /issue/AUTH-3
+        - cell "Bug"
+        - cell "New"
+        - cell "Backend（群組）"
+        - cell "Normal"
+        - cell "—"
+        - cell /\d+\/\d+ \d+:\d+/
+      - row /AUTH-2 設定 OIDC client 與 redirect URI Task New Bob Chen Normal — \d+\/\d+ \d+:\d+/:
+        - cell "AUTH-2":
+          - link "AUTH-2":
+            - /url: /issue/AUTH-2
+        - cell "設定 OIDC client 與 redirect URI":
+          - link "設定 OIDC client 與 redirect URI":
+            - /url: /issue/AUTH-2
+        - cell "Task"
+        - cell "New"
+        - cell "Bob Chen"
+        - cell "Normal"
+        - cell "—"
+        - cell /\d+\/\d+ \d+:\d+/
+      - row /AUTH-1 支援 Google Workspace SSO 登入 Feature In Progress Bob Chen Normal — \d+\/\d+ \d+:\d+/:
+        - cell "AUTH-1":
+          - link "AUTH-1":
+            - /url: /issue/AUTH-1
+        - cell "支援 Google Workspace SSO 登入":
+          - link "支援 Google Workspace SSO 登入":
+            - /url: /issue/AUTH-1
+        - cell "Feature"
+        - cell "In Progress"
+        - cell "Bob Chen"
+        - cell "Normal"
+        - cell "—"
+        - cell /\d+\/\d+ \d+:\d+/
+  - text: 只包含你看得到的議題。

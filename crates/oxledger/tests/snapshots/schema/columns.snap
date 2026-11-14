@@ -1,0 +1,966 @@
+---
+source: crates/oxledger/tests/golden_schema.rs
+---
+_sqlx_migrations.version bigint NOT NULL
+_sqlx_migrations.description text NOT NULL
+_sqlx_migrations.installed_on timestamp with time zone NOT NULL DEFAULT now()
+_sqlx_migrations.success boolean NOT NULL
+_sqlx_migrations.checksum bytea NOT NULL
+_sqlx_migrations.execution_time bigint NOT NULL
+agent_clients.id uuid NOT NULL DEFAULT uuidv7()
+agent_clients.name text NOT NULL
+agent_clients.enabled boolean NOT NULL DEFAULT false
+agent_clients.egress_policy_ref text NOT NULL
+agent_clients.created_at timestamp with time zone NOT NULL DEFAULT now()
+agent_clients.builtin boolean NOT NULL DEFAULT false
+agent_context_source_projects.context_id uuid NOT NULL
+agent_context_source_projects.project_id uuid NOT NULL
+agent_context_source_projects.security_epoch bigint NOT NULL
+agent_context_source_projects.first_delegation_id uuid NOT NULL
+agent_context_source_projects.granted_at timestamp with time zone NOT NULL DEFAULT now()
+agent_context_write_controls.context_id uuid NOT NULL
+agent_context_write_controls.suspended_at timestamp with time zone
+agent_context_write_controls.suspension_reason text
+agent_context_write_controls.inflight_lease_until timestamp with time zone
+agent_credentials.id uuid NOT NULL DEFAULT uuidv7()
+agent_credentials.context_id uuid NOT NULL
+agent_credentials.token_sha256 bytea NOT NULL
+agent_credentials.label text NOT NULL DEFAULT ''::text
+agent_credentials.created_at timestamp with time zone NOT NULL DEFAULT now()
+agent_credentials.expires_at timestamp with time zone NOT NULL
+agent_credentials.revoked_at timestamp with time zone
+agent_credentials.agent_principal_id uuid NOT NULL
+agent_credentials.runtime_id uuid NOT NULL
+agent_credentials.runtime_kind text NOT NULL DEFAULT 'external'::text
+agent_credentials.last_used_at timestamp with time zone
+agent_principals.agent_principal_id uuid NOT NULL
+agent_principals.delegator_user_id uuid NOT NULL
+agent_principals.agent_client_id uuid NOT NULL
+agent_principals.handle text NOT NULL
+agent_principals.status text NOT NULL DEFAULT 'active'::text
+agent_principals.runtime_id uuid NOT NULL
+agent_principals.role_key text NOT NULL DEFAULT 'personal'::text
+agent_principals.role_template text NOT NULL
+agent_principals.template_version integer NOT NULL
+agent_principals.duties text NOT NULL DEFAULT ''::text
+agent_principals.created_at timestamp with time zone NOT NULL DEFAULT now()
+agent_principals.paused_at timestamp with time zone
+agent_principals.paused_by uuid
+agent_principals.pause_scope text
+agent_principals.paused_reason text
+agent_principals.retired_at timestamp with time zone
+agent_runtimes.id uuid NOT NULL DEFAULT uuidv7()
+agent_runtimes.sponsor_user_id uuid NOT NULL
+agent_runtimes.kind text NOT NULL
+agent_runtimes.label text NOT NULL
+agent_runtimes.isolation_ack boolean NOT NULL
+agent_runtimes.created_by_session uuid
+agent_runtimes.backfilled boolean NOT NULL DEFAULT false
+agent_runtimes.lock_version integer NOT NULL DEFAULT 1
+agent_runtimes.created_at timestamp with time zone NOT NULL DEFAULT now()
+agent_runtimes.retired_at timestamp with time zone
+agent_runtimes.admin_paused_at timestamp with time zone
+agent_runtimes.admin_paused_by uuid
+agent_runtimes.admin_paused_reason text
+agent_work_contexts.id uuid NOT NULL DEFAULT uuidv7()
+agent_work_contexts.created_for_principal_id uuid
+agent_work_contexts.state text NOT NULL DEFAULT 'active'::text
+agent_work_contexts.fresh_context_ack boolean NOT NULL
+agent_work_contexts.created_by_session uuid NOT NULL
+agent_work_contexts.created_at timestamp with time zone NOT NULL DEFAULT now()
+agent_work_contexts.closed_at timestamp with time zone
+agent_work_contexts.runtime_id uuid NOT NULL
+agent_write_log.id uuid NOT NULL DEFAULT uuidv7()
+agent_write_log.agent_principal_id uuid NOT NULL
+agent_write_log.context_id uuid NOT NULL
+agent_write_log.delegation_id uuid
+agent_write_log.kind text NOT NULL
+agent_write_log.issue_id uuid
+agent_write_log.version_id uuid
+agent_write_log.at timestamp with time zone NOT NULL DEFAULT clock_timestamp()
+ai_budget_months.month date NOT NULL
+ai_budget_months.reserved_usd numeric(12,6) NOT NULL DEFAULT 0
+ai_budget_months.spent_usd numeric(12,6) NOT NULL DEFAULT 0
+ai_budget_months.notified_80 boolean NOT NULL DEFAULT false
+ai_budget_months.notified_100 boolean NOT NULL DEFAULT false
+ai_conversations.id uuid NOT NULL DEFAULT uuidv7()
+ai_conversations.user_id uuid NOT NULL
+ai_conversations.agent_principal_id uuid NOT NULL
+ai_conversations.runtime_id uuid NOT NULL
+ai_conversations.context_id uuid NOT NULL
+ai_conversations.title text NOT NULL DEFAULT ''::text
+ai_conversations.state text NOT NULL DEFAULT 'open'::text
+ai_conversations.last_provider_id uuid
+ai_conversations.last_provider_config_at timestamp with time zone
+ai_conversations.created_at timestamp with time zone NOT NULL DEFAULT now()
+ai_conversations.last_at timestamp with time zone NOT NULL DEFAULT now()
+ai_conversations.purge_after timestamp with time zone NOT NULL
+ai_conversations.purged_at timestamp with time zone
+ai_conversations.deleted_at timestamp with time zone
+ai_conversations.runtime_kind text NOT NULL DEFAULT 'builtin'::text
+ai_messages.id uuid NOT NULL DEFAULT uuidv7()
+ai_messages.conversation_id uuid NOT NULL
+ai_messages.run_id uuid
+ai_messages.seq integer NOT NULL
+ai_messages.role text NOT NULL
+ai_messages.parts jsonb
+ai_messages.source_projects uuid[] NOT NULL DEFAULT '{}'::uuid[]
+ai_messages.time_tainted boolean NOT NULL DEFAULT false
+ai_messages.page_context jsonb
+ai_messages.created_at timestamp with time zone NOT NULL DEFAULT now()
+ai_messages.purged_at timestamp with time zone
+ai_provider_events.id uuid NOT NULL DEFAULT uuidv7()
+ai_provider_events.provider_id uuid
+ai_provider_events.at timestamp with time zone NOT NULL DEFAULT now()
+ai_provider_events.actor_id uuid NOT NULL
+ai_provider_events.kind text NOT NULL
+ai_provider_events.payload jsonb NOT NULL
+ai_providers.id uuid NOT NULL DEFAULT uuidv7()
+ai_providers.name text NOT NULL
+ai_providers.kind text NOT NULL
+ai_providers.endpoint_name text NOT NULL
+ai_providers.model text NOT NULL
+ai_providers.max_output_tokens integer NOT NULL DEFAULT 4096
+ai_providers.input_usd_per_mtok numeric(10,4) NOT NULL
+ai_providers.output_usd_per_mtok numeric(10,4) NOT NULL
+ai_providers.supports_tools boolean NOT NULL DEFAULT false
+ai_providers.last_test_at timestamp with time zone
+ai_providers.last_test_ok_at timestamp with time zone
+ai_providers.last_test_result jsonb
+ai_providers.d17_attested_by uuid NOT NULL
+ai_providers.d17_attested_at timestamp with time zone NOT NULL
+ai_providers.org_account_attested_by uuid
+ai_providers.org_account_attested_at timestamp with time zone
+ai_providers.lock_version integer NOT NULL DEFAULT 0
+ai_providers.created_at timestamp with time zone NOT NULL DEFAULT now()
+ai_providers.updated_at timestamp with time zone NOT NULL DEFAULT now()
+ai_providers.config_changed_at timestamp with time zone NOT NULL DEFAULT now()
+ai_providers.retired_at timestamp with time zone
+ai_runs.id uuid NOT NULL DEFAULT uuidv7()
+ai_runs.conversation_id uuid
+ai_runs.user_id uuid NOT NULL
+ai_runs.provider_id uuid NOT NULL
+ai_runs.model text NOT NULL
+ai_runs.prompt_version integer NOT NULL
+ai_runs.state text NOT NULL
+ai_runs.stop_reason text
+ai_runs.lease_until timestamp with time zone
+ai_runs.cancel_requested_at timestamp with time zone
+ai_runs.time_tainted boolean NOT NULL DEFAULT false
+ai_runs.tool_calls integer NOT NULL DEFAULT 0
+ai_runs.input_tokens integer NOT NULL DEFAULT 0
+ai_runs.output_tokens integer NOT NULL DEFAULT 0
+ai_runs.reserved_usd numeric(10,6) NOT NULL DEFAULT 0
+ai_runs.cost_usd numeric(10,6) NOT NULL DEFAULT 0
+ai_runs.usage_estimated boolean NOT NULL DEFAULT false
+ai_runs.execution_ids uuid[] NOT NULL DEFAULT '{}'::uuid[]
+ai_runs.changeset_ids uuid[] NOT NULL DEFAULT '{}'::uuid[]
+ai_runs.started_at timestamp with time zone NOT NULL DEFAULT now()
+ai_runs.finished_at timestamp with time zone
+ai_settings.id boolean NOT NULL DEFAULT true
+ai_settings.enabled boolean NOT NULL DEFAULT false
+ai_settings.active_provider_id uuid
+ai_settings.monthly_budget_usd numeric(10,2)
+ai_settings.user_daily_budget_usd numeric(8,2) NOT NULL DEFAULT 2.00
+ai_settings.user_runs_per_hour integer NOT NULL DEFAULT 30
+ai_settings.conversation_retention_days integer NOT NULL DEFAULT 30
+ai_settings.lock_version integer NOT NULL DEFAULT 0
+ai_settings.updated_by uuid
+ai_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
+ai_usage_daily.user_id uuid NOT NULL
+ai_usage_daily.day date NOT NULL
+ai_usage_daily.runs integer NOT NULL DEFAULT 0
+ai_usage_daily.input_tokens bigint NOT NULL DEFAULT 0
+ai_usage_daily.output_tokens bigint NOT NULL DEFAULT 0
+ai_usage_daily.reserved_usd numeric(10,6) NOT NULL DEFAULT 0
+ai_usage_daily.spent_usd numeric(10,6) NOT NULL DEFAULT 0
+aliases.entity_kind text NOT NULL
+aliases.entity_id uuid NOT NULL
+aliases.label text NOT NULL
+aliases.label_kind text NOT NULL DEFAULT 'alt'::text
+aliases.lang text NOT NULL DEFAULT ''::text
+aliases.status text NOT NULL DEFAULT 'active'::text
+aliases.created_by uuid
+aliases.created_at timestamp with time zone NOT NULL DEFAULT now()
+api_keys.token_sha256 text NOT NULL
+api_keys.principal_id uuid NOT NULL
+api_keys.label text NOT NULL DEFAULT ''::text
+api_keys.created_at timestamp with time zone NOT NULL DEFAULT now()
+api_keys.id uuid NOT NULL DEFAULT uuidv7()
+api_keys.revoked_at timestamp with time zone
+api_keys.expires_at timestamp with time zone
+auth_events.id uuid NOT NULL DEFAULT uuidv7()
+auth_events.kind text NOT NULL
+auth_events.actor_id uuid
+auth_events.subject_id uuid
+auth_events.details jsonb NOT NULL DEFAULT '{}'::jsonb
+auth_events.at timestamp with time zone NOT NULL DEFAULT now()
+browser_sessions.id uuid NOT NULL DEFAULT uuidv7()
+browser_sessions.user_id uuid NOT NULL
+browser_sessions.token_sha256 bytea NOT NULL
+browser_sessions.csrf_secret bytea NOT NULL
+browser_sessions.credential_version bigint NOT NULL
+browser_sessions.created_at timestamp with time zone NOT NULL DEFAULT now()
+browser_sessions.last_seen_at timestamp with time zone NOT NULL DEFAULT now()
+browser_sessions.reauthenticated_at timestamp with time zone NOT NULL DEFAULT now()
+browser_sessions.idle_expires_at timestamp with time zone NOT NULL
+browser_sessions.absolute_expires_at timestamp with time zone NOT NULL
+browser_sessions.revoked_at timestamp with time zone
+browser_sessions.revoked_reason text
+changeset_applications.changeset_id uuid NOT NULL
+changeset_applications.version integer NOT NULL
+changeset_applications.execution_id uuid NOT NULL
+changeset_applications.effect_count integer NOT NULL
+changeset_applications.applied_at timestamp with time zone NOT NULL DEFAULT now()
+changeset_decisions.id uuid NOT NULL DEFAULT uuidv7()
+changeset_decisions.changeset_id uuid NOT NULL
+changeset_decisions.version integer NOT NULL
+changeset_decisions.proposal_hash bytea NOT NULL
+changeset_decisions.decider_id uuid NOT NULL
+changeset_decisions.decision text NOT NULL
+changeset_decisions.session_id uuid NOT NULL
+changeset_decisions.review_mode text NOT NULL DEFAULT 'detail'::text
+changeset_decisions.created_at timestamp with time zone NOT NULL DEFAULT now()
+changeset_executions.id uuid NOT NULL
+changeset_executions.ref_kind text NOT NULL DEFAULT 'changeset'::text
+changeset_executions.changeset_id uuid NOT NULL
+changeset_executions.version integer NOT NULL
+changeset_executions.proposal_hash bytea NOT NULL
+changeset_executions.attempt_no integer NOT NULL
+changeset_executions.operation_request_id uuid NOT NULL
+changeset_executions.decision_id uuid NOT NULL
+changeset_executions.decision text NOT NULL DEFAULT 'approve'::text
+changeset_executions.executor_id uuid NOT NULL
+changeset_executions.executor_session_id uuid NOT NULL
+changeset_executions.status text NOT NULL
+changeset_executions.error_code text
+changeset_executions.item_results jsonb
+changeset_executions.consistent_after text
+changeset_executions.created_at timestamp with time zone NOT NULL DEFAULT now()
+changeset_executions.started_at timestamp with time zone
+changeset_executions.finished_at timestamp with time zone
+changeset_executions.agent_chain_writes integer
+changeset_executions.agent_chain_depth integer
+changeset_groups.id uuid NOT NULL DEFAULT uuidv7()
+changeset_groups.delegation_id uuid NOT NULL
+changeset_groups.project_id uuid NOT NULL
+changeset_groups.security_epoch bigint NOT NULL
+changeset_groups.label text
+changeset_groups.label_state text NOT NULL DEFAULT 'available'::text
+changeset_groups.created_at timestamp with time zone NOT NULL DEFAULT now()
+changeset_version_ops.changeset_id uuid NOT NULL
+changeset_version_ops.version integer NOT NULL
+changeset_version_ops.op_id uuid NOT NULL
+changeset_version_ops.position integer NOT NULL
+changeset_version_ops.kind text NOT NULL
+changeset_version_source_projects.changeset_id uuid NOT NULL
+changeset_version_source_projects.version integer NOT NULL
+changeset_version_source_projects.project_id uuid NOT NULL
+changeset_version_source_projects.security_epoch bigint NOT NULL
+changeset_versions.changeset_id uuid NOT NULL
+changeset_versions.version integer NOT NULL
+changeset_versions.content_id uuid NOT NULL
+changeset_versions.proposal_hash bytea NOT NULL
+changeset_versions.command_schema_version integer NOT NULL
+changeset_versions.exec_mode text NOT NULL
+changeset_versions.expires_at timestamp with time zone NOT NULL
+changeset_versions.authority_ceiling jsonb NOT NULL
+changeset_versions.security_epoch bigint NOT NULL
+changeset_versions.editor_id uuid NOT NULL
+changeset_versions.edit_method text NOT NULL
+changeset_versions.based_on_version integer
+changeset_versions.validation jsonb
+changeset_versions.audience_contract_ver integer NOT NULL DEFAULT 1
+changeset_versions.created_at timestamp with time zone NOT NULL DEFAULT now()
+changeset_versions.rules_version text
+changesets.id uuid NOT NULL DEFAULT uuidv7()
+changesets.origin text NOT NULL
+changesets.context_project_id uuid NOT NULL
+changesets.proposer_id uuid NOT NULL
+changesets.on_behalf_of_id uuid NOT NULL
+changesets.delegation_id uuid
+changesets.context_id uuid
+changesets.current_version integer NOT NULL
+changesets.state text NOT NULL
+changesets.created_at timestamp with time zone NOT NULL DEFAULT now()
+changesets.expires_at timestamp with time zone NOT NULL
+changesets.group_id uuid
+changesets.chain_review text
+command_execution_chains.execution_id uuid NOT NULL
+command_execution_chains.issue_id uuid NOT NULL
+command_execution_chains.writes integer NOT NULL
+command_execution_source_projects.execution_id uuid NOT NULL
+command_execution_source_projects.project_id uuid NOT NULL
+command_execution_source_projects.security_epoch bigint NOT NULL
+command_executions.id uuid NOT NULL
+command_executions.ref_kind text NOT NULL DEFAULT 'command'::text
+command_executions.operation_request_id uuid NOT NULL
+command_executions.actor_id uuid NOT NULL
+command_executions.on_behalf_of_id uuid
+command_executions.origin text NOT NULL
+command_executions.delegation_id uuid
+command_executions.context_id uuid
+command_executions.policy_version bigint
+command_executions.command_hash bytea NOT NULL
+command_executions.reverts_execution_id uuid
+command_executions.consistent_after text NOT NULL
+command_executions.created_at timestamp with time zone NOT NULL DEFAULT now()
+command_executions.agent_chain_writes integer
+command_executions.agent_chain_depth integer
+command_executions.import_id uuid
+concepts.id uuid NOT NULL DEFAULT uuidv7()
+concepts.pref_label text NOT NULL
+concepts.status text NOT NULL DEFAULT 'active'::text
+concepts.lock_version integer NOT NULL DEFAULT 0
+concepts.created_by uuid NOT NULL
+concepts.created_at timestamp with time zone NOT NULL DEFAULT now()
+custom_field_conversions.id uuid NOT NULL DEFAULT uuidv7()
+custom_field_conversions.from_field_id integer NOT NULL
+custom_field_conversions.to_field_id integer NOT NULL
+custom_field_conversions.mapping jsonb NOT NULL
+custom_field_conversions.state text NOT NULL
+custom_field_conversions.batches_done integer NOT NULL DEFAULT 0
+custom_field_conversions.cursor_issue_id uuid
+custom_field_conversions.report jsonb
+custom_field_conversions.created_by uuid NOT NULL
+custom_field_conversions.created_at timestamp with time zone NOT NULL DEFAULT now()
+custom_field_conversions.started_at timestamp with time zone
+custom_field_conversions.finished_at timestamp with time zone
+delegation_command_policies.delegation_id uuid NOT NULL
+delegation_command_policies.command_kind text NOT NULL
+delegation_command_policies.mode agent_policy_mode NOT NULL DEFAULT 'direct'::agent_policy_mode
+delegation_field_policies.delegation_id uuid NOT NULL
+delegation_field_policies.field_key text NOT NULL
+delegation_field_policies.mode agent_policy_mode NOT NULL DEFAULT 'direct'::agent_policy_mode
+delegations.id uuid NOT NULL DEFAULT uuidv7()
+delegations.agent_principal_id uuid NOT NULL
+delegations.delegator_user_id uuid NOT NULL
+delegations.context_id uuid NOT NULL
+delegations.project_id uuid NOT NULL
+delegations.security_epoch bigint NOT NULL
+delegations.proposal_ops text[] NOT NULL
+delegations.writable_fields text[] NOT NULL
+delegations.max_ops integer NOT NULL DEFAULT 10
+delegations.created_at timestamp with time zone NOT NULL DEFAULT now()
+delegations.expires_at timestamp with time zone NOT NULL
+delegations.revoked_at timestamp with time zone
+delegations.revoked_reason text
+delegations.policy_version bigint NOT NULL DEFAULT 1
+delegations.read_own_time boolean NOT NULL DEFAULT false
+delegations.read_own_time_ack_at timestamp with time zone
+delegations.runtime_id uuid NOT NULL
+delegations.paused_at timestamp with time zone
+delegations.paused_by uuid
+delegations.paused_reason text
+enabled_modules.project_id uuid NOT NULL
+enabled_modules.module text NOT NULL
+execution_field_changes.execution_id uuid NOT NULL
+execution_field_changes.issue_id uuid NOT NULL
+execution_field_changes.field_key text NOT NULL
+execution_field_changes.before_value jsonb
+execution_field_changes.after_value jsonb
+execution_field_changes.reverted_by uuid
+execution_refs.id uuid NOT NULL DEFAULT uuidv7()
+execution_refs.kind text NOT NULL
+execution_relation_changes.execution_id uuid NOT NULL
+execution_relation_changes.relation_id uuid NOT NULL
+execution_relation_changes.action text NOT NULL
+execution_relation_changes.reverted_by uuid
+execution_time_entry_changes.execution_id uuid NOT NULL
+execution_time_entry_changes.time_entry_id uuid NOT NULL
+execution_time_entry_changes.field_key text NOT NULL
+execution_time_entry_changes.before_value jsonb
+execution_time_entry_changes.after_value jsonb
+execution_time_entry_changes.reverted_by uuid
+execution_version_changes.execution_id uuid NOT NULL
+execution_version_changes.version_id uuid NOT NULL
+execution_version_changes.field_key text NOT NULL
+execution_version_changes.before_value jsonb
+execution_version_changes.after_value jsonb
+execution_version_changes.reverted_by uuid
+field_defs.id integer NOT NULL IDENTITY a
+field_defs.name text NOT NULL
+field_defs.ftype text NOT NULL
+field_defs.description text NOT NULL DEFAULT ''::text
+field_defs.is_required boolean NOT NULL DEFAULT false
+field_defs.is_for_all boolean NOT NULL DEFAULT false
+field_defs.visible boolean NOT NULL DEFAULT true
+field_defs.position integer NOT NULL DEFAULT 0
+field_defs.index_state text NOT NULL DEFAULT 'pending'::text
+field_defs.created_at timestamp with time zone NOT NULL DEFAULT now()
+field_defs.definition_version integer NOT NULL DEFAULT 1
+field_defs.unit text
+field_defs.deactivated_at timestamp with time zone
+field_defs.lock_version integer NOT NULL DEFAULT 0
+field_options.id uuid NOT NULL DEFAULT uuidv7()
+field_options.field_id integer NOT NULL
+field_options.label text NOT NULL
+field_options.position integer NOT NULL DEFAULT 0
+field_options.active boolean NOT NULL DEFAULT true
+field_projects.field_id integer NOT NULL
+field_projects.project_id uuid NOT NULL
+field_roles.field_id integer NOT NULL
+field_roles.role_id uuid NOT NULL
+field_trackers.field_id integer NOT NULL
+field_trackers.tracker_id uuid NOT NULL
+form_defs.id uuid NOT NULL DEFAULT uuidv7()
+form_defs.tracker_id uuid NOT NULL
+form_defs.project_id uuid
+form_defs.published_rules_version integer NOT NULL DEFAULT 0
+form_defs.published_layout_version integer NOT NULL DEFAULT 0
+form_defs.lock_version integer NOT NULL DEFAULT 0
+form_defs.created_at timestamp with time zone NOT NULL DEFAULT now()
+form_layout_versions.form_id uuid NOT NULL
+form_layout_versions.version integer NOT NULL
+form_layout_versions.state text NOT NULL
+form_layout_versions.body jsonb NOT NULL
+form_layout_versions.publish_mode text
+form_layout_versions.impact jsonb
+form_layout_versions.created_by uuid NOT NULL
+form_layout_versions.created_at timestamp with time zone NOT NULL DEFAULT now()
+form_layout_versions.published_by uuid
+form_layout_versions.published_at timestamp with time zone
+form_rule_marks.issue_id uuid NOT NULL
+form_rule_marks.form_id uuid NOT NULL
+form_rule_marks.rules_version integer NOT NULL
+form_rule_marks.rule_ids text[] NOT NULL
+form_rule_marks.marked_at timestamp with time zone NOT NULL DEFAULT now()
+form_rule_marks.cleared_at timestamp with time zone
+form_rule_versions.form_id uuid NOT NULL
+form_rule_versions.version integer NOT NULL
+form_rule_versions.state text NOT NULL
+form_rule_versions.body jsonb NOT NULL
+form_rule_versions.publish_mode text
+form_rule_versions.impact jsonb
+form_rule_versions.created_by uuid NOT NULL
+form_rule_versions.created_at timestamp with time zone NOT NULL DEFAULT now()
+form_rule_versions.published_by uuid
+form_rule_versions.published_at timestamp with time zone
+github_check_runs.gh_run_id bigint NOT NULL
+github_check_runs.repo_id uuid NOT NULL
+github_check_runs.head_sha text NOT NULL
+github_check_runs.app_id bigint NOT NULL
+github_check_runs.check_suite_id bigint
+github_check_runs.name text NOT NULL
+github_check_runs.status text NOT NULL
+github_check_runs.gh_status text NOT NULL
+github_check_runs.conclusion text
+github_check_runs.started_at timestamp with time zone
+github_check_runs.completed_at timestamp with time zone
+github_check_suites.gh_suite_id bigint NOT NULL
+github_check_suites.repo_id uuid NOT NULL
+github_check_suites.head_sha text NOT NULL
+github_check_suites.app_id bigint NOT NULL
+github_check_suites.status text NOT NULL
+github_check_suites.conclusion text
+github_check_suites.gh_updated_at timestamp with time zone NOT NULL
+github_check_suites.content_hash bytea NOT NULL
+github_check_suites.row_version bigint NOT NULL DEFAULT 0
+github_commit_statuses.repo_id uuid NOT NULL
+github_commit_statuses.head_sha text NOT NULL
+github_commit_statuses.context text NOT NULL
+github_commit_statuses.gh_status_id bigint NOT NULL
+github_commit_statuses.state text NOT NULL
+github_deliveries.delivery_id uuid NOT NULL
+github_deliveries.event text NOT NULL
+github_deliveries.received_at timestamp with time zone NOT NULL DEFAULT now()
+github_deliveries.processed_at timestamp with time zone
+github_deliveries.result text
+github_event_jobs.delivery_id uuid NOT NULL
+github_event_jobs.payload jsonb
+github_event_jobs.attempts smallint NOT NULL DEFAULT 0
+github_event_jobs.next_at timestamp with time zone NOT NULL DEFAULT now()
+github_installations.id uuid NOT NULL DEFAULT uuidv7()
+github_installations.gh_installation_id bigint NOT NULL
+github_installations.account_login text NOT NULL
+github_installations.state text NOT NULL
+github_installations.updated_at timestamp with time zone NOT NULL DEFAULT now()
+github_pull_requests.id uuid NOT NULL DEFAULT uuidv7()
+github_pull_requests.repo_id uuid NOT NULL
+github_pull_requests.number integer NOT NULL
+github_pull_requests.title text NOT NULL
+github_pull_requests.head_ref text NOT NULL
+github_pull_requests.head_sha text NOT NULL
+github_pull_requests.state text NOT NULL
+github_pull_requests.review_state text NOT NULL
+github_pull_requests.ci_state text
+github_pull_requests.html_url text NOT NULL
+github_pull_requests.gh_updated_at timestamp with time zone NOT NULL
+github_pull_requests.content_hash bytea NOT NULL
+github_pull_requests.row_version bigint NOT NULL DEFAULT 0
+github_repos.id uuid NOT NULL DEFAULT uuidv7()
+github_repos.gh_repo_id bigint NOT NULL
+github_repos.installation_id uuid
+github_repos.full_name text NOT NULL
+github_repos.is_private boolean NOT NULL
+github_repos.linkable boolean NOT NULL DEFAULT false
+github_repos.state text NOT NULL
+github_repos.updated_at timestamp with time zone NOT NULL DEFAULT now()
+group_members.group_id uuid NOT NULL
+group_members.user_id uuid NOT NULL
+issue_agent_chains.issue_id uuid NOT NULL
+issue_agent_chains.started_at timestamp with time zone NOT NULL
+issue_agent_chains.started_by_execution_id uuid NOT NULL
+issue_agent_chains.writes integer NOT NULL
+issue_agent_chains.depth integer NOT NULL
+issue_agent_chains.last_agent_principal_id uuid NOT NULL
+issue_agent_chains.agents uuid[] NOT NULL
+issue_agent_chains.updated_at timestamp with time zone NOT NULL
+issue_cf.issue_id uuid NOT NULL
+issue_cf.field_id integer NOT NULL
+issue_cf.v_date date
+issue_cf.v_bool boolean
+issue_cf.v_ref uuid
+issue_cf.v_num numeric
+issue_cf.v_text text
+issue_duplicates.id uuid NOT NULL DEFAULT uuidv7()
+issue_duplicates.source_issue_id uuid NOT NULL
+issue_duplicates.target_issue_id uuid NOT NULL
+issue_duplicates.created_by_execution_id uuid
+issue_duplicates.created_at timestamp with time zone NOT NULL DEFAULT now()
+issue_event_mentions.event_id uuid NOT NULL
+issue_event_mentions.user_id uuid NOT NULL
+issue_event_redactions.id uuid NOT NULL DEFAULT uuidv7()
+issue_event_redactions.event_id uuid
+issue_event_redactions.note_id uuid
+issue_event_redactions.redacted_by uuid NOT NULL
+issue_event_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+issue_event_redactions.reason_code text NOT NULL
+issue_event_redactions.reason text NOT NULL
+issue_events.id uuid NOT NULL DEFAULT uuidv7()
+issue_events.issue_id uuid NOT NULL
+issue_events.seq bigint NOT NULL
+issue_events.at timestamp with time zone NOT NULL DEFAULT now()
+issue_events.kind text NOT NULL
+issue_events.schema_ver smallint NOT NULL DEFAULT 1
+issue_events.origin text NOT NULL
+issue_events.actor_id uuid NOT NULL
+issue_events.actor_kind text NOT NULL
+issue_events.proposer_id uuid
+issue_events.approver_id uuid
+issue_events.on_behalf_of_id uuid
+issue_events.delegation_id uuid
+issue_events.agent_client_id uuid
+issue_events.operation_request_id uuid
+issue_events.command_execution_id uuid
+issue_events.changeset_id uuid
+issue_events.changeset_version integer
+issue_events.execution_id uuid
+issue_events.op_id uuid
+issue_events.system_operation text
+issue_events.note_id uuid
+issue_events.payload jsonb NOT NULL
+issue_events.redaction_id uuid
+issue_field_changes.event_id uuid NOT NULL
+issue_field_changes.issue_id uuid NOT NULL
+issue_field_changes.field_key text NOT NULL
+issue_field_changes.old_ref uuid
+issue_field_changes.new_ref uuid
+issue_field_changes.at timestamp with time zone NOT NULL
+issue_field_origins.issue_id uuid NOT NULL
+issue_field_origins.field_key text NOT NULL
+issue_field_origins.origin_execution_id uuid
+issue_field_origins.origin_event_id uuid NOT NULL
+issue_keys.key text NOT NULL
+issue_keys.issue_id uuid NOT NULL
+issue_keys.project_id uuid NOT NULL
+issue_keys.number integer NOT NULL
+issue_keys.is_current boolean NOT NULL DEFAULT true
+issue_keys.created_at timestamp with time zone NOT NULL DEFAULT now()
+issue_notes.id uuid NOT NULL DEFAULT uuidv7()
+issue_notes.issue_id uuid NOT NULL
+issue_notes.author_id uuid NOT NULL
+issue_notes.created_on_behalf_of_id uuid
+issue_notes.body text NOT NULL
+issue_notes.is_private boolean NOT NULL DEFAULT false
+issue_notes.created_at timestamp with time zone NOT NULL DEFAULT now()
+issue_notes.redacted_at timestamp with time zone
+issue_notes.retracted_at timestamp with time zone
+issue_notes.retracted_by_execution_id uuid
+issue_notes.body_format text NOT NULL DEFAULT 'markdown'::text
+issue_priorities.id uuid NOT NULL DEFAULT uuidv7()
+issue_priorities.name text NOT NULL
+issue_priorities.position integer NOT NULL DEFAULT 0
+issue_priorities.active boolean NOT NULL DEFAULT true
+issue_priorities.is_default boolean NOT NULL DEFAULT false
+issue_statuses.id uuid NOT NULL DEFAULT uuidv7()
+issue_statuses.name text NOT NULL
+issue_statuses.category text NOT NULL
+issue_statuses.position integer NOT NULL DEFAULT 0
+issue_triage.issue_id uuid NOT NULL
+issue_triage.project_id uuid NOT NULL
+issue_triage.state text NOT NULL
+issue_triage.entered_at timestamp with time zone NOT NULL
+issue_triage.snoozed_until timestamp with time zone
+issue_triage.snoozed_at timestamp with time zone
+issue_triage.snoozed_by uuid
+issue_triage.decided_at timestamp with time zone
+issue_triage.decided_by uuid
+issue_triage.self_triage boolean NOT NULL DEFAULT false
+issue_triage.same_sponsor boolean NOT NULL DEFAULT false
+issue_watch_optouts.issue_id uuid NOT NULL
+issue_watch_optouts.user_id uuid NOT NULL
+issue_watch_optouts.created_at timestamp with time zone NOT NULL DEFAULT now()
+issue_watchers.issue_id uuid NOT NULL
+issue_watchers.user_id uuid NOT NULL
+issue_watchers.source text NOT NULL
+issue_watchers.created_at timestamp with time zone NOT NULL DEFAULT now()
+issues.id uuid NOT NULL DEFAULT uuidv7()
+issues.project_id uuid NOT NULL
+issues.tracker_id uuid NOT NULL
+issues.status_id uuid NOT NULL
+issues.subject text NOT NULL
+issues.description text NOT NULL DEFAULT ''::text
+issues.author_id uuid NOT NULL
+issues.assigned_to_id uuid
+issues.is_private boolean NOT NULL DEFAULT false
+issues.parent_id uuid
+issues.start_date date
+issues.due_date date
+issues.lock_version integer NOT NULL DEFAULT 0
+issues.archived_at timestamp with time zone
+issues.created_at timestamp with time zone NOT NULL DEFAULT now()
+issues.updated_at timestamp with time zone NOT NULL DEFAULT now()
+issues.fixed_version_id uuid
+issues.priority_id uuid NOT NULL
+issues.last_event_seq bigint NOT NULL DEFAULT 0
+issues.created_on_behalf_of_id uuid
+issues.estimated_hours numeric(7,2)
+issues.description_format text NOT NULL DEFAULT 'markdown'::text
+login_challenges.token_sha256 bytea NOT NULL
+login_challenges.csrf_secret bytea NOT NULL
+login_challenges.expires_at timestamp with time zone NOT NULL
+member_roles.member_id uuid NOT NULL
+member_roles.role_id uuid NOT NULL
+members.id uuid NOT NULL DEFAULT uuidv7()
+members.project_id uuid NOT NULL
+members.principal_id uuid NOT NULL
+notification_issue_progress.issue_id uuid NOT NULL
+notification_issue_progress.last_event_seq bigint NOT NULL
+notification_preferences.user_id uuid NOT NULL
+notification_preferences.on_watching boolean NOT NULL DEFAULT true
+notification_preferences.on_assigned boolean NOT NULL DEFAULT true
+notification_preferences.on_author boolean NOT NULL DEFAULT true
+notification_preferences.on_triage_decided boolean NOT NULL DEFAULT true
+notification_preferences.on_my_agents boolean NOT NULL DEFAULT true
+notification_preferences.on_self boolean NOT NULL DEFAULT false
+notification_preferences.auto_watch_author boolean NOT NULL DEFAULT true
+notification_preferences.auto_watch_assignee boolean NOT NULL DEFAULT true
+notification_preferences.auto_watch_note boolean NOT NULL DEFAULT true
+notification_preferences.lock_version integer NOT NULL DEFAULT 0
+notification_preferences.updated_at timestamp with time zone NOT NULL DEFAULT now()
+notification_preferences.on_mentioned boolean NOT NULL DEFAULT true
+notification_project_mutes.user_id uuid NOT NULL
+notification_project_mutes.project_id uuid NOT NULL
+notification_project_mutes.created_at timestamp with time zone NOT NULL DEFAULT now()
+notifications.id uuid NOT NULL DEFAULT uuidv7()
+notifications.recipient_id uuid NOT NULL
+notifications.kind text NOT NULL DEFAULT 'issue'::text
+notifications.issue_id uuid
+notifications.project_id uuid
+notifications.event_ids uuid[] NOT NULL DEFAULT '{}'::uuid[]
+notifications.reasons text[] NOT NULL
+notifications.event_reasons text[] NOT NULL DEFAULT '{}'::text[]
+notifications.payload jsonb
+notifications.first_at timestamp with time zone NOT NULL
+notifications.last_at timestamp with time zone NOT NULL
+notifications.read_at timestamp with time zone
+operation_requests.id uuid NOT NULL DEFAULT uuidv7()
+operation_requests.caller_id uuid NOT NULL
+operation_requests.operation_id uuid NOT NULL
+operation_requests.action text NOT NULL
+operation_requests.fingerprint bytea NOT NULL
+operation_requests.status text NOT NULL
+operation_requests.result_ref jsonb
+operation_requests.result_expires_at timestamp with time zone
+operation_requests.created_at timestamp with time zone NOT NULL DEFAULT now()
+org_settings.singleton boolean NOT NULL DEFAULT true
+org_settings.issue_group_assignment boolean NOT NULL DEFAULT false
+org_settings.spa_origin text
+org_settings.timezone text NOT NULL DEFAULT 'Asia/Taipei'::text
+org_settings.health_at_risk_days integer DEFAULT 7
+org_settings.health_at_risk_open_pct integer DEFAULT 50
+org_settings.schedule_lock_version integer NOT NULL DEFAULT 0
+org_settings.schema_version bigint NOT NULL DEFAULT 1
+org_settings.workflow_version bigint NOT NULL DEFAULT 1
+org_settings.week_start smallint NOT NULL DEFAULT 1
+org_settings.timelog_max_hours_per_day numeric(4,2) NOT NULL DEFAULT 0
+org_settings.timelog_accept_0_hours boolean NOT NULL DEFAULT true
+org_settings.timelog_accept_future_dates boolean NOT NULL DEFAULT true
+org_settings.timelog_accept_closed_issues boolean NOT NULL DEFAULT true
+org_settings.timelog_require_issue boolean NOT NULL DEFAULT false
+org_settings.timelog_require_comments boolean NOT NULL DEFAULT false
+org_settings.timelog_lock_version integer NOT NULL DEFAULT 0
+org_settings.form_l0_version bigint NOT NULL DEFAULT 1
+outbox.id bigint NOT NULL DEFAULT nextval('outbox_id_seq'::regclass)
+outbox.xid xid8 NOT NULL DEFAULT pg_current_xact_id()
+outbox.topic text NOT NULL
+outbox.entity_id uuid NOT NULL
+outbox.created_at timestamp with time zone NOT NULL DEFAULT now()
+outbox_cursors.consumer text NOT NULL
+outbox_cursors.last_xid xid8 NOT NULL DEFAULT '0'::xid8
+outbox_cursors.last_id bigint NOT NULL DEFAULT 0
+outbox_cursors.state text NOT NULL DEFAULT 'active'::text
+outbox_cursors.retained_until timestamp with time zone
+outbox_cursors.updated_at timestamp with time zone NOT NULL DEFAULT now()
+pr_issue_refs.pr_id uuid NOT NULL
+pr_issue_refs.issue_id uuid NOT NULL
+pr_issue_refs.project_id uuid NOT NULL
+pr_issue_refs.link_id uuid NOT NULL
+pr_issue_refs.sources text[] NOT NULL
+pr_issue_refs.first_seen timestamp with time zone NOT NULL DEFAULT now()
+principals.id uuid NOT NULL DEFAULT uuidv7()
+principals.kind text NOT NULL
+principals.login text
+principals.name text NOT NULL
+principals.is_admin boolean NOT NULL DEFAULT false
+principals.status text NOT NULL DEFAULT 'active'::text
+principals.created_at timestamp with time zone NOT NULL DEFAULT now()
+project_catalog.id boolean NOT NULL DEFAULT true
+project_pr_hidden.project_id uuid NOT NULL
+project_pr_hidden.pr_id uuid NOT NULL
+project_pr_hidden.hidden_by uuid NOT NULL
+project_pr_hidden.hidden_at timestamp with time zone NOT NULL DEFAULT now()
+project_repo_links.id uuid NOT NULL DEFAULT uuidv7()
+project_repo_links.project_id uuid NOT NULL
+project_repo_links.repo_id uuid NOT NULL
+project_repo_links.linked_by uuid NOT NULL
+project_repo_links.linked_at timestamp with time zone NOT NULL DEFAULT now()
+project_repo_links.unlinked_at timestamp with time zone
+project_repo_links.unlinked_by uuid
+project_repo_links.sync_state text NOT NULL DEFAULT 'backfilling'::text
+project_repo_links.synced_through timestamp with time zone
+project_repo_links.paused_until timestamp with time zone
+project_schedule_settings.project_id uuid NOT NULL
+project_schedule_settings.inherit_org boolean NOT NULL DEFAULT true
+project_schedule_settings.health_at_risk_days integer
+project_schedule_settings.health_at_risk_open_pct integer
+project_schedule_settings.lock_version integer NOT NULL DEFAULT 0
+project_schedule_settings.updated_by uuid
+project_schedule_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
+project_setting_event_redactions.id uuid NOT NULL DEFAULT uuidv7()
+project_setting_event_redactions.event_id uuid NOT NULL
+project_setting_event_redactions.redacted_by uuid NOT NULL
+project_setting_event_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+project_setting_event_redactions.reason_code text NOT NULL
+project_setting_event_redactions.reason text NOT NULL
+project_setting_event_redactions.admin_only boolean NOT NULL DEFAULT false
+project_setting_events.id uuid NOT NULL DEFAULT uuidv7()
+project_setting_events.project_id uuid NOT NULL
+project_setting_events.at timestamp with time zone NOT NULL DEFAULT now()
+project_setting_events.kind text NOT NULL
+project_setting_events.actor_id uuid NOT NULL
+project_setting_events.operation_request_id uuid NOT NULL
+project_setting_events.payload jsonb NOT NULL
+project_setting_events.redaction_id uuid
+project_tab_settings.project_id uuid NOT NULL
+project_tab_settings.tabs jsonb NOT NULL DEFAULT project_tabs_default()
+project_tab_settings.default_tab text NOT NULL DEFAULT 'timeline'::text
+project_tab_settings.is_default boolean NOT NULL DEFAULT true
+project_tab_settings.lock_version integer NOT NULL DEFAULT 0
+project_tab_settings.updated_by uuid
+project_tab_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
+project_time_activities.project_id uuid NOT NULL
+project_time_activities.activity_id uuid NOT NULL
+project_time_activities.active boolean NOT NULL
+project_time_settings.project_id uuid NOT NULL
+project_time_settings.lock_version integer NOT NULL DEFAULT 0
+project_time_settings.updated_by uuid
+project_time_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
+project_trackers.project_id uuid NOT NULL
+project_trackers.tracker_id uuid NOT NULL
+project_triage_settings.project_id uuid NOT NULL
+project_triage_settings.enabled boolean NOT NULL DEFAULT false
+project_triage_settings.entry_rule text NOT NULL DEFAULT 'creator_without_triage'::text
+project_triage_settings.responsible_user_id uuid
+project_triage_settings.decline_status_id uuid
+project_triage_settings.lock_version integer NOT NULL DEFAULT 0
+project_triage_settings.updated_by uuid
+project_triage_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
+projects.id uuid NOT NULL DEFAULT uuidv7()
+projects.key text NOT NULL
+projects.name text NOT NULL
+projects.description text NOT NULL DEFAULT ''::text
+projects.is_public boolean NOT NULL DEFAULT false
+projects.status text NOT NULL DEFAULT 'active'::text
+projects.parent_id uuid
+projects.issue_counter integer NOT NULL DEFAULT 0
+projects.created_at timestamp with time zone NOT NULL DEFAULT now()
+projects.security_epoch bigint NOT NULL DEFAULT 1
+proposal_contents.id uuid NOT NULL DEFAULT uuidv7()
+proposal_contents.body jsonb
+proposal_contents.body_sha256 bytea NOT NULL
+proposal_contents.state text NOT NULL DEFAULT 'available'::text
+proposal_contents.redacted_at timestamp with time zone
+proposal_contents.redacted_by uuid
+proposal_contents.baseline jsonb
+role_permission_trackers.role_id uuid NOT NULL
+role_permission_trackers.permission text NOT NULL
+role_permission_trackers.tracker_id uuid NOT NULL
+role_permissions.role_id uuid NOT NULL
+role_permissions.permission text NOT NULL
+role_permissions.all_trackers boolean NOT NULL DEFAULT true
+roles.id uuid NOT NULL DEFAULT uuidv7()
+roles.name text NOT NULL
+roles.builtin text
+roles.issues_visibility text NOT NULL DEFAULT 'default'::text
+roles.position integer NOT NULL DEFAULT 0
+roles.assignable boolean NOT NULL DEFAULT true
+roles.time_entries_visibility text NOT NULL DEFAULT 'all'::text
+search_settings.singleton boolean NOT NULL DEFAULT true
+search_settings.data_epoch uuid NOT NULL DEFAULT uuidv7()
+search_settings.rotated_at timestamp with time zone NOT NULL DEFAULT now()
+search_settings.rebuild_requested_at timestamp with time zone
+server_secrets.name text NOT NULL
+server_secrets.secret bytea NOT NULL
+server_secrets.created_at timestamp with time zone NOT NULL DEFAULT now()
+time_daily_totals.user_id uuid NOT NULL
+time_daily_totals.spent_on date NOT NULL
+time_daily_totals.hours numeric(7,2) NOT NULL DEFAULT 0
+time_entries.id uuid NOT NULL DEFAULT uuidv7()
+time_entries.project_id uuid NOT NULL
+time_entries.issue_id uuid
+time_entries.user_id uuid NOT NULL
+time_entries.author_id uuid NOT NULL
+time_entries.created_on_behalf_of_id uuid
+time_entries.activity_id uuid NOT NULL
+time_entries.spent_on date NOT NULL
+time_entries.hours numeric(6,2) NOT NULL
+time_entries.comments text NOT NULL DEFAULT ''::text
+time_entries.lock_version integer NOT NULL DEFAULT 0
+time_entries.last_event_seq bigint NOT NULL DEFAULT 0
+time_entries.created_at timestamp with time zone NOT NULL DEFAULT now()
+time_entries.updated_at timestamp with time zone NOT NULL DEFAULT now()
+time_entries.deleted_at timestamp with time zone
+time_entries.deleted_by_execution_id uuid
+time_entries.redacted_at timestamp with time zone
+time_entry_activities.id uuid NOT NULL DEFAULT uuidv7()
+time_entry_activities.name text NOT NULL
+time_entry_activities.name_key text NOT NULL
+time_entry_activities.position integer NOT NULL DEFAULT 0
+time_entry_activities.active boolean NOT NULL DEFAULT true
+time_entry_activities.is_default boolean NOT NULL DEFAULT false
+time_entry_event_redactions.id uuid NOT NULL DEFAULT uuidv7()
+time_entry_event_redactions.event_id uuid NOT NULL
+time_entry_event_redactions.redacted_by uuid NOT NULL
+time_entry_event_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+time_entry_event_redactions.reason_code text NOT NULL
+time_entry_event_redactions.reason text NOT NULL
+time_entry_events.id uuid NOT NULL DEFAULT uuidv7()
+time_entry_events.time_entry_id uuid NOT NULL
+time_entry_events.seq bigint NOT NULL
+time_entry_events.at timestamp with time zone NOT NULL DEFAULT now()
+time_entry_events.kind text NOT NULL
+time_entry_events.origin text NOT NULL
+time_entry_events.actor_id uuid NOT NULL
+time_entry_events.actor_kind text NOT NULL
+time_entry_events.on_behalf_of_id uuid
+time_entry_events.approver_id uuid
+time_entry_events.delegation_id uuid
+time_entry_events.execution_id uuid
+time_entry_events.operation_request_id uuid
+time_entry_events.system_operation text
+time_entry_events.payload jsonb NOT NULL
+time_entry_events.redaction_id uuid
+time_entry_field_origins.time_entry_id uuid NOT NULL
+time_entry_field_origins.field_key text NOT NULL
+time_entry_field_origins.origin_execution_id uuid
+trackers.id uuid NOT NULL DEFAULT uuidv7()
+trackers.name text NOT NULL
+trackers.default_status_id uuid
+trackers.position integer NOT NULL DEFAULT 0
+trackers.private_by_default boolean NOT NULL DEFAULT false
+user_passwords.user_id uuid NOT NULL
+user_passwords.password_phc text NOT NULL
+user_passwords.credential_version bigint NOT NULL DEFAULT 1
+user_passwords.changed_at timestamp with time zone NOT NULL DEFAULT now()
+user_preferences.user_id uuid NOT NULL
+user_preferences.interface_roles text[] NOT NULL DEFAULT '{}'::text[]
+user_preferences.onboarded_at timestamp with time zone
+user_preferences.theme text NOT NULL DEFAULT 'dark'::text
+user_preferences.density text NOT NULL DEFAULT 'comfortable'::text
+user_preferences.home jsonb NOT NULL
+user_preferences.nav_shortcuts jsonb NOT NULL DEFAULT '[]'::jsonb
+user_preferences.default_views jsonb NOT NULL DEFAULT '{}'::jsonb
+user_preferences.lock_version integer NOT NULL DEFAULT 0
+user_preferences.home_lock_version integer NOT NULL DEFAULT 0
+user_preferences.updated_at timestamp with time zone NOT NULL DEFAULT now()
+version_event_redactions.id uuid NOT NULL DEFAULT uuidv7()
+version_event_redactions.event_id uuid NOT NULL
+version_event_redactions.redacted_by uuid NOT NULL
+version_event_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+version_event_redactions.reason_code text NOT NULL
+version_event_redactions.reason text NOT NULL
+version_events.id uuid NOT NULL DEFAULT uuidv7()
+version_events.version_id uuid NOT NULL
+version_events.seq bigint NOT NULL
+version_events.at timestamp with time zone NOT NULL DEFAULT now()
+version_events.kind text NOT NULL
+version_events.origin text NOT NULL
+version_events.actor_id uuid NOT NULL
+version_events.actor_kind text NOT NULL
+version_events.on_behalf_of_id uuid
+version_events.approver_id uuid
+version_events.delegation_id uuid
+version_events.execution_id uuid
+version_events.operation_request_id uuid
+version_events.system_operation text
+version_events.payload jsonb NOT NULL
+version_events.redaction_id uuid
+version_field_origins.version_id uuid NOT NULL
+version_field_origins.field_key text NOT NULL
+version_field_origins.origin_execution_id uuid
+versions.id uuid NOT NULL DEFAULT uuidv7()
+versions.project_id uuid NOT NULL
+versions.name text NOT NULL
+versions.name_key text NOT NULL
+versions.description text NOT NULL DEFAULT ''::text
+versions.effective_date date
+versions.status text NOT NULL DEFAULT 'open'::text
+versions.sharing text NOT NULL DEFAULT 'none'::text
+versions.lock_version integer NOT NULL DEFAULT 0
+versions.last_event_seq bigint NOT NULL DEFAULT 0
+versions.created_at timestamp with time zone NOT NULL DEFAULT now()
+versions.updated_at timestamp with time zone NOT NULL DEFAULT now()
+versions.deleted_at timestamp with time zone
+versions.created_by uuid NOT NULL
+versions.created_on_behalf_of_id uuid
+view_def_event_redactions.id uuid NOT NULL DEFAULT uuidv7()
+view_def_event_redactions.event_id uuid NOT NULL
+view_def_event_redactions.redacted_by uuid NOT NULL
+view_def_event_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+view_def_event_redactions.reason_code text NOT NULL
+view_def_event_redactions.reason text NOT NULL
+view_def_events.id uuid NOT NULL DEFAULT uuidv7()
+view_def_events.view_id uuid NOT NULL
+view_def_events.at timestamp with time zone NOT NULL DEFAULT now()
+view_def_events.kind text NOT NULL
+view_def_events.actor_id uuid NOT NULL
+view_def_events.operation_request_id uuid NOT NULL
+view_def_events.payload jsonb NOT NULL
+view_def_events.redaction_id uuid
+view_defs.id uuid NOT NULL DEFAULT uuidv7()
+view_defs.scope text NOT NULL
+view_defs.owner_id uuid NOT NULL
+view_defs.project_id uuid
+view_defs.kind text NOT NULL
+view_defs.name text NOT NULL
+view_defs.name_key text NOT NULL
+view_defs.def jsonb NOT NULL
+view_defs.def_schema_ver smallint NOT NULL DEFAULT 1
+view_defs.lock_version integer NOT NULL DEFAULT 0
+view_defs.created_at timestamp with time zone NOT NULL DEFAULT now()
+view_defs.updated_at timestamp with time zone NOT NULL DEFAULT now()
+view_defs.updated_by uuid
+view_defs.deleted_at timestamp with time zone
+view_defs.redacted_at timestamp with time zone
+workflow_field_rules.tracker_id uuid NOT NULL
+workflow_field_rules.role_id uuid NOT NULL
+workflow_field_rules.old_status_id uuid NOT NULL
+workflow_field_rules.field_key text NOT NULL
+workflow_field_rules.rule text NOT NULL
+workflow_transitions.tracker_id uuid NOT NULL
+workflow_transitions.role_id uuid NOT NULL
+workflow_transitions.old_status_id uuid NOT NULL
+workflow_transitions.new_status_id uuid NOT NULL
+workflow_transitions.condition text NOT NULL DEFAULT 'always'::text

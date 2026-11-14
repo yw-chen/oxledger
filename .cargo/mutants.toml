@@ -1,0 +1,25 @@
+# cargo-mutants 27.1.0 configuration (docs/research/09b G12;
+# docs/impl/testing-playbook.md "Mutation"). Only settings: run it on a
+# diff (`cargo mutants --in-diff <file> -j1`), never the whole tree, and
+# not in parallel until every test runs on its own slot database (D2).
+
+# Tests run under nextest (tests/common picks the slot database from
+# NEXTEST_TEST_GLOBAL_SLOT).
+test_tool = "nextest"
+
+# `--profile mutants` here is nextest's profile (fail-fast,
+# .config/nextest.toml), passed to both `cargo nextest run --no-run` and
+# `cargo nextest run`. Not cargo-mutants' own `--profile`, which is the
+# cargo build profile. These args also go to `cargo check --tests` (the
+# `--check` mode), where `--profile mutants` would name a cargo profile
+# that does not exist: do not use `cargo mutants --check` with this file.
+additional_cargo_args = ["--profile", "mutants"]
+
+# The features the merge run uses, so feature-gated tests (ai, github)
+# see their mutants. Written for mutants of oxledger (only `--list` has
+# been run against this file so far, no mutant).
+features = ["test-support", "github", "ai"]
+
+# Narrow the tests per run with a nextest filter, e.g.
+#   cargo mutants --in-diff d.diff -j1 -- -E 'binary(m2_1_markdown)'
+# (arguments after `--` are added to `cargo nextest run`).

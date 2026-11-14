@@ -1,0 +1,80 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/lists.md
+---
+=== markdown agent=false
+<ul>
+<li>one</li>
+<li>two
+<ul>
+<li>nested a</li>
+<li>nested b</li>
+</ul>
+</li>
+<li>three</li>
+</ul>
+<ol start="3">
+<li>starts at three</li>
+<li>four</li>
+</ol>
+<ul>
+<li><input type="checkbox" disabled=""> open task</li>
+<li><input type="checkbox" checked="" disabled=""> done task</li>
+</ul>
+<ol>
+<li>
+<p>loose item</p>
+</li>
+<li>
+<p>second loose item</p>
+</li>
+</ol>
+issues={} logins={} truncated=false
+
+=== markdown agent=true
+<ul>
+<li>one</li>
+<li>two
+<ul>
+<li>nested a</li>
+<li>nested b</li>
+</ul>
+</li>
+<li>three</li>
+</ul>
+<ol start="3">
+<li>starts at three</li>
+<li>four</li>
+</ol>
+<ul>
+<li><input type="checkbox" disabled=""> open task</li>
+<li><input type="checkbox" checked="" disabled=""> done task</li>
+</ul>
+<ol>
+<li>
+<p>loose item</p>
+</li>
+<li>
+<p>second loose item</p>
+</li>
+</ol>
+issues={} logins={} truncated=false
+
+=== plain agent=false
+<p>- one<br>
+- two<br>
+  - nested a<br>
+  - nested b<br>
+- three<br>
+<br>
+3. starts at three<br>
+4. four<br>
+<br>
+- [ ] open task<br>
+- [x] done task<br>
+<br>
+1. loose item<br>
+<br>
+2. second loose item<br>
+</p>
+issues={} logins={} truncated=false

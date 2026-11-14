@@ -1,0 +1,40 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/links.md
+---
+=== markdown agent=false
+<p>Inline <a href="https://ok.example/path?q=1#frag" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example" title="title">link</a>, a site path
+<a href="/issue/AUTH-1">issue</a>, a fragment <a href="#top">top</a>, and mail
+<a href="mailto:someone@example.com" rel="nofollow ugc">me</a>.</p>
+<p>Autolinks: <a href="https://auto.example/x" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="auto.example">https://auto.example/x</a> and <a href="https://bare.example/y" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="bare.example">https://bare.example/y</a> and
+<a href="http://www.www.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="www.www.example">www.www.example</a>.</p>
+<p>Reference <a href="https://ref.example/r" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ref.example">ref</a> and <a href="https://ref.example/c" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ref.example">collapsed</a>.</p>
+<p>An image: <a href="https://img.example/a.png" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-img-ext" data-ox-host="img.example">外部圖片：alt text（img.example）</a></p>
+issues={} logins={} truncated=false
+
+=== markdown agent=true
+<p>Inline <a href="https://ok.example/path?q=1#frag" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example" data-ox-agent="" title="title">link</a>, a site path
+<a href="/issue/AUTH-1">issue</a>, a fragment <a href="#top">top</a>, and mail
+<a href="mailto:someone@example.com" rel="nofollow ugc" data-ox-agent="">me</a>.</p>
+<p>Autolinks: <a href="https://auto.example/x" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="auto.example" data-ox-agent="">https://auto.example/x</a> and <a href="https://bare.example/y" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="bare.example" data-ox-agent="">https://bare.example/y</a> and
+<a href="http://www.www.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="www.www.example" data-ox-agent="">www.www.example</a>.</p>
+<p>Reference <a href="https://ref.example/r" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ref.example" data-ox-agent="">ref</a> and <a href="https://ref.example/c" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ref.example" data-ox-agent="">collapsed</a>.</p>
+<p>An image: <a href="https://img.example/a.png" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-img-ext" data-ox-host="img.example" data-ox-agent="">外部圖片：alt text（img.example）</a></p>
+issues={} logins={} truncated=false
+
+=== plain agent=false
+<p>Inline [link](<a href="https://ok.example/path?q=1#frag" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">https://ok.example/path?q=1#frag</a> "title"), a site path<br>
+[issue](/issue/<span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span>), a fragment [top](#top), and mail<br>
+[me](mailto:someone@example.com).<br>
+<br>
+Autolinks: &lt;<a href="https://auto.example/x" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="auto.example">https://auto.example/x</a>&gt; and <a href="https://bare.example/y" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="bare.example">https://bare.example/y</a> and<br>
+www.www.example.<br>
+<br>
+Reference [ref][r] and [collapsed][].<br>
+<br>
+[r]: <a href="https://ref.example/r" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ref.example">https://ref.example/r</a><br>
+[collapsed]: <a href="https://ref.example/c" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ref.example">https://ref.example/c</a><br>
+<br>
+An image: ![alt text](<a href="https://img.example/a.png" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="img.example">https://img.example/a.png</a>)<br>
+</p>
+issues={"AUTH-1"} logins={} truncated=false

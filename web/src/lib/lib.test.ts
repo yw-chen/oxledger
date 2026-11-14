@@ -259,6 +259,7 @@ describe('errors (02 §15.5)', () => {
 });
 
 import { sameValue, show, untyped } from './render';
+import { fmtValue } from './format';
 describe('render (names, not ids)', () => {
 	const look = {
 		fields: [{ key: 'cf:1', name: 'Severity', type: 'list', ops: [], required: false, options: [{ id: 'o1', label: 'High', active: true }] }] as never,
@@ -274,6 +275,27 @@ describe('render (names, not ids)', () => {
 		expect(show('cf:2', { float: '3.5' }, look)).toBe('3.5');
 		expect(show('due_date', null, look)).toBe('（空）');
 		expect(show('cf:3', { bool: true }, look)).toBe('是');
+	});
+	it('fmtValue for every kind of value (golden, G9)', () => {
+		const values: unknown[] = [null, undefined, '', 'text', true, false, 0, 3.5, ['a', 2, null], { name: 'N', label: 'L' }, { label: 'L' }, { title: 'T' }, { key: 'AUTH-1' }, { value: 'v' }, { id: 'x' }, []];
+		expect(values.map((v) => `${JSON.stringify(v) ?? 'undefined'} → ${fmtValue(v)}`).join('\n')).toMatchInlineSnapshot(`
+			"null → （空）
+			undefined → （空）
+			"" → （空）
+			"text" → text
+			true → 是
+			false → 否
+			0 → 0
+			3.5 → 3.5
+			["a",2,null] → a、2、（空）
+			{"name":"N","label":"L"} → N
+			{"label":"L"} → L
+			{"title":"T"} → T
+			{"key":"AUTH-1"} → AUTH-1
+			{"value":"v"} → v
+			{"id":"x"} → {"id":"x"}
+			[] → "
+		`);
 	});
 	it('compares typed and plain values', () => {
 		expect(sameValue({ float: '5' }, 5)).toBe(true);

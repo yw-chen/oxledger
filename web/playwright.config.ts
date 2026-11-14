@@ -27,7 +27,11 @@ export default defineConfig({
 	fullyParallel: false,
 	workers: 1,
 	timeout: 60_000,
-	expect: { timeout: 15_000 },
+	// G10: aria snapshots live at e2e/__snapshots__/<spec>/<name>.aria.yml. A
+	// missing one is written on a local run; `npm run e2e:ci` (merge) passes
+	// --update-snapshots=none so it fails instead. Playwright does not notice an
+	// orphaned .aria.yml: delete the file with its test.
+	expect: { timeout: 15_000, toMatchAriaSnapshot: { pathTemplate: '{testDir}/__snapshots__/{testFilePath}/{arg}{ext}' } },
 	reporter: [['list']],
 	use: { baseURL: WEB, locale: 'zh-TW', timezoneId: 'Asia/Taipei', trace: 'retain-on-failure', screenshot: 'only-on-failure' },
 	webServer: [

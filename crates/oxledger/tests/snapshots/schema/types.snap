@@ -1,0 +1,6 @@
+---
+source: crates/oxledger/tests/golden_schema.rs
+---
+enum agent_policy_mode (direct, review, off)
+sequence field_defs_id_seq integer
+sequence outbox_id_seq bigint

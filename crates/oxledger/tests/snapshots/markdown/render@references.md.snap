@@ -1,0 +1,27 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/references.md
+---
+=== markdown agent=false
+<p>See <span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span> and <span data-ox-ref="issue" data-ox-v="WEB-12">WEB-12</span>, ask <span data-ox-ref="user" data-ox-v="bob">@bob</span> and <span data-ox-ref="user" data-ox-v="carol-x">@carol-x</span>.</p>
+<p>Not references: <code>AUTH-2</code>, <a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">AUTH-3 @dave</a>, auth-4,
+mail <a href="mailto:bob@example.com" rel="nofollow ugc">bob@example.com</a>, X-0 and AUTH-1x.</p>
+<p>(<span data-ox-ref="issue" data-ox-v="AUTH-5">AUTH-5</span>), "<span data-ox-ref="issue" data-ox-v="WEB-6">WEB-6</span>".</p>
+issues={"AUTH-1", "AUTH-5", "WEB-12", "WEB-6"} logins={"bob", "carol-x"} truncated=false
+
+=== markdown agent=true
+<p>See <span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span> and <span data-ox-ref="issue" data-ox-v="WEB-12">WEB-12</span>, ask <span data-ox-ref="user" data-ox-v="bob">@bob</span> and <span data-ox-ref="user" data-ox-v="carol-x">@carol-x</span>.</p>
+<p>Not references: <code>AUTH-2</code>, <a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example" data-ox-agent="">AUTH-3 @dave</a>, auth-4,
+mail <a href="mailto:bob@example.com" rel="nofollow ugc" data-ox-agent="">bob@example.com</a>, X-0 and AUTH-1x.</p>
+<p>(<span data-ox-ref="issue" data-ox-v="AUTH-5">AUTH-5</span>), "<span data-ox-ref="issue" data-ox-v="WEB-6">WEB-6</span>".</p>
+issues={"AUTH-1", "AUTH-5", "WEB-12", "WEB-6"} logins={"bob", "carol-x"} truncated=false
+
+=== plain agent=false
+<p>See <span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span> and <span data-ox-ref="issue" data-ox-v="WEB-12">WEB-12</span>, ask <span data-ox-ref="user" data-ox-v="bob">@bob</span> and <span data-ox-ref="user" data-ox-v="carol-x">@carol-x</span>.<br>
+<br>
+Not references: `<span data-ox-ref="issue" data-ox-v="AUTH-2">AUTH-2</span>`, [<span data-ox-ref="issue" data-ox-v="AUTH-3">AUTH-3</span> <span data-ox-ref="user" data-ox-v="dave">@dave</span>](<a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">https://ok.example</a>), auth-4,<br>
+mail bob@example.com, X-0 and AUTH-1x.<br>
+<br>
+(<span data-ox-ref="issue" data-ox-v="AUTH-5">AUTH-5</span>), "<span data-ox-ref="issue" data-ox-v="WEB-6">WEB-6</span>".<br>
+</p>
+issues={"AUTH-1", "AUTH-2", "AUTH-3", "AUTH-5", "WEB-12", "WEB-6"} logins={"bob", "carol-x", "dave"} truncated=false

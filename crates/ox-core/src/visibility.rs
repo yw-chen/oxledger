@@ -302,4 +302,153 @@ mod tests {
         f.project_id = id(101);
         assert!(!s.can_see(&f));
     }
+
+    // ------------------------------------------------------------ properties (09b G13)
+    //
+    // Ids come from a small range so authors, assignees, groups, trackers
+    // and projects collide often. Failures are kept in
+    // crates/ox-core/proptest-regressions/visibility.txt (committed).
+
+    use proptest::prelude::*;
+
+    fn small_id() -> impl Strategy<Value = Uuid> {
+        (1u128..=4).prop_map(id)
+    }
+
+    fn arb_facts() -> impl Strategy<Value = IssueFacts> {
+        (
+            small_id(),
+            small_id(),
+            any::<bool>(),
+            small_id(),
+            proptest::option::of(small_id()),
+        )
+            .prop_map(|(p, t, private, a, asg)| IssueFacts {
+                project_id: p,
+                tracker_id: t,
+                is_private: private,
+                author_id: a,
+                assigned_to_id: asg,
+            })
+    }
+
+    fn arb_pred() -> impl Strategy<Value = Pred> {
+        let leaf = prop_oneof![
+            Just(Pred::True),
+            Just(Pred::False),
+            Just(Pred::NotPrivate),
+            small_id().prop_map(Pred::ProjectIs),
+            small_id().prop_map(Pred::AuthorIs),
+            proptest::collection::vec(small_id(), 0..3).prop_map(Pred::TrackerIn),
+            proptest::collection::vec(small_id(), 0..3).prop_map(Pred::AssigneeIn),
+        ];
+        leaf.prop_recursive(4, 32, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(Pred::And),
+                proptest::collection::vec(inner, 0..4).prop_map(Pred::Or),
+            ]
+        })
+    }
+
+    fn arb_role() -> impl Strategy<Value = RoleGrant> {
+        (
+            prop_oneof![
+                Just(Visibility::All),
+                Just(Visibility::Default),
+                Just(Visibility::Own)
+            ],
+            proptest::option::of(proptest::collection::vec(small_id(), 0..3)),
+        )
+            .prop_map(|(visibility, trackers)| RoleGrant {
+                visibility,
+                trackers,
+            })
+    }
+
+    fn arb_scope() -> impl Strategy<Value = Scope> {
+        (
+            proptest::option::of(small_id()),
+            proptest::collection::vec(small_id(), 0..3),
+            proptest::collection::vec(
+                (small_id(), proptest::collection::vec(arb_role(), 0..3))
+                    .prop_map(|(project_id, roles)| ProjectGrant { project_id, roles }),
+                0..3,
+            ),
+        )
+            .prop_map(|(user, groups, grants)| match user {
+                None => Scope::anonymous(grants),
+                Some(me) => {
+                    let mut principal_ids = vec![me];
+                    principal_ids.extend(groups);
+                    Scope {
+                        user_id: Some(me),
+                        principal_ids,
+                        grants,
+                    }
+                }
+            })
+    }
+
+    /// The rules of the module docs, written out directly (no `Pred`).
+    fn reference_can_see(s: &Scope, f: &IssueFacts) -> bool {
+        s.grants.iter().any(|g| {
+            g.project_id == f.project_id
+                && g.roles.iter().any(|r| {
+                    let tracker_ok = r
+                        .trackers
+                        .as_ref()
+                        .is_none_or(|t| t.contains(&f.tracker_id));
+                    let mine = || {
+                        s.user_id == Some(f.author_id)
+                            || f.assigned_to_id
+                                .is_some_and(|a| s.principal_ids.contains(&a))
+                    };
+                    let mode_ok = match (s.user_id, r.visibility) {
+                        (None, _) => !f.is_private,
+                        (Some(_), Visibility::All) => true,
+                        (Some(_), Visibility::Default) => !f.is_private || mine(),
+                        (Some(_), Visibility::Own) => mine(),
+                    };
+                    tracker_ok && mode_ok
+                })
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+        /// `simplify` never changes what a predicate selects.
+        #[test]
+        fn prop_simplify_keeps_meaning(p in arb_pred(), f in arb_facts()) {
+            prop_assert_eq!(p.clone().simplify().eval(&f), p.eval(&f));
+        }
+
+        /// `simplify` is idempotent.
+        #[test]
+        fn prop_simplify_is_idempotent(p in arb_pred()) {
+            let once = p.simplify();
+            prop_assert_eq!(once.clone().simplify(), once);
+        }
+
+        /// `can_see` is exactly the Redmine rules of the module docs.
+        #[test]
+        fn prop_can_see_follows_the_rules(s in arb_scope(), f in arb_facts()) {
+            prop_assert_eq!(s.can_see(&f), reference_can_see(&s, &f));
+        }
+
+        /// Anonymous callers never see a private issue; another role never
+        /// hides an issue (roles only add).
+        #[test]
+        fn prop_anonymous_and_monotonic(s in arb_scope(), f in arb_facts(), extra in arb_role()) {
+            if s.user_id.is_none() && f.is_private {
+                prop_assert!(!s.can_see(&f));
+            }
+            let mut more = s.clone();
+            match more.grants.iter_mut().find(|g| g.project_id == f.project_id) {
+                Some(g) => g.roles.push(extra),
+                None => more.grants.push(ProjectGrant { project_id: f.project_id, roles: vec![extra] }),
+            }
+            prop_assert!(!s.can_see(&f) || more.can_see(&f));
+        }
+    }
 }

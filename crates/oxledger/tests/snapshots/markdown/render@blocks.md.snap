@@ -1,0 +1,49 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/blocks.md
+---
+=== markdown agent=false
+<blockquote>
+<p>A quote
+with two lines</p>
+<blockquote>
+<p>and a nested one</p>
+</blockquote>
+</blockquote>
+<hr>
+<p>Line one<br>
+hard break, then a soft
+break.</p>
+&lt;div&gt;raw html is text&lt;/div&gt;
+issues={} logins={} truncated=false
+
+=== markdown agent=true
+<blockquote>
+<p>A quote
+with two lines</p>
+<blockquote>
+<p>and a nested one</p>
+</blockquote>
+</blockquote>
+<hr>
+<p>Line one<br>
+hard break, then a soft
+break.</p>
+&lt;div&gt;raw html is text&lt;/div&gt;
+issues={} logins={} truncated=false
+
+=== plain agent=false
+<p>&gt; A quote<br>
+&gt; with two lines<br>
+&gt;<br>
+&gt; &gt; and a nested one<br>
+<br>
+---<br>
+<br>
+Line one\<br>
+hard break, then a soft<br>
+break.<br>
+<br>
+&lt;div&gt;raw html is text&lt;/div&gt;<br>
+</p>
+issues={} logins={} truncated=false

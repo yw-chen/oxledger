@@ -1,0 +1,39 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/footnotes.md
+---
+=== markdown agent=false
+<p>Text with a note<sup class="footnote-ref"><a href="#fn-374708ff-1" id="fnref-374708ff-1">1</a></sup> and another<sup class="footnote-ref"><a href="#fn-374708ff-long" id="fnref-374708ff-long">2</a></sup>.</p>
+<section class="footnotes">
+<ol>
+<li id="fn-374708ff-1">
+<p>The first note. <a href="#fnref-374708ff-1" class="footnote-backref">↩</a></p>
+</li>
+<li id="fn-374708ff-long">
+<p>A note with <strong>markup</strong> and a <a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">link</a>. <a href="#fnref-374708ff-long" class="footnote-backref">↩</a></p>
+</li>
+</ol>
+</section>
+issues={} logins={} truncated=false
+
+=== markdown agent=true
+<p>Text with a note<sup class="footnote-ref"><a href="#fn-374708ff-1" id="fnref-374708ff-1">1</a></sup> and another<sup class="footnote-ref"><a href="#fn-374708ff-long" id="fnref-374708ff-long">2</a></sup>.</p>
+<section class="footnotes">
+<ol>
+<li id="fn-374708ff-1">
+<p>The first note. <a href="#fnref-374708ff-1" class="footnote-backref">↩</a></p>
+</li>
+<li id="fn-374708ff-long">
+<p>A note with <strong>markup</strong> and a <a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example" data-ox-agent="">link</a>. <a href="#fnref-374708ff-long" class="footnote-backref">↩</a></p>
+</li>
+</ol>
+</section>
+issues={} logins={} truncated=false
+
+=== plain agent=false
+<p>Text with a note[^1] and another[^long].<br>
+<br>
+[^1]: The first note.<br>
+[^long]: A note with **markup** and a [link](<a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">https://ok.example</a>).<br>
+</p>
+issues={} logins={} truncated=false

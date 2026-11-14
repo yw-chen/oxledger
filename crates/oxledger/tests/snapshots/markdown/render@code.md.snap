@@ -1,0 +1,44 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/code.md
+---
+=== markdown agent=false
+<p>Inline <code>let x = 1;</code> and <code>a `tick` inside</code>.</p>
+<pre><code>fn main() {
+    println!("&lt;b&gt;not bold&lt;/b&gt;");
+}
+</code></pre>
+<pre><code>indented code AUTH-1 @bob
+</code></pre>
+<pre><code>no language
+</code></pre>
+issues={} logins={} truncated=false
+
+=== markdown agent=true
+<p>Inline <code>let x = 1;</code> and <code>a `tick` inside</code>.</p>
+<pre><code>fn main() {
+    println!("&lt;b&gt;not bold&lt;/b&gt;");
+}
+</code></pre>
+<pre><code>indented code AUTH-1 @bob
+</code></pre>
+<pre><code>no language
+</code></pre>
+issues={} logins={} truncated=false
+
+=== plain agent=false
+<p>Inline `let x = 1;` and ``a `tick` inside``.<br>
+<br>
+```rust<br>
+fn main() {<br>
+    println!("&lt;b&gt;not bold&lt;/b&gt;");<br>
+}<br>
+```<br>
+<br>
+    indented code <span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span> <span data-ox-ref="user" data-ox-v="bob">@bob</span><br>
+<br>
+```<br>
+no language<br>
+```<br>
+</p>
+issues={"AUTH-1"} logins={"bob"} truncated=false

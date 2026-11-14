@@ -39,14 +39,51 @@ fn api_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../api")
 }
 
+/// Whether `OXLEDGER_UPDATE_API_SPEC` may rewrite the committed spec: set,
+/// and not under CI (09b G6). CI is read as insta 1.49 reads it
+/// (`utils.rs` `is_ci`): when `CI` is set, it counts unless `false`, `0` or
+/// empty; only when `CI` is unset does `TF_BUILD` count. Under CI the flag is
+/// ignored, so a stale spec fails instead of being overwritten.
+fn spec_update_allowed(
+    update: Option<std::ffi::OsString>,
+    ci: Option<std::ffi::OsString>,
+    tf_build: Option<std::ffi::OsString>,
+) -> bool {
+    let ci = match ci {
+        Some(v) => !matches!(v.to_str(), Some("false" | "0" | "")),
+        None => tf_build.is_some(),
+    };
+    update.is_some() && !ci
+}
+
+#[test]
+fn spec_update_is_ignored_under_ci() {
+    let s = |v: &str| Some(std::ffi::OsString::from(v));
+    assert!(spec_update_allowed(s("1"), None, None));
+    assert!(!spec_update_allowed(None, None, None));
+    assert!(!spec_update_allowed(s("1"), s("true"), None));
+    assert!(!spec_update_allowed(s("1"), s("1"), None));
+    assert!(!spec_update_allowed(s("1"), None, s("True")));
+    // An explicit `CI=false` wins over `TF_BUILD`, as in insta.
+    assert!(spec_update_allowed(s("1"), s("false"), s("True")));
+    for off in ["false", "0", ""] {
+        assert!(spec_update_allowed(s("1"), s(off), None), "CI={off:?}");
+    }
+}
+
 /// The committed `api/openapi.json` and `api/types.ts` match the code.
-/// Regenerate with `oxledger api-spec` (or OXLEDGER_UPDATE_API_SPEC=1 cargo test).
+/// Regenerate with `oxledger api-spec` (or `OXLEDGER_UPDATE_API_SPEC=1`
+/// with nextest; ignored when `CI` is set, see `spec_update_allowed`).
 #[test]
 fn api_spec_is_current() {
     let doc = openapi::document();
     let json = serde_json::to_string_pretty(&doc).unwrap() + "\n";
     let ts = openapi::typescript(&doc);
-    if std::env::var_os("OXLEDGER_UPDATE_API_SPEC").is_some() {
+    if spec_update_allowed(
+        std::env::var_os("OXLEDGER_UPDATE_API_SPEC"),
+        std::env::var_os("CI"),
+        std::env::var_os("TF_BUILD"),
+    ) {
         std::fs::create_dir_all(api_dir()).unwrap();
         std::fs::write(api_dir().join("openapi.json"), &json).unwrap();
         std::fs::write(api_dir().join("types.ts"), &ts).unwrap();

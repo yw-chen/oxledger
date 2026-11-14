@@ -24,3 +24,11 @@ opt-level = 3
 
 [profile.dev.package.digest]
 opt-level = 3
+
+# Snapshot diffs (insta's recommendation; docs/impl/testing-playbook.md "golden"):
+# comparing and diffing large snapshots is slow unoptimized.
+[profile.dev.package.insta]
+opt-level = 3
+
+[profile.dev.package.similar]
+opt-level = 3

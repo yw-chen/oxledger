@@ -571,3 +571,139 @@ async fn state_report_says_why_it_cannot_connect() {
     assert_eq!(msg, "state: cannot connect: no answer within 3s");
     assert!(took < Duration::from_secs(10), "the report took {took:?}");
 }
+
+// ---------------------------------------------------------------- golden normalizer (09b G4)
+
+/// The same id gets the same label everywhere (values, inside text, object
+/// keys, either case); different ids get different labels, in order of
+/// first appearance; named ids keep their name.
+#[test]
+fn snap_ids_keep_their_references() {
+    use common::snap::Normalizer;
+    use serde_json::json;
+    let a = uuid::Uuid::now_v7();
+    let b = uuid::Uuid::now_v7();
+    let alice = uuid::Uuid::now_v7();
+    let mut n = Normalizer::new();
+    n.name(alice, "user:alice");
+    let v = json!({
+        "issue": a.to_string(),
+        "project": b,
+        "author": alice,
+        "parent": a.to_string().to_uppercase(),
+        "text": format!("moved {a} under {b}"),
+        "by_id": {a.to_string(): 1},
+        "not_an_id": format!("x{a}"),
+    });
+    let out = n.json(&v);
+    assert_eq!(
+        out,
+        json!({
+            "issue": "<id1>",
+            "project": "<id2>",
+            "author": "<user:alice>",
+            "parent": "<id1>",
+            "text": "moved <id1> under <id2>",
+            "by_id": {"<id1>": 1},
+            "not_an_id": format!("x{a}"),
+        })
+    );
+    // Same normalizer: the labels carry over.
+    assert_eq!(n.text(&b.to_string()), "<id2>");
+    assert_eq!(n.label(&uuid::Uuid::nil().to_string()), "<id3>");
+}
+
+/// Timestamps become `<ts>` (RFC 3339 with or without fraction and zone, and
+/// PostgreSQL's space form); dates and other numbers stay.
+#[test]
+fn snap_timestamps_and_numbers() {
+    use common::snap::{Normalizer, replace_timestamps};
+    use serde_json::json;
+    for s in [
+        "2026-11-14T01:02:03Z",
+        "2026-11-14T01:02:03.123456Z",
+        "2026-11-14T01:02:03+08:00",
+        "2026-11-14 01:02:03.5+00:00",
+        // PostgreSQL's text output: hour-only offset.
+        "2026-11-14 01:02:03.5+00",
+        "2026-11-14 01:02:03-05",
+        "2026-11-14T01:02:03+0530",
+        "2026-11-14T01:02:03",
+    ] {
+        assert_eq!(replace_timestamps(s), "<ts>", "{s}");
+        assert_eq!(replace_timestamps(&format!("at {s}.")), "at <ts>.", "{s}");
+    }
+    for s in ["2026-11-14", "12026-11-14T01:02:03Z0", "v1.2.3", "01:02:03"] {
+        assert_eq!(replace_timestamps(s), s, "{s}");
+    }
+    let mut n = Normalizer::new();
+    let v = json!({
+        "score": 0.123456789,
+        "neg": -2.00004,
+        "tiny": -0.00001,
+        "count": 3,
+        "big": 12345678901234i64,
+        "created_at": chrono::Utc::now(),
+    });
+    assert_eq!(
+        n.json(&v),
+        json!({"score": 0.1235, "neg": -2.0, "tiny": 0.0, "count": 3, "big": 12345678901234i64, "created_at": "<ts>"})
+    );
+    n.float_digits(1);
+    assert_eq!(n.json(&json!(0.26)), json!(0.3));
+}
+
+/// `xid` / `*_xid` keys go, so do keys asked for; set-like arrays are
+/// sorted after normalizing, other arrays keep their order.
+#[test]
+fn snap_drops_xids_and_sorts_sets() {
+    use common::snap::Normalizer;
+    use serde_json::json;
+    let mut n = Normalizer::new();
+    n.drop_key("generation").set_key("tags");
+    let v = json!({
+        "xid": 812,
+        "commit_xid": "813",
+        "generation": 4,
+        "tags": ["b", "a", "c"],
+        "items": ["b", "a"],
+        "nested": [{"xid": 1, "tags": [2, 1]}],
+    });
+    assert_eq!(
+        n.json(&v),
+        json!({"tags": ["a", "b", "c"], "items": ["b", "a"], "nested": [{"tags": [1, 2]}]})
+    );
+}
+
+/// Secrets are masked anywhere, longest first, and `assert_no_secrets`
+/// fails when one is still there.
+#[test]
+fn snap_masks_secrets() {
+    use common::snap::Normalizer;
+    use serde_json::json;
+    let mut n = Normalizer::new();
+    n.secret("sk-test-123").secret("sk-test-123-long");
+    let out = n.pretty(&json!({
+        "h": "Bearer sk-test-123",
+        "k": "sk-test-123-long",
+        "sk-test-123": true,
+    }));
+    assert!(!out.contains("sk-test"), "{out}");
+    assert!(out.contains("\"Bearer <secret>\""), "{out}");
+    assert!(out.contains("\"k\": \"<secret>\""), "{out}");
+    let leaked = std::panic::catch_unwind(|| n.assert_no_secrets("x sk-test-123 y"));
+    assert!(leaked.is_err(), "a leaked secret must fail");
+    // The panic message does not repeat the secret.
+    let msg = common::panic_text(&*leaked.unwrap_err());
+    assert!(!msg.contains("sk-test"), "{msg}");
+}
+
+/// `settings` puts snapshots under `tests/snapshots/<topic>/` without the
+/// module prefix.
+#[test]
+fn snap_settings_fix_the_path() {
+    let s = common::snap::settings("errors");
+    assert_eq!(s.snapshot_path(), std::path::Path::new("snapshots/errors"));
+    assert!(!s.prepend_module_to_snapshot());
+    assert!(std::panic::catch_unwind(|| common::snap::settings("../x")).is_err());
+}

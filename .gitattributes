@@ -1,2 +1,7 @@
 # Keep LF everywhere (core.autocrlf=true on Windows was converting files to CRLF on checkout).
 * text=auto eol=lf
+# Golden files (docs/research/09b G17): listed explicitly so text=auto
+# cannot guess them binary. insta also compares with CRLF → LF, so line
+# endings are asserted in Rust, not through snapshots.
+*.snap text eol=lf
+*.aria.yml text eol=lf

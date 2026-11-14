@@ -61,5 +61,10 @@ webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 http-body-util = "0.1"
+# Golden tests (docs/research/09b G1/G2): no `redactions` (it pulls pest;
+# tests/common/snap.rs normalizes instead).
+insta = { version = "=1.49.0", default-features = false, features = ["json", "glob"] }
+# Invariants next to the golden tests (09b G13).
+proptest = "1.12.0"
 # Integration tests need the test-support helpers.
 oxledger = { path = ".", features = ["test-support"] }

@@ -265,6 +265,73 @@ async fn keys_match_whole() {
     );
 }
 
+/// Golden (09b G7 (4)): the ranking of a fixed corpus
+/// (`tests/golden/search/corpus.json`) for fixed queries, as alice sees
+/// it: rank, key, match strength and fields, subject. There is no score in
+/// the API (rank and strength only), so nothing needs rounding; keys are
+/// fixed by the insertion order.
+#[tokio::test]
+async fn golden_ranking_on_a_fixed_corpus() {
+    use oxledger::test_support::{NewIssue, create_issue};
+    use std::fmt::Write;
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let corpus: Value = serde_json::from_str(include_str!("golden/search/corpus.json")).unwrap();
+    for it in corpus["issues"].as_array().unwrap() {
+        let project = match it["project"].as_str().unwrap() {
+            "WEB" => w.web,
+            "AUTH" => w.auth_p,
+            p => panic!("unknown project {p}"),
+        };
+        create_issue(
+            &pool,
+            NewIssue {
+                project_id: project,
+                tracker_id: w.bug,
+                status_id: w.new,
+                subject: it["subject"].as_str().unwrap(),
+                description: it["description"].as_str().unwrap(),
+                author_id: w.bob,
+                assigned_to_id: None,
+                is_private: false,
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    w.app.index.sync_all(&pool).await.unwrap();
+    let mut out = String::new();
+    for q in corpus["queries"].as_array().unwrap() {
+        let q = q.as_str().unwrap();
+        let r = search_as(&w.app, w.alice_ctx, q).await;
+        writeln!(
+            out,
+            "## {q}  (outcome={}, truncated={})",
+            r.outcome, r.truncated
+        )
+        .unwrap();
+        for it in &r.items {
+            let m = it.matched.as_ref().unwrap();
+            let strength = serde_json::to_value(m.strength).unwrap();
+            writeln!(
+                out,
+                "{:>2} {:<7} {:<8} {:<28} {}",
+                it.rank.unwrap(),
+                it.key,
+                strength.as_str().unwrap(),
+                m.fields.join(","),
+                it.subject.as_deref().unwrap_or("")
+            )
+            .unwrap();
+        }
+        out.push('\n');
+    }
+    common::snap::settings("search").bind(|| {
+        insta::assert_snapshot!("ranking", out);
+    });
+}
+
 // ---------------------------------------------------------------- T-M1-64
 
 /// T-M1-64: 登入 expands to SSO through a concept and the hit says so;

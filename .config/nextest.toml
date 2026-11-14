@@ -64,3 +64,20 @@ filter = '''
         | test(=m1_2_people_lanes_do_not_depend_on_counting)))
 '''
 threads-required = 'num-test-threads'
+
+# Merge profile (docs/research/09b G5, G16): the full run before merging,
+#   CI=true cargo insta test --test-runner nextest --nextest-profile merge --dnd \
+#     --features test-support,github,ai --unreferenced=reject
+# Custom profiles inherit everything above, the default profile's test
+# groups and overrides included; this only pins what the merge run must
+# not depend on. Retries stay off (D7); if they are ever turned on, a test
+# that passes only on retry still fails the merge.
+[profile.merge]
+retries = 0
+flaky-result = "fail"
+fail-fast = false
+
+# cargo-mutants (09b G12; .cargo/mutants.toml passes `--profile mutants`):
+# a mutant is caught at the first failing test, so stop there.
+[profile.mutants]
+fail-fast = true

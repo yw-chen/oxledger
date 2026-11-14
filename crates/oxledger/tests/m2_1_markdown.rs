@@ -34,6 +34,7 @@ use oxledger::policy::PolicyMode;
 use oxledger::redaction::{self, RedactInput, Target};
 use oxledger::search::{Layout, SearchIndex};
 use oxledger::service::{self, App, SearchParams};
+use proptest::strategy::Strategy as _;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -484,6 +485,113 @@ fn t_m2_01_xss_corpus() {
     assert!(forged.refs.logins.is_empty());
 }
 
+/// Pieces the sanitizer property (below) glues together: markup that opens
+/// links, tags, entities and references, and the characters that break them.
+const FRAGMENTS: &[&str] = &[
+    "<script>",
+    "</script>",
+    "<img src=x onerror=alert(1)>",
+    "<a href=\"",
+    "\">",
+    "<svg onload=alert(1)>",
+    "<input type=text>",
+    "javascript:",
+    "JaVaScRiPt:",
+    "data:text/html,",
+    "vbscript:",
+    "&#106;",
+    "&#x6A;",
+    "&colon;",
+    "%6A",
+    "[x](",
+    "![i](",
+    ")",
+    "]",
+    "[r]: ",
+    "[x][r]",
+    "\"",
+    "'",
+    "`",
+    "```\n",
+    "<",
+    ">",
+    "//evil.example/",
+    "/\\evil.example/",
+    "/.//",
+    "/%2E//",
+    "https://ok.example/",
+    "http://a",
+    "www.x.example",
+    "mailto:a@example.com",
+    "@bob",
+    "AUTH-1",
+    "[^1]",
+    "\n\n[^1]: ",
+    "[[x|y]]",
+    "| a | b |\n|---|---|\n",
+    "- [ ] ",
+    "# ",
+    "> ",
+    "<!--",
+    "-->",
+    " ",
+    "\n",
+    "\r\n",
+    "\r",
+    "\t",
+    "\u{0}",
+    "\u{1}",
+    "\u{202e}",
+    "<span data-ox-ref=\"user\" data-ox-v=\"bob\">",
+    " onmouseover=alert(1) ",
+    " style=\"x\" ",
+];
+
+/// proptest settings: few cases (each renders four times), failures kept in
+/// `crates/oxledger/proptest-regressions/` (committed).
+fn prop_config(file: &'static str) -> proptest::test_runner::Config {
+    proptest::test_runner::Config {
+        cases: 256,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(file),
+        )),
+        ..Default::default()
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(prop_config(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/proptest-regressions/m2_1_markdown.txt"
+    )))]
+
+    /// 09b G13: whatever the text, in either format, by a person or an
+    /// agent, stage 1 passes `assert_safe` (the allow list of tags,
+    /// attributes, classes and link schemes) and is deterministic.
+    #[test]
+    fn prop_stage1_is_always_safe(
+        parts in proptest::collection::vec(
+            proptest::prop_oneof![
+                3 => proptest::sample::select(FRAGMENTS).prop_map(String::from),
+                1 => "[a-zA-Z0-9 .:/=-]{1,6}",
+                1 => "\\PC{1,3}",
+            ],
+            0..24,
+        ),
+        markdown_format in proptest::bool::ANY,
+        agent in proptest::bool::ANY,
+    ) {
+        let text = parts.concat();
+        let format = if markdown_format { TextFormat::Markdown } else { TextFormat::Plain };
+        let s = markdown::render_stage1(&text, src(format, agent));
+        assert_safe(&text, &s.html);
+        proptest::prop_assert_eq!(&s, &markdown::render_stage1(&text, src(format, agent)));
+        proptest::prop_assert!(
+            s.refs.issues.len() + s.refs.logins.len() <= markdown::MAX_REFS
+        );
+    }
+}
+
 /// R-M2, R-M3: a path that normalizes (WHATWG) to `//host` or `/\host` is
 /// that host: an external link, never a site path. Inline, reference and
 /// image links; a person's and an agent's.
@@ -772,6 +880,72 @@ fn plain_text_extraction() {
     // Plain text is as it is.
     let raw = "**x** [y](https://z.example)";
     assert_eq!(markdown::plain_text(raw, TextFormat::Plain), raw);
+}
+
+/// Golden (09b G7 (3)): ordinary Markdown (`tests/golden/markdown/*.md`,
+/// one snapshot each) in Markdown by a person and by an agent, and as
+/// plain text. Every output also passes `assert_safe`. The XSS corpus stays
+/// in Rust (`XSS`, invisible and control characters); line endings are
+/// asserted in `cr_line_endings` (insta compares with CRLF → LF).
+#[test]
+fn golden_markdown_examples() {
+    use std::fmt::Write;
+    common::snap::settings("markdown").bind(|| {
+        insta::glob!("golden/markdown/*.md", |path| {
+            let text = std::fs::read_to_string(path).unwrap();
+            assert!(
+                !text.contains('\r'),
+                "{}: corpus files are LF (.gitattributes)",
+                path.display()
+            );
+            let mut out = String::new();
+            for (format, agent) in [
+                (TextFormat::Markdown, false),
+                (TextFormat::Markdown, true),
+                (TextFormat::Plain, false),
+            ] {
+                let s = markdown::render_stage1(&text, src(format, agent));
+                assert_safe(&path.display().to_string(), &s.html);
+                writeln!(
+                    out,
+                    "=== {} agent={agent}\n{}\nissues={:?} logins={:?} truncated={}\n",
+                    format.as_str(),
+                    s.html.trim_end(),
+                    s.refs.issues,
+                    s.refs.logins,
+                    s.truncated
+                )
+                .unwrap();
+            }
+            insta::assert_snapshot!("render", out);
+        });
+    });
+}
+
+/// Line endings (insta cannot see them: it compares with `\r\n` → `\n`):
+/// CRLF renders exactly like LF in both formats; a lone CR is a line break
+/// in Markdown. A lone CR in plain text currently gives no `<br>` (the two
+/// lines run together); that is left unasserted beyond "nothing but the
+/// break is lost" until it is decided whether it is intended.
+#[test]
+fn cr_line_endings() {
+    for format in [TextFormat::Markdown, TextFormat::Plain] {
+        for (lf, crlf) in [
+            ("a\nb\n\n- x\n- y\n", "a\r\nb\r\n\r\n- x\r\n- y\r\n"),
+            ("# t\n\nAUTH-1 @bob\n", "# t\r\n\r\nAUTH-1 @bob\r\n"),
+            ("x  \ny\n", "x  \r\ny\r\n"),
+        ] {
+            let a = markdown::render_stage1(lf, src(format, false));
+            let b = markdown::render_stage1(crlf, src(format, false));
+            assert_eq!(a, b, "{format:?} {crlf:?}");
+            assert!(!b.html.contains('\r'), "{format:?} {crlf:?}: {:?}", b.html);
+        }
+    }
+    let lone = markdown::render_stage1("a\rb", src(TextFormat::Markdown, false));
+    assert_eq!(lone.html, "<p>a\nb</p>\n");
+    let plain = markdown::render_stage1("a\rb", src(TextFormat::Plain, false)).html;
+    assert!(!plain.contains('\r'), "{plain:?}");
+    assert!(plain.contains('a') && plain.contains('b'), "{plain:?}");
 }
 
 /// T-M2-08 (no database): `plain` text keeps its characters.

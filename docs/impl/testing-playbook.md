@@ -192,6 +192,103 @@ nextest 的 `threads-required`、`drop-database` 群組只管得到同一次 run
 處理方式：這兩個測試（`s5_changesets`、`e5_live`）改成 `#[test]`，用 `common::run_with_big_stack` 在 16 MiB 堆疊的執行緒上開 current-thread runtime 跑（和 `#[tokio::test]` 一樣）。
 全套不設 `RUST_MIN_STACK`。以後有新的測試溢位（nextest 顯示 `ABORT … 0xc00000fd` 或 `has overflowed its stack`），同樣包一層，不要改回全域設定。
 
+## Golden 測試（insta、proptest、mutation；決定 G1–G18 見 `decisions.tsv`，依據見 `docs/research/09b-golden-testing-review.md` §4）
+
+### 有哪些快照
+
+| 主題（`tests/snapshots/<主題>/`） | 測試 | 內容 |
+|---|---|---|
+| `errors` | `src/error.rs` 的 `error_code_table`（單元測試） | 全部錯誤碼（目前 73 個）依 code 排序：HTTP status、retryable、next_actions。`ErrorCode::ALL` 和 enum 的 JSON schema 比對，漏列一個 variant 就失敗，所以新增錯誤碼一定會進表。前端 `errors.ts` 的對照在前端測試 |
+| `ai` | `m1_10_ai_run::t_m1_117_both_protocols_same_events`（`ai` feature） | 兩種 protocol 各兩輪送給 provider 的請求：path、幾個 header（key 遮成 `<secret>`）、body（system prompt、tools、歷史、max_tokens）。header 與 key 的明確斷言保留 |
+| `markdown` | `m2_1_markdown::golden_markdown_examples` | `tests/golden/markdown/*.md` 每檔一個快照（`render@<檔名>.md.snap`）：Markdown（人、agent）與 plain 三種的 stage 1 HTML 與 refs；每個輸出也過 `assert_safe` |
+| `search` | `m1_7_search::golden_ranking_on_a_fixed_corpus` | `tests/golden/search/corpus.json` 的固定語料與查詢：名次、key、strength、命中欄位、subject（API 沒有分數，不用四捨五入） |
+| `schema` | `golden_schema::schema_catalog` | migration 建出的 schema，查 `pg_catalog` 後在 Rust 排序：`migrations`、`columns`、`constraints`、`indexes`、`triggers`、`functions`（函式本體只放 12 字的 md5）、`types` |
+
+- 斷言一律具名，用 `common::snap::settings("<主題>").bind(|| insta::assert_snapshot!("<名稱>", …))`（`src` 的單元測試直接寫 `with_settings!`，路徑指到 `../tests/snapshots/<主題>`）。快照路徑與名稱不跟著 module 或 binary 走，D6 合併 test binary 時不用搬。
+- 語料放 `tests/golden/<主題>/`，用 `insta::glob!` 跑；`INSTA_GLOB_FILTER`（或 `cargo insta test --glob-filter`）可以只跑部分語料。
+- `schema_catalog` 用 `<slot DB>_schema`：每次 `DROP SCHEMA public CASCADE` 後重跑 migration，不是 `DROP DATABASE`，所以不在 `drop-database` 群組；別的測試留在 slot DB 的東西（`issue_cf_f<n>` 動態索引、失敗時沒刪掉的 trigger）不會進快照。
+
+### 正規化（`tests/common/snap.rs`）
+
+拍之前先過 `Normalizer`，**保留參照關係**，不要把不確定的值全抹成同一個字串：
+
+| 值 | 規則 |
+|---|---|
+| uuid（值、字串裡、物件 key，大小寫都算） | 依第一次出現的順序 `<id1>`、`<id2>`…；同一個 id 永遠同一個標籤。已知的實體先 `name(id, "user:alice")` 得 `<user:alice>` |
+| 時間（RFC 3339、PostgreSQL 的空白格式） | `<ts>`；只有日期的字串保留 |
+| `xid`、`*_xid` 的 key | 刪掉；其他時序值（frontier、generation）用 `drop_key` 刪，或乾脆不放進快照 |
+| 浮點數 | 四捨五入，預設 4 位（`float_digits`） |
+| 集合語意的陣列 | `set_key("tags")`，正規化後排序 |
+| 密鑰 | `secret(KEY)` 遮成 `<secret>`；`pretty()`／`assert_no_secrets()` 另外斷言原值不在輸出 |
+
+- 正規化函式的測試在 `t1_test_infra` 的 `snap_*`（放在一個 binary，不會在每個 include `common` 的 binary 各跑一次）。
+- id 第一次出現的位置要是確定的（不要先出現在一個沒排序的集合裡），否則標籤號碼會變。
+- 快照只拍「這個測試要守的那一塊」，單檔超過約 200 行就考慮拆（`schema` 的 `columns` 例外：一行一欄，拆開反而難審）。
+
+### 換行（G17）
+
+insta 比較前會把 `\r\n` 換成 `\n`、去掉結尾空白，所以**快照看不出換行差異**。和 CR 有關的行為一律用明確斷言（`m2_1_markdown::cr_line_endings`），語料檔一律 LF（`golden_markdown_examples` 讀到 `\r` 就失敗）。
+`.gitattributes` 明列 `*.snap text eol=lf`、`*.aria.yml text eol=lf`；XSS 語料（含控制字元、RTL override）留在 Rust 常數，不放進文字檔。
+
+### 本機：新增或更新快照
+
+```powershell
+$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+cargo nextest run -p oxledger --features test-support,github,ai -E 'binary(m2_1_markdown)'   # 不符：失敗並留下 .snap.new
+cargo insta review                                                                         # 逐一看 diff，a 接受、r 拒絕
+cargo insta test -p oxledger --test-runner nextest --dnd --features test-support,github,ai --review --test m2_1_markdown   # 一次收集多個再審（cargo-insta 不能轉交 nextest 的 -E；用 --lib／--test 選 binary，`--` 之後放測試名稱）
+```
+
+- `.snap.new`、`.pending-snap` 在 `.gitignore`，不會被 commit。
+- 不在任何腳本寫 `INSTA_UPDATE=always`、`cargo insta accept`、`--accept`。新快照第一次產生後，人工看過內容合理才接受；看到像 bug 的值要回報，不要直接接受。
+- **新快照在不同 slot 連跑兩次**確認穩定（G16），之後才 commit。
+- PR 說明列出每個改動的快照與原因（新增、修改分兩節），說不出原因就是 bug 或正規化不足。
+
+### 合流（G5）
+
+```powershell
+$env:CI = 'true'
+cargo insta test -p oxledger --test-runner nextest --nextest-profile merge --dnd --features test-support,github,ai --unreferenced=reject
+Remove-Item Env:CI
+```
+
+- `CI=true` 時 `cargo insta test` 等同 `--check`：不寫任何檔，不符、**缺少**的快照都失敗。
+- `--unreferenced=reject`：全部測試通過後，`crates/oxledger` 底下沒被任何測試用到的 `.snap` 讓這次失敗。**只在全套時用**（只跑部分測試時沒跑到的快照會被當成孤兒）；**不要設 `auto`**（非 CI 時會刪檔）。
+- features 一定要 `test-support,github,ai`：`m1_10_ai_run` 等檔有 `#![cfg(feature = …)]`，沒編進來時它們的快照會被當成孤兒。`#[ignore]` 或需要外部資源（真的模型、key）的測試不擁有快照。
+- `--dnd`（`--disable-nextest-doctest`）：不然 cargo-insta 會另外用 `cargo test --doc` 跑 doctest，繞過 nextest 的逾時。
+- `merge` profile（`.config/nextest.toml`）繼承 default 的群組與 overrides，只固定 `retries = 0`、`flaky-result = "fail"`（以後開重試時，重試才過的測試在合流仍算失敗）、`fail-fast = false`。
+- 2026-11-14 實測：用上面的合流指令只跑本次的快照測試（`--lib --test golden_schema --test m1_10_ai_run --test m1_7_search --test m2_1_markdown -- error_code_table golden_ t_m1_117 schema_catalog`）全過、`no unreferenced snapshots found`；在 `snapshots/errors/` 放一個多餘的 `.snap` 時以 `aborting because of unreferenced snapshots` 失敗。
+- 合流前 `git status --porcelain` 不得有 `*.snap.new`、`*.pending-snap`。
+- OpenAPI golden（`api/openapi.json`、`api/types.ts`）維持原機制，`CI` 有設時忽略 `OXLEDGER_UPDATE_API_SPEC`，過期就失敗（`s2_api::spec_update_allowed`，判斷和 insta 的 `CI` 一致）。
+
+### proptest（G13）
+
+| 不變式 | 位置 |
+|---|---|
+| filter AST（`FilterInput`）序列化成 JSON 再 `parse_input` 回來不變 | `src/filter.rs` 的 `prop_filter_input_round_trips` |
+| 任何文字、兩種格式、人或 agent，stage 1 都過 `assert_safe`（允許清單），而且結果確定 | `m2_1_markdown::prop_stage1_is_always_safe` |
+| visibility：`simplify` 不改語意且冪等；`can_see` 等於模組文件寫的 Redmine 規則（另寫一份不經 `Pred` 的參考實作）；匿名看不到私有、多一個角色不會少看到 | `ox-core` `src/visibility.rs` 的 `prop_*` |
+
+- 案例數 256–512，整組不到幾秒；失敗的反例存在 `crates/oxledger/proptest-regressions/`、`crates/ox-core/proptest-regressions/`，**要 commit**（下次先重跑這些反例）。
+- 反例修好後也可以變成 golden 語料或明確斷言。
+
+### Mutation（G12）
+
+設定在 `.cargo/mutants.toml`：`test_tool = "nextest"`、`additional_cargo_args = ["--profile", "mutants"]`（**nextest** 的 profile，`fail-fast = true`；不是 cargo-mutants 自己的 `--profile`，那是 cargo 建置 profile）、`features = test-support,github,ai`。
+
+```powershell
+git diff main > $env:TEMP\d.diff
+cargo mutants --in-diff $env:TEMP\d.diff -j1 -- -E 'binary(m2_1_markdown)'
+```
+
+- 只在 diff 範圍跑，`-j1`；等 D2 每個測試都有自己的 slot DB 之後再開平行。`--in-diff` 只選 mutant，不縮小測試範圍，所以要自己用 `-E` 過濾。
+- 不擋合流。只改測試的 diff 不會產生 mutant。nextest 不跑 doctest，只被 doctest 抓到的 mutant 會顯示 missed。
+- `cargo mutants --list` 不跑測試，可以用來確認設定讀得到（golden 導入時只跑過這個，還沒有實際跑過 mutant）。設定裡的 `--profile mutants` 也會傳給 `cargo check --tests`，所以不要用 `cargo mutants --check`。
+
+### 覆蓋對照（G18）
+
+cargo-llvm-cov 0.9.1 與 rustup `llvm-tools` 已裝。D2 之後每月或每個里程碑跑一次全套覆蓋，產生「原始碼檔 → 測試」的對照，校正 T7 的選測試對照表；不做即時的 coverage 選測試。一次約一輪全套的時間。
+
 ## 舊跑法（只在必要時）
 
 ```powershell

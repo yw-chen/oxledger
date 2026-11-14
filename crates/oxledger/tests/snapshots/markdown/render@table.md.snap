@@ -1,0 +1,65 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/table.md
+---
+=== markdown agent=false
+<table>
+<thead>
+<tr>
+<th>欄位</th>
+<th align="left">Left</th>
+<th align="center">Center</th>
+<th align="right">Right</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td align="left">1</td>
+<td align="center">2</td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td><code>b</code></td>
+<td align="left"><strong>x</strong></td>
+<td align="center"><a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">l</a></td>
+<td align="right"><span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span></td>
+</tr>
+</tbody>
+</table>
+issues={"AUTH-1"} logins={} truncated=false
+
+=== markdown agent=true
+<table>
+<thead>
+<tr>
+<th>欄位</th>
+<th align="left">Left</th>
+<th align="center">Center</th>
+<th align="right">Right</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td align="left">1</td>
+<td align="center">2</td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td><code>b</code></td>
+<td align="left"><strong>x</strong></td>
+<td align="center"><a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example" data-ox-agent="">l</a></td>
+<td align="right"><span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span></td>
+</tr>
+</tbody>
+</table>
+issues={"AUTH-1"} logins={} truncated=false
+
+=== plain agent=false
+<p>| 欄位 | Left | Center | Right |<br>
+|------|:-----|:------:|------:|<br>
+| a    | 1    | 2      | 3     |<br>
+| `b`  | **x** | [l](<a href="https://ok.example/" target="_blank" rel="noopener noreferrer nofollow ugc" class="ox-ext" data-ox-host="ok.example">https://ok.example</a>) | <span data-ox-ref="issue" data-ox-v="AUTH-1">AUTH-1</span> |<br>
+</p>
+issues={"AUTH-1"} logins={} truncated=false

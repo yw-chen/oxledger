@@ -1,0 +1,16 @@
+- main:
+  - heading "通知" [level=1]
+  - tablist:
+    - tab "未讀" [selected]
+    - tab "全部"
+  - combobox "專案":
+    - option "所有專案" [selected]
+    - option "AUTH 登入系統"
+    - option "WEB 官方網站"
+  - button "全部標為已讀" [disabled]
+  - link "通知偏好":
+    - /url: /me/notifications
+    - text: ⚙
+  - text: 沒有未讀通知。
+  - button "查看全部"
+  - paragraph: 鍵盤：J／K 上下、Enter 開啟、E 標為已讀。

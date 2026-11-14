@@ -99,6 +99,71 @@ describe('toolbar edits', () => {
 	});
 });
 
+describe('toolbar edits (golden, G9)', () => {
+	// The same calls as MarkdownEditor.svelte's toolbar. ⟦ ⟧ mark the selection after the edit.
+	const tools: [string, (t: string, s: number, e: number) => { text: string; selStart: number; selEnd: number }][] = [
+		['bold', (t, s, e) => wrapSel(t, s, e, '**', '**', '粗體')],
+		['italic', (t, s, e) => wrapSel(t, s, e, '*', '*', '斜體')],
+		['heading', (t, s, e) => prefixLines(t, s, e, '### ')],
+		['list', (t, s, e) => prefixLines(t, s, e, '- ')],
+		['numbered', (t, s, e) => prefixLines(t, s, e, 'n. ')],
+		['task', (t, s, e) => prefixLines(t, s, e, '- [ ] ')],
+		['quote', (t, s, e) => prefixLines(t, s, e, '> ')],
+		['code', (t, s, e) => (t.slice(s, e).includes('\n') ? codeBlock(t, s, e) : wrapSel(t, s, e, '`', '`', '程式碼'))],
+		['link', (t, s, e) => wrapSel(t, s, e, '[', '](https://)', '連結文字')],
+		['table', (t, s) => table(t, s)]
+	];
+	const run = (text: string, s: number, e: number) =>
+		tools
+			.map(([name, f]) => {
+				const r = f(text, s, e);
+				return `${name}: ${JSON.stringify(r.text.slice(0, r.selStart) + '⟦' + r.text.slice(r.selStart, r.selEnd) + '⟧' + r.text.slice(r.selEnd))}`;
+			})
+			.join('\n');
+	it('selection inside one line', () => {
+		expect(run('前文 選取 後文', 3, 5)).toMatchInlineSnapshot(`
+			"bold: "前文 **⟦選取⟧** 後文"
+			italic: "前文 *⟦選取⟧* 後文"
+			heading: "⟦### 前文 選取 後文⟧"
+			list: "⟦- 前文 選取 後文⟧"
+			numbered: "⟦1. 前文 選取 後文⟧"
+			task: "⟦- [ ] 前文 選取 後文⟧"
+			quote: "⟦> 前文 選取 後文⟧"
+			code: "前文 \`⟦選取⟧\` 後文"
+			link: "前文 [⟦選取⟧](https://) 後文"
+			table: "前文 \\n\\n| ⟦欄位⟧ | 欄位 |\\n|---|---|\\n|  |  |\\n選取 後文""
+		`);
+	});
+	it('selection across two lines', () => {
+		expect(run('a\none\ntwo\nb', 2, 9)).toMatchInlineSnapshot(`
+			"bold: "a\\n**⟦one\\ntwo⟧**\\nb"
+			italic: "a\\n*⟦one\\ntwo⟧*\\nb"
+			heading: "a\\n⟦### one\\n### two⟧\\nb"
+			list: "a\\n⟦- one\\n- two⟧\\nb"
+			numbered: "a\\n⟦1. one\\n2. two⟧\\nb"
+			task: "a\\n⟦- [ ] one\\n- [ ] two⟧\\nb"
+			quote: "a\\n⟦> one\\n> two⟧\\nb"
+			code: "a\\n\`\`\`\\n⟦one\\ntwo⟧\\n\`\`\`\\n\\nb"
+			link: "a\\n[⟦one\\ntwo⟧](https://)\\nb"
+			table: "a\\n| ⟦欄位⟧ | 欄位 |\\n|---|---|\\n|  |  |\\none\\ntwo\\nb""
+		`);
+	});
+	it('empty selection mid-line', () => {
+		expect(run('ab', 1, 1)).toMatchInlineSnapshot(`
+			"bold: "a**⟦粗體⟧**b"
+			italic: "a*⟦斜體⟧*b"
+			heading: "⟦### ab⟧"
+			list: "⟦- ab⟧"
+			numbered: "⟦1. ab⟧"
+			task: "⟦- [ ] ab⟧"
+			quote: "⟦> ab⟧"
+			code: "a\`⟦程式碼⟧\`b"
+			link: "a[⟦連結文字⟧](https://)b"
+			table: "a\\n\\n| ⟦欄位⟧ | 欄位 |\\n|---|---|\\n|  |  |\\nb""
+		`);
+	});
+});
+
 describe('limits and formats', () => {
 	it('counts UTF-8 bytes', () => {
 		expect(utf8Bytes('ab')).toBe(2);

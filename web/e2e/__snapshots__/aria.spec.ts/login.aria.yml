@@ -1,0 +1,6 @@
+- text: oxledger 帳號
+- textbox "帳號"
+- text: 密碼
+- textbox "密碼"
+- button "登入"
+- paragraph: 忘記密碼請聯絡管理員。

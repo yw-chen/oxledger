@@ -664,6 +664,78 @@ mod tests {
         }
     }
 
+    /// Every variant's name, read from the derived JSON schema (so it
+    /// follows the enum itself, not a hand-kept list).
+    fn schema_codes() -> std::collections::BTreeSet<String> {
+        fn walk(v: &Value, out: &mut std::collections::BTreeSet<String>) {
+            match v {
+                Value::Object(m) => {
+                    if let Some(Value::String(s)) = m.get("const") {
+                        out.insert(s.clone());
+                    }
+                    if let Some(Value::Array(xs)) = m.get("enum") {
+                        out.extend(xs.iter().filter_map(|x| x.as_str().map(String::from)));
+                    }
+                    m.values().for_each(|x| walk(x, out));
+                }
+                Value::Array(xs) => xs.iter().for_each(|x| walk(x, out)),
+                _ => {}
+            }
+        }
+        let mut out = Default::default();
+        walk(schemars::schema_for!(ErrorCode).as_value(), &mut out);
+        out
+    }
+
+    /// Golden (09b G7 (1)): code → HTTP status → retryable → next_actions,
+    /// sorted by code. `ALL` must hold every variant (checked against the
+    /// derived schema), so a new code always lands in the table. The front
+    /// end checks its messages against the same codes (web errors.ts).
+    #[test]
+    fn error_code_table() {
+        let all: std::collections::BTreeSet<String> = ErrorCode::ALL
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect();
+        assert_eq!(all.len(), ErrorCode::ALL.len(), "ALL has a duplicate");
+        assert_eq!(all, schema_codes(), "ErrorCode::ALL misses a variant");
+        let mut rows: Vec<(&str, u16, bool, String)> = ErrorCode::ALL
+            .iter()
+            .map(|c| {
+                let next = c
+                    .next_actions()
+                    .iter()
+                    .map(|a| {
+                        serde_json::to_value(a)
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (c.as_str(), c.http_status(), c.retryable(), next)
+            })
+            .collect();
+        rows.sort();
+        let w = rows.iter().map(|r| r.0.len()).max().unwrap();
+        let mut table = format!("{:w$}  status  retryable  next_actions\n", "code", w = w);
+        for (code, status, retry, next) in &rows {
+            table.push_str(&format!(
+                "{code:w$}  {status:<6}  {:<9}  {next}\n",
+                if *retry { "yes" } else { "no" },
+                w = w
+            ));
+        }
+        insta::with_settings!({
+            snapshot_path => "../tests/snapshots/errors",
+            prepend_module_to_snapshot => false,
+            omit_expression => true,
+        }, {
+            insta::assert_snapshot!("error_code_table", table);
+        });
+    }
+
     #[test]
     fn classify_keeps_api_errors_and_hides_others() {
         let e = api(ErrorCode::NotFound, "no issue X-1");

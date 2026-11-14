@@ -1,0 +1,31 @@
+{
+  "issues": [
+    {"project": "WEB", "subject": "Login page shows a blank screen", "description": "After the deploy the login page is blank in Firefox."},
+    {"project": "WEB", "subject": "Password reset email never arrives", "description": "Users who reset the password get no email; the login works."},
+    {"project": "WEB", "subject": "Dark mode colours on the settings screen", "description": "Contrast is too low in dark mode."},
+    {"project": "WEB", "subject": "Export to CSV drops the last row", "description": "The csv export misses one row when the list is paged."},
+    {"project": "WEB", "subject": "登入頁面空白", "description": "部署之後登入頁面一片空白，重新整理也一樣。"},
+    {"project": "WEB", "subject": "密碼重設信沒有寄出", "description": "重設密碼後沒有收到信件。"},
+    {"project": "AUTH", "subject": "Session token expires too early", "description": "The session_token cookie expires after five minutes instead of an hour."},
+    {"project": "AUTH", "subject": "Rate limit on login attempts", "description": "Too many login attempts should be rate limited per account and per address."},
+    {"project": "AUTH", "subject": "SSO redirect loops between pages", "description": "The SSO login redirects back and forth."},
+    {"project": "AUTH", "subject": "Audit log entry for password change", "description": "A password change writes no audit entry."},
+    {"project": "AUTH", "subject": "parseAuthHeader rejects lowercase bearer", "description": "parse_auth_header fails on 'bearer' in lower case."},
+    {"project": "AUTH", "subject": "Login login login", "description": "Repeated words in the subject."}
+  ],
+  "queries": [
+    "login",
+    "login page",
+    "password",
+    "password reset",
+    "登入",
+    "密碼",
+    "空白",
+    "session token",
+    "csv",
+    "parse auth header",
+    "redirect",
+    "AUTH-3",
+    "nothing-matches-this"
+  ]
+}

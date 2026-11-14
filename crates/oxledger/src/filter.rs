@@ -1584,4 +1584,59 @@ mod tests {
             "the pre-filter narrows most filters ({narrowed})"
         );
     }
+
+    // ------------------------------------------------------------ properties (09b G13)
+
+    use proptest::prelude::*;
+
+    fn arb_value() -> impl Strategy<Value = Json> {
+        // Never null: `parse_input` treats `"value": null` as no value.
+        let leaf = prop_oneof![
+            any::<bool>().prop_map(Json::from),
+            any::<i64>().prop_map(Json::from),
+            (-1.0e9f64..1.0e9).prop_map(Json::from),
+            "[a-zA-Z0-9 :@-]{0,8}".prop_map(Json::from),
+        ];
+        prop_oneof![
+            3 => leaf.clone(),
+            1 => proptest::collection::vec(leaf, 0..3).prop_map(Json::from),
+        ]
+    }
+
+    fn arb_input() -> impl Strategy<Value = FilterInput> {
+        let cond = (
+            r"\PC{0,8}",
+            proptest::sample::select(OPS.map(|(_, o)| o).to_vec()),
+            proptest::option::of(arb_value()),
+            proptest::option::of(1i32..=i32::MAX),
+        )
+            .prop_map(|(field, op, value, definition_version)| {
+                FilterInput::Cond(CondInput {
+                    field,
+                    op,
+                    value,
+                    definition_version,
+                })
+            });
+        cond.prop_recursive(3, 24, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4)
+                    .prop_map(|and| FilterInput::And { and }),
+                proptest::collection::vec(inner, 0..4).prop_map(|or| FilterInput::Or { or }),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// The filter AST survives JSON: what the API documents (the
+        /// serialized shape) parses back to the same tree.
+        #[test]
+        fn prop_filter_input_round_trips(x in arb_input()) {
+            let json = serde_json::to_value(&x).unwrap();
+            let back = parse_input(&json).map_err(|e| TestCaseError::fail(format!("{e:#}: {json}")))?;
+            prop_assert_eq!(back, x);
+        }
+    }
 }

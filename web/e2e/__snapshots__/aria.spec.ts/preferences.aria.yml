@@ -1,0 +1,51 @@
+- main:
+  - tablist:
+    - tab "偏好" [selected]
+    - tab "通知"
+  - heading "偏好" [level=1]
+  - heading "介面角色" [level=2]
+  - checkbox "PM"
+  - text: PM
+  - checkbox "設計師"
+  - text: 設計師
+  - checkbox "工程師"
+  - text: 工程師 只影響預設的首頁和捷徑，不影響權限。
+  - heading "以角色預覽" [level=2]
+  - text: 角色
+  - combobox "角色":
+    - option "（不預覽）" [selected]
+    - option "PM"
+    - option "設計師"
+    - option "工程師"
+  - heading "外觀" [level=2]
+  - radiogroup "主題":
+    - text: ""
+    - radio "深色" [checked]
+    - text: 深色
+    - radio "淺色"
+    - text: 淺色
+    - radio "高對比"
+    - text: 高對比
+    - radio "跟隨系統"
+    - text: 跟隨系統
+  - radiogroup "密度":
+    - text: ""
+    - radio "寬鬆" [checked]
+    - text: 寬鬆
+    - radio "緊湊"
+    - text: 緊湊
+  - heading "左欄捷徑" [level=2]
+  - text: 指派給我
+  - button "上移" [disabled]: ↑
+  - button "下移" [disabled]: ↓
+  - button "移除"
+  - combobox "捷徑類型":
+    - option "＋ 捷徑…" [selected]
+    - option "視圖"
+    - option "分流"
+    - option "看板"
+    - option "時程"
+    - option "我的工時"
+  - button "加入" [disabled]
+  - button "儲存捷徑" [disabled]
+  - text: 看板和時程捷徑開啟你目前所在的專案（不在專案裡時開第一個專案）。

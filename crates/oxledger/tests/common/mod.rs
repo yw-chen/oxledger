@@ -18,6 +18,8 @@
 //! database, so they follow the prefix too.
 #![allow(dead_code)]
 
+pub mod snap;
+
 use oxledger::db;
 use sqlx::PgPool;
 

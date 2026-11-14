@@ -1,0 +1,51 @@
+---
+source: crates/oxledger/tests/m1_7_search.rs
+---
+## login  (outcome=ok, truncated=false)
+ 1 AUTH-6  primary  subject                      Login login login
+ 2 AUTH-2  primary  subject,description          Rate limit on login attempts
+ 3 WEB-1   primary  subject,description          Login page shows a blank screen
+ 4 AUTH-3  primary  description                  SSO redirect loops between pages
+ 5 WEB-2   primary  description                  Password reset email never arrives
+
+## login page  (outcome=ok, truncated=false)
+ 1 WEB-1   primary  subject,description          Login page shows a blank screen
+ 2 AUTH-6  primary  subject                      Login login login
+ 3 AUTH-2  primary  subject,description          Rate limit on login attempts
+ 4 AUTH-3  primary  description                  SSO redirect loops between pages
+ 5 WEB-2   primary  description                  Password reset email never arrives
+
+## password  (outcome=ok, truncated=false)
+ 1 WEB-2   primary  subject,description          Password reset email never arrives
+ 2 AUTH-4  primary  subject,description          Audit log entry for password change
+
+## password reset  (outcome=ok, truncated=false)
+ 1 WEB-2   primary  subject,description          Password reset email never arrives
+ 2 AUTH-4  primary  subject,description          Audit log entry for password change
+
+## 登入  (outcome=ok, truncated=false)
+ 1 WEB-5   primary  subject,description          登入頁面空白
+
+## 密碼  (outcome=ok, truncated=false)
+ 1 WEB-6   primary  subject,description          密碼重設信沒有寄出
+
+## 空白  (outcome=ok, truncated=false)
+ 1 WEB-5   primary  subject,description          登入頁面空白
+
+## session token  (outcome=ok, truncated=false)
+ 1 AUTH-1  primary  subject,description          Session token expires too early
+
+## csv  (outcome=ok, truncated=false)
+ 1 WEB-4   primary  subject,description          Export to CSV drops the last row
+
+## parse auth header  (outcome=ok, truncated=false)
+ 1 AUTH-5  primary  description                  parseAuthHeader rejects lowercase bearer
+
+## redirect  (outcome=ok, truncated=false)
+ 1 AUTH-3  primary  subject                      SSO redirect loops between pages
+
+## AUTH-3  (outcome=ok, truncated=false)
+ 1 AUTH-3  primary  key                          SSO redirect loops between pages
+ 2 AUTH-5  primary  description                  parseAuthHeader rejects lowercase bearer
+
+## nothing-matches-this  (outcome=ok, truncated=false)

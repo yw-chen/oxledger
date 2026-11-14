@@ -1,0 +1,33 @@
+---
+source: crates/oxledger/tests/m2_1_markdown.rs
+input_file: crates/oxledger/tests/golden/markdown/headings.md
+---
+=== markdown agent=false
+<h1 id="h-374708ff-第一層標題">第一層標題<a href="#h-374708ff-第一層標題" class="anchor"></a></h1>
+<h2 id="h-374708ff-second-level-with-emphasis">Second level <em>with emphasis</em><a href="#h-374708ff-second-level-with-emphasis" class="anchor"></a></h2>
+<h3 id="h-374708ff-third-code-heading">Third <code>code</code> heading<a href="#h-374708ff-third-code-heading" class="anchor"></a></h3>
+<p>Some <strong>bold</strong>, <em>italic</em>, <em><strong>both</strong></em> and <del>struck</del> text.</p>
+<h2 id="h-374708ff-setext-heading">Setext heading<a href="#h-374708ff-setext-heading" class="anchor"></a></h2>
+issues={} logins={} truncated=false
+
+=== markdown agent=true
+<h1 id="h-374708ff-第一層標題">第一層標題<a href="#h-374708ff-第一層標題" class="anchor"></a></h1>
+<h2 id="h-374708ff-second-level-with-emphasis">Second level <em>with emphasis</em><a href="#h-374708ff-second-level-with-emphasis" class="anchor"></a></h2>
+<h3 id="h-374708ff-third-code-heading">Third <code>code</code> heading<a href="#h-374708ff-third-code-heading" class="anchor"></a></h3>
+<p>Some <strong>bold</strong>, <em>italic</em>, <em><strong>both</strong></em> and <del>struck</del> text.</p>
+<h2 id="h-374708ff-setext-heading">Setext heading<a href="#h-374708ff-setext-heading" class="anchor"></a></h2>
+issues={} logins={} truncated=false
+
+=== plain agent=false
+<p># 第一層標題<br>
+<br>
+## Second level *with emphasis*<br>
+<br>
+### Third `code` heading<br>
+<br>
+Some **bold**, *italic*, ***both*** and ~~struck~~ text.<br>
+<br>
+Setext heading<br>
+--------------<br>
+</p>
+issues={} logins={} truncated=false
