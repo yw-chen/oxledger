@@ -2003,6 +2003,46 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
     )
     .await;
     let frank = login(&router, "frank").await;
+    // M2.2: a wiki page of AUTH (alice's), with its created event.
+    sqlx::query(
+        "INSERT INTO enabled_modules (project_id, module) VALUES ($1, 'wiki') ON CONFLICT DO NOTHING",
+    )
+    .bind(w.auth_p)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let wiki_role = id(
+        &pool,
+        "INSERT INTO roles (name, issues_visibility) VALUES ('GateWiki','default') RETURNING id",
+    )
+    .await;
+    grant(&pool, wiki_role, &["view_wiki_pages", "edit_wiki_pages"]).await;
+    sqlx::query(
+        "INSERT INTO member_roles SELECT id, $3 FROM members WHERE project_id = $1 AND principal_id = $2",
+    )
+    .bind(w.auth_p)
+    .bind(w.alice)
+    .bind(wiki_role)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let wiki_page = commands::submit(
+        &w.app,
+        w.alice_ctx,
+        Uuid::now_v7(),
+        &json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "wiki_put", "target": {"project": "AUTH", "page": "Gate_Page"},
+             "body": "secret"}]}),
+    )
+    .await
+    .unwrap()
+    .wiki[0]
+        .page_id;
+    let wiki_event = id(
+        &pool,
+        &format!("SELECT id FROM wiki_events WHERE page_id = '{wiki_page}' LIMIT 1"),
+    )
+    .await;
     let reason = json!({"reason_code": "other", "reason": "x"});
     let missing_uuid = Uuid::now_v7().to_string();
     // (method, real path, missing path, body, expected status)
@@ -2057,6 +2097,41 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
             "POST",
             format!("/time-entries/{entry}/redact"),
             format!("/time-entries/{missing_uuid}/redact"),
+            reason.clone(),
+            nf,
+        ),
+        // M2.2 wiki: start page settings and D12 on a wiki frank cannot read.
+        (
+            "PUT",
+            format!("/projects/{}/wiki/settings", w.auth_p),
+            format!("/projects/{missing_uuid}/wiki/settings"),
+            json!({"lock_version": 1, "start_page_id": wiki_page}),
+            nf,
+        ),
+        (
+            "POST",
+            format!(
+                "/projects/{}/wiki/pages/Gate_Page/versions/1/redact",
+                w.auth_p
+            ),
+            format!("/projects/{missing_uuid}/wiki/pages/Gate_Page/versions/1/redact"),
+            reason.clone(),
+            nf,
+        ),
+        (
+            "POST",
+            format!("/projects/{}/wiki/pages/Gate_Page/title/redact", w.auth_p),
+            format!("/projects/{missing_uuid}/wiki/pages/Gate_Page/title/redact"),
+            json!({"reason_code": "other", "reason": "x", "new_title": "Renamed"}),
+            nf,
+        ),
+        (
+            "POST",
+            format!(
+                "/projects/{}/wiki/pages/Gate_Page/events/{wiki_event}/redact",
+                w.auth_p
+            ),
+            format!("/projects/{missing_uuid}/wiki/pages/Gate_Page/events/{wiki_event}/redact"),
             reason.clone(),
             nf,
         ),
