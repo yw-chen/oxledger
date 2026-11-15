@@ -28,6 +28,32 @@ export function isForbidden(e: unknown): boolean {
 }
 const UNKNOWN = '尚未確認是否完成。';
 
+/** `forbidden_op.details.reason` with its own wording (others: FORBIDDEN). */
+const FORBIDDEN_REASON: Record<string, string> = {
+	wiki_protected: '這一頁受保護，只有有保護權限的人能修改',
+	project_not_writable: '專案已關閉，現在是唯讀'
+};
+
+/** R-W2: what is wrong with a wiki title (`wiki_title_invalid.details`), for the title field. */
+export function wikiTitleProblem(d: Record<string, unknown>): string {
+	switch (d.reason) {
+		case 'length':
+			return '標題要有 1～100 個字';
+		case 'leading_dot':
+			return '標題不能以「.」開頭';
+		case 'char': {
+			const ch = typeof d.char === 'string' ? d.char : '';
+			const cp = typeof d.codepoint === 'string' ? d.codepoint : '';
+			// Control and format characters cannot be seen: name the code point.
+			const visible = ch !== '' && !/[\p{Cc}\p{Cf}\s]/u.test(ch);
+			if (visible) return `標題不能有「${ch}」（不能用 [ ] | # ? / \\ : < > " 這些字元）`;
+			return `標題有看不見的控制字元${cp ? ` ${cp}` : ''}，請刪掉後再試`;
+		}
+		default:
+			return '標題不合法';
+	}
+}
+
 function names(v: unknown): string {
 	if (!Array.isArray(v)) return '';
 	return v
@@ -48,7 +74,16 @@ const INVALID_KIND: Record<string, string> = {
 	builtin_missing: '內建分頁不能移除（可以隱藏）',
 	duplicate_id: '同一個分頁出現兩次',
 	unknown_id: '有分頁已經不存在，請重新載入',
-	unknown_kind: '分頁種類不正確'
+	unknown_kind: '分頁種類不正確',
+	// Wiki (design 06 §3.5, §5).
+	wiki_cycle: '不能把頁面移到它自己或它的子頁下面',
+	wiki_depth: '頁面最多只能有 10 層',
+	wiki_version_limit: '這一頁的版本數已達上限（10,000 版）',
+	wiki_page_limit: '這個 wiki 的頁數已達上限（5,000 頁）',
+	wiki_comment: '修改說明最多 255 字，也不能有控制字元',
+	wiki_body: '內容有不允許的字元（NUL）',
+	start_page_invalid: '起始頁要是這個 wiki 裡現有的頁面',
+	redacted_source: '被遮蔽的版本不能拿來回復'
 };
 /** `tabs[5].url` → 「第 6 列：」. */
 function rowOf(path: unknown): string {
@@ -169,7 +204,7 @@ export function describeError(e: unknown): Shown {
 		case 'execution_in_progress':
 			return { title: '結果確認中，請勿重複按；會自動更新', changed: UNKNOWN, action: 'wait' };
 		case 'forbidden_op':
-			return { title: FORBIDDEN, changed: NOTHING };
+			return { title: (typeof d.reason === 'string' && FORBIDDEN_REASON[d.reason]) || FORBIDDEN, changed: NOTHING };
 		case 'not_found':
 			return { title: NOT_FOUND, changed: NOTHING };
 		case 'invalid_value': {
@@ -320,6 +355,15 @@ export function describeError(e: unknown): Shown {
 			const who = p.name ? `〈${p.name}${p.model ? `（${p.model}）` : ''}〉` : '新的服務';
 			return { title: `AI 服務已換成${who}；繼續這個對話時，先前的對話內容會送到新服務`, changed: NOTHING };
 		}
+		// ---- M2.2 wiki (design 06 §5) ----
+		case 'wiki_page_exists':
+			return { title: '已經有同名的頁面', changed: NOTHING, next: '換一個標題' };
+		case 'wiki_has_children': {
+			const n = typeof d.children === 'number' ? d.children : null;
+			return { title: `這一頁還有${n !== null ? ` ${n} 個` : ''}子頁，刪除時要一併決定子頁移到哪裡`, changed: NOTHING };
+		}
+		case 'wiki_title_invalid':
+			return { title: wikiTitleProblem(d), changed: NOTHING };
 		case 'ai_run_in_progress':
 			return { title: '你還有一個 AI 回覆在進行中；等它完成或取消後再送', changed: NOTHING, action: 'wait' };
 		default:

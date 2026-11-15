@@ -491,6 +491,9 @@ pub struct CommandResult {
     /// Time entries the document wrote (contract 05 §3.10.2); omitted when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub time_entries: Vec<crate::time_entries::TimeEntryEffect>,
+    /// The wiki page a wiki document wrote (design 06 §3.11); omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wiki: Vec<crate::wiki::WikiEffect>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -553,6 +556,9 @@ pub struct ItemResult {
     /// The time entry the op wrote (time ops, contract 05 §3.10.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_entry_id: Option<Uuid>,
+    /// The wiki page the op wrote (wiki ops, design 06 §3.11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki_page_id: Option<Uuid>,
 }
 
 /// What a version command did (§17.9a: the new id is in the response).
@@ -1635,6 +1641,17 @@ async fn parse_seen(
     }
     if let Some(Json::Array(ops)) = top.get("ops") {
         for (i, op) in ops.iter().enumerate() {
+            // Design 06 §3.11: wiki ops run only from a person's POST
+            // /commands (wiki::run) in M2.2; anywhere else (agents,
+            // validation, changesets) they are not among the commands.
+            if let Some(k) = op.get("kind").and_then(Json::as_str)
+                && crate::wiki::KINDS.contains(&k)
+            {
+                return Err(bad(
+                    &format!("ops[{i}].kind"),
+                    format!("{k} is not available here"),
+                ));
+            }
             if let Some(k) = op.get("kind").and_then(Json::as_str)
                 && !KINDS.contains(&k)
             {
@@ -2673,6 +2690,13 @@ async fn run(
     operation_id: Uuid,
     doc: &Json,
 ) -> Result<Outcome> {
+    // Design 06 §3.11: a wiki document is its own path (one op, its own
+    // locks, R-W10).
+    if crate::wiki::is_wiki_doc(doc) {
+        return crate::wiki::run(&mut *tx, caller, who, operation_id, doc)
+            .await
+            .map(Outcome::Done);
+    }
     let parsed = match parse_for(&mut *tx, doc, MAX_OPS as usize, caller).await {
         Ok(p) => p,
         Err(e) => {
@@ -3030,6 +3054,7 @@ pub(crate) async fn evaluate_undo(
         items: sim.items,
         search: SearchReceipt { consistent_after },
         time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
+        wiki: Vec::new(),
     })
 }
 
@@ -3179,6 +3204,7 @@ pub(crate) async fn replay(
                 .to_string(),
         },
         time_entries,
+        wiki: Vec::new(),
     })
 }
 
@@ -3325,6 +3351,7 @@ async fn evaluate(
         items: sim.items,
         search: SearchReceipt { consistent_after },
         time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
+        wiki: Vec::new(),
     })
 }
 
@@ -4097,6 +4124,7 @@ async fn run_ops(
                     issue_id: Some(id),
                     version_id: None,
                     time_entry_id: None,
+                    wiki_page_id: None,
                 });
             }
             Op::Update {
@@ -4188,6 +4216,7 @@ async fn run_ops(
                     issue_id: Some(id),
                     version_id: None,
                     time_entry_id: None,
+                    wiki_page_id: None,
                 });
             }
             Op::Transition { op_id, target, to } => {
@@ -4245,6 +4274,7 @@ async fn run_ops(
                     issue_id: Some(id),
                     version_id: None,
                     time_entry_id: None,
+                    wiki_page_id: None,
                 });
             }
             Op::Note {
@@ -4293,6 +4323,7 @@ async fn run_ops(
                     issue_id: Some(id),
                     version_id: None,
                     time_entry_id: None,
+                    wiki_page_id: None,
                 });
             }
             Op::Duplicate {
@@ -4310,6 +4341,7 @@ async fn run_ops(
                     issue_id: Some(s),
                     version_id: None,
                     time_entry_id: None,
+                    wiki_page_id: None,
                 });
             }
             Op::Triage {
@@ -4399,6 +4431,7 @@ async fn run_ops(
                     issue_id: Some(id),
                     version_id: None,
                     time_entry_id: None,
+                    wiki_page_id: None,
                 });
             }
         }

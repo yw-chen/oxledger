@@ -172,11 +172,15 @@ pub struct UndoPreview {
     /// Time entries (contract 05 §3.10.2, T-M1-41).
     #[serde(default)]
     pub time_entries: Vec<UndoTimeEntry>,
+    /// Wiki pages (design 06 R-W9).
+    #[serde(default)]
+    pub wiki: Vec<crate::wiki::UndoWikiPage>,
 }
 
 impl UndoPreview {
     fn automatic(&self) -> bool {
-        self.fields.iter().any(|f| f.restorable)
+        self.wiki.iter().any(|w| w.restorable)
+            || self.fields.iter().any(|f| f.restorable)
             || self.triage.iter().any(|t| t.restorable)
             || self.time_entries.iter().any(|t| t.restorable)
             || self.notes.iter().any(|n| n.restorable)
@@ -187,6 +191,11 @@ impl UndoPreview {
 
     fn reasons(&self) -> Json {
         let mut v: Vec<Json> = Vec::new();
+        for w in &self.wiki {
+            if let Some(r) = &w.reason {
+                v.push(json!({"page_id": w.page_id, "field": w.change, "reason": r}));
+            }
+        }
         for f in &self.fields {
             if let Some(r) = &f.reason {
                 let mut item =
@@ -255,6 +264,9 @@ pub struct UndoInput {
     /// leave as they are (contract 05 §3.10.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_time_entries: Vec<String>,
+    /// Wiki page ids to leave as they are (design 06 R-W9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_wiki_pages: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -276,6 +288,9 @@ pub struct UndoResult {
     pub version_fields_restored: usize,
     #[serde(default)]
     pub version_deleted: bool,
+    /// Wiki pages put back (design 06 R-W9).
+    #[serde(default)]
+    pub wiki_pages_restored: usize,
     pub consistent_after: String,
 }
 
@@ -330,6 +345,8 @@ async fn exec_info(conn: &mut PgConnection, id: Uuid) -> Result<Option<ExecInfo>
         let owner = match (origin.as_str(), behalf, reverts) {
             ("agent_direct", Some(b), _) => b,
             ("human_direct", _, Some(_)) => actor,
+            // Design 06 R-W9 (C8): a person's own wiki write.
+            ("human_direct", _, None) if crate::wiki::has_changes(&mut *conn, id).await? => actor,
             _ => return Ok(None),
         };
         let sources = sqlx::query_as(
@@ -770,6 +787,7 @@ async fn build_preview(
         .collect();
     let time_entries =
         crate::time_entries::undo_preview(&mut *conn, caller, id, expired, &seen).await?;
+    let wiki = crate::wiki::undo_preview(&mut *conn, caller, id, expired).await?;
 
     Ok(UndoPreview {
         execution_id: id,
@@ -784,6 +802,7 @@ async fn build_preview(
         version_created,
         triage,
         time_entries,
+        wiki,
     })
 }
 
@@ -1006,6 +1025,41 @@ pub async fn apply(
     };
     db::effective(&mut tx, caller).await?;
     let info = owned_info(&mut tx, user, id).await?;
+
+    // Design 06 R-W9: a wiki execution has its own locks (R-W10) and rows.
+    if crate::wiki::has_changes(&mut tx, id).await? {
+        let (n, exec, token, reasons) = crate::wiki::undo_apply(
+            &mut tx,
+            caller,
+            &who,
+            request_id,
+            id,
+            info.created_at,
+            &input.skip_wiki_pages,
+            &payload,
+        )
+        .await?;
+        if n == 0 {
+            return Err(not_applicable(reasons));
+        }
+        let out = UndoResult {
+            execution_id: exec,
+            reverts_execution_id: id,
+            fields_restored: 0,
+            notes_retracted: 0,
+            relations_removed: 0,
+            transitions: 0,
+            triage_restored: 0,
+            time_entries_restored: 0,
+            version_fields_restored: 0,
+            version_deleted: false,
+            wiki_pages_restored: n,
+            consistent_after: token,
+        };
+        commands::complete_request(&mut tx, request_id, &serde_json::to_value(&out)?).await?;
+        tx.commit().await?;
+        return Ok(out);
+    }
 
     // Locks: projects in UUID order (FOR SHARE, no epoch comparison: B5),
     // then the issues FOR UPDATE, then the undo data.
@@ -1450,6 +1504,7 @@ pub async fn apply(
         time_entries_restored: time_restored,
         version_fields_restored: 0,
         version_deleted: false,
+        wiki_pages_restored: 0,
         consistent_after,
     };
     commands::complete_request(&mut tx, request_id, &serde_json::to_value(&out)?).await?;
@@ -1559,6 +1614,7 @@ async fn apply_version(
         time_entries_restored: 0,
         version_fields_restored: restorable.len(),
         version_deleted: create.is_some(),
+        wiki_pages_restored: 0,
         consistent_after: token,
     })
 }

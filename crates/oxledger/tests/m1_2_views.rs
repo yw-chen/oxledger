@@ -814,7 +814,8 @@ async fn t_m1_12_a_view_a_tab_shows_is_in_use() {
             ("dev", false),
             ("plan", false),
             ("board", false),
-            ("triage", true)
+            ("triage", true),
+            ("wiki", false)
         ]
     );
     let list = create(

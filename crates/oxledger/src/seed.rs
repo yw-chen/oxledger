@@ -159,8 +159,9 @@ pub async fn seed_demo(pool: &PgPool) -> Result<Vec<(String, String)>> {
         SELECT 'project', id, 'login', 'en' FROM projects WHERE key='AUTH'")
     .execute(&mut *tx)
     .await?;
+    // Design 06 B-9: new projects have the wiki module on.
     q("INSERT INTO enabled_modules (project_id, module)
-        SELECT id, m FROM projects, (VALUES ('issue_tracking'), ('time_tracking')) AS v(m)")
+        SELECT id, m FROM projects, (VALUES ('issue_tracking'), ('time_tracking'), ('wiki')) AS v(m)")
     .execute(&mut *tx)
     .await?;
     q("INSERT INTO project_trackers SELECT p.id, t.id FROM projects p, trackers t")

@@ -186,6 +186,15 @@ pub enum ErrorCode {
     /// Design 06 §5: the body is over a size limit (`POST /markdown/preview`
     /// text, later uploads, imports and wiki pages); `details.limit` in bytes.
     PayloadTooLarge,
+    /// Design 06 §5: a wiki page of this project already has that title
+    /// (create, rename, restore); `details.page_id`.
+    WikiPageExists,
+    /// Design 06 §5: the page has child pages; delete with
+    /// `children: "reparent"`.
+    WikiHasChildren,
+    /// Design 06 R-W2: the title is not allowed; `details.reason`: `length`,
+    /// `char` (with `details.char`) or `leading_dot`.
+    WikiTitleInvalid,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -202,7 +211,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 73] = [
+    pub const ALL: [ErrorCode; 76] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -276,6 +285,9 @@ impl ErrorCode {
         Self::AiProviderChanged,
         Self::AiRunInProgress,
         Self::PayloadTooLarge,
+        Self::WikiPageExists,
+        Self::WikiHasChildren,
+        Self::WikiTitleInvalid,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -353,6 +365,9 @@ impl ErrorCode {
             Self::AiProviderChanged => "ai_provider_changed",
             Self::AiRunInProgress => "ai_run_in_progress",
             Self::PayloadTooLarge => "payload_too_large",
+            Self::WikiPageExists => "wiki_page_exists",
+            Self::WikiHasChildren => "wiki_has_children",
+            Self::WikiTitleInvalid => "wiki_title_invalid",
         }
     }
 
@@ -423,6 +438,8 @@ impl ErrorCode {
             Self::AiModelDisallowed | Self::AiEndpointInvalid => 422,
             Self::AiConversationReadOnly | Self::AiProviderChanged | Self::AiRunInProgress => 409,
             Self::PayloadTooLarge => 413,
+            Self::WikiPageExists | Self::WikiHasChildren => 409,
+            Self::WikiTitleInvalid => 422,
         }
     }
 
@@ -512,6 +529,9 @@ impl ErrorCode {
             Self::AiProviderChanged => &[AskHuman],
             Self::AiRunInProgress => &[WaitAndRetry],
             Self::PayloadTooLarge => &[FixInput],
+            Self::WikiPageExists | Self::WikiTitleInvalid => &[FixInput],
+            // Design 06 §5: "(SPA)": the person decides in the dialog.
+            Self::WikiHasChildren => &[AskHuman],
         }
     }
 }

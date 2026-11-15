@@ -1815,7 +1815,12 @@ async fn m1_3_constraints() {
     ] {
         let d = def(c).await;
         let n = d.matches("'").count() / 2;
-        assert_eq!(n, agents::PROPOSAL_OPS.len(), "{c}: {d}");
+        // Design 06 §2.3: plus the wiki ops agents get in M2.3.
+        assert_eq!(
+            n,
+            agents::PROPOSAL_OPS.len() + agents::WIKI_PROPOSAL_OPS.len(),
+            "{c}: {d}"
+        );
         for op in agents::PROPOSAL_OPS {
             assert!(d.contains(&format!("'{op}'")), "{c} lacks {op}: {d}");
         }

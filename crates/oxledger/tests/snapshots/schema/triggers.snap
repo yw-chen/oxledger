@@ -102,5 +102,7 @@ CREATE TRIGGER user_passwords_user_guard BEFORE INSERT OR UPDATE OF user_id ON p
 CREATE TRIGGER user_preferences_user BEFORE INSERT OR UPDATE OF user_id ON public.user_preferences FOR EACH ROW EXECUTE FUNCTION user_preferences_user_check()
 CREATE TRIGGER versions_on_behalf_of BEFORE INSERT OR UPDATE OF created_by, created_on_behalf_of_id ON public.versions FOR EACH ROW EXECUTE FUNCTION versions_on_behalf_of_guard()
 CREATE TRIGGER view_defs_owner_check BEFORE INSERT OR UPDATE OF owner_id ON public.view_defs FOR EACH ROW EXECUTE FUNCTION view_defs_owner_check()
+CREATE TRIGGER wiki_pages_outbox AFTER INSERT OR UPDATE ON public.wiki_pages FOR EACH ROW EXECUTE FUNCTION wiki_pages_enqueue()
+CREATE TRIGGER wiki_settings_row AFTER INSERT ON public.projects FOR EACH ROW EXECUTE FUNCTION wiki_settings_row()
 CREATE TRIGGER workflow_field_rules_version AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.workflow_field_rules FOR EACH STATEMENT EXECUTE FUNCTION bump_workflow_version()
 CREATE TRIGGER workflow_transitions_version AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.workflow_transitions FOR EACH STATEMENT EXECUTE FUNCTION bump_workflow_version()

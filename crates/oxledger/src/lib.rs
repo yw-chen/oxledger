@@ -50,3 +50,4 @@ pub mod triage;
 pub mod undo;
 pub mod versions;
 pub mod views;
+pub mod wiki;

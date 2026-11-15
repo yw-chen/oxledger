@@ -35,6 +35,10 @@ pub const PROPOSAL_OPS: [&str; 10] = [
     "log_time",
     "update_time_entry",
 ];
+/// Design 06 §3.11, §2.3: the wiki ops agents get in M2.3. Migration 0034
+/// already lists them in the op CHECKs (the union rule); until M2.3 they are
+/// not offered and the engine refuses them from an agent.
+pub const WIKI_PROPOSAL_OPS: [&str; 2] = ["wiki_put", "wiki_move"];
 /// Contract 05 §4.3 (A1(b)): time commands default to `review` on a new
 /// delegation (and when added later).
 pub const TIME_OPS: [&str; 2] = ["log_time", "update_time_entry"];

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// A project and one of its shared tabs (§18.6): 時程, 里程碑, 議題, 開發,
+	// A project and one of its shared tabs (§18.6): 時程, 里程碑, 議題, 開發, Wiki,
 	// saved queries (run with the viewer's own visibility, R-T6) and links.
 	import { page } from '$app/state';
 	import type { TabSettings } from '$api/types';
@@ -17,6 +17,7 @@
 	import TriageInbox from '#lib/components/TriageInbox.svelte';
 	import TimeReport from '#lib/components/TimeReport.svelte';
 	import AiTeamList from '#lib/components/AiTeamList.svelte';
+	import WikiHome from '#lib/components/WikiHome.svelte';
 
 	const key = $derived((page.params.key ?? '').toUpperCase());
 	const project = $derived(projectByKey(key));
@@ -73,6 +74,8 @@
 			{#key tab.view_id}<ViewPage viewId={tab.view_id} projectKey={key} inFrame />{/key}
 		{:else if tab.id === 'dev'}
 			<DevTab projectId={project?.id ?? key} />
+		{:else if tab.id === 'wiki'}
+			{#key key}<WikiHome projectKey={key} />{/key}
 		{:else if tab.id === 'plan'}
 			<div class="empty">規劃（心智圖）第一版不提供。</div>
 		{:else if tab.kind === 'query'}

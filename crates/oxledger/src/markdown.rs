@@ -24,13 +24,14 @@
 //! sanitizer. [`plain_text`] is the text search and notification excerpts
 //! use (R-M11).
 //!
-//! Until M2.2 there is no wiki: a `[[…]]` link always shows its text. Until
+//! A `[[…]]` link (R-RF4) links to a page of a wiki the reader can read
+//! (or, missing and editable, to its creation); otherwise its text. Until
 //! M2.4 there are no attachments: no image is ever loaded (R-M4 "A2 不做附件
 //! 時"), and `img` is not on the allow list at all.
 
 use crate::auth::AuthContext;
 use crate::commands::TextFormat;
-use crate::error::{ApiError, ErrorCode, api};
+use crate::error::{ApiError, ErrorCode};
 use crate::mentions::{self, Item};
 use crate::service::{App, read_tx};
 use anyhow::Result;
@@ -1012,6 +1013,36 @@ pub struct Resolver {
     /// Written login → (display name, login), for users in the project's
     /// assignable list.
     users: HashMap<String, (String, String)>,
+    /// Wiki link value (as escaped in the placeholder) → (href, class), for
+    /// pages the reader may open or create (R-RF4).
+    wiki: HashMap<String, (String, &'static str)>,
+}
+
+/// `&amp;` and friends back to text (the placeholder value is escaped).
+fn unesc(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// The wiki link values of a stage 1 HTML, as escaped there.
+fn wiki_values(html: &str) -> Vec<String> {
+    const OPEN: &str = "<span data-ox-ref=\"wiki\" data-ox-v=\"";
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(at) = rest.find(OPEN) {
+        let after = &rest[at + OPEN.len()..];
+        match after.find('"') {
+            Some(end) => {
+                out.push(after[..end].to_string());
+                rest = &after[end..];
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 impl Resolver {
@@ -1075,6 +1106,17 @@ impl Resolver {
                 r.users.insert(written, (u.name, u.login));
             }
         }
+        // R-RF4 (M2.2): wiki links of wikis the reader can read.
+        let escaped: BTreeSet<String> = docs.iter().flat_map(|d| wiki_values(&d.html)).collect();
+        if !escaped.is_empty() {
+            let plain: BTreeSet<String> = escaped.iter().map(|v| unesc(v)).collect();
+            let found = crate::wiki::resolve_links(&mut *conn, caller, project, &plain).await?;
+            for v in escaped {
+                if let Some(l) = found.links.get(&unesc(&v)) {
+                    r.wiki.insert(v, l.clone());
+                }
+            }
+        }
         Ok(r)
     }
 
@@ -1122,8 +1164,18 @@ impl Resolver {
                     }
                     None => out.push_str(inner),
                 },
-                // R-RF4: no wiki before M2.2: the link's text.
-                _ => out.push_str(inner),
+                // R-RF4: a page the reader may open (or create); otherwise
+                // the link's text, the same for a wiki they cannot read.
+                _ => match self.wiki.get(value) {
+                    Some((href, class)) => {
+                        let _ = write!(
+                            out,
+                            r#"<a class="{class}" href="{}">{inner}</a>"#,
+                            esc(href)
+                        );
+                    }
+                    None => out.push_str(inner),
+                },
             }
             rest = &after[len..];
         }
@@ -1201,7 +1253,8 @@ pub async fn render_for(
 pub struct MarkdownPreviewInput {
     /// What the text belongs to: `{"issue": "AUTH-1"}` (a description or
     /// note of that issue) or `{"project": "AUTH"}` (a new issue).
-    /// `{"wiki_project": …}` answers `not_found` until the wiki exists (M2.2).
+    /// `{"wiki_project": …}`: a wiki page of that project (a wiki the
+    /// caller cannot read is `not_found`).
     pub context: MarkdownPreviewContext,
     pub text: String,
     /// `markdown` (default) or `plain`.
@@ -1289,8 +1342,12 @@ pub async fn preview(
             let id = crate::describe::visible_project(&mut tx, caller, p).await?;
             (id, id)
         }
-        (None, None, Some(_)) => {
-            return Err(api(ErrorCode::NotFound, "no such wiki"));
+        (None, None, Some(p)) => {
+            // R-W1: a wiki the caller cannot read is not_found, like a
+            // missing one. The container is the project (a page has its id
+            // only once saved).
+            let a = crate::wiki::access(&mut tx, caller, p).await?;
+            (a.project, a.project)
         }
         _ => {
             return Err(ApiError::new(

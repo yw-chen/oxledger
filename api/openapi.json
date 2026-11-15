@@ -1094,6 +1094,17 @@
         ],
         "type": "object"
       },
+      "CommandBody": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CommandDoc"
+          },
+          {
+            "$ref": "#/components/schemas/WikiCommandDoc"
+          }
+        ],
+        "description": "The body of `POST /commands`: an issue command document or a wiki one\n(OpenAPI only; the engine tells them apart by the op kinds)."
+      },
       "CommandDoc": {
         "additionalProperties": false,
         "description": "A command document, `command_schema_version = 1`.",
@@ -1186,6 +1197,13 @@
             "description": "Time entries the document wrote (contract 05 §3.10.2); omitted when none.",
             "items": {
               "$ref": "#/components/schemas/TimeEntryEffect"
+            },
+            "type": "array"
+          },
+          "wiki": {
+            "description": "The wiki page a wiki document wrote (design 06 §3.11); omitted when none.",
+            "items": {
+              "$ref": "#/components/schemas/WikiEffect"
             },
             "type": "array"
           }
@@ -2368,6 +2386,60 @@
         ],
         "type": "object"
       },
+      "DiffHunk": {
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/DiffLine"
+            },
+            "type": "array"
+          },
+          "new_start": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "old_start": {
+            "description": "1-based line numbers where the hunk starts.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "old_start",
+          "new_start",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "DiffLine": {
+        "properties": {
+          "op": {
+            "description": "`equal`, `delete` or `insert`.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The line without its line break.",
+            "type": "string"
+          },
+          "words": {
+            "description": "Changed lines paired with their counterpart: word-level pieces.",
+            "items": {
+              "$ref": "#/components/schemas/DiffWord"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "op",
+          "text"
+        ],
+        "type": "object"
+      },
       "DiffRow": {
         "description": "One changed field as the queue shows it.",
         "properties": {
@@ -2424,6 +2496,22 @@
           "id",
           "key",
           "subject"
+        ],
+        "type": "object"
+      },
+      "DiffWord": {
+        "properties": {
+          "op": {
+            "description": "`equal`, `delete` or `insert`.",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "text"
         ],
         "type": "object"
       },
@@ -2977,6 +3065,21 @@
           {
             "const": "payload_too_large",
             "description": "Design 06 §5: the body is over a size limit (`POST /markdown/preview`\ntext, later uploads, imports and wiki pages); `details.limit` in bytes.",
+            "type": "string"
+          },
+          {
+            "const": "wiki_page_exists",
+            "description": "Design 06 §5: a wiki page of this project already has that title\n(create, rename, restore); `details.page_id`.",
+            "type": "string"
+          },
+          {
+            "const": "wiki_has_children",
+            "description": "Design 06 §5: the page has child pages; delete with\n`children: \"reparent\"`.",
+            "type": "string"
+          },
+          {
+            "const": "wiki_title_invalid",
+            "description": "Design 06 R-W2: the title is not allowed; `details.reason`: `length`,\n`char` (with `details.char`) or `leading_dot`.",
             "type": "string"
           }
         ]
@@ -4992,6 +5095,14 @@
               "string",
               "null"
             ]
+          },
+          "wiki_page_id": {
+            "description": "The wiki page the op wrote (wiki ops, design 06 §3.11).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -5336,7 +5447,7 @@
         "properties": {
           "context": {
             "$ref": "#/components/schemas/MarkdownPreviewContext",
-            "description": "What the text belongs to: `{\"issue\": \"AUTH-1\"}` (a description or\nnote of that issue) or `{\"project\": \"AUTH\"}` (a new issue).\n`{\"wiki_project\": …}` answers `not_found` until the wiki exists (M2.2)."
+            "description": "What the text belongs to: `{\"issue\": \"AUTH-1\"}` (a description or\nnote of that issue) or `{\"project\": \"AUTH\"}` (a new issue).\n`{\"wiki_project\": …}`: a wiki page of that project (a wiki the\ncaller cannot read is `not_found`)."
           },
           "format": {
             "anyOf": [
@@ -12758,6 +12869,14 @@
             },
             "type": "array"
           },
+          "skip_wiki_pages": {
+            "description": "Wiki page ids to leave as they are (design 06 R-W9).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "transitions": {
             "additionalProperties": {
               "format": "uuid",
@@ -12873,6 +12992,14 @@
               "$ref": "#/components/schemas/UndoVersionField"
             },
             "type": "array"
+          },
+          "wiki": {
+            "default": [],
+            "description": "Wiki pages (design 06 R-W9).",
+            "items": {
+              "$ref": "#/components/schemas/UndoWikiPage"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -12886,7 +13013,8 @@
           "choices",
           "version_fields",
           "triage",
-          "time_entries"
+          "time_entries",
+          "wiki"
         ],
         "type": "object"
       },
@@ -13005,6 +13133,13 @@
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "wiki_pages_restored": {
+            "default": 0,
+            "description": "Wiki pages put back (design 06 R-W9).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -13018,6 +13153,7 @@
           "time_entries_restored",
           "version_fields_restored",
           "version_deleted",
+          "wiki_pages_restored",
           "consistent_after"
         ],
         "type": "object"
@@ -13159,6 +13295,53 @@
           "version_id",
           "name",
           "field",
+          "before",
+          "after",
+          "current",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "UndoWikiPage": {
+        "description": "One page an execution changed, as its undo would treat it.",
+        "properties": {
+          "after": true,
+          "before": {
+            "description": "`{version?, title?, parent_id?, deleted?, protected?}` before and\nafter the execution, and now."
+          },
+          "change": {
+            "description": "`created` (undo: soft delete), `updated` (content, title, parent or\nprotection back), `deleted` (undo: restore), `restored` (undo:\ndelete again) or `reparented` (a child of a deleted page; undo: back\nunder it).",
+            "type": "string"
+          },
+          "current": true,
+          "page_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "description": "`expired`, `changed_since`, `redacted_source`, `redacted`,\n`title_taken`, `has_children`, `dependency`, `value_no_longer_valid`,\n`wiki_depth`, `wiki_page_limit`, `wiki_version_limit` (the undo\nanswers `invalid_value` with that kind) or `permission`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "title": {
+            "description": "The page's title now.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page_id",
+          "project_id",
+          "title",
+          "change",
           "before",
           "after",
           "current",
@@ -14665,6 +14848,1069 @@
         },
         "required": [
           "type"
+        ],
+        "type": "object"
+      },
+      "WikiCommandDoc": {
+        "additionalProperties": false,
+        "description": "A wiki command document: exactly one wiki op (design 06 §3.11).",
+        "properties": {
+          "command_schema_version": {
+            "description": "Always 1.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ops": {
+            "description": "Exactly one wiki op.",
+            "items": {
+              "$ref": "#/components/schemas/WikiOp"
+            },
+            "type": "array"
+          },
+          "preconditions": {
+            "default": [],
+            "description": "An update (`wiki_put` of an existing page) carries the page's\n`lock_version`; optional for the other ops; a new page takes none.",
+            "items": {
+              "$ref": "#/components/schemas/WikiPrecondition"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command_schema_version",
+          "ops"
+        ],
+        "type": "object"
+      },
+      "WikiDeletedItem": {
+        "properties": {
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "title_taken": {
+            "description": "The title is used by a live page now: restoring is\n`wiki_page_exists` until it is renamed.",
+            "type": "boolean"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "version",
+          "deleted_at",
+          "deleted_by",
+          "title_taken"
+        ],
+        "type": "object"
+      },
+      "WikiDeletedList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WikiDeletedItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "WikiDeletedPage": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "$ref": "#/components/schemas/WikiProjectRef"
+          },
+          "title": {
+            "type": "string"
+          },
+          "title_taken": {
+            "type": "boolean"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "versions": {
+            "description": "With `view_wiki_edits` only.",
+            "items": {
+              "$ref": "#/components/schemas/WikiVersionItem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "project",
+          "title",
+          "body",
+          "body_html",
+          "version",
+          "parent_id",
+          "deleted_at",
+          "deleted_by",
+          "title_taken",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "WikiDiff": {
+        "properties": {
+          "from": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "hunks": {
+            "items": {
+              "$ref": "#/components/schemas/DiffHunk"
+            },
+            "type": "array"
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "to": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "More than 2,000 changed lines: the first 2,000 only.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "page_id",
+          "from",
+          "to",
+          "hunks",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "WikiEffect": {
+        "description": "What a wiki command did to one page (`CommandResult.wiki`).",
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reparented": {
+            "description": "Children moved to the deleted page's parent (`wiki_delete`).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "The title now.",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "page_id",
+          "project_id",
+          "title",
+          "version",
+          "lock_version",
+          "changed",
+          "created"
+        ],
+        "type": "object"
+      },
+      "WikiEventItem": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "description": "The id D12 takes (`…/events/{event_id}/redact`).",
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`created`, `renamed`, `moved`, `deleted`, `restored`, `protected`,\n`unprotected`.",
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "payload": {
+            "description": "`created {title, parent_id}`, `renamed {from, to}`, `moved\n{from_parent, to_parent}`, `deleted {children}`, `restored\n{parent_id}`; `\"[已遮蔽]\"` when redacted."
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "kind",
+          "payload",
+          "actor",
+          "origin",
+          "at",
+          "redacted"
+        ],
+        "type": "object"
+      },
+      "WikiIndex": {
+        "description": "`GET /projects/{id}/wiki`.",
+        "properties": {
+          "can": {
+            "$ref": "#/components/schemas/WikiIndexCan"
+          },
+          "project": {
+            "$ref": "#/components/schemas/WikiProjectRef"
+          },
+          "read_only": {
+            "description": "The project is closed: every write is refused.",
+            "type": "boolean"
+          },
+          "start_page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "R-W13: the set start page, else the page titled \"Wiki\", else none\n(show the index)."
+          },
+          "tree": {
+            "description": "Every live page (at most 5000), by title.",
+            "items": {
+              "$ref": "#/components/schemas/WikiTreeItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project",
+          "start_page",
+          "read_only",
+          "can",
+          "tree"
+        ],
+        "type": "object"
+      },
+      "WikiIndexCan": {
+        "properties": {
+          "create": {
+            "description": "Create pages (`edit_wiki_pages`, active project).",
+            "type": "boolean"
+          },
+          "manage": {
+            "description": "Deleted pages, restore and settings (`manage_wiki`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "create",
+          "manage"
+        ],
+        "type": "object"
+      },
+      "WikiOp": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "description": "Attachments come with M2.4: any value is `invalid_argument`."
+              },
+              "body": {
+                "description": "Markdown, at most 524288 bytes (`payload_too_large`).",
+                "type": "string"
+              },
+              "comment": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "const": "wiki_put",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "parent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/WikiPageRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The parent; `null` is the top level, absent keeps it."
+              },
+              "target": {
+                "$ref": "#/components/schemas/WikiTarget"
+              },
+              "title": {
+                "description": "Rename too (an existing page; `rename_wiki_pages`).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "body"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "keep_redirect": {
+                "description": "Keep the old title as a redirect (default true).",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "kind": {
+                "const": "wiki_move",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "parent": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/WikiPageRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The new parent; `null` is the top level, absent keeps it."
+              },
+              "target": {
+                "$ref": "#/components/schemas/WikiTarget"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "children": {
+                "description": "`\"reparent\"`: the children move to the deleted page's parent.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "const": "wiki_delete",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/WikiTarget"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "wiki_restore",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/WikiTarget",
+                "description": "`{\"project\", \"page_id\"}` of a page deleted within 30 days."
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "wiki_protect",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "protected": {
+                "type": "boolean"
+              },
+              "target": {
+                "$ref": "#/components/schemas/WikiTarget"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "protected"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "WikiPage": {
+        "description": "`GET /projects/{id}/wiki/pages/{title}`.",
+        "properties": {
+          "attachments": {
+            "description": "Attachments come with M2.4: always empty.",
+            "items": true,
+            "type": "array"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "description": "Sanitized HTML, references resolved for the caller.",
+            "type": "string"
+          },
+          "breadcrumbs": {
+            "description": "From the top level down to the parent.",
+            "items": {
+              "$ref": "#/components/schemas/WikiPageLink"
+            },
+            "type": "array"
+          },
+          "by_agent": {
+            "description": "The current version is an agent's (R-M3).",
+            "type": "boolean"
+          },
+          "can": {
+            "$ref": "#/components/schemas/WikiPageCan"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/WikiPageLink"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPageLink"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "$ref": "#/components/schemas/WikiProjectRef"
+          },
+          "protected": {
+            "type": "boolean"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "redirected_from": {
+            "description": "The title asked for, when it was an old title (a redirect).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "project",
+          "title",
+          "body",
+          "body_html",
+          "version",
+          "lock_version",
+          "protected",
+          "parent",
+          "breadcrumbs",
+          "children",
+          "updated_at",
+          "updated_by",
+          "by_agent",
+          "attachments",
+          "redirected_from",
+          "read_only",
+          "can"
+        ],
+        "type": "object"
+      },
+      "WikiPageCan": {
+        "properties": {
+          "delete": {
+            "type": "boolean"
+          },
+          "edit": {
+            "type": "boolean"
+          },
+          "history": {
+            "description": "Versions and diffs (`view_wiki_edits`): a read permission.",
+            "type": "boolean"
+          },
+          "protect": {
+            "type": "boolean"
+          },
+          "rename": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "edit",
+          "rename",
+          "delete",
+          "protect",
+          "history"
+        ],
+        "type": "object"
+      },
+      "WikiPageLink": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "WikiPageRef": {
+        "additionalProperties": false,
+        "description": "A parent page: `{\"page\": title}` or `{\"page_id\": id}`.",
+        "properties": {
+          "page": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "WikiPerson": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`user` or `agent`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "WikiPrecondition": {
+        "additionalProperties": false,
+        "description": "`{\"wiki_page\": page_id, \"lock_version\": n}`.",
+        "properties": {
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "wiki_page": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wiki_page",
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "WikiProjectRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name"
+        ],
+        "type": "object"
+      },
+      "WikiSettings": {
+        "properties": {
+          "can_manage": {
+            "description": "`manage_wiki` in an active project.",
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "start_page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The page the wiki opens on now (R-W13 fallback included)."
+          },
+          "start_page_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "start_page_id",
+          "start_page",
+          "lock_version",
+          "can_manage"
+        ],
+        "type": "object"
+      },
+      "WikiSettingsPut": {
+        "additionalProperties": false,
+        "properties": {
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "start_page_id": {
+            "description": "A live page of this wiki, or null (the page titled \"Wiki\").",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "WikiTarget": {
+        "additionalProperties": false,
+        "description": "`{\"project\": id or key, \"page\": title}` or `{\"project\", \"page_id\"}`.",
+        "properties": {
+          "page": {
+            "description": "The page's title (a new title for a new page). Redirects are not\nfollowed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "A project id or key.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "WikiTitleRedactInput": {
+        "additionalProperties": false,
+        "description": "`{reason_code, reason, new_title}`.",
+        "properties": {
+          "new_title": {
+            "description": "The page's title from now on (R-W2; not \"[已遮蔽]\").",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason_code",
+          "reason",
+          "new_title"
+        ],
+        "type": "object"
+      },
+      "WikiTreeItem": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "parent_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "parent_id",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "WikiVersionItem": {
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "comment": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "origin": {
+            "description": "`human_direct`, `agent_direct` or `external_agent`.",
+            "type": "string"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "size": {
+            "description": "Bytes of the body.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "author",
+          "origin",
+          "comment",
+          "size",
+          "created_at",
+          "redacted"
+        ],
+        "type": "object"
+      },
+      "WikiVersionList": {
+        "properties": {
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "items": {
+            "description": "Newest first, 50 per page.",
+            "items": {
+              "$ref": "#/components/schemas/WikiVersionItem"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page_id",
+          "title",
+          "current_version",
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "WikiVersionView": {
+        "description": "`GET …/versions/{n}`.",
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiPerson"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "description": "`[已遮蔽]` when redacted.",
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "page_id",
+          "title",
+          "version",
+          "current_version",
+          "body",
+          "body_html",
+          "comment",
+          "author",
+          "origin",
+          "created_at",
+          "redacted"
         ],
         "type": "object"
       },
@@ -19245,7 +20491,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CommandDoc"
+                "$ref": "#/components/schemas/CommandBody"
               }
             }
           },
@@ -19293,7 +20539,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result.",
+        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect, and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (attachments before M2.4; preconditions on a new page or without one on an update by page_id).",
         "x-access": "session",
         "x-csrf": true
       }
@@ -19859,7 +21105,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule.",
+        "summary": "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule. skip_wiki_pages: wiki page ids to leave as they are (a child of a deleted page goes back under it only when that page is restored too). A wiki undo that would pass 5,000 pages or 10,000 versions is invalid_value (kind wiki_page_limit, wiki_version_limit).",
         "x-access": "session",
         "x-csrf": true
       }
@@ -19919,7 +21165,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "What undoing one of your agent's executions (or your undo) would restore now (§16.7): per field before, after, current and whether it can be restored (reasons changed_since, value_no_longer_valid, permission, redacted, expired); notes to retract, relations to remove, transitions to choose. Writes nothing.",
+        "summary": "What undoing one of your agent's executions, your undo, or your own wiki write (design 06 R-W9) would restore now (§16.7): per field before, after, current and whether it can be restored (reasons changed_since, value_no_longer_valid, permission, redacted, expired); notes to retract, relations to remove, transitions to choose; wiki[] per page (change created, updated, deleted, restored, reparented; reasons also redacted_source, title_taken, has_children, dependency, wiki_depth, wiki_page_limit, wiki_version_limit; the last two make the undo invalid_value of that kind). Writes nothing.",
         "x-access": "session"
       }
     },
@@ -23543,7 +24789,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "The project's shared tab bar (§18): built-in views (timeline, milestones, issues, dev, plan, board, triage; triage hidden by default), saved queries, links and project views (kind view, view_id), the default tab, is_default, lock_version and can_manage. Project-public content.",
+        "summary": "The project's shared tab bar (§18): built-in views (timeline, milestones, issues, dev, plan, board, triage, wiki; triage hidden by default; the web app hides wiki where you cannot read the wiki), saved queries, links and project views (kind view, view_id), the default tab, is_default, lock_version and can_manage. Project-public content.",
         "x-access": "session"
       },
       "put": {
@@ -23680,7 +24926,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Back to the seven built-in tabs (triage hidden), default timeline, is_default true (manage_project). Header Idempotency-Key.",
+        "summary": "Back to the eight built-in tabs (triage hidden), default timeline, is_default true (manage_project). Header Idempotency-Key.",
         "x-access": "session",
         "x-csrf": true
       }
@@ -24443,6 +25689,914 @@
           }
         },
         "summary": "Create a version (manage_versions). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/wiki": {
+      "get": {
+        "operationId": "get_projects_id_wiki",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiIndex"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The project's wiki (design 06 R-W1): readable when the project is not archived, has the wiki module and you hold view_wiki_pages (or are a system administrator); otherwise not_found, exactly like a missing project. {project, start_page (R-W13: the set start page, else the page titled Wiki, else null), read_only (closed project), can {create, manage}, tree [{id, title, parent_id, updated_at}] (every live page, at most 5000)}.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/deleted": {
+      "get": {
+        "operationId": "get_projects_id_wiki_deleted",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiDeletedList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Pages deleted within 30 days, newest first (R-W16; manage_wiki, forbidden_op otherwise). title_taken: a live page has the title now (restore is wiki_page_exists). Restore with POST /commands (op wiki_restore).",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/deleted/{page_id}": {
+      "get": {
+        "operationId": "get_projects_id_wiki_deleted_pageid",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "page_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiDeletedPage"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "A page deleted within 30 days as it was (manage_wiki): body, body_html, version; versions only with view_wiki_edits. Older or not deleted: not_found.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}": {
+      "get": {
+        "operationId": "get_projects_id_wiki_pages_title",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiPage"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One page by title ({title}: the title with spaces as _, percent-encoded; case, width and runs of _ or spaces do not matter, R-W2). An old title follows its redirect and sets redirected_from. A missing or deleted page is not_found (the same not_found as an unreadable wiki). body (Markdown) and body_html (sanitized, references resolved for you), version, lock_version (the wiki_put precondition), protected, parent, breadcrumbs, children, updated_by, by_agent, attachments (empty until M2.4), read_only, can {edit, rename, delete, protect, history}.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/diff": {
+      "get": {
+        "operationId": "get_projects_id_wiki_pages_title_diff",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiDiff"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "R-W7 (view_wiki_edits): query from (default to - 1; 0 = empty) and to (default the current version). Line diff with 3 lines of context; changed lines paired with their counterpart carry words [{op, text}] (ASCII words, spaces, each other character). More than 2,000 changed lines: the first 2,000 and truncated true. Redacted versions compare as [已遮蔽].",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/events": {
+      "get": {
+        "operationId": "get_projects_id_wiki_pages_title_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/WikiEventItem"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The page's changes other than content (created, renamed, moved, deleted, restored, protected, unprotected), oldest first, with the event ids D12 takes (view_wiki_edits).",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/events/{event}/redact": {
+      "post": {
+        "operationId": "post_projects_id_wiki_pages_title_events_event_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "D12 (design 06 §3.13): one wiki event's payload becomes [已遮蔽]. Same rules as the other redactions. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/title/redact": {
+      "post": {
+        "operationId": "post_projects_id_wiki_pages_title_title_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WikiTitleRedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "D12 (design 06 §3.13): every past title of the page becomes [已遮蔽] (created and renamed events, undo copies; its redirects are deleted) and the page takes new_title in the same transaction (wiki_title_invalid, wiki_page_exists). Same rules as the other redactions. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/versions": {
+      "get": {
+        "operationId": "get_projects_id_wiki_pages_title_versions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiVersionList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The page's versions, newest first, 50 per page (query cursor). Needs view_wiki_edits (forbidden_op otherwise: you read the wiki, so its existence is no secret). Redacted versions say redacted (body and comment are [已遮蔽]).",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/versions/{n}": {
+      "get": {
+        "operationId": "get_projects_id_wiki_pages_title_versions_n",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "n",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiVersionView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "One version's body, body_html and comment (view_wiki_edits). A missing version is not_found.",
+        "x-access": "session"
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/versions/{n}/redact": {
+      "post": {
+        "operationId": "post_projects_id_wiki_pages_title_versions_n_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "n",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "D12 (design 06 §3.13): replace one version's body and comment with [已遮蔽] ({title}: the page id, or its title as in the page routes). manage_project on a wiki you read, or a system administrator; human session; step-up within 15 minutes. The project's security_epoch + 1; the version can no longer be a revert source (invalid_value kind redacted_source). Already redacted → changed=false. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/wiki/settings": {
+      "get": {
+        "operationId": "get_projects_id_wiki_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The wiki settings (R-W13) for wiki readers: start_page_id, start_page (the page the wiki opens on now), lock_version, can_manage.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_projects_id_wiki_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WikiSettingsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiSettings"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Set the start page (manage_wiki, active project). Header Idempotency-Key. start_page_id: a live page of this wiki or null (invalid_value kind start_page_invalid); conflict carries current and current_lock_version. Writes project_setting_events kind wiki_start_page {before, after}.",
         "x-access": "session",
         "x-csrf": true
       }

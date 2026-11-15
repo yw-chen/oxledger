@@ -364,6 +364,19 @@ changed: 沒有改到任何資料。
 title:   已經有同名的視圖，請換一個名稱
 changed: 沒有改到任何資料。
 
+## wiki_has_children
+title:   這一頁還有子頁，刪除時要一併決定子頁移到哪裡
+changed: 沒有改到任何資料。
+
+## wiki_page_exists
+title:   已經有同名的頁面
+changed: 沒有改到任何資料。
+next:    換一個標題
+
+## wiki_title_invalid
+title:   標題不合法
+changed: 沒有改到任何資料。
+
 # Not from the API
 
 ## (not an ApiError)
@@ -638,6 +651,74 @@ changed: 沒有改到任何資料。
 
 ## ai_provider_changed: provider=Anthropic, no model
 title:   AI 服務已換成〈Anthropic〉；繼續這個對話時，先前的對話內容會送到新服務
+changed: 沒有改到任何資料。
+
+## forbidden_op: reason=permission
+title:   你沒有權限執行這個動作
+changed: 沒有改到任何資料。
+
+## forbidden_op: reason=wiki_protected
+title:   這一頁受保護，只有有保護權限的人能修改
+changed: 沒有改到任何資料。
+
+## forbidden_op: reason=project_not_writable
+title:   專案已關閉，現在是唯讀
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=wiki_cycle, path=ops[0].parent
+title:   不能把頁面移到它自己或它的子頁下面
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=wiki_depth, path=ops[0].parent
+title:   頁面最多只能有 10 層
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=wiki_version_limit, path=ops[0].parent
+title:   這一頁的版本數已達上限（10,000 版）
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=wiki_page_limit, path=ops[0].parent
+title:   這個 wiki 的頁數已達上限（5,000 頁）
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=wiki_comment, path=ops[0].parent
+title:   修改說明最多 255 字，也不能有控制字元
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=wiki_body, path=ops[0].parent
+title:   內容有不允許的字元（NUL）
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=start_page_invalid, path=ops[0].parent
+title:   起始頁要是這個 wiki 裡現有的頁面
+changed: 沒有改到任何資料。
+
+## invalid_value: kind=redacted_source, path=ops[0].parent
+title:   被遮蔽的版本不能拿來回復
+changed: 沒有改到任何資料。
+
+## wiki_has_children: children=3
+title:   這一頁還有 3 個子頁，刪除時要一併決定子頁移到哪裡
+changed: 沒有改到任何資料。
+
+## wiki_title_invalid: reason=length
+title:   標題要有 1～100 個字
+changed: 沒有改到任何資料。
+
+## wiki_title_invalid: reason=leading_dot
+title:   標題不能以「.」開頭
+changed: 沒有改到任何資料。
+
+## wiki_title_invalid: reason=char, char=#
+title:   標題不能有「#」（不能用 [ ] | # ? / \ : < > " 這些字元）
+changed: 沒有改到任何資料。
+
+## wiki_title_invalid: reason=char, char=U+202E
+title:   標題有看不見的控制字元 U+202E，請刪掉後再試
+changed: 沒有改到任何資料。
+
+## wiki_title_invalid: reason=char, char=U+200B
+title:   標題有看不見的控制字元 U+200B，請刪掉後再試
 changed: 沒有改到任何資料。
 
 # describeFailure (stored execution errors)

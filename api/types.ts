@@ -303,6 +303,9 @@ export type ColumnHead = {
   label: string;
 };
 
+/** The body of `POST /commands`: an issue command document or a wiki one (OpenAPI only; the engine tells them apart by the op kinds). */
+export type CommandBody = CommandDoc | WikiCommandDoc;
+
 /** A command document, `command_schema_version = 1`. */
 export type CommandDoc = {
   /** Always 1. */
@@ -331,6 +334,8 @@ export type CommandResult = {
   status: string;
   /** Time entries the document wrote (contract 05 §3.10.2); omitted when none. */
   time_entries?: Array<TimeEntryEffect>;
+  /** The wiki page a wiki document wrote (design 06 §3.11); omitted when none. */
+  wiki?: Array<WikiEffect>;
 };
 
 export type CompactValidation = {
@@ -656,6 +661,22 @@ export type DevPr = {
   url: string;
 };
 
+export type DiffHunk = {
+  lines: Array<DiffLine>;
+  new_start: number;
+  /** 1-based line numbers where the hunk starts. */
+  old_start: number;
+};
+
+export type DiffLine = {
+  /** `equal`, `delete` or `insert`. */
+  op: string;
+  /** The line without its line break. */
+  text: string;
+  /** Changed lines paired with their counterpart: word-level pieces. */
+  words?: Array<DiffWord> | null;
+};
+
 /** One changed field as the queue shows it. */
 export type DiffRow = {
   /** Proposed value, rendered. */
@@ -677,6 +698,12 @@ export type DiffTarget = {
   id: string;
   key: string;
   subject: string;
+};
+
+export type DiffWord = {
+  /** `equal`, `delete` or `insert`. */
+  op: string;
+  text: string;
 };
 
 /** An action that returns nothing but success. */
@@ -739,7 +766,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -1266,6 +1293,8 @@ export type ItemResult = {
   time_entry_id?: string | null;
   /** The milestone the op wrote (version ops). */
   version_id?: string | null;
+  /** The wiki page the op wrote (wiki ops, design 06 §3.11). */
+  wiki_page_id?: string | null;
 };
 
 export type LabelPatch = {
@@ -1366,7 +1395,7 @@ export type MarkdownPreviewContext = {
 
 /** `POST /markdown/preview` (§3.1, R-RF6). */
 export type MarkdownPreviewInput = {
-  /** What the text belongs to: `{"issue": "AUTH-1"}` (a description or note of that issue) or `{"project": "AUTH"}` (a new issue). `{"wiki_project": …}` answers `not_found` until the wiki exists (M2.2). */
+  /** What the text belongs to: `{"issue": "AUTH-1"}` (a description or note of that issue) or `{"project": "AUTH"}` (a new issue). `{"wiki_project": …}`: a wiki page of that project (a wiki the caller cannot read is `not_found`). */
   context: MarkdownPreviewContext;
   /** `markdown` (default) or `plain`. */
   format?: TextFormat | null;
@@ -3352,6 +3381,8 @@ export type UndoInput = {
   skip_time_entries?: Array<string>;
   /** Issue ids whose triage decision stays (contract 05 §3.10.1). */
   skip_triage?: Array<string>;
+  /** Wiki page ids to leave as they are (design 06 R-W9). */
+  skip_wiki_pages?: Array<string>;
   /** Chosen transitions per issue (from `choices`). */
   transitions?: Record<string, string>;
 };
@@ -3380,6 +3411,8 @@ export type UndoPreview = {
   triage: Array<UndoTriage>;
   version_created?: UndoVersionCreate | null;
   version_fields: Array<UndoVersionField>;
+  /** Wiki pages (design 06 R-W9). */
+  wiki: Array<UndoWikiPage>;
 };
 
 export type UndoRate = {
@@ -3413,6 +3446,8 @@ export type UndoResult = {
   triage_restored: number;
   version_deleted: boolean;
   version_fields_restored: number;
+  /** Wiki pages put back (design 06 R-W9). */
+  wiki_pages_restored: number;
 };
 
 /** One time entry change of an agent execution (contract 05 §3.10.2, T-M1-41): a created entry is undone by a soft delete, a changed field goes back to its value before. */
@@ -3462,6 +3497,23 @@ export type UndoVersionField = {
   reason?: string | null;
   restorable: boolean;
   version_id: string;
+};
+
+/** One page an execution changed, as its undo would treat it. */
+export type UndoWikiPage = {
+  after: unknown;
+  /** `{version?, title?, parent_id?, deleted?, protected?}` before and after the execution, and now. */
+  before: unknown;
+  /** `created` (undo: soft delete), `updated` (content, title, parent or protection back), `deleted` (undo: restore), `restored` (undo: delete again) or `reparented` (a child of a deleted page; undo: back under it). */
+  change: string;
+  current: unknown;
+  page_id: string;
+  project_id: string;
+  /** `expired`, `changed_since`, `redacted_source`, `redacted`, `title_taken`, `has_children`, `dependency`, `value_no_longer_valid`, `wiki_depth`, `wiki_page_limit`, `wiki_version_limit` (the undo answers `invalid_value` with that kind) or `permission`. */
+  reason?: string | null;
+  restorable: boolean;
+  /** The page's title now. */
+  title: string;
 };
 
 export type Unlinked = {
@@ -3876,6 +3928,285 @@ export type WidgetInput = {
   width?: number | null;
 };
 
+/** A wiki command document: exactly one wiki op (design 06 §3.11). */
+export type WikiCommandDoc = {
+  /** Always 1. */
+  command_schema_version: number;
+  /** Exactly one wiki op. */
+  ops: Array<WikiOp>;
+  /** An update (`wiki_put` of an existing page) carries the page's `lock_version`; optional for the other ops; a new page takes none. */
+  preconditions?: Array<WikiPrecondition>;
+  title?: string | null;
+};
+
+export type WikiDeletedItem = {
+  deleted_at: string;
+  deleted_by: WikiPerson | null;
+  id: string;
+  title: string;
+  /** The title is used by a live page now: restoring is `wiki_page_exists` until it is renamed. */
+  title_taken: boolean;
+  version: number;
+};
+
+export type WikiDeletedList = {
+  items: Array<WikiDeletedItem>;
+};
+
+export type WikiDeletedPage = {
+  body: string;
+  body_html: string;
+  deleted_at: string;
+  deleted_by: WikiPerson | null;
+  id: string;
+  parent_id: string | null;
+  project: WikiProjectRef;
+  title: string;
+  title_taken: boolean;
+  version: number;
+  /** With `view_wiki_edits` only. */
+  versions: Array<WikiVersionItem> | null;
+};
+
+export type WikiDiff = {
+  from: number;
+  hunks: Array<DiffHunk>;
+  page_id: string;
+  to: number;
+  /** More than 2,000 changed lines: the first 2,000 only. */
+  truncated: boolean;
+};
+
+/** What a wiki command did to one page (`CommandResult.wiki`). */
+export type WikiEffect = {
+  changed: boolean;
+  created: boolean;
+  lock_version: number;
+  page_id: string;
+  project_id: string;
+  /** Children moved to the deleted page's parent (`wiki_delete`). */
+  reparented?: Array<string>;
+  /** The title now. */
+  title: string;
+  version: number;
+};
+
+export type WikiEventItem = {
+  actor: WikiPerson | null;
+  at: string;
+  /** The id D12 takes (`…/events/{event_id}/redact`). */
+  id: string;
+  /** `created`, `renamed`, `moved`, `deleted`, `restored`, `protected`, `unprotected`. */
+  kind: string;
+  origin: string;
+  /** `created {title, parent_id}`, `renamed {from, to}`, `moved {from_parent, to_parent}`, `deleted {children}`, `restored {parent_id}`; `"[已遮蔽]"` when redacted. */
+  payload: unknown;
+  redacted: boolean;
+  seq: number;
+};
+
+/** `GET /projects/{id}/wiki`. */
+export type WikiIndex = {
+  can: WikiIndexCan;
+  project: WikiProjectRef;
+  /** The project is closed: every write is refused. */
+  read_only: boolean;
+  /** R-W13: the set start page, else the page titled "Wiki", else none (show the index). */
+  start_page: WikiPageLink | null;
+  /** Every live page (at most 5000), by title. */
+  tree: Array<WikiTreeItem>;
+};
+
+export type WikiIndexCan = {
+  /** Create pages (`edit_wiki_pages`, active project). */
+  create: boolean;
+  /** Deleted pages, restore and settings (`manage_wiki`). */
+  manage: boolean;
+};
+
+export type WikiOp = {
+  /** Attachments come with M2.4: any value is `invalid_argument`. */
+  attachments?: unknown;
+  /** Markdown, at most 524288 bytes (`payload_too_large`). */
+  body: string;
+  /** At most 255 characters. */
+  comment?: string | null;
+  kind: "wiki_put";
+  op_id: string;
+  /** The parent; `null` is the top level, absent keeps it. */
+  parent?: WikiPageRef | null;
+  target: WikiTarget;
+  /** Rename too (an existing page; `rename_wiki_pages`). */
+  title?: string | null;
+} | {
+  /** Keep the old title as a redirect (default true). */
+  keep_redirect?: boolean | null;
+  kind: "wiki_move";
+  op_id: string;
+  /** The new parent; `null` is the top level, absent keeps it. */
+  parent?: WikiPageRef | null;
+  target: WikiTarget;
+  title?: string | null;
+} | {
+  /** `"reparent"`: the children move to the deleted page's parent. */
+  children?: string | null;
+  kind: "wiki_delete";
+  op_id: string;
+  target: WikiTarget;
+} | {
+  kind: "wiki_restore";
+  op_id: string;
+  /** `{"project", "page_id"}` of a page deleted within 30 days. */
+  target: WikiTarget;
+} | {
+  kind: "wiki_protect";
+  op_id: string;
+  protected: boolean;
+  target: WikiTarget;
+};
+
+/** `GET /projects/{id}/wiki/pages/{title}`. */
+export type WikiPage = {
+  /** Attachments come with M2.4: always empty. */
+  attachments: Array<unknown>;
+  body: string;
+  /** Sanitized HTML, references resolved for the caller. */
+  body_html: string;
+  /** From the top level down to the parent. */
+  breadcrumbs: Array<WikiPageLink>;
+  /** The current version is an agent's (R-M3). */
+  by_agent: boolean;
+  can: WikiPageCan;
+  children: Array<WikiPageLink>;
+  id: string;
+  lock_version: number;
+  parent: WikiPageLink | null;
+  project: WikiProjectRef;
+  protected: boolean;
+  read_only: boolean;
+  /** The title asked for, when it was an old title (a redirect). */
+  redirected_from: string | null;
+  title: string;
+  updated_at: string;
+  updated_by: WikiPerson | null;
+  version: number;
+};
+
+export type WikiPageCan = {
+  delete: boolean;
+  edit: boolean;
+  /** Versions and diffs (`view_wiki_edits`): a read permission. */
+  history: boolean;
+  protect: boolean;
+  rename: boolean;
+};
+
+export type WikiPageLink = {
+  id: string;
+  title: string;
+};
+
+/** A parent page: `{"page": title}` or `{"page_id": id}`. */
+export type WikiPageRef = {
+  page?: string | null;
+  page_id?: string | null;
+};
+
+export type WikiPerson = {
+  id: string;
+  /** `user` or `agent`. */
+  kind: string;
+  name: string;
+};
+
+/** `{"wiki_page": page_id, "lock_version": n}`. */
+export type WikiPrecondition = {
+  lock_version: number;
+  wiki_page: string;
+};
+
+export type WikiProjectRef = {
+  id: string;
+  key: string;
+  name: string;
+};
+
+export type WikiSettings = {
+  /** `manage_wiki` in an active project. */
+  can_manage: boolean;
+  lock_version: number;
+  /** The page the wiki opens on now (R-W13 fallback included). */
+  start_page: WikiPageLink | null;
+  start_page_id: string | null;
+};
+
+export type WikiSettingsPut = {
+  lock_version: number;
+  /** A live page of this wiki, or null (the page titled "Wiki"). */
+  start_page_id?: string | null;
+};
+
+/** `{"project": id or key, "page": title}` or `{"project", "page_id"}`. */
+export type WikiTarget = {
+  /** The page's title (a new title for a new page). Redirects are not followed. */
+  page?: string | null;
+  page_id?: string | null;
+  /** A project id or key. */
+  project: string;
+};
+
+/** `{reason_code, reason, new_title}`. */
+export type WikiTitleRedactInput = {
+  /** The page's title from now on (R-W2; not "[已遮蔽]"). */
+  new_title: string;
+  reason: string;
+  reason_code: string;
+};
+
+export type WikiTreeItem = {
+  id: string;
+  parent_id: string | null;
+  title: string;
+  updated_at: string;
+};
+
+export type WikiVersionItem = {
+  author: WikiPerson | null;
+  comment: string;
+  created_at: string;
+  /** `human_direct`, `agent_direct` or `external_agent`. */
+  origin: string;
+  redacted: boolean;
+  /** Bytes of the body. */
+  size: number;
+  version: number;
+};
+
+export type WikiVersionList = {
+  current_version: number;
+  /** Newest first, 50 per page. */
+  items: Array<WikiVersionItem>;
+  next_cursor: string | null;
+  page_id: string;
+  title: string;
+};
+
+/** `GET …/versions/{n}`. */
+export type WikiVersionView = {
+  author: WikiPerson | null;
+  /** `[已遮蔽]` when redacted. */
+  body: string;
+  body_html: string;
+  comment: string;
+  created_at: string;
+  current_version: number;
+  origin: string;
+  page_id: string;
+  redacted: boolean;
+  title: string;
+  version: number;
+};
+
 export type Wip = {
   /** null when the lane was not counted. */
   exceeded: boolean | null;
@@ -3970,7 +4301,7 @@ export interface Endpoints {
   "POST /changesets/{id}/revisions": { body: RevisionInput; data: ChangesetView };
   "POST /changesets/{id}/validations": { body: ValidateInput; data: Validation };
   "GET /changesets/{id}/versions/{v}": { body: never; data: ChangesetView };
-  "POST /commands": { body: CommandDoc; data: CommandResult };
+  "POST /commands": { body: CommandBody; data: CommandResult };
   "POST /commands/validate": { body: ValidateCommandInput; data: ValidateResult };
   "GET /delegations": { body: never; data: Array<DelegationView> };
   "POST /delegations": { body: DelegationBody; data: DelegationView };
@@ -4054,6 +4385,19 @@ export interface Endpoints {
   "PUT /projects/{id}/triage-settings": { body: TriageSettingsPut; data: TriageSettings };
   "GET /projects/{id}/versions": { body: never; data: VersionList };
   "POST /projects/{id}/versions": { body: NewVersion; data: VersionWriteResult };
+  "GET /projects/{id}/wiki": { body: never; data: WikiIndex };
+  "GET /projects/{id}/wiki/deleted": { body: never; data: WikiDeletedList };
+  "GET /projects/{id}/wiki/deleted/{page_id}": { body: never; data: WikiDeletedPage };
+  "GET /projects/{id}/wiki/pages/{title}": { body: never; data: WikiPage };
+  "GET /projects/{id}/wiki/pages/{title}/diff": { body: never; data: WikiDiff };
+  "GET /projects/{id}/wiki/pages/{title}/events": { body: never; data: Array<WikiEventItem> };
+  "POST /projects/{id}/wiki/pages/{title}/events/{event}/redact": { body: RedactInput; data: Redacted };
+  "POST /projects/{id}/wiki/pages/{title}/title/redact": { body: WikiTitleRedactInput; data: Redacted };
+  "GET /projects/{id}/wiki/pages/{title}/versions": { body: never; data: WikiVersionList };
+  "GET /projects/{id}/wiki/pages/{title}/versions/{n}": { body: never; data: WikiVersionView };
+  "POST /projects/{id}/wiki/pages/{title}/versions/{n}/redact": { body: RedactInput; data: Redacted };
+  "GET /projects/{id}/wiki/settings": { body: never; data: WikiSettings };
+  "PUT /projects/{id}/wiki/settings": { body: WikiSettingsPut; data: WikiSettings };
   "POST /resolve": { body: ResolveParams; data: ResolveResult };
   "GET /time-activities": { body: never; data: ProjectActivities };
   "GET /time-entries": { body: never; data: TimeEntryPage };

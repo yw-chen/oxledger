@@ -75,3 +75,6 @@ version_not_open              422     no         fix_input,ask_human
 version_superseded            409     no         refresh_and_revise
 view_in_use                   409     no         ask_human
 view_name_taken               409     no         fix_input
+wiki_has_children             409     no         ask_human
+wiki_page_exists              409     no         fix_input
+wiki_title_invalid            422     no         fix_input

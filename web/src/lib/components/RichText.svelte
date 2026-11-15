@@ -3,6 +3,7 @@
 	// server's (`*_html`, sanitized there, R-M2/R-M5); this is the one component
 	// allowed to put it into {@html}, and only `*_html` fields (R-M10). Without
 	// it (a server before M2.1) the text shows as it is, like M1.
+	import { spaWikiHref } from '#lib/wiki.js';
 	let {
 		html = null,
 		text = '',
@@ -55,6 +56,11 @@
 				a.setAttribute('href', '#');
 				a.removeAttribute('target');
 			}
+		}
+		// Wiki links (design 06 §3.2) name `/projects/KEY/wiki/…`; the SPA's routes are `/project/…`.
+		for (const a of el.querySelectorAll<HTMLAnchorElement>('a.ox-wiki[href]')) {
+			const to = spaWikiHref(a.getAttribute('href') ?? '');
+			if (to) a.setAttribute('href', to);
 		}
 		for (const a of el.querySelectorAll<HTMLAnchorElement>('a.ox-issue[title]')) {
 			if (!a.hasAttribute('aria-label')) a.setAttribute('aria-label', `${a.textContent ?? ''} ${a.title}`);
@@ -112,4 +118,5 @@
 	.md :global(.ox-mention) { display: inline-block; padding: 0 6px; border-radius: 10px; background: var(--bg3, var(--bg2)); border: 1px solid var(--line2); font-size: 0.92em; }
 	.md :global(a.ox-ext[data-ox-host])::after { content: '（' attr(data-ox-host) '）'; font-size: 11px; color: var(--muted); }
 	.md :global(img) { max-width: 100%; }
+	.md :global(a.ox-wiki-new) { color: var(--bad, #d33); }
 </style>

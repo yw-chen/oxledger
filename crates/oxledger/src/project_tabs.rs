@@ -24,8 +24,9 @@ use uuid::Uuid;
 
 /// The built-in tabs and their default titles; migration 0021's
 /// `project_tabs_default()` holds the same list (a test compares them).
-/// `board` and `triage` came with design 05 M1.2 (R-T1: appended).
-pub const BUILTIN: [(&str, &str); 7] = [
+/// `board` and `triage` came with design 05 M1.2 (R-T1: appended), `wiki`
+/// with design 06 M2.2 (migration 0034).
+pub const BUILTIN: [(&str, &str); 8] = [
     ("timeline", "時程"),
     ("milestones", "里程碑"),
     ("issues", "議題"),
@@ -33,6 +34,7 @@ pub const BUILTIN: [(&str, &str); 7] = [
     ("plan", "規劃（心智圖）"),
     ("board", "看板"),
     ("triage", "Triage"),
+    ("wiki", "Wiki"),
 ];
 /// Built-in tabs hidden by default (R-V3: a project turns Triage on first).
 pub const BUILTIN_HIDDEN: &[&str] = &["triage"];

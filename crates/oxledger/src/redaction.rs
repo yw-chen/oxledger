@@ -77,6 +77,26 @@ pub enum Target {
     TimeEntry {
         entry: Uuid,
     },
+    /// Design 06 §3.13: one version's body and comment. `page` is the page
+    /// id or its title (as in the page routes).
+    WikiVersion {
+        project: String,
+        page: String,
+        version: i32,
+    },
+    /// Design 06 §3.13: every past title of the page (events, undo copies,
+    /// redirects); the page takes `new_title` in the same transaction.
+    WikiTitle {
+        project: String,
+        page: String,
+        new_title: String,
+    },
+    /// Design 06 §3.13: one wiki event's payload.
+    WikiEvent {
+        project: String,
+        page: String,
+        event: Uuid,
+    },
 }
 
 impl Target {
@@ -87,6 +107,9 @@ impl Target {
             Target::VersionEvent { .. } => "redact_version_event",
             Target::SettingEvent { .. } => "redact_setting_event",
             Target::TimeEntry { .. } => "redact_time_entry",
+            Target::WikiVersion { .. } => "redact_wiki_version",
+            Target::WikiTitle { .. } => "redact_wiki_title",
+            Target::WikiEvent { .. } => "redact_wiki_event",
         }
     }
 }
@@ -100,6 +123,9 @@ pub struct Derived {
     pub version_changes: u64,
     /// `execution_time_entry_changes` rows (contract 05 §2.5 D12).
     pub time_changes: u64,
+    /// `execution_wiki_changes` rows whose titles became the marker
+    /// (design 06 §3.13).
+    pub wiki_changes: u64,
 }
 
 #[cfg(feature = "test-support")]
@@ -147,6 +173,8 @@ struct Located {
     version: Option<Uuid>,
     row: Uuid,
     admin_only: bool,
+    /// A wiki target: the page (locked after the project).
+    wiki_page: Option<Uuid>,
 }
 
 async fn is_admin(conn: &mut PgConnection, caller: AuthContext) -> Result<bool> {
@@ -253,6 +281,7 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 version: None,
                 row: *note,
                 admin_only: false,
+                wiki_page: None,
             })
         }
         Target::IssueEvent { key, event } => {
@@ -279,6 +308,7 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 version: None,
                 row: *event,
                 admin_only: false,
+                wiki_page: None,
             })
         }
         Target::VersionEvent { version, seq } => {
@@ -306,6 +336,7 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 version: Some(*version),
                 row: id.ok_or_else(|| not_found("event"))?,
                 admin_only: false,
+                wiki_page: None,
             })
         }
         Target::TimeEntry { entry } => {
@@ -364,6 +395,7 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 version: None,
                 row: *entry,
                 admin_only: false,
+                wiki_page: None,
             })
         }
         Target::SettingEvent { project, event } => {
@@ -387,6 +419,51 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 version: None,
                 row: *event,
                 admin_only,
+                wiki_page: None,
+            })
+        }
+        Target::WikiVersion { project, page, .. }
+        | Target::WikiTitle { project, page, .. }
+        | Target::WikiEvent { project, page, .. } => {
+            // R-W1: a wiki the caller cannot read is not_found.
+            let a = crate::wiki::access(&mut *conn, caller, project).await?;
+            let page = crate::wiki::page_for_redaction(&mut *conn, &a, page).await?;
+            let row = match t {
+                Target::WikiVersion { version, .. } => {
+                    let ok: bool = sqlx::query_scalar(
+                        "SELECT EXISTS (SELECT 1 FROM wiki_page_versions WHERE page_id = $1 AND version = $2)",
+                    )
+                    .bind(page)
+                    .bind(version)
+                    .fetch_one(&mut *conn)
+                    .await?;
+                    if !ok {
+                        return Err(not_found("version"));
+                    }
+                    page
+                }
+                Target::WikiEvent { event, .. } => {
+                    let ok: bool = sqlx::query_scalar(
+                        "SELECT EXISTS (SELECT 1 FROM wiki_events WHERE id = $1 AND page_id = $2)",
+                    )
+                    .bind(event)
+                    .bind(page)
+                    .fetch_one(&mut *conn)
+                    .await?;
+                    if !ok {
+                        return Err(not_found("event"));
+                    }
+                    *event
+                }
+                _ => page,
+            };
+            Ok(Located {
+                project: a.project,
+                issue: None,
+                version: None,
+                row,
+                admin_only: false,
+                wiki_page: Some(page),
             })
         }
     }
@@ -403,6 +480,25 @@ fn request_hash(t: &Target, input: &RedactInput) -> [u8; 32] {
             json!({"project": project.trim().to_uppercase(), "event": event})
         }
         Target::TimeEntry { entry } => json!({"time_entry": entry}),
+        Target::WikiVersion {
+            project,
+            page,
+            version,
+        } => {
+            json!({"wiki_project": project.trim().to_uppercase(), "page": page, "version": version})
+        }
+        Target::WikiTitle {
+            project,
+            page,
+            new_title,
+        } => {
+            json!({"wiki_project": project.trim().to_uppercase(), "page": page, "new_title": new_title})
+        }
+        Target::WikiEvent {
+            project,
+            page,
+            event,
+        } => json!({"wiki_project": project.trim().to_uppercase(), "page": page, "event": event}),
     };
     let body =
         json!({"target": target, "reason_code": input.reason_code, "reason": input.reason.trim()});
@@ -462,7 +558,29 @@ async fn redact_locked(
             .bind(at.project)
             .fetch_one(&mut *tx)
             .await?;
-    may_redact(&mut *tx, caller, at.project).await?;
+    // A wiki target is resolved again under the project lock: a rename,
+    // move, delete or restore committed in between changes which page (and
+    // which version or event) the title names.
+    let at = match at.wiki_page {
+        Some(_) => {
+            let again = locate(&mut *tx, caller, target).await?;
+            if again.project != at.project {
+                return Err(crate::wiki::not_found());
+            }
+            again
+        }
+        None => at,
+    };
+    match at.wiki_page {
+        Some(_) => may_redact_wiki(&mut *tx, caller, at.project).await?,
+        None => may_redact(&mut *tx, caller, at.project).await?,
+    }
+    if let Some(page) = at.wiki_page {
+        sqlx::query("SELECT 1 FROM wiki_pages WHERE id = $1 FOR UPDATE")
+            .bind(page)
+            .execute(&mut *tx)
+            .await?;
+    }
     if let Some(issue) = at.issue {
         sqlx::query("SELECT 1 FROM issues WHERE id = $1 FOR UPDATE")
             .bind(issue)
@@ -475,26 +593,32 @@ async fn redact_locked(
             .execute(&mut *tx)
             .await?;
     }
-    let done: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(match target {
-        Target::Note { .. } => {
-            "SELECT redacted_at IS NOT NULL FROM issue_notes WHERE id = $1 FOR UPDATE"
+    let done: bool = match target {
+        Target::WikiVersion { version, .. } => {
+            sqlx::query_scalar(
+                "SELECT redaction_id IS NOT NULL FROM wiki_page_versions
+                 WHERE page_id = $1 AND version = $2 FOR UPDATE",
+            )
+            .bind(at.row)
+            .bind(version)
+            .fetch_one(&mut *tx)
+            .await?
         }
-        Target::IssueEvent { .. } => {
-            "SELECT redaction_id IS NOT NULL FROM issue_events WHERE id = $1 FOR UPDATE"
+        Target::WikiEvent { .. } => {
+            sqlx::query_scalar(
+                "SELECT redaction_id IS NOT NULL FROM wiki_events WHERE id = $1 FOR UPDATE",
+            )
+            .bind(at.row)
+            .fetch_one(&mut *tx)
+            .await?
         }
-        Target::VersionEvent { .. } => {
-            "SELECT redaction_id IS NOT NULL FROM version_events WHERE id = $1 FOR UPDATE"
+        // A title redaction always renames and clears the history again.
+        Target::WikiTitle { new_title, .. } => {
+            crate::wiki::check_redaction_title(&mut *tx, at.project, at.row, new_title).await?;
+            false
         }
-        Target::SettingEvent { .. } => {
-            "SELECT redaction_id IS NOT NULL FROM project_setting_events WHERE id = $1 FOR UPDATE"
-        }
-        Target::TimeEntry { .. } => {
-            "SELECT redacted_at IS NOT NULL FROM time_entries WHERE id = $1 FOR UPDATE"
-        }
-    }))
-    .bind(at.row)
-    .fetch_one(&mut *tx)
-    .await?;
+        _ => generic_done(&mut *tx, target, at.row).await?,
+    };
     if done {
         // C4: already redacted; nothing new, epoch unchanged.
         return Ok(Redacted {
@@ -511,6 +635,77 @@ async fn redact_locked(
     .await?;
     let reason = input.reason.trim();
     let id: Uuid = match target {
+        Target::WikiVersion { .. } | Target::WikiTitle { .. } | Target::WikiEvent { .. } => {
+            crate::wiki::redact(
+                &mut *tx,
+                target,
+                at.row,
+                who.user_id,
+                &input.reason_code,
+                reason,
+            )
+            .await?
+        }
+        _ => redact_row(&mut *tx, target, &at, who, input, reason).await?,
+    };
+    fault("redact.before_derived").await?;
+    derived(&mut *tx, at.project, who.user_id).await?;
+    if let Some(issue) = at.issue {
+        // C7: re-index without touching the issue row.
+        sqlx::query("INSERT INTO outbox (topic, entity_id) VALUES ('issue', $1)")
+            .bind(issue)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(page) = at.wiki_page {
+        // R-W11: the wiki index follows (M2.3).
+        sqlx::query("INSERT INTO outbox (topic, entity_id) VALUES ('wiki_page', $1)")
+            .bind(page)
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(Redacted {
+        changed: true,
+        redaction_id: Some(id),
+        security_epoch: epoch,
+    })
+}
+
+/// Whether a note or event target is already redacted (locks its row).
+async fn generic_done(tx: &mut PgConnection, target: &Target, row: Uuid) -> Result<bool> {
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(match target {
+        Target::Note { .. } => {
+            "SELECT redacted_at IS NOT NULL FROM issue_notes WHERE id = $1 FOR UPDATE"
+        }
+        Target::IssueEvent { .. } => {
+            "SELECT redaction_id IS NOT NULL FROM issue_events WHERE id = $1 FOR UPDATE"
+        }
+        Target::VersionEvent { .. } => {
+            "SELECT redaction_id IS NOT NULL FROM version_events WHERE id = $1 FOR UPDATE"
+        }
+        Target::SettingEvent { .. } => {
+            "SELECT redaction_id IS NOT NULL FROM project_setting_events WHERE id = $1 FOR UPDATE"
+        }
+        Target::TimeEntry { .. } => {
+            "SELECT redacted_at IS NOT NULL FROM time_entries WHERE id = $1 FOR UPDATE"
+        }
+        _ => "SELECT false WHERE $1::uuid IS NOT NULL",
+    }))
+    .bind(row)
+    .fetch_one(&mut *tx)
+    .await?)
+}
+
+/// The redaction of a note, an event or a time entry.
+async fn redact_row(
+    tx: &mut PgConnection,
+    target: &Target,
+    at: &Located,
+    who: &Executor,
+    input: &RedactInput,
+    reason: &str,
+) -> Result<Uuid> {
+    Ok(match target {
         Target::Note { .. } => {
             sqlx::query("UPDATE issue_notes SET body = $2, redacted_at = now() WHERE id = $1")
                 .bind(at.row)
@@ -607,21 +802,42 @@ async fn redact_locked(
         Target::TimeEntry { .. } => {
             redact_time_entry(&mut *tx, at.row, who.user_id, &input.reason_code, reason).await?
         }
-    };
-    fault("redact.before_derived").await?;
-    derived(&mut *tx, at.project, who.user_id).await?;
-    if let Some(issue) = at.issue {
-        // C7: re-index without touching the issue row.
-        sqlx::query("INSERT INTO outbox (topic, entity_id) VALUES ('issue', $1)")
-            .bind(issue)
-            .execute(&mut *tx)
-            .await?;
-    }
-    Ok(Redacted {
-        changed: true,
-        redaction_id: Some(id),
-        security_epoch: epoch,
+        Target::WikiVersion { .. } | Target::WikiTitle { .. } | Target::WikiEvent { .. } => {
+            unreachable!("wiki targets are redacted by wiki::redact")
+        }
     })
+}
+
+/// Design 06 §3.13: wiki targets need `manage_project` (or a system
+/// administrator) on a wiki the caller reads.
+async fn may_redact_wiki(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    project: Uuid,
+) -> Result<()> {
+    let a = crate::wiki::access_of(&mut *conn, caller, project)
+        .await?
+        .ok_or_else(|| not_found("project"))?;
+    if a.admin {
+        return Ok(());
+    }
+    let actor = perm::actor(&mut *conn, caller).await?;
+    let pp = perm::project_perms(&mut *conn, &actor, project)
+        .await?
+        .ok_or_else(|| not_found("project"))?;
+    if !pp
+        .roles
+        .iter()
+        .any(|r| r.perms.contains_key(MANAGE_PROJECT))
+    {
+        return Err(ApiError::new(
+            ErrorCode::ForbiddenOp,
+            "redaction needs manage_project".to_string(),
+        )
+        .with_details(json!({"reason": "permission"}))
+        .into());
+    }
+    Ok(())
 }
 
 /// `manage_project` on a project that is not archived, or a system
@@ -728,12 +944,27 @@ pub async fn derived(conn: &mut PgConnection, project: Uuid, actor: Uuid) -> Res
     .execute(&mut *conn)
     .await?
     .rows_affected();
+    // Design 06 §3.13: the wiki undo copies' titles (by project).
+    let wiki_changes = sqlx::query(
+        "UPDATE execution_wiki_changes f
+         SET before_title = CASE WHEN f.before_title IS NULL THEN NULL ELSE $2 END,
+             after_title = CASE WHEN f.after_title IS NULL THEN NULL ELSE $2 END
+         WHERE (f.before_title IS DISTINCT FROM $2 AND f.before_title IS NOT NULL
+                OR f.after_title IS DISTINCT FROM $2 AND f.after_title IS NOT NULL)
+           AND f.page_id IN (SELECT id FROM wiki_pages WHERE project_id = $1)",
+    )
+    .bind(project)
+    .bind(REDACTED)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
     Ok(Derived {
         contents,
         labels,
         field_changes,
         version_changes,
         time_changes,
+        wiki_changes,
     })
 }
 

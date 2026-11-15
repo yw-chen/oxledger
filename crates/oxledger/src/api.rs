@@ -437,6 +437,39 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(redact_setting_event),
         )
         .route("/time-entries/{id}/redact", post(redact_time_entry))
+        .route("/projects/{id}/wiki", get(wiki_index))
+        .route("/projects/{id}/wiki/pages/{title}", get(wiki_page))
+        .route(
+            "/projects/{id}/wiki/pages/{title}/versions",
+            get(wiki_versions),
+        )
+        .route(
+            "/projects/{id}/wiki/pages/{title}/versions/{n}",
+            get(wiki_version),
+        )
+        .route("/projects/{id}/wiki/pages/{title}/diff", get(wiki_diff))
+        .route("/projects/{id}/wiki/pages/{title}/events", get(wiki_events))
+        .route(
+            "/projects/{id}/wiki/pages/{title}/versions/{n}/redact",
+            post(redact_wiki_version),
+        )
+        .route(
+            "/projects/{id}/wiki/pages/{title}/title/redact",
+            post(redact_wiki_title),
+        )
+        .route(
+            "/projects/{id}/wiki/pages/{title}/events/{event}/redact",
+            post(redact_wiki_event),
+        )
+        .route("/projects/{id}/wiki/deleted", get(wiki_deleted))
+        .route(
+            "/projects/{id}/wiki/deleted/{page_id}",
+            get(wiki_deleted_page),
+        )
+        .route(
+            "/projects/{id}/wiki/settings",
+            get(wiki_settings_get).put(wiki_settings_put),
+        )
         .route("/issues/{key}/dev", get(issue_dev))
         .route("/admin/github", get(admin_github_get).put(admin_github_put))
         .route(
@@ -2610,6 +2643,227 @@ async fn redact_time_entry(
         &ra,
         &headers,
         crate::redaction::Target::TimeEntry { entry },
+        &body,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------- wiki (design 06 §3.1, M2.2)
+
+fn version_param(s: &str) -> Result<i32, ApiFailure> {
+    s.parse::<i32>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .ok_or_else(|| ApiFailure(api(ErrorCode::NotFound, "no such version")))
+}
+
+fn opt_version(q: &HashMap<String, String>, name: &str) -> Result<Option<i32>, ApiFailure> {
+    match q.get(name) {
+        None => Ok(None),
+        Some(v) => v
+            .parse::<i32>()
+            .ok()
+            .filter(|n| *n >= 0)
+            .map(Some)
+            .ok_or_else(|| {
+                ApiFailure(
+                    ApiError::new(
+                        ErrorCode::InvalidArgument,
+                        format!("{name} is a version number"),
+                    )
+                    .with_details(json!({"path": name}))
+                    .into(),
+                )
+            }),
+    }
+}
+
+async fn wiki_index(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::index(&st.app, ctx, &id).await?))
+}
+
+async fn wiki_page(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, title)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::page(&st.app, ctx, &id, &title).await?))
+}
+
+async fn wiki_versions(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, title)): Path<(String, String)>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::versions(
+        &st.app,
+        ctx,
+        &id,
+        &title,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+async fn wiki_version(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, title, n)): Path<(String, String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let n = version_param(&n)?;
+    Ok(ok(crate::wiki::version(&st.app, ctx, &id, &title, n).await?))
+}
+
+async fn wiki_diff(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, title)): Path<(String, String)>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let from = opt_version(&q, "from")?;
+    let to = opt_version(&q, "to")?;
+    Ok(ok(crate::wiki::page_diff(
+        &st.app, ctx, &id, &title, from, to,
+    )
+    .await?))
+}
+
+async fn wiki_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, title)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::events(&st.app, ctx, &id, &title).await?))
+}
+
+async fn wiki_deleted(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::deleted(&st.app, ctx, &id).await?))
+}
+
+async fn wiki_deleted_page(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, page)): Path<(String, String)>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let page = id_param(&page).map_err(|_| ApiFailure(crate::wiki::not_found()))?;
+    Ok(ok(crate::wiki::deleted_page(&st.app, ctx, &id, page).await?))
+}
+
+async fn wiki_settings_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::settings(&st.app, ctx, &id).await?))
+}
+
+async fn wiki_settings_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::wiki::WikiSettingsPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::wiki::put_settings(&st.app, ctx, key, &id, &body).await?
+    ))
+}
+
+async fn redact_wiki_version(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((project, page, n)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let version = version_param(&n)?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::WikiVersion {
+            project,
+            page,
+            version,
+        },
+        &body,
+    )
+    .await
+}
+
+/// `{reason_code, reason, new_title}`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WikiTitleRedactInput {
+    pub reason_code: String,
+    pub reason: String,
+    /// The page's title from now on (R-W2; not "[已遮蔽]").
+    pub new_title: String,
+}
+
+async fn redact_wiki_title(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((project, page)): Path<(String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<WikiTitleRedactInput>,
+) -> ApiResult {
+    let input = crate::redaction::RedactInput {
+        reason_code: body.reason_code,
+        reason: body.reason,
+    };
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::WikiTitle {
+            project,
+            page,
+            new_title: body.new_title,
+        },
+        &input,
+    )
+    .await
+}
+
+async fn redact_wiki_event(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((project, page, event)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let event =
+        id_param(&event).map_err(|_| ApiFailure(api(ErrorCode::NotFound, "no such event")))?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::WikiEvent {
+            project,
+            page,
+            event,
+        },
         &body,
     )
     .await

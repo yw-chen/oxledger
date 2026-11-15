@@ -1358,14 +1358,17 @@ async fn t_m1_124_check_lists_match_code() {
         def("agent_write_log_kind_check").await,
         set(&oxledger::quota::WRITE_LOG_KINDS)
     );
+    // Design 06 §2.3: the lists also hold the wiki ops agents get in M2.3.
+    let ops: Vec<&str> = agents::PROPOSAL_OPS
+        .iter()
+        .chain(agents::WIKI_PROPOSAL_OPS.iter())
+        .copied()
+        .collect();
     assert_eq!(
         def("delegation_command_policies_command_kind_check").await,
-        set(&agents::PROPOSAL_OPS)
+        set(&ops)
     );
-    assert_eq!(
-        def("delegations_proposal_ops_check").await,
-        set(&agents::PROPOSAL_OPS)
-    );
+    assert_eq!(def("delegations_proposal_ops_check").await, set(&ops));
 }
 
 // ---------------------------------------------------------------- T-M1-127

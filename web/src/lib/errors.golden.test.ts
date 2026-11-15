@@ -84,7 +84,10 @@ const CODES = {
 	ai_conversation_read_only: true,
 	ai_provider_changed: true,
 	ai_run_in_progress: true,
-	payload_too_large: true
+	payload_too_large: true,
+	wiki_page_exists: true,
+	wiki_has_children: true,
+	wiki_title_invalid: true
 } satisfies Record<ErrorCode, true>;
 
 /** The server's message is English; a code that reaches `default` shows it. */
@@ -143,7 +146,16 @@ const VARIANTS: Variant[] = [
 	['ai_endpoint_invalid', 'kind=no_key', { kind: 'no_key' }],
 	['ai_endpoint_invalid', 'kind=endpoint_blocked', { kind: 'endpoint_blocked' }],
 	['ai_provider_changed', 'provider=Anthropic (claude-x)', { provider: { name: 'Anthropic', model: 'claude-x' } }],
-	['ai_provider_changed', 'provider=Anthropic, no model', { provider: { name: 'Anthropic' } }]
+	['ai_provider_changed', 'provider=Anthropic, no model', { provider: { name: 'Anthropic' } }],
+	// M2.2 wiki (design 06 §5)
+	...each('forbidden_op', 'reason', ['permission', 'wiki_protected', 'project_not_writable']),
+	...each('invalid_value', 'kind', ['wiki_cycle', 'wiki_depth', 'wiki_version_limit', 'wiki_page_limit', 'wiki_comment', 'wiki_body', 'start_page_invalid', 'redacted_source'], { path: 'ops[0].parent' }),
+	['wiki_has_children', 'children=3', { page_id: 'p', children: 3 }],
+	['wiki_title_invalid', 'reason=length', { reason: 'length', path: 'ops[0].target.page' }],
+	['wiki_title_invalid', 'reason=leading_dot', { reason: 'leading_dot' }],
+	['wiki_title_invalid', 'reason=char, char=#', { reason: 'char', char: '#', codepoint: 'U+0023' }],
+	['wiki_title_invalid', 'reason=char, char=U+202E', { reason: 'char', char: '‮', codepoint: 'U+202E' }],
+	['wiki_title_invalid', 'reason=char, char=U+200B', { reason: 'char', char: '​', codepoint: 'U+200B' }]
 ];
 
 describe('error wording table (golden)', () => {

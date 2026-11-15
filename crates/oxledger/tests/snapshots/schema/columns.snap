@@ -378,6 +378,22 @@ execution_version_changes.field_key text NOT NULL
 execution_version_changes.before_value jsonb
 execution_version_changes.after_value jsonb
 execution_version_changes.reverted_by uuid
+execution_wiki_changes.execution_id uuid NOT NULL
+execution_wiki_changes.page_id uuid NOT NULL
+execution_wiki_changes.before_version integer
+execution_wiki_changes.after_version integer NOT NULL
+execution_wiki_changes.before_title text
+execution_wiki_changes.after_title text
+execution_wiki_changes.parent_changed boolean NOT NULL DEFAULT false
+execution_wiki_changes.before_parent uuid
+execution_wiki_changes.after_parent uuid
+execution_wiki_changes.before_deleted boolean
+execution_wiki_changes.after_deleted boolean NOT NULL
+execution_wiki_changes.before_protected boolean
+execution_wiki_changes.after_protected boolean NOT NULL
+execution_wiki_changes.before_lock_version bigint
+execution_wiki_changes.after_lock_version bigint NOT NULL
+execution_wiki_changes.reverted_by uuid
 field_defs.id integer NOT NULL IDENTITY a
 field_defs.name text NOT NULL
 field_defs.ftype text NOT NULL
@@ -954,6 +970,79 @@ view_defs.updated_at timestamp with time zone NOT NULL DEFAULT now()
 view_defs.updated_by uuid
 view_defs.deleted_at timestamp with time zone
 view_defs.redacted_at timestamp with time zone
+wiki_events.id uuid NOT NULL DEFAULT uuidv7()
+wiki_events.page_id uuid NOT NULL
+wiki_events.seq bigint NOT NULL
+wiki_events.kind text NOT NULL
+wiki_events.payload jsonb NOT NULL
+wiki_events.origin text NOT NULL
+wiki_events.actor_id uuid NOT NULL
+wiki_events.actor_kind text NOT NULL
+wiki_events.proposer_id uuid
+wiki_events.approver_id uuid
+wiki_events.on_behalf_of_id uuid
+wiki_events.delegation_id uuid
+wiki_events.agent_client_id uuid
+wiki_events.operation_request_id uuid
+wiki_events.command_execution_id uuid
+wiki_events.changeset_id uuid
+wiki_events.changeset_version integer
+wiki_events.execution_id uuid
+wiki_events.op_id uuid
+wiki_events.at timestamp with time zone NOT NULL DEFAULT now()
+wiki_events.redaction_id uuid
+wiki_page_versions.page_id uuid NOT NULL
+wiki_page_versions.version integer NOT NULL
+wiki_page_versions.body text NOT NULL
+wiki_page_versions.body_format text NOT NULL DEFAULT 'markdown'::text
+wiki_page_versions.comment text NOT NULL DEFAULT ''::text
+wiki_page_versions.origin text NOT NULL
+wiki_page_versions.actor_id uuid NOT NULL
+wiki_page_versions.actor_kind text NOT NULL
+wiki_page_versions.proposer_id uuid
+wiki_page_versions.approver_id uuid
+wiki_page_versions.on_behalf_of_id uuid
+wiki_page_versions.delegation_id uuid
+wiki_page_versions.agent_client_id uuid
+wiki_page_versions.operation_request_id uuid
+wiki_page_versions.command_execution_id uuid
+wiki_page_versions.changeset_id uuid
+wiki_page_versions.changeset_version integer
+wiki_page_versions.execution_id uuid
+wiki_page_versions.op_id uuid
+wiki_page_versions.created_at timestamp with time zone NOT NULL DEFAULT now()
+wiki_page_versions.redaction_id uuid
+wiki_pages.id uuid NOT NULL DEFAULT uuidv7()
+wiki_pages.project_id uuid NOT NULL
+wiki_pages.title text NOT NULL
+wiki_pages.title_key text NOT NULL
+wiki_pages.parent_id uuid
+wiki_pages.current_version integer NOT NULL
+wiki_pages.lock_version bigint NOT NULL DEFAULT 0
+wiki_pages.protected boolean NOT NULL DEFAULT false
+wiki_pages.created_at timestamp with time zone NOT NULL DEFAULT now()
+wiki_pages.updated_at timestamp with time zone NOT NULL DEFAULT now()
+wiki_pages.deleted_at timestamp with time zone
+wiki_pages.deleted_by_execution_id uuid
+wiki_redactions.id uuid NOT NULL DEFAULT uuidv7()
+wiki_redactions.page_id uuid NOT NULL
+wiki_redactions.target text NOT NULL
+wiki_redactions.version integer
+wiki_redactions.event_id uuid
+wiki_redactions.reason_code text NOT NULL
+wiki_redactions.reason text NOT NULL
+wiki_redactions.redacted_by uuid NOT NULL
+wiki_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+wiki_redirects.project_id uuid NOT NULL
+wiki_redirects.title_key text NOT NULL
+wiki_redirects.page_id uuid NOT NULL
+wiki_redirects.created_at timestamp with time zone NOT NULL DEFAULT now()
+wiki_settings.project_id uuid NOT NULL
+wiki_settings.start_page_id uuid
+wiki_settings.page_count integer NOT NULL DEFAULT 0
+wiki_settings.lock_version bigint NOT NULL DEFAULT 0
+wiki_settings.updated_by uuid
+wiki_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
 workflow_field_rules.tracker_id uuid NOT NULL
 workflow_field_rules.role_id uuid NOT NULL
 workflow_field_rules.old_status_id uuid NOT NULL

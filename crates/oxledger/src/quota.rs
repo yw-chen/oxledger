@@ -23,7 +23,7 @@ use uuid::Uuid;
 /// Every `agent_write_log.kind` (the union rule of design 05 §2.1; T-M1-124
 /// compares it with the CHECK constraint). `time_taint_review` is written
 /// by the built-in AI (M1.10).
-pub const WRITE_LOG_KINDS: [&str; 11] = [
+pub const WRITE_LOG_KINDS: [&str; 12] = [
     "direct_write",
     "issue_create",
     "issue_write",
@@ -35,6 +35,8 @@ pub const WRITE_LOG_KINDS: [&str; 11] = [
     "time_write",
     "chain_review",
     "time_taint_review",
+    // Design 06 §2.3: agent wiki writes (M2.3).
+    "wiki_write",
 ];
 
 /// Initial values (deployment may lower them; a delegation only narrows).

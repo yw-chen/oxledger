@@ -14,6 +14,11 @@ ON CONFLICT DO NOTHING;
 INSERT INTO role_permissions (role_id, permission)
 SELECT id, 'manage_versions' FROM roles WHERE name = 'Manager'
 ON CONFLICT DO NOTHING;
+-- Wiki editing follows issue editing (design 06 §2.2, as migration 0032 grants
+-- it); seed-demo ran that rule before the roles above could edit issues.
+INSERT INTO role_permissions (role_id, permission)
+SELECT role_id, 'edit_wiki_pages' FROM role_permissions WHERE permission = 'edit_issues'
+ON CONFLICT DO NOTHING;
 
 -- AUTH becomes audience-consistent: Reporter sees the default set instead of `own`.
 UPDATE roles SET issues_visibility = 'default' WHERE name = 'Reporter';

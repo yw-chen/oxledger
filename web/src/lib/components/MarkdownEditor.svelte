@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Design 06 §6.2: the editor for descriptions and notes (wiki later).
+	// Design 06 §6.2: the editor for descriptions, notes and wiki pages.
 	// Write / preview tabs (side by side at 1280 px and wider), a toolbar,
 	// @mention autocomplete from the project's assignable users (R-RF3), the
 	// chips of who will be mentioned, a byte limit, drafts and a leave guard.
@@ -47,7 +47,7 @@
 		/** The project's assignable users (`GET /projects/{id}/assignees`). */
 		people?: Mentionable[];
 		/** What the preview resolves references against (R-RF6). */
-		context?: { issue: string } | { project: string } | null;
+		context?: { issue: string } | { project: string } | { wiki_project: string } | null;
 		/** Bytes (§6.2: notes 64 KiB, wiki 512 KiB). */
 		limit: number;
 		/** True while over the limit: the parent disables its send button. */

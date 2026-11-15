@@ -346,7 +346,7 @@ async fn s6b_tabs() {
     }
 
     // A good PUT: a saved query (project: added), renames, reorder, hide.
-    let mut five = as_input(&s1.tabs[..7]);
+    let mut five = as_input(&s1.tabs[..8]);
     five.swap(0, 2);
     five[1]["title"] = json!("  里程碑 2  ");
     five[4]["hidden"] = json!(true);
@@ -473,7 +473,7 @@ async fn s6b_tabs() {
     let rs = reset(&w, bob, s5.lock_version).await.unwrap();
     assert!(rs.is_default);
     assert_eq!(rs.default_tab, "timeline");
-    assert_eq!(rs.tabs.len(), 7);
+    assert_eq!(rs.tabs.len(), 8);
     // (b) never changed (NEWP).
     exec(
         &pool,

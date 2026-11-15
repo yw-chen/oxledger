@@ -245,6 +245,23 @@
 - 不動權限、角色與成員，`security_epoch` 不變，agent 工作脈絡不受影響。
 - 同一階段沒有 migration 的 API 變更（G38–G47）見 `docs/impl/p1-backend-gaps.md`；其中要注意的：用 key 指定議題的 `log_time` 命令，升級前送出、升級後用同一個 Idempotency-Key 重送，會回 `idempotency_key_reused`（請求的正規化雜湊改了）。
 
+## 0034_wiki（M2.2，Wiki 核心）
+
+- **不會讓 agent 工作脈絡失效**：不動權限、角色與成員，每個專案的 `security_epoch` 不變。
+- **wiki 模組預設不開**（契約 06 B-9）：既有專案升級後沒有 wiki，要由管理者在專案設定開啟 `wiki` 模組。開發用 seed 建的專案有開。
+- **誰讀得到 wiki**：專案沒有封存、開了 `wiki` 模組、而且有 `view_wiki_pages`（或站台管理員）。讀不到的人對 wiki 的任何讀取與寫入都回 `not_found`，和不存在的頁一樣；**只有 `edit_wiki_pages` 沒有 `view_wiki_pages` 的人也不能寫**（使用者決定 2026-11-15）。0032 自動授予時，議題可見範圍是「自己的」的角色有 `edit_wiki_pages` 卻沒有 `view_wiki_pages`，這些角色要管理者補 `view_wiki_pages` 才能用 wiki。
+- **每個專案一列 `wiki_settings`**：升級時替既有專案補上，之後新專案由 trigger 建。
+- **專案分頁多了 `wiki`**（排在最後，不隱藏）：已存過分頁設定的專案，升級時把 `wiki` 加在最後並讓 `lock_version` 加一，所以升級前讀到的分頁設定拿去 PUT 會得到 `conflict`（回應帶新的清單）。重設分頁回到 8 個內建分頁。分頁上限從 7＋10 變成 8＋10。網頁在讀不到 wiki 時不顯示這個分頁。
+- **`POST /commands` 多了 wiki 文件**（契約 06 §3.11）：一份文件恰好一個 op，`wiki_put`、`wiki_move`、`wiki_delete`、`wiki_restore`、`wiki_protect`；回應多了 `wiki[]` 與 `items[].wiki_page_id`。議題文件不受影響。agent 送 wiki op 一律 `invalid_request`（agent 的 wiki 路徑在 M2.3）。`wiki_put` 帶 `attachments` 回 `invalid_argument`（附件在 M2.4）。
+- **標題比對**：大小寫、全形半形、ß／ss 不分，空白與 `_` 的連續串視為同一個 `_`（`a b`、`a_b`、`a__b` 是同一頁，建第二個回 `wiki_page_exists`）。網址把空白寫成 `_`。
+- **受保護頁**：編輯、改名、搬移、刪除都要 `protect_wiki_pages`；刪除時帶 `children: "reparent"` 而子頁中有受保護頁，也要 `protect_wiki_pages`。
+- **新錯誤碼**：`wiki_page_exists`（409）、`wiki_has_children`（409）、`wiki_title_invalid`（422）。`invalid_value` 多了 kind `wiki_cycle`、`wiki_depth`、`wiki_version_limit`、`wiki_page_limit`、`wiki_comment`、`start_page_invalid`；`forbidden_op` 多了 reason `wiki_protected`。
+- **undo**：人自己的 wiki 寫入可以 undo（`GET /executions/{id}/undo-preview` 多了 `wiki[]`，`POST /executions/{id}/undo` 多了輸入 `skip_wiki_pages` 與結果 `wiki_pages_restored`）。undo 建立頁＝軟刪除（30 天內可還原）。會超過 5000 頁、10000 版的 undo 回 `invalid_value`（`wiki_page_limit`／`wiki_version_limit`），會超過 10 層的搬回列為不能 undo（`wiki_depth`）；刪除時被移上層的子頁，只有在被刪的頁也一起還原時才搬回。
+- **D12 遮蔽多了三個 wiki 目標**（版本、標題、事件），規則和既有遮蔽相同（`manage_project`、step-up、epoch 加一）。
+- **Markdown 的 `[[頁名]]` 參照開始解析**：讀得到 wiki 的人看到連結（頁不存在時，有 `edit_wiki_pages` 的人看到「新頁」連結，其他人只看到連結文字），讀不到的人只看到連結文字。`POST /markdown/preview` 的 `wiki_project` context 從一律 `not_found` 改成照 wiki 讀取權限。
+- **outbox 多了 topic `wiki_page`**：M2.2 沒有消費者，既有的搜尋與通知只讀 `issue`；搜尋的 outbox 清理會刪掉一小時前的這些列，M2.3 的 wiki 索引第一次啟動時要全量建立。
+- 還沒有的（之後的階段）：wiki 搜尋與 `consistent_after` 的 wiki 前沿（M2.3）、agent 的 `wiki_get` 與提案（M2.3）、附件（M2.4）、`export.md` 匯出（M2.7）。
+
 ## T2 可觀測性（沒有 migration）
 
 規格見設計 02 §4.3「可觀測性」。部署要知道的：

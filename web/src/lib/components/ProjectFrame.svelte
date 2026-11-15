@@ -16,6 +16,8 @@
 	}: { projectKey: string; active?: string | null; issuePage?: boolean; reload?: number; children: Snippet } = $props();
 
 	let tabs = $state<TabSettings | null>(null);
+	/** Design 06 R-W1: the Wiki tab only for people who can read the wiki (one `not_found` for every other case). */
+	let wikiReadable = $state(false);
 	const project = $derived(projectByKey(projectKey));
 	const back = $derived(issuePage ? fromTab(projectKey) : null);
 	const shownTab = $derived(issuePage ? (back?.tab ?? 'issues') : active);
@@ -31,6 +33,22 @@
 		api('GET /projects/{id}/tabs', { path: { id: projectKey } })
 			.then((t) => (tabs = t))
 			.catch(() => (tabs = null));
+	});
+	// Switching projects hides the tab at once; only the newest probe's answer counts
+	// (an older project's late answer never shows the tab on the new one).
+	let wikiProbe = 0;
+	$effect(() => {
+		const k = projectKey;
+		const my = ++wikiProbe;
+		wikiReadable = false;
+		api('GET /projects/{id}/wiki/settings', { path: { id: k } }).then(
+			() => {
+				if (my === wikiProbe) wikiReadable = true;
+			},
+			() => {
+				if (my === wikiProbe) wikiReadable = false;
+			}
+		);
 	});
 	function remember(id: string, title: string) {
 		rememberTab({ project: projectKey, tab: id, title });
@@ -48,7 +66,7 @@
 	</div>
 	{#if tabs}
 		<nav class="ptabs" aria-label="專案分頁" data-testid="ptabs">
-			{#each tabs.tabs.filter((t) => !t.hidden) as t (t.id)}
+			{#each tabs.tabs.filter((t) => !t.hidden && (t.id !== 'wiki' || wikiReadable)) as t (t.id)}
 				{#if t.kind === 'link' && t.url}
 					<a href={t.url} target="_blank" rel="noopener noreferrer" title="開到 {t.url}">{t.title} ↗</a>
 				{:else}
