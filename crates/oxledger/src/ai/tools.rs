@@ -132,6 +132,11 @@ pub(crate) fn summary(name: &str, input: &Json) -> String {
         "triage_list" => "讀取 Triage 收件匣".into(),
         "time_list" => "讀取你的工時".into(),
         "version_list" => "讀取版本".into(),
+        "wiki_list" => "列出 wiki 頁".into(),
+        "wiki_get" => match input.get("page").map(short).filter(|s| !s.is_empty()) {
+            Some(t) => format!("讀取 wiki「{t}」"),
+            None => "讀取 wiki 頁".into(),
+        },
         "command_submit" => "寫入".into(),
         "changeset_get" | "changeset_list" => "讀取提案".into(),
         "operation_get" => "查詢操作結果".into(),
@@ -217,7 +222,12 @@ async fn call(
     spa: &str,
 ) -> anyhow::Result<Json> {
     match name {
-        "search" => run(input, |p| crate::service::search(app, ctx, p)).await,
+        "search" => {
+            run(input, |p: mcp::McpSearchParams| async move {
+                p.run(app, ctx).await
+            })
+            .await
+        }
         "get" => run(input, |p| crate::issue_view::get(app, ctx, p)).await,
         "get_many" => run(input, |p| crate::issue_view::get_many(app, ctx, p)).await,
         "get_source" => run(input, |p| crate::citations::get_source(app, ctx, p)).await,
@@ -277,6 +287,8 @@ async fn call(
             })
             .await
         }
+        "wiki_list" => run(input, |p| crate::wiki::agent::list(app, ctx, p)).await,
+        "wiki_get" => run(input, |p| crate::wiki::agent::get(app, ctx, p)).await,
         "command_submit" => {
             run(input, |p: BuiltinSubmit| async move {
                 crate::changesets::command_submit(app, ctx, op, &p.command, p.require_review, spa)
@@ -352,7 +364,10 @@ pub(crate) async fn sources_of(
         "verify_citations",
         "command_submit",
     ];
-    if !issue_tools.contains(&tool) {
+    // A search with wiki results drew from project wikis too (design 06
+    // §3.14): count every delegated project, as for the other reads.
+    let wiki_results = tool == "search" && result.get("wiki").is_some();
+    if !issue_tools.contains(&tool) || wiki_results {
         let delegated: Vec<Uuid> = sqlx::query_scalar(
             "SELECT DISTINCT project_id FROM delegations WHERE agent_principal_id = $1 AND context_id = $2",
         )

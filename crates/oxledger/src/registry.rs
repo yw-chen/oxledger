@@ -305,6 +305,20 @@ pub fn tools() -> Vec<ToolDescriptor> {
             schema::<crate::time_reports::TimeEntryPage>,
         ),
         agent_tool(
+            "wiki_list",
+            "The live pages of a delegated project's wiki when R-AG1 holds (design 06 §4.1).",
+            EffectClass::Read,
+            schema::<crate::wiki::agent::WikiListParams>,
+            schema::<crate::wiki::agent::WikiListResult>,
+        ),
+        agent_tool(
+            "wiki_get",
+            "One wiki page (or an older version when H(P) ⊇ A(P)) of a delegated project (design 06 §4.1, R-AG1).",
+            EffectClass::Read,
+            schema::<crate::wiki::agent::WikiGetParams>,
+            schema::<crate::wiki::agent::AgentWikiPage>,
+        ),
+        agent_tool(
             "describe_form",
             "The issue form of a project and tracker: fields, options, required, the L1 rules and rules_version (design 05 §3.6.1).",
             EffectClass::Read,
@@ -385,7 +399,7 @@ pub fn tools() -> Vec<ToolDescriptor> {
 
 /// The tools the built-in AI may call (design 05 §4.5). A tool added later
 /// is not open to it until it is listed here.
-pub const BUILTIN_TOOLS: [&str; 18] = [
+pub const BUILTIN_TOOLS: [&str; 20] = [
     "search",
     "get",
     "get_many",
@@ -400,6 +414,8 @@ pub const BUILTIN_TOOLS: [&str; 18] = [
     "triage_list",
     "time_list",
     "version_list",
+    "wiki_list",
+    "wiki_get",
     "command_submit",
     "changeset_get",
     "changeset_list",

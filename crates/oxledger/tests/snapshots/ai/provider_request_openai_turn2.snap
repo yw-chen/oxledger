@@ -55,7 +55,9 @@ source: crates/oxledger/tests/m1_10_ai_run.rs
       "verify_citations",
       "version_list",
       "view_list",
-      "view_run"
+      "view_run",
+      "wiki_get",
+      "wiki_list"
     ]
   },
   "headers": {

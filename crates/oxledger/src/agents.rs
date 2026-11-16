@@ -2005,6 +2005,9 @@ pub struct ContextProject {
     pub delegation: String,
     pub readable: bool,
     pub publish: ContextPublish,
+    /// Design 06 §4.1: whether this project's wiki is readable or writable
+    /// for you (R-AG1, R-AG3), and why not.
+    pub wiki: crate::wiki::agent::ContextWiki,
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
@@ -2072,6 +2075,37 @@ pub async fn describe_context(
     // their keys would tell it they exist. The publish verdicts below still
     // weigh them (the audience check is against the whole R).
     let other_role_projects = rows.iter().filter(|r| !r.4).count();
+    // Design 06 R-AG1 / R-AG3: each project's wiki for this role.
+    let wikis = crate::wiki::agent::agent_wikis(&mut tx, caller)
+        .await?
+        .ok_or_else(|| api(ErrorCode::ForbiddenOp, "scope context is for agents"))?;
+    let all: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+    let allowed = crate::audience::allowed_readers(&mut tx, &all).await?;
+    let mut wiki = Vec::new();
+    for (id, _, active, _, mine) in &rows {
+        if !mine {
+            wiki.push(None);
+            continue;
+        }
+        let ops: Vec<String> = sqlx::query_scalar(
+            "SELECT unnest(proposal_ops) FROM delegations
+             WHERE context_id = $1 AND project_id = $2 AND agent_principal_id = $3
+               AND revoked_at IS NULL AND expires_at > clock_timestamp()",
+        )
+        .bind(a.context_id)
+        .bind(id)
+        .bind(a.agent_principal_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        wiki.push(Some(if *active {
+            crate::wiki::agent::context_wiki(&mut tx, &wikis, *id, &ops, &allowed).await?
+        } else {
+            crate::wiki::agent::ContextWiki {
+                state: "unavailable".into(),
+                reason: Some("delegation".into()),
+            }
+        }));
+    }
     let projects = rows
         .iter()
         .enumerate()
@@ -2079,6 +2113,7 @@ pub async fn describe_context(
         .map(|(i, (id, key, active, revoked, _))| {
             let fits = audiences.iter().all(|r| audiences[i].is_subset(r));
             ContextProject {
+                wiki: wiki[i].clone().expect("a project of this role"),
                 project: key.clone(),
                 project_id: *id,
                 delegation: if *active {

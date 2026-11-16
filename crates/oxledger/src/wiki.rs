@@ -44,6 +44,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
+pub mod agent;
+
 #[cfg(feature = "test-support")]
 async fn fault(point: &str) -> Result<()> {
     crate::changesets::faults::hit(point).await
@@ -305,6 +307,16 @@ pub(crate) async fn access_of(
     caller: AuthContext,
     project: Uuid,
 ) -> Result<Option<Access>> {
+    let actor = perm::actor(&mut *conn, caller).await?;
+    access_with(&mut *conn, &actor, project).await
+}
+
+/// [`access_of`] for an actor already loaded.
+pub(crate) async fn access_with(
+    conn: &mut PgConnection,
+    actor: &perm::Actor,
+    project: Uuid,
+) -> Result<Option<Access>> {
     let row: Option<(String, String, String, bool)> = sqlx::query_as(
         "SELECT p.key, p.name, p.status,
                 EXISTS (SELECT 1 FROM enabled_modules m WHERE m.project_id = p.id AND m.module = $2)
@@ -320,8 +332,7 @@ pub(crate) async fn access_of(
     if status == "archived" || !module {
         return Ok(None);
     }
-    let actor = perm::actor(&mut *conn, caller).await?;
-    access_for(&mut *conn, &actor, project, key, name, status).await
+    access_for(&mut *conn, actor, project, key, name, status).await
 }
 
 /// The wiki permissions [`Access`] keeps (the only ones R-W1 and the wiki
@@ -388,7 +399,12 @@ pub(crate) async fn readable_wikis(
     conn: &mut PgConnection,
     caller: AuthContext,
 ) -> Result<BTreeMap<Uuid, Access>> {
+    // An agent reads only the delegated wikis R-AG1 allows (design 06
+    // §3.14: "agent 再交集 R-AG1 的專案"), never the delegator's others.
     let actor = perm::actor(&mut *conn, caller).await?;
+    if let Some(w) = agent::agent_wikis_of(&mut *conn, &actor).await? {
+        return Ok(w.readable.into_iter().map(|(p, (a, _))| (p, a)).collect());
+    }
     let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
         "SELECT p.id, p.key, p.name, p.status FROM projects p
          WHERE p.status <> 'archived'

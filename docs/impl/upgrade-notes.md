@@ -279,3 +279,13 @@
 - **新的環境變數 `OXLEDGER_ALLOW_RMCP_DEBUG`**：rmcp（MCP 函式庫）的 DEBUG／TRACE log 含整個 MCP 請求與 tool 結果，也就是議題內容。現在不論 `RUST_LOG` 怎麼設，rmcp 最多記到 INFO；只有設成 `1` 才放行。只在本機除錯時開，正式環境不要設。以前用 `RUST_LOG=debug` 看得到的 rmcp 細節，升級後要加這個變數才看得到。
 - JSON log 裡的 U+2028、U+2029、U+0085 會寫成 JSON 的 `\u` 跳脫（反斜線加 `u2028` 等），按行切不會切壞。
 
+
+## M2.3b（agent 讀寫 wiki；讀取部分，沒有 migration）
+
+規格見設計 06 §3.12 R-AG1、§3.14、§4.1。
+
+- **MCP 新工具 `wiki_list`、`wiki_get`**（agent token 與內建 AI）：只讀得到委派給這個 agent、委派者讀得到、而且 wiki 讀者包含所有議題讀者（W(P) ⊇ A(P)）的專案。wiki 讀者比議題讀者少的專案回 `forbidden_op`（`reason = wiki_not_delegable`），頁存不存在都一樣；讀舊版另外要歷史讀者包含議題讀者（`wiki_history_not_delegable`）。已刪除的頁讀不到。
+- **MCP `search` 多了 `kinds`（`["issue"]` 預設、`"wiki"`）與 `wiki_cursor`**：議題結果的欄位和以前一樣在最上層，wiki 結果在 `wiki`（和 `GET /wiki/search` 同一個形狀）。只送 `kinds: ["wiki"]` 時沒有議題欄位。不帶 `kinds` 的呼叫和以前完全相同。REST `POST /issues/search` 不變。舊 API key 帶 `"wiki"` 回 `forbidden_op`（`method_not_allowed`）；`kinds` 不含 `"issue"` 時，帶了只有議題搜尋才讀的參數（例如 `cursor`、`tracker`、`limit`）回 `invalid_argument`，不再靜默忽略。
+- **`describe` scope `agent_context` 的每個專案多了 `wiki: {state, reason}`**：`readable`、`writable`、`unavailable`。在寫入部分上線前，`writable` 不會出現（委派還不能加 wiki 操作，原因是 `not_delegated`）。
+- 內建 AI 的工具多了 `wiki_list`、`wiki_get`；對話紀錄的工具摘要是「列出 wiki 頁」「讀取 wiki「標題」」。
+- 角色權限改變（例如把 `view_wiki_pages` 授給成員用到的角色）照舊會讓專案的 security epoch 增加，讀過該專案的 agent 脈絡會變成 `context_unavailable`，要委派者開新脈絡。

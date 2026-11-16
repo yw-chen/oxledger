@@ -80,12 +80,26 @@ async fn holders(
     tracker: Option<Uuid>,
     vis: Vis,
 ) -> Result<Audience> {
+    holders_in(conn, "issue_tracking", project, permission, tracker, vis).await
+}
+
+/// [`holders`] for a project that has `module` on (and is not archived);
+/// no readers otherwise.
+async fn holders_in(
+    conn: &mut PgConnection,
+    module: &str,
+    project: Uuid,
+    permission: &str,
+    tracker: Option<Uuid>,
+    vis: Vis,
+) -> Result<Audience> {
     let eligible: Option<bool> = sqlx::query_scalar(
         "SELECT p.is_public FROM projects p
-         JOIN enabled_modules m ON m.project_id = p.id AND m.module = 'issue_tracking'
+         JOIN enabled_modules m ON m.project_id = p.id AND m.module = $2
          WHERE p.id = $1 AND p.status <> 'archived'",
     )
     .bind(project)
+    .bind(module)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(public) = eligible else {
@@ -147,6 +161,53 @@ async fn holders(
 /// A(P): the readers of a hypothetical non-private issue of `project`.
 pub async fn project_audience(conn: &mut PgConnection, project: Uuid) -> Result<Audience> {
     holders(conn, project, "view_issues", None, Vis::Public).await
+}
+
+/// Design 06 R-AG1: who holds the wiki permission `perm` in `project` — W(P)
+/// for `view_wiki_pages`, H(P) for `view_wiki_edits`. Not [`holders`]: that
+/// one needs the issue module and counts only roles reading non-private
+/// issues, so a wiki without issues (or an `own` role holding the wiki
+/// permission) would come out with fewer readers than it has. Here the wiki
+/// module must be on (project not archived) and every role counts whatever
+/// its `issues_visibility`; Non member, Anonymous and admins as in
+/// [`holders`].
+pub async fn wiki_audience(conn: &mut PgConnection, project: Uuid, perm: &str) -> Result<Audience> {
+    holders_in(conn, "wiki", project, perm, None, Vis::Any).await
+}
+
+/// R-AG1 for `project`: whether W(P) ⊇ A(P) (an agent may read the wiki)
+/// and H(P) ⊇ A(P) (it may read older versions too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WikiDelegable {
+    pub pages: bool,
+    pub history: bool,
+    /// W(P) = A(P): what the wiki holds reaches exactly the issue readers
+    /// (R-AG3 needs it for a write; W ⊆ ∩A(R) is checked per write).
+    pub equal: bool,
+}
+
+pub async fn wiki_delegable(conn: &mut PgConnection, project: Uuid) -> Result<WikiDelegable> {
+    let a = project_audience(&mut *conn, project).await?;
+    let w = wiki_audience(&mut *conn, project, "view_wiki_pages").await?;
+    let h = wiki_audience(&mut *conn, project, "view_wiki_edits").await?;
+    Ok(WikiDelegable {
+        pages: a.is_subset(&w),
+        history: a.is_subset(&h),
+        equal: a == w,
+    })
+}
+
+/// ∩ A(R) over `sources` (an empty R allows no one).
+pub(crate) async fn allowed_readers(conn: &mut PgConnection, sources: &[Uuid]) -> Result<Audience> {
+    let mut allowed: Option<Audience> = None;
+    for s in sources {
+        let a = project_audience(conn, *s).await?;
+        allowed = Some(match allowed {
+            None => a,
+            Some(x) => x.intersect(&a),
+        });
+    }
+    Ok(allowed.unwrap_or_default())
 }
 
 /// Active users among `ids`, groups expanded to their active members.
@@ -222,15 +283,7 @@ pub(crate) async fn check(
     sources: &[Uuid],
     delegator: Uuid,
 ) -> Result<()> {
-    let mut allowed: Option<Audience> = None;
-    for s in sources {
-        let a = project_audience(conn, *s).await?;
-        allowed = Some(match allowed {
-            None => a,
-            Some(x) => x.intersect(&a),
-        });
-    }
-    let allowed = allowed.unwrap_or_default();
+    let allowed = allowed_readers(&mut *conn, sources).await?;
     let dests = doc.destinations();
     // Readers of each issue the document creates, by op index.
     let mut created: Vec<(usize, Uuid, Uuid, Audience)> = Vec::new();

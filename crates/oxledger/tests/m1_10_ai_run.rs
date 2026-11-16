@@ -958,6 +958,66 @@ async fn t_m1_102_audience_and_injection() {
     );
 }
 
+/// Design 06 §3.14 / R-AG4: a wiki search result names no issue, yet it drew
+/// from the delegated projects' wikis; the run records every delegated
+/// project as the tool message's sources (what decides, later, whether the
+/// user may still read the reply, §3.13.3).
+#[tokio::test]
+async fn m2_3_wiki_search_counts_the_delegated_projects() {
+    let pool = test_pool().await;
+    let t = setup(&pool, |_| {}).await;
+    let w = &t.w;
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(&pool, w.dev, &["view_wiki_pages", "edit_wiki_pages"]).await;
+    oxledger::commands::submit(
+        &w.app,
+        w.alice_ctx,
+        Uuid::now_v7(),
+        &json!({"command_schema_version": 1, "ops": [{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                "target": {"project": "WEB", "page": "Zebra"}, "body": "zebra notes"}]}),
+    )
+    .await
+    .unwrap();
+    w.app.wiki.sync_all(&pool).await.unwrap();
+    t.delegate(w.web, &[("add_note", Direct)], false).await;
+    t.delegate(w.auth_p, &[("add_note", Direct)], false).await;
+    t.fake.push(turn(
+        P::Anth,
+        &[call(
+            "c1",
+            "search",
+            json!({"q": "zebra", "kinds": ["wiki"]}),
+        )],
+        Some((10, 5)),
+    ));
+    t.fake.push(turn(P::Anth, &[text("好")], Some((10, 5))));
+    let c = conversation(w, w.alice_ctx, "t").await;
+    let (run, state, _) = t.ask(c, "找 zebra", vec![]).await;
+    assert_eq!(state, "succeeded");
+    let results = tool_results(w, run).await;
+    assert_eq!(results[0]["is_error"], false, "{}", results[0]);
+    assert!(
+        results[0]["content"].as_str().unwrap().contains("Zebra"),
+        "{}",
+        results[0]
+    );
+    let mut sources: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT unnest(source_projects) FROM ai_messages WHERE run_id = $1 AND role = 'tool'",
+    )
+    .bind(run)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    sources.sort();
+    let mut want = vec![w.web, w.auth_p];
+    want.sort();
+    assert_eq!(sources, want);
+}
+
 // ---------------------------------------------------------------- T-M1-122
 
 #[tokio::test]
