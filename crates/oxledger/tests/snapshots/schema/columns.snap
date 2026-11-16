@@ -381,6 +381,10 @@ delegations.paused_by uuid
 delegations.paused_reason text
 enabled_modules.project_id uuid NOT NULL
 enabled_modules.module text NOT NULL
+execution_attachment_changes.execution_id uuid NOT NULL
+execution_attachment_changes.attachment_id uuid NOT NULL
+execution_attachment_changes.change text NOT NULL
+execution_attachment_changes.reverted_by uuid
 execution_field_changes.execution_id uuid NOT NULL
 execution_field_changes.issue_id uuid NOT NULL
 execution_field_changes.field_key text NOT NULL

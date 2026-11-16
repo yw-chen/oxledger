@@ -3473,6 +3473,20 @@ export type TriageWarning = {
   roles: Array<Named2>;
 };
 
+/** One attachment an execution deleted or put back, as its undo would treat it. */
+export type UndoAttachment = {
+  attachment_id: string;
+  /** `deleted` (undo: put it back) or `restored` (undo: delete it again). */
+  change: string;
+  filename: string;
+  /** Where it hangs: the issue's key, or the wiki page's title. */
+  issue_key?: string | null;
+  /** `expired`, `changed_since` (put back or deleted again since), `redacted`, `content_gone` (the file was removed), `container_gone` (the issue, note or page is gone or out of reach), `project_not_writable` or `permission`. */
+  reason?: string | null;
+  restorable: boolean;
+  wiki_title?: string | null;
+};
+
 /** Not done in a batch: a person picks (§16.7: "轉回 X", "關閉為誤建"). */
 export type UndoChoice = {
   issue_id: string;
@@ -3501,6 +3515,8 @@ export type UndoField = {
 
 /** What the person confirmed (§16.7 flow: preview → confirm). */
 export type UndoInput = {
+  /** Attachment ids to leave as they are (design 06 R-A7). */
+  skip_attachments?: Array<string>;
   /** `"<issue_id>/<field>"` to leave as they are. */
   skip_fields?: Array<string>;
   /** Note ids not to retract. */
@@ -3526,6 +3542,8 @@ export type UndoNote = {
 };
 
 export type UndoPreview = {
+  /** Attachments deleted or put back (design 06 R-A7). */
+  attachments: Array<UndoAttachment>;
   choices: Array<UndoChoice>;
   created_at: string;
   execution_id: string;
@@ -3563,6 +3581,8 @@ export type UndoRelation = {
 };
 
 export type UndoResult = {
+  /** Attachments put back, or deleted again (design 06 R-A7). */
+  attachments_restored: number;
   consistent_after: string;
   execution_id: string;
   fields_restored: number;

@@ -175,11 +175,15 @@ pub struct UndoPreview {
     /// Wiki pages (design 06 R-W9).
     #[serde(default)]
     pub wiki: Vec<crate::wiki::UndoWikiPage>,
+    /// Attachments deleted or put back (design 06 R-A7).
+    #[serde(default)]
+    pub attachments: Vec<crate::attachments::undo::UndoAttachment>,
 }
 
 impl UndoPreview {
     fn automatic(&self) -> bool {
         self.wiki.iter().any(|w| w.restorable)
+            || self.attachments.iter().any(|a| a.restorable)
             || self.fields.iter().any(|f| f.restorable)
             || self.triage.iter().any(|t| t.restorable)
             || self.time_entries.iter().any(|t| t.restorable)
@@ -194,6 +198,11 @@ impl UndoPreview {
         for w in &self.wiki {
             if let Some(r) = &w.reason {
                 v.push(json!({"page_id": w.page_id, "field": w.change, "reason": r}));
+            }
+        }
+        for a in &self.attachments {
+            if let Some(r) = &a.reason {
+                v.push(json!({"attachment_id": a.attachment_id, "field": a.change, "reason": r}));
             }
         }
         for f in &self.fields {
@@ -267,6 +276,9 @@ pub struct UndoInput {
     /// Wiki page ids to leave as they are (design 06 R-W9).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_wiki_pages: Vec<Uuid>,
+    /// Attachment ids to leave as they are (design 06 R-A7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_attachments: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -291,6 +303,9 @@ pub struct UndoResult {
     /// Wiki pages put back (design 06 R-W9).
     #[serde(default)]
     pub wiki_pages_restored: usize,
+    /// Attachments put back, or deleted again (design 06 R-A7).
+    #[serde(default)]
+    pub attachments_restored: usize,
     pub consistent_after: String,
 }
 
@@ -347,6 +362,12 @@ async fn exec_info(conn: &mut PgConnection, id: Uuid) -> Result<Option<ExecInfo>
             ("human_direct", _, Some(_)) => actor,
             // Design 06 R-W9 (C8): a person's own wiki write.
             ("human_direct", _, None) if crate::wiki::has_changes(&mut *conn, id).await? => actor,
+            // R-A7: a person's own delete_attachment.
+            ("human_direct", _, None)
+                if crate::attachments::undo::has_changes(&mut *conn, id).await? =>
+            {
+                actor
+            }
             _ => return Ok(None),
         };
         let sources = sqlx::query_as(
@@ -788,6 +809,7 @@ async fn build_preview(
     let time_entries =
         crate::time_entries::undo_preview(&mut *conn, caller, id, expired, &seen).await?;
     let wiki = crate::wiki::undo_preview(&mut *conn, caller, id, expired).await?;
+    let attachments = crate::attachments::undo::preview(&mut *conn, caller, id, expired).await?;
 
     Ok(UndoPreview {
         execution_id: id,
@@ -803,6 +825,7 @@ async fn build_preview(
         triage,
         time_entries,
         wiki,
+        attachments,
     })
 }
 
@@ -1054,6 +1077,43 @@ pub async fn apply(
             version_fields_restored: 0,
             version_deleted: false,
             wiki_pages_restored: n,
+            attachments_restored: 0,
+            consistent_after: token,
+        };
+        commands::complete_request(&mut tx, request_id, &serde_json::to_value(&out)?).await?;
+        tx.commit().await?;
+        return Ok(out);
+    }
+
+    // Design 06 R-A7: an attachment execution, the same way.
+    if crate::attachments::undo::has_changes(&mut tx, id).await? {
+        let (n, exec, token, reasons) = crate::attachments::undo::apply(
+            &mut tx,
+            caller,
+            &who,
+            request_id,
+            id,
+            info.created_at,
+            &input.skip_attachments,
+            &payload,
+        )
+        .await?;
+        if n == 0 {
+            return Err(not_applicable(reasons));
+        }
+        let out = UndoResult {
+            execution_id: exec,
+            reverts_execution_id: id,
+            fields_restored: 0,
+            notes_retracted: 0,
+            relations_removed: 0,
+            transitions: 0,
+            triage_restored: 0,
+            time_entries_restored: 0,
+            version_fields_restored: 0,
+            version_deleted: false,
+            wiki_pages_restored: 0,
+            attachments_restored: n,
             consistent_after: token,
         };
         commands::complete_request(&mut tx, request_id, &serde_json::to_value(&out)?).await?;
@@ -1505,6 +1565,7 @@ pub async fn apply(
         version_fields_restored: 0,
         version_deleted: false,
         wiki_pages_restored: 0,
+        attachments_restored: 0,
         consistent_after,
     };
     commands::complete_request(&mut tx, request_id, &serde_json::to_value(&out)?).await?;
@@ -1615,6 +1676,7 @@ async fn apply_version(
         version_fields_restored: restorable.len(),
         version_deleted: create.is_some(),
         wiki_pages_restored: 0,
+        attachments_restored: 0,
         consistent_after: token,
     })
 }

@@ -280,6 +280,11 @@ delegations delegations_proposal_ops_check CHECK ((proposal_ops <@ ARRAY['create
 delegations delegations_read_own_time_ack CHECK (((NOT read_own_time) OR (read_own_time_ack_at IS NOT NULL)))
 enabled_modules enabled_modules_pkey PRIMARY KEY (project_id, module)
 enabled_modules enabled_modules_project_id_fkey FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+execution_attachment_changes execution_attachment_changes_attachment_id_fkey FOREIGN KEY (attachment_id) REFERENCES attachments(id)
+execution_attachment_changes execution_attachment_changes_change_check CHECK ((change = ANY (ARRAY['deleted'::text, 'restored'::text])))
+execution_attachment_changes execution_attachment_changes_execution_id_fkey FOREIGN KEY (execution_id) REFERENCES execution_refs(id)
+execution_attachment_changes execution_attachment_changes_pkey PRIMARY KEY (execution_id, attachment_id)
+execution_attachment_changes execution_attachment_changes_reverted_by_fkey FOREIGN KEY (reverted_by) REFERENCES execution_refs(id)
 execution_field_changes execution_field_changes_execution_id_fkey FOREIGN KEY (execution_id) REFERENCES execution_refs(id)
 execution_field_changes execution_field_changes_issue_id_fkey FOREIGN KEY (issue_id) REFERENCES issues(id)
 execution_field_changes execution_field_changes_pkey PRIMARY KEY (execution_id, issue_id, field_key)

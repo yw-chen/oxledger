@@ -1349,3 +1349,441 @@ async fn review_fixes() {
         StatusCode::NOT_FOUND
     );
 }
+
+fn exec_of(r: &Value) -> Uuid {
+    serde_json::from_value(r["execution_id"].clone()).unwrap()
+}
+
+async fn undo_preview(w: &World, who: AuthContext, exec: Uuid) -> Value {
+    serde_json::to_value(oxledger::undo::preview(&w.app, who, exec).await.unwrap()).unwrap()
+}
+
+async fn undo(w: &World, who: AuthContext, exec: Uuid) -> anyhow::Result<Value> {
+    oxledger::undo::apply(
+        &w.app,
+        who,
+        Uuid::now_v7(),
+        exec,
+        &oxledger::undo::UndoInput::default(),
+    )
+    .await
+    .map(|r| serde_json::to_value(r).unwrap())
+}
+
+/// R-A7 (U18): a person's delete_attachment is undone within 30 days (the
+/// file comes back), and that undo is undone (deleted again); expired,
+/// redacted, closed projects and others' executions are refused.
+#[tokio::test]
+async fn undo_delete() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(&pool, w.dev, &["view_wiki_pages", "edit_wiki_pages"]).await;
+    let a = w.alice_ctx;
+    let bob = sign_in(&pool, &w.policy, "bob").await;
+    let issue = w.issue(w.web, "undo").await;
+    let key = key_of(&pool, issue).await;
+    let attach = |name: &'static str, bytes: &'static [u8]| {
+        let w = &w;
+        let key = key.clone();
+        async move {
+            let u = up(w, a, "WEB", name, bytes).await.unwrap();
+            let r = run(
+                w,
+                a,
+                json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                        "attachments": [{"upload_id": u.upload_id}]}]),
+            )
+            .await
+            .unwrap();
+            ids_of(&r)[0]
+        }
+    };
+    let del = |id: Uuid| {
+        let w = &w;
+        async move {
+            let r = run(
+                w,
+                a,
+                json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                        "target": {"attachment": id}}]),
+            )
+            .await
+            .unwrap();
+            exec_of(&r)
+        }
+    };
+
+    // Delete, preview, put back.
+    let f = attach("back.txt", b"back").await;
+    let d = del(f).await;
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["attachment_id"], json!(f));
+    assert_eq!(pv["attachments"][0]["change"], "deleted");
+    assert_eq!(pv["attachments"][0]["issue_key"], json!(key));
+    assert_eq!(pv["attachments"][0]["restorable"], true, "{pv}");
+    // Only the person who deleted it undoes it.
+    let e = oxledger::undo::preview(&w.app, bob, d).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+    let r = undo(&w, a, d).await.unwrap();
+    assert_eq!(r["attachments_restored"], 1);
+    let restore = exec_of(&r);
+    attachments::read::get(&w.app, a, f).await.unwrap();
+    let v = view(&w, a, &key).await;
+    assert_eq!(v["attachments"][0]["id"], json!(f));
+    // Once.
+    let e = undo(&w, a, d).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["reason"], "changed_since");
+    // The undo's undo deletes it again.
+    let pv = undo_preview(&w, a, restore).await;
+    assert_eq!(pv["attachments"][0]["change"], "restored");
+    let r = undo(&w, a, restore).await.unwrap();
+    assert_eq!(r["attachments_restored"], 1);
+    let e = attachments::read::get(&w.app, a, f).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM issue_events WHERE issue_id = $1 AND kind LIKE 'attachment%' ORDER BY seq",
+    )
+    .bind(issue)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        kinds,
+        [
+            "attachment_added",
+            "attachment_removed",
+            "attachment_added",
+            "attachment_removed"
+        ]
+    );
+
+    // Older than 30 days.
+    let old = attach("old.txt", b"old").await;
+    let d = del(old).await;
+    exec(
+        &pool,
+        &format!(
+            "ALTER TABLE command_executions DISABLE TRIGGER command_executions_append_only;
+             UPDATE command_executions SET created_at = now() - interval '31 days' WHERE id = '{d}';
+             ALTER TABLE command_executions ENABLE TRIGGER command_executions_append_only"
+        ),
+    )
+    .await;
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["reason"], "expired");
+    let e = undo(&w, a, d).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+
+    // Redacted content does not come back.
+    let red = attach("red.txt", b"red").await;
+    let d = del(red).await;
+    exec(
+        &pool,
+        &format!(
+            "UPDATE attachments SET redacted_at = now(), redaction_id = uuidv7() WHERE id = '{red}'"
+        ),
+    )
+    .await;
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["reason"], "redacted");
+
+    // A closed project.
+    let shut = attach("shut.txt", b"shut").await;
+    let d = del(shut).await;
+    exec(
+        &pool,
+        &format!(
+            "UPDATE projects SET status = 'closed' WHERE id = '{}'",
+            w.web
+        ),
+    )
+    .await;
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["reason"], "project_not_writable");
+    let e = undo(&w, a, d).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+    exec(
+        &pool,
+        &format!(
+            "UPDATE projects SET status = 'active' WHERE id = '{}'",
+            w.web
+        ),
+    )
+    .await;
+    undo(&w, a, d).await.unwrap();
+
+    // Deleted again by someone else since: changed_since.
+    let again = attach("again.txt", b"again").await;
+    let d = del(again).await;
+    let restore = exec_of(&undo(&w, a, d).await.unwrap());
+    run(
+        &w,
+        bob,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": again}}]),
+    )
+    .await
+    .unwrap();
+    let pv = undo_preview(&w, a, restore).await;
+    assert_eq!(pv["attachments"][0]["reason"], "changed_since");
+
+    // A wiki page's attachment.
+    let u = up(&w, a, "WEB", "plan.png", PNG).await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                "target": {"project": "WEB", "page": "Plan"},
+                "body": "# Plan", "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let att = ids_of(&r)[0];
+    let d = del(att).await;
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["wiki_title"], "Plan");
+    assert_eq!(pv["wiki"], json!([]));
+    undo(&w, a, d).await.unwrap();
+    let p = oxledger::wiki::page(&w.app, a, "WEB", "Plan")
+        .await
+        .unwrap();
+    assert_eq!(p.attachments.len(), 1);
+}
+
+/// The undo review's findings: a later execution blocks the undo of an
+/// earlier one; skip_attachments; a replayed operation; notes (private,
+/// retracted); lost permission; attach is not undone; wiki events.
+#[tokio::test]
+async fn undo_delete_more() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(
+        &pool,
+        w.dev,
+        &["view_wiki_pages", "edit_wiki_pages", "delete_wiki_pages"],
+    )
+    .await;
+    let a = w.alice_ctx;
+    let bob = sign_in(&pool, &w.policy, "bob").await;
+    let issue = w.issue(w.web, "more").await;
+    let key = key_of(&pool, issue).await;
+    let up_attach = |name: &'static str, target: Value| {
+        let w = &w;
+        async move {
+            let u = up(w, a, "WEB", name, name.as_bytes()).await.unwrap();
+            let r = run(
+                w,
+                a,
+                json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": target,
+                        "attachments": [{"upload_id": u.upload_id}]}]),
+            )
+            .await
+            .unwrap();
+            (ids_of(&r)[0], exec_of(&r))
+        }
+    };
+    let del = |who: AuthContext, id: Uuid| {
+        let w = &w;
+        async move {
+            exec_of(
+                &run(
+                    w,
+                    who,
+                    json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                            "target": {"attachment": id}}]),
+                )
+                .await
+                .unwrap(),
+            )
+        }
+    };
+
+    // attach itself is not undone (delete_attachment removes a file).
+    let (f, attach_exec) = up_attach("f.txt", json!({"issue": key})).await;
+    let e = oxledger::undo::preview(&w.app, a, attach_exec)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+
+    // E1 alice deletes, E2 alice undoes, E3 bob deletes, E4 bob undoes:
+    // E2's undo is changed_since (E3, E4 came later).
+    let e1 = del(a, f).await;
+    let e2 = exec_of(&undo(&w, a, e1).await.unwrap());
+    let e3 = del(bob, f).await;
+    undo(&w, bob, e3).await.unwrap();
+    let pv = undo_preview(&w, a, e2).await;
+    assert_eq!(pv["attachments"][0]["reason"], "changed_since", "{pv}");
+    let e = undo(&w, a, e2).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+    attachments::read::get(&w.app, a, f).await.unwrap();
+
+    // skip_attachments: nothing left to do; a replayed operation answers
+    // the same and writes once.
+    let (g, _) = up_attach("g.txt", json!({"issue": key})).await;
+    let d = del(a, g).await;
+    let skip = oxledger::undo::UndoInput {
+        skip_attachments: vec![g],
+        ..Default::default()
+    };
+    let e = oxledger::undo::apply(&w.app, a, Uuid::now_v7(), d, &skip)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+    let op = Uuid::now_v7();
+    let none = oxledger::undo::UndoInput::default();
+    let r1 = oxledger::undo::apply(&w.app, a, op, d, &none)
+        .await
+        .unwrap();
+    let r2 = oxledger::undo::apply(&w.app, a, op, d, &none)
+        .await
+        .unwrap();
+    assert_eq!(r1, r2);
+    let n = count(
+        &pool,
+        &format!("SELECT count(*) FROM execution_attachment_changes WHERE attachment_id = '{g}'"),
+    )
+    .await;
+    assert_eq!(n, 2);
+    // The second delete's row names the undo of the undo.
+    let again = exec_of(&undo(&w, a, r1.execution_id).await.unwrap());
+    let by: Uuid =
+        sqlx::query_scalar("SELECT deleted_by_execution_id FROM attachments WHERE id = $1")
+            .bind(g)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(by, again);
+
+    // Lost permission: bob (a member through the Developer role) deleted
+    // one; without edit_issues his undo is refused.
+    let (h, _) = up_attach("h.txt", json!({"issue": key})).await;
+    let d = del(bob, h).await;
+    exec(
+        &pool,
+        "DELETE FROM role_permissions WHERE permission IN ('edit_issues', 'edit_own_issues')",
+    )
+    .await;
+    let pv = undo_preview(&w, bob, d).await;
+    assert_eq!(pv["attachments"][0]["reason"], "permission", "{pv}");
+    let e = undo(&w, bob, d).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+    assert_eq!(details(&e)["reasons"][0]["reason"], "permission");
+    grant(&pool, w.dev, &["edit_issues"]).await;
+
+    // A note's attachment: the note retracted is container_gone.
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": issue}, "body": "n"}]),
+    )
+    .await
+    .unwrap();
+    let note_exec = exec_of(&r);
+    let note: Uuid = sqlx::query_scalar(
+        "SELECT id FROM issue_notes WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(issue)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (on_note, _) = up_attach("n.txt", json!({"note": note})).await;
+    let d = del(a, on_note).await;
+    exec(
+        &pool,
+        &format!(
+            "UPDATE issue_notes SET retracted_at = now(), retracted_by_execution_id = '{note_exec}'
+             WHERE id = '{note}'"
+        ),
+    )
+    .await;
+    let pv = undo_preview(&w, a, d).await;
+    assert_eq!(pv["attachments"][0]["reason"], "container_gone", "{pv}");
+    let e = undo(&w, a, d).await.unwrap_err();
+    assert_eq!(details(&e)["reasons"][0]["reason"], "container_gone");
+
+    // A private note the deleter can no longer read: left out of the
+    // preview (no file name), refused.
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": issue}, "body": "secret",
+                "is_private": true}]),
+    )
+    .await
+    .unwrap();
+    let _ = r;
+    let private: Uuid = sqlx::query_scalar(
+        "SELECT id FROM issue_notes WHERE issue_id = $1 AND is_private ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(issue)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (on_private, _) = up_attach("p-secret.txt", json!({"note": private})).await;
+    let d = del(bob, on_private).await;
+    exec(
+        &pool,
+        "DELETE FROM role_permissions WHERE permission = 'view_private_notes'",
+    )
+    .await;
+    let pv = undo_preview(&w, bob, d).await;
+    assert_eq!(pv["attachments"], json!([]), "{pv}");
+    assert!(!pv.to_string().contains("p-secret.txt"));
+    let e = undo(&w, bob, d).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable);
+
+    // Wiki: the events of the delete, the undo and its undo.
+    let u = up(&w, a, "WEB", "w.png", PNG).await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                "target": {"project": "WEB", "page": "Doc"},
+                "body": "# Doc", "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let page: Uuid = serde_json::from_value(r["items"][0]["wiki_page_id"].clone()).unwrap();
+    let att = ids_of(&r)[0];
+    let d = del(a, att).await;
+    let back = exec_of(&undo(&w, a, d).await.unwrap());
+    undo(&w, a, back).await.unwrap();
+    let ev: Vec<(String, Option<Uuid>)> = sqlx::query_as(
+        "SELECT kind, command_execution_id FROM wiki_events
+         WHERE page_id = $1 AND kind LIKE 'attachment%' ORDER BY seq",
+    )
+    .bind(page)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "attachment_added",
+            "attachment_removed",
+            "attachment_added",
+            "attachment_removed"
+        ]
+    );
+    assert_eq!(ev[1].1, Some(d));
+    assert_eq!(ev[2].1, Some(back));
+}

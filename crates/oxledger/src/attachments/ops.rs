@@ -368,7 +368,7 @@ pub(crate) fn event_payload(id: Uuid, filename: &str) -> Json {
 // ---------------------------------------------------------------- run (POST /commands)
 
 /// An issue the caller sees, locked for the write.
-struct IssueRow {
+pub(crate) struct IssueRow {
     id: Uuid,
     key: String,
     project: Uuid,
@@ -452,7 +452,7 @@ async fn issue_events(
     who: Uuid,
     request: Uuid,
     exec: Uuid,
-    op_id: Uuid,
+    op_id: Option<Uuid>,
 ) -> Result<()> {
     for (id, filename, note) in rows {
         sqlx::query(
@@ -809,7 +809,7 @@ async fn attach(
         me,
         request,
         x.exec,
-        o.op_id,
+        Some(o.op_id),
     )
     .await?;
     let ids = planned.iter().map(|p| p.id).collect();
@@ -840,7 +840,6 @@ struct Row {
     issue_id: Option<Uuid>,
     note_id: Option<Uuid>,
     wiki_page_id: Option<Uuid>,
-    filename: String,
     author_id: Uuid,
 }
 
@@ -855,11 +854,59 @@ async fn delete(
 ) -> Result<(Done, Exec)> {
     let me = who.user_id;
     let id = o.target.attachment;
+    let (holder, filename) = removal_check(&mut *conn, caller, me, id, false).await?;
+    let x = begin(&mut *conn, who, request, hash, deadline).await?;
+    set_deleted(&mut *conn, id, Some(x.exec)).await?;
+    record_change(&mut *conn, x.exec, id, "deleted").await?;
+    holder_event(
+        &mut *conn,
+        &holder,
+        "attachment_removed",
+        id,
+        &filename,
+        me,
+        request,
+        x.exec,
+        Some(o.op_id),
+    )
+    .await?;
+    let done = match &holder {
+        Holder::Wiki { page } => Done {
+            effects: Vec::new(),
+            item: item(o.op_id, None, Some(*page), vec![id]),
+        },
+        Holder::Issue { issue, .. } => Done {
+            effects: vec![issue_effect(issue, "attachment_removed")],
+            item: item(o.op_id, Some(issue.id), None, vec![id]),
+        },
+    };
+    Ok((done, x))
+}
+
+/// Where an attachment hangs, checked and locked for a person's change of
+/// it: its delete (R-A7, R-W14), or an undo putting it back or deleting it
+/// again (the same permission).
+pub(crate) enum Holder {
+    Wiki { page: Uuid },
+    Issue { issue: IssueRow, note: Option<Uuid> },
+}
+
+/// R-A7, R-W14: whether `me` may delete attachment `id` now (or, with
+/// `deleted`, put the deleted one back); the container is locked, then the
+/// row (in that state). Its file name.
+pub(crate) async fn removal_check(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    me: Uuid,
+    id: Uuid,
+    deleted: bool,
+) -> Result<(Holder, String)> {
     let row: Option<Row> = sqlx::query_as(
-        "SELECT project_id, issue_id, note_id, wiki_page_id, filename, author_id
-         FROM attachments WHERE id = $1 AND deleted_at IS NULL",
+        "SELECT project_id, issue_id, note_id, wiki_page_id, author_id
+         FROM attachments WHERE id = $1 AND (deleted_at IS NOT NULL) = $2",
     )
     .bind(id)
+    .bind(deleted)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(r) = row else {
@@ -895,27 +942,15 @@ async fn delete(
             return Err(not_writable());
         }
         page.require_unprotected(&a)?;
-        let filename = lock_live(&mut *conn, id).await?;
-        let x = begin(&mut *conn, who, request, hash, deadline).await?;
-        mark_deleted(&mut *conn, id, x.exec).await?;
-        let prov = crate::wiki::Prov::human(me, request, x.exec);
-        crate::wiki::attachment_event(
-            &mut *conn,
-            page.id,
-            "attachment_removed",
-            event_payload(id, &filename),
-            &prov,
-        )
-        .await?;
-        return Ok((
-            Done {
-                effects: Vec::new(),
-                item: item(o.op_id, None, Some(page.id), vec![id]),
-            },
-            x,
-        ));
+        let filename = lock_state(&mut *conn, id, deleted).await?;
+        return Ok((Holder::Wiki { page: page.id }, filename));
     }
     let issue_id = r.issue_id.expect("an attachment is on an issue or a page");
+    // The project first (a concurrent close waits, or wins), then the issue.
+    sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
+        .bind(r.project_id)
+        .execute(&mut *conn)
+        .await?;
     let issue = match r.note_id {
         Some(note) => note_for_write(&mut *conn, caller, me, note)
             .await?
@@ -940,48 +975,106 @@ async fn delete(
             "deleting an attachment needs edit_issues, or being its author with the permission that added it",
         ));
     }
-    let filename = lock_live(&mut *conn, id).await?;
-    let x = begin(&mut *conn, who, request, hash, deadline).await?;
-    mark_deleted(&mut *conn, id, x.exec).await?;
-    issue_events(
-        &mut *conn,
-        issue.id,
-        "attachment_removed",
-        &[(id, filename.clone(), r.note_id)],
-        me,
-        request,
-        x.exec,
-        o.op_id,
-    )
-    .await?;
-    let _ = r.filename;
+    let filename = lock_state(&mut *conn, id, deleted).await?;
     Ok((
-        Done {
-            effects: vec![issue_effect(&issue, "attachment_removed")],
-            item: item(o.op_id, Some(issue.id), None, vec![id]),
+        Holder::Issue {
+            issue,
+            note: r.note_id,
         },
-        x,
+        filename,
     ))
 }
 
-/// The attachment, locked, still not deleted (a concurrent delete waited
-/// on the container's lock): its file name.
-async fn lock_live(conn: &mut PgConnection, id: Uuid) -> Result<String> {
+/// `attachment_added` or `attachment_removed` on the attachment's issue or
+/// page.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn holder_event(
+    conn: &mut PgConnection,
+    holder: &Holder,
+    kind: &str,
+    id: Uuid,
+    filename: &str,
+    me: Uuid,
+    request: Uuid,
+    exec: Uuid,
+    op_id: Option<Uuid>,
+) -> Result<()> {
+    match holder {
+        Holder::Wiki { page } => {
+            let prov = crate::wiki::Prov::human(me, request, exec);
+            crate::wiki::attachment_event(
+                &mut *conn,
+                *page,
+                kind,
+                event_payload(id, filename),
+                &prov,
+            )
+            .await
+        }
+        Holder::Issue { issue, note } => {
+            issue_events(
+                &mut *conn,
+                issue.id,
+                kind,
+                &[(id, filename.to_string(), *note)],
+                me,
+                request,
+                exec,
+                op_id,
+            )
+            .await
+        }
+    }
+}
+
+/// The attachment, locked, in the expected state (a concurrent change
+/// waited on the container's lock): its file name.
+async fn lock_state(conn: &mut PgConnection, id: Uuid, deleted: bool) -> Result<String> {
     sqlx::query_scalar(
-        "SELECT filename FROM attachments WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        "SELECT filename FROM attachments
+         WHERE id = $1 AND (deleted_at IS NOT NULL) = $2 FOR UPDATE",
     )
     .bind(id)
+    .bind(deleted)
     .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(attachment_not_found)
 }
 
-async fn mark_deleted(conn: &mut PgConnection, id: Uuid, exec: Uuid) -> Result<()> {
+/// Deleted by `exec`, or (`None`) back.
+pub(crate) async fn set_deleted(
+    conn: &mut PgConnection,
+    id: Uuid,
+    exec: Option<Uuid>,
+) -> Result<()> {
     sqlx::query(
-        "UPDATE attachments SET deleted_at = now(), deleted_by_execution_id = $2 WHERE id = $1",
+        "UPDATE attachments
+         SET deleted_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE now() END,
+             deleted_by_execution_id = $2
+         WHERE id = $1",
     )
     .bind(id)
     .bind(exec)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// R-A7: what an execution did to an attachment (`deleted`, or an undo's
+/// `restored` / `deleted`), for its undo.
+pub(crate) async fn record_change(
+    conn: &mut PgConnection,
+    exec: Uuid,
+    id: Uuid,
+    change: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO execution_attachment_changes (execution_id, attachment_id, change)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(exec)
+    .bind(id)
+    .bind(change)
     .execute(&mut *conn)
     .await?;
     Ok(())

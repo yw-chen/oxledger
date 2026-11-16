@@ -13213,6 +13213,52 @@
         ],
         "type": "object"
       },
+      "UndoAttachment": {
+        "description": "One attachment an execution deleted or put back, as its undo would\ntreat it.",
+        "properties": {
+          "attachment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "change": {
+            "description": "`deleted` (undo: put it back) or `restored` (undo: delete it again).",
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "issue_key": {
+            "description": "Where it hangs: the issue's key, or the wiki page's title.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "`expired`, `changed_since` (put back or deleted again since),\n`redacted`, `content_gone` (the file was removed),\n`container_gone` (the issue, note or page is gone or out of reach),\n`project_not_writable` or `permission`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "wiki_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "attachment_id",
+          "filename",
+          "change",
+          "restorable"
+        ],
+        "type": "object"
+      },
       "UndoChoice": {
         "description": "Not done in a batch: a person picks (§16.7: \"轉回 X\", \"關閉為誤建\").",
         "properties": {
@@ -13308,6 +13354,14 @@
         "additionalProperties": false,
         "description": "What the person confirmed (§16.7 flow: preview → confirm).",
         "properties": {
+          "skip_attachments": {
+            "description": "Attachment ids to leave as they are (design 06 R-A7).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "skip_fields": {
             "default": [],
             "description": "`\"<issue_id>/<field>\"` to leave as they are.",
@@ -13402,6 +13456,14 @@
       },
       "UndoPreview": {
         "properties": {
+          "attachments": {
+            "default": [],
+            "description": "Attachments deleted or put back (design 06 R-A7).",
+            "items": {
+              "$ref": "#/components/schemas/UndoAttachment"
+            },
+            "type": "array"
+          },
           "choices": {
             "items": {
               "$ref": "#/components/schemas/UndoChoice"
@@ -13494,7 +13556,8 @@
           "version_fields",
           "triage",
           "time_entries",
-          "wiki"
+          "wiki",
+          "attachments"
         ],
         "type": "object"
       },
@@ -13559,6 +13622,13 @@
       },
       "UndoResult": {
         "properties": {
+          "attachments_restored": {
+            "default": 0,
+            "description": "Attachments put back, or deleted again (design 06 R-A7).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "consistent_after": {
             "type": "string"
           },
@@ -13634,6 +13704,7 @@
           "version_fields_restored",
           "version_deleted",
           "wiki_pages_restored",
+          "attachments_restored",
           "consistent_after"
         ],
         "type": "object"
@@ -21945,7 +22016,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule. skip_wiki_pages: wiki page ids to leave as they are (a child of a deleted page goes back under it only when that page is restored too). A wiki undo that would pass 5,000 pages or 10,000 versions is invalid_value (kind wiki_page_limit, wiki_version_limit).",
+        "summary": "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule. skip_wiki_pages: wiki page ids to leave as they are (a child of a deleted page goes back under it only when that page is restored too). A wiki undo that would pass 5,000 pages or 10,000 versions is invalid_value (kind wiki_page_limit, wiki_version_limit). skip_attachments: attachment ids to leave as they are (undo of delete_attachment puts the file back within 30 days; undoing that undo deletes it again; whoever undoes needs the delete permission now).",
         "x-access": "session",
         "x-csrf": true
       }

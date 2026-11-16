@@ -36,6 +36,7 @@ use uuid::Uuid;
 
 pub mod ops;
 pub mod read;
+pub mod undo;
 
 const MB: u64 = 1024 * 1024;
 /// R-A2: the default and the largest allowed single-file limit.

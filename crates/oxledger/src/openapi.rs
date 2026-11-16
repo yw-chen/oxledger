@@ -1212,7 +1212,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "POST",
             "/executions/{id}/undo",
-            "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule. skip_wiki_pages: wiki page ids to leave as they are (a child of a deleted page goes back under it only when that page is restored too). A wiki undo that would pass 5,000 pages or 10,000 versions is invalid_value (kind wiki_page_limit, wiki_version_limit).",
+            "Undo what is still restorable, re-checked under the locks (§16.7). Header Idempotency-Key. A new human_direct execution with reverts_execution_id. undo_not_applicable (409) when nothing can be restored or the subset breaks a rule. skip_wiki_pages: wiki page ids to leave as they are (a child of a deleted page goes back under it only when that page is restored too). A wiki undo that would pass 5,000 pages or 10,000 versions is invalid_value (kind wiki_page_limit, wiki_version_limit). skip_attachments: attachment ids to leave as they are (undo of delete_attachment puts the file back within 30 days; undoing that undo deletes it again; whoever undoes needs the delete permission now).",
             Session,
             Some(s::<crate::undo::UndoInput>),
             s::<crate::undo::UndoResult>,
