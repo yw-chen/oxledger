@@ -6,6 +6,7 @@
 import type { CommandResult, WikiEffect, WikiOp } from '$api/types';
 import { api, newOperationId } from './api';
 import { wikiDoc } from './wiki';
+import { forgetWikiWrite, rememberWikiWrite } from './wikisearch';
 
 export const wikiWrite = $state<{ last: { executionId: string; projectKey: string; text: string } | null }>({ last: null });
 
@@ -25,6 +26,13 @@ export async function runWiki(
 	const result = await api('POST /commands', { body: wikiDoc(op, pre), operationId });
 	const effect = result.wiki?.[0] ?? null;
 	if (!effect || effect.changed) wikiWrite.last = { executionId: result.execution_id, projectKey: projectKey.toUpperCase(), text };
+	// Q-S10: the search page's Wiki tab waits for this write and shows the
+	// page as 「剛寫入・同步中」 until the wiki index has it.
+	if (effect?.changed) {
+		if (op.kind === 'wiki_delete') forgetWikiWrite(effect.page_id);
+		else if (op.kind !== 'wiki_protect')
+			rememberWikiWrite({ pageId: effect.page_id, projectKey, title: effect.title, after: result.search.consistent_after });
+	}
 	return { result, effect };
 }
 

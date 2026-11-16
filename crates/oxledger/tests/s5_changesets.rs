@@ -474,6 +474,7 @@ async fn s5_changesets_body() {
     let app = Arc::new(App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     });
     let policy = SessionPolicy::default();
     let router = api::router(

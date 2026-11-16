@@ -801,6 +801,7 @@ async fn legacy_index_ignores_status_prefilter() {
     let app = App {
         pool: pool.clone(),
         index,
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     };
     app.index.sync_all(&pool).await.unwrap();
     assert_eq!(app.index.view().unwrap().layout(), Layout::Legacy);
@@ -854,6 +855,7 @@ async fn legacy_generation_on_disk_is_opened() {
     let app = App {
         pool: pool.clone(),
         index: idx,
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     };
     assert_eq!(
         keys_as(&app, w.alice_ctx, "numbat").await,
@@ -893,6 +895,7 @@ async fn legacy_index_serves_until_the_upgrade_switches() {
     let app = Arc::new(App {
         pool: pool.clone(),
         index,
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     });
     app.index.sync_all(&pool).await.unwrap();
     assert!(app.index.needs_upgrade());

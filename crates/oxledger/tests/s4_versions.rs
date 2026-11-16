@@ -296,6 +296,7 @@ async fn s4_versions() {
     let app = Arc::new(App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     });
     let router = api::router(
         app.clone(),

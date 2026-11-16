@@ -391,6 +391,7 @@ async fn s2_api() {
     let app = Arc::new(App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     });
     app.index.sync_all(&pool).await.unwrap();
     let r = api::router(

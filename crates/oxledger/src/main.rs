@@ -14,10 +14,12 @@
 //!   oxledger api-spec [dir]  write <dir>/openapi.json and <dir>/types.ts (default dir: api)
 //!   oxledger seed-demo    fill an empty database with demo data, print API keys
 //!                         (only with --features test-support)
-//!   oxledger reindex      ask the running server for a blue-green rebuild of the search index
-//!   oxledger reindex --offline   rebuild in this process (server stopped)
+//!   oxledger reindex      ask the running server for a blue-green rebuild of the search
+//!                         indexes (issues and wiki)
+//!   oxledger reindex --offline   rebuild both in this process (server stopped)
 //!
-//! Configuration (environment): DATABASE_URL, OXLEDGER_INDEX_DIR (default ./data/index),
+//! Configuration (environment): DATABASE_URL, OXLEDGER_INDEX_DIR (default ./data/index; the
+//! wiki index lives in its `wiki` subdirectory),
 //! OXLEDGER_BIND (default 127.0.0.1:8080), OXLEDGER_API_KEY (stdio),
 //! OXLEDGER_SPA_ORIGIN (default http://<OXLEDGER_BIND>; non-GET /api/v1 requests must come from it),
 //! OXLEDGER_METRICS_TOKEN (enables GET /metrics with `Authorization: Bearer <token>`),
@@ -32,6 +34,7 @@ use oxledger::mcp::OxServer;
 use oxledger::metrics::{Worker, timed_round, worker_expected, worker_round, worker_started};
 use oxledger::search::SearchIndex;
 use oxledger::service::App;
+use oxledger::wiki_search::WikiIndex;
 use rmcp::ServiceExt;
 use std::io::Read as _;
 use std::net::SocketAddr;
@@ -54,7 +57,47 @@ async fn open_app() -> Result<Arc<App>> {
     // The first sync round (background) validates the generation on disk or
     // builds one; until then free-text search answers search_unavailable.
     let index = SearchIndex::open(Some(&dir))?;
-    Ok(Arc::new(App { pool, index }))
+    // Design 06 §3.14: the wiki index, its own generations under `wiki/`
+    // (the issue index only ever touches `CURRENT` and `gen-*`).
+    let wiki = WikiIndex::open(Some(&dir.join("wiki")))?;
+    Ok(Arc::new(App { pool, index, wiki }))
+}
+
+/// Rebuilds the wiki index blue-green in the background (`oxledger
+/// reindex` asks for both indexes).
+fn spawn_wiki_rebuild(app: Arc<App>) {
+    tokio::spawn(async move {
+        match app.wiki.rebuild(&app.pool).await {
+            Ok(r) => tracing::info!(?r, "wiki index rebuilt"),
+            Err(e) => tracing::error!("wiki index rebuild failed: {e:#}"),
+        }
+    });
+}
+
+/// Keeps the wiki index following the outbox (design 06 §3.14, B-49) and
+/// runs its generation GC hourly. Its own task, so a wiki baseline does not
+/// hold up issue search; rebuild requests come through [`spawn_indexer`].
+fn spawn_wiki_indexer(app: Arc<App>) {
+    app.wiki
+        .metrics
+        .loop_running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::spawn(async move {
+        let mut last_gc = std::time::Instant::now();
+        loop {
+            if let Err(e) = app.wiki.sync(&app.pool).await {
+                tracing::warn!("wiki index sync failed: {e:#}");
+            }
+            if last_gc.elapsed() >= Duration::from_secs(3600) {
+                last_gc = std::time::Instant::now();
+                match app.wiki.gc(&app.pool).await {
+                    Ok((rows, gens)) => tracing::info!(rows, gens, "wiki index GC"),
+                    Err(e) => tracing::warn!("wiki index GC failed: {e:#}"),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
 }
 
 /// Keeps the search index following the outbox; picks up `oxledger reindex`
@@ -117,6 +160,7 @@ fn spawn_indexer(app: Arc<App>) {
                 .fetch_optional(&app.pool)
                 .await;
                 if let Ok(Some(_)) = requested {
+                    spawn_wiki_rebuild(app.clone());
                     let a = app.clone();
                     tokio::spawn(async move {
                         match a.index.rebuild(&a.pool).await {
@@ -241,6 +285,7 @@ async fn serve() -> Result<()> {
     let app = open_app().await?;
     oxledger::cursor::init(&app.pool).await?;
     spawn_indexer(app.clone());
+    spawn_wiki_indexer(app.clone());
     spawn_field_indexer(app.clone());
     spawn_sweeper(app.clone());
     spawn_notifier(app.clone());
@@ -300,6 +345,7 @@ async fn stdio() -> Result<()> {
     let app = open_app().await?;
     oxledger::cursor::init(&app.pool).await?;
     spawn_indexer(app.clone());
+    spawn_wiki_indexer(app.clone());
     let key = env("OXLEDGER_API_KEY", None)?;
     let Some(ctx) = auth::authenticate_bearer(&app.pool, key.trim()).await? else {
         bail!("OXLEDGER_API_KEY is not a valid agent token or API key")
@@ -417,13 +463,19 @@ async fn main() -> Result<()> {
                     "rebuilt: generation {} ({} documents, F {})",
                     r.generation, r.baseline_docs, r.frontier
                 );
+                let r = app.wiki.rebuild(&app.pool).await?;
+                eprintln!(
+                    "rebuilt the wiki index: generation {} ({} pages, F {})",
+                    r.generation, r.baseline_docs, r.frontier
+                );
             } else {
                 let pool = db::connect(&env("DATABASE_URL", None)?).await?;
                 sqlx::query("UPDATE search_settings SET rebuild_requested_at = now()")
                     .execute(&pool)
                     .await?;
                 eprintln!(
-                    "rebuild requested; the running server builds a new generation in the background\n\
+                    "rebuild requested; the running server builds new generations of the issue and\n\
+                     wiki indexes in the background\n\
                      (search keeps working). Without a running server use `oxledger reindex --offline`."
                 );
             }

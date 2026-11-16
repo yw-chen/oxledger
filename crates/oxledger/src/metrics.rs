@@ -1079,6 +1079,25 @@ pub async fn render(pool: &PgPool, index: &SearchIndex) -> Result<String> {
         "Age of the oldest transaction holding an xid, instance-wide",
         oldest_xid.max(0.0),
     );
+    // Design 06 §3.14: wiki events after the active wiki generation's
+    // cursor (it reads every row, so this is also how far it holds back
+    // the outbox GC in wiki events).
+    let (wiki_pending,): (i64,) = sqlx::query_as(
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM outbox_cursors
+                                  WHERE consumer LIKE 'wiki@%' AND state = 'active')
+                THEN (SELECT count(o.id) FROM outbox_cursors c JOIN outbox o
+                        ON o.topic = 'wiki_page' AND (o.xid, o.id) > (c.last_xid, c.last_id)
+                      WHERE c.consumer LIKE 'wiki@%' AND c.state = 'active')
+                ELSE (SELECT count(*) FROM outbox WHERE topic = 'wiki_page') END",
+    )
+    .fetch_one(pool)
+    .await?;
+    gauge(
+        &mut out,
+        "wiki_outbox_pending",
+        "Wiki outbox events after the active wiki index generation's cursor",
+        wiki_pending as f64,
+    );
     let notify_pending = NOTIFY.render(&mut out, pool).await?;
     HTTP.render(&mut out)?;
     render_pool(&mut out, pool);

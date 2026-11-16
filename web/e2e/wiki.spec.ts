@@ -337,3 +337,65 @@ test('wiki：讀不到 wiki 的人一律看到「找不到」，也沒有 Wiki �
 	expect(real.json.error.code).toBe('not_found');
 	expect(real.json.error.message).toBe(none.json.error.message);
 });
+
+test('wiki 搜尋：新頁在搜尋頁的 Wiki 分頁搜得到，點進去開到該頁；讀不到 wiki 的人沒有 Wiki 分頁', async ({ browser }) => {
+	const page = await as(browser, 'alice', '/project/AUTH/wiki-new');
+	await page.getByTestId('wiki-title-input').fill('灰熊 部署手冊');
+	await page.getByTestId('wiki-md-input').fill('# 說明\n\n上線前先看灰熊檢查表，再跑 grizzly-check。');
+	await page.getByTestId('wiki-save').click();
+	await page.waitForURL((u) => decodeURIComponent(u.pathname) === '/project/AUTH/wiki/灰熊_部署手冊');
+
+	// The same tab: the search waits for this write (Q-S10), or says 「同步中」.
+	await page.goto('/search');
+	await page.getByTestId('tab-wiki').click();
+	await page.waitForURL((u) => u.searchParams.get('tab') === 'wiki');
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Wiki');
+	await expect(page.getByTestId('wiki-no-query')).toBeVisible();
+	await expect(page.getByTestId('search-conditions')).toHaveCount(0);
+	await page.getByTestId('search-input').fill('灰熊');
+	await page.getByTestId('search-input').press('Enter');
+	const hit = page.getByTestId('wiki-hit').filter({ hasText: '灰熊 部署手冊' });
+	await expect(async () => {
+		if (await page.getByTestId('wiki-lagging').isVisible()) await page.getByTestId('wiki-retry').click();
+		await expect(hit).toBeVisible({ timeout: 1000 });
+	}).toPass({ timeout: 15_000 });
+	await expect(hit.getByTestId('wiki-hit-project')).toHaveText('AUTH');
+	await expect(hit.getByTestId('wiki-hit-snippet').locator('b').first()).toHaveText('灰熊');
+	await expect(hit).toContainText('更新於');
+	await expect(page.getByTestId('wiki-just-written')).toHaveCount(0);
+	// The issues tab is one click away and keeps the query.
+	await page.getByTestId('tab-issues').click();
+	await page.waitForURL((u) => !u.searchParams.has('tab') && u.searchParams.get('q') === '灰熊');
+	await expect(page.getByTestId('search-conditions')).toBeVisible();
+	await page.goBack();
+	await hit.getByTestId('wiki-hit-title').click();
+	await page.waitForURL((u) => decodeURIComponent(u.pathname) === '/project/AUTH/wiki/灰熊_部署手冊');
+	await expect(page.getByTestId('wiki-title')).toHaveText('灰熊 部署手冊');
+
+	// carol (Reporter on AUTH, no view_wiki_pages there) still reads WEB's
+	// public wiki (Non member), so she has the tab, but AUTH's page is not hers to find (R-W1).
+	const carol = await as(browser, 'carol', `/search?tab=wiki&q=${encodeURIComponent('灰熊')}`);
+	await expect(carol.getByTestId('wiki-empty-result')).toBeVisible();
+	await expect(carol.getByTestId('wiki-hit')).toHaveCount(0);
+	const r = await papi(carol, 'GET', `/wiki/search?q=${encodeURIComponent('灰熊')}`);
+	expect(r.json.data.available).toBe(true);
+	expect(r.json.data.items).toEqual([]);
+
+	// Someone who reads no wiki at all: the seed has nobody like that (WEB is
+	// public), so the server's answer is stood in for. No tab, and tab=wiki
+	// shows the issues.
+	const ctx = carol.context();
+	await ctx.route(/\/api\/v1\/wiki\/search(\?|$)/, async (route) => {
+		if (new URL(route.request().url()).searchParams.has('q')) return route.continue();
+		const resp = await route.fetch();
+		const body = await resp.json();
+		body.data.available = false;
+		await route.fulfill({ response: resp, json: body });
+	});
+	await carol.goto(`/search?tab=wiki&q=${encodeURIComponent('灰熊')}`);
+	await expect(carol.getByRole('heading', { level: 1 })).toHaveText('議題');
+	await carol.waitForLoadState('networkidle');
+	await expect(carol.getByTestId('search-tabs')).toHaveCount(0);
+	await expect(carol.getByTestId('search-conditions')).toBeVisible();
+	await expect(carol.getByTestId('wiki-hit')).toHaveCount(0);
+});

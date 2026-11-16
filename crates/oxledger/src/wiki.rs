@@ -321,34 +321,104 @@ pub(crate) async fn access_of(
         return Ok(None);
     }
     let actor = perm::actor(&mut *conn, caller).await?;
-    let Some(pp) = perm::project_perms(&mut *conn, &actor, project).await? else {
+    access_for(&mut *conn, &actor, project, key, name, status).await
+}
+
+/// The wiki permissions [`Access`] keeps (the only ones R-W1 and the wiki
+/// write paths ask about).
+const WIKI_PERMS: [&str; 7] = [
+    VIEW_WIKI_PAGES,
+    VIEW_WIKI_EDITS,
+    EDIT_WIKI_PAGES,
+    RENAME_WIKI_PAGES,
+    DELETE_WIKI_PAGES,
+    PROTECT_WIKI_PAGES,
+    MANAGE_WIKI,
+];
+
+/// The rest of [`access_of`] once the project is known to exist, not be
+/// archived and have the wiki module: the actor's roles there.
+async fn access_for(
+    conn: &mut PgConnection,
+    actor: &perm::Actor,
+    project: Uuid,
+    key: String,
+    name: String,
+    status: String,
+) -> Result<Option<Access>> {
+    let Some(pp) = perm::project_perms(&mut *conn, actor, project).await? else {
         return Ok(None);
     };
+    Ok(judge(&pp, key, name, status))
+}
+
+/// R-W1's judgment from the actor's permissions in a project that exists,
+/// is not archived and has the wiki module: the one place that decides,
+/// for one page ([`access_for`]) and for the wiki search
+/// ([`readable_wikis`]) alike.
+fn judge(pp: &perm::ProjectPerms, key: String, name: String, status: String) -> Option<Access> {
     let mut perms = BTreeSet::new();
     for r in &pp.roles {
-        for p in [
-            VIEW_WIKI_PAGES,
-            VIEW_WIKI_EDITS,
-            EDIT_WIKI_PAGES,
-            RENAME_WIKI_PAGES,
-            DELETE_WIKI_PAGES,
-            PROTECT_WIKI_PAGES,
-            MANAGE_WIKI,
-        ] {
+        for p in WIKI_PERMS {
             if r.perms.contains_key(p) {
                 perms.insert(p.to_string());
             }
         }
     }
     let a = Access {
-        project,
+        project: pp.project_id,
         key,
         name,
         status,
         admin: pp.admin,
         perms,
     };
-    Ok(a.has(VIEW_WIKI_PAGES).then_some(a))
+    a.has(VIEW_WIKI_PAGES).then_some(a)
+}
+
+/// Every wiki the caller reads (R-W1), by project id: the wiki search's
+/// visibility filter (design 06 §3.14). Candidates are the projects where
+/// roles can apply at all (any project for a system administrator, else a
+/// membership of the person or one of their groups, or a public project),
+/// not archived and with the wiki module; their permissions are loaded in
+/// one batch ([`perm::projects_perms`], a fixed number of queries however
+/// many projects there are) and [`judge`] decides each, as [`access_of`]
+/// does for one project.
+pub(crate) async fn readable_wikis(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+) -> Result<BTreeMap<Uuid, Access>> {
+    let actor = perm::actor(&mut *conn, caller).await?;
+    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+        "SELECT p.id, p.key, p.name, p.status FROM projects p
+         WHERE p.status <> 'archived'
+           AND EXISTS (SELECT 1 FROM enabled_modules m WHERE m.project_id = p.id AND m.module = $1)
+           AND ($2 OR p.is_public
+                OR EXISTS (SELECT 1 FROM members mb
+                           WHERE mb.project_id = p.id AND mb.principal_id = ANY($3)))
+         ORDER BY p.id",
+    )
+    .bind(WIKI_MODULE)
+    .bind(actor.is_admin)
+    .bind(&actor.principal_ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+    let pps = perm::projects_perms(&mut *conn, &actor, &ids, &WIKI_PERMS).await?;
+    let mut out = BTreeMap::new();
+    for (id, key, name, status) in rows {
+        if let Some(a) = pps.get(&id).and_then(|pp| judge(pp, key, name, status)) {
+            out.insert(id, a);
+        }
+    }
+    Ok(out)
+}
+
+/// The ids of [`readable_wikis`], on the caller's connection: lets tests
+/// measure the work it does inside one transaction.
+#[cfg(feature = "test-support")]
+pub async fn readable_wiki_ids(conn: &mut PgConnection, caller: AuthContext) -> Result<Vec<Uuid>> {
+    Ok(readable_wikis(conn, caller).await?.into_keys().collect())
 }
 
 /// [`access_of`] for a project id or key; `not_found` when unreadable.
@@ -2113,7 +2183,7 @@ async fn person(conn: &mut PgConnection, id: Uuid) -> Result<Option<WikiPerson>>
     Ok(r.map(|(name, kind)| WikiPerson { id, name, kind }))
 }
 
-fn project_ref(a: &Access) -> WikiProjectRef {
+pub(crate) fn project_ref(a: &Access) -> WikiProjectRef {
     WikiProjectRef {
         id: a.project,
         key: a.key.clone(),

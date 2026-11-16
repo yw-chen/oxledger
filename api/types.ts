@@ -2723,6 +2723,12 @@ export type ShortcutView = {
   name?: string | null;
 };
 
+/** One part of a snippet: plain text, `hit` where a query term matched. Render the parts in order as text (no HTML), bold where `hit`. */
+export type SnippetPart = {
+  hit: boolean;
+  text: string;
+};
+
 export type SortDir = "asc" | "desc";
 
 /** One sort key (design 05 §3.2). */
@@ -4133,6 +4139,30 @@ export type WikiProjectRef = {
   name: string;
 };
 
+export type WikiSearchItem = {
+  page_id: string;
+  project: WikiProjectRef;
+  /** About one line of the current text around the best match (the start of the page when only the title matched); empty for an empty page. */
+  snippet: Array<SnippetPart>;
+  /** The current title. */
+  title: string;
+  updated_at: string;
+  /** The title as the page URL writes it: `/projects/{project.key}/wiki/{url_title}`. */
+  url_title: string;
+};
+
+export type WikiSearchResult = {
+  /** You read at least one wiki (whatever `q` and `project` say): the web app shows the Wiki tab of the search page only then. */
+  available: boolean;
+  /** eventual (no token) | satisfied | lagging | not_applicable (no `q`). */
+  consistency: Consistency;
+  /** Best first, at most 20. */
+  items: Array<WikiSearchItem>;
+  next_cursor: string | null;
+  /** "ok", or "search_lagging": the wiki index has not caught up with `consistent_after` yet (no items; the write itself succeeded). */
+  outcome: string;
+};
+
 export type WikiSettings = {
   /** `manage_wiki` in an active project. */
   can_manage: boolean;
@@ -4424,4 +4454,5 @@ export interface Endpoints {
   "POST /views/{id}/copy": { body: ViewCopy; data: ViewDetail };
   "GET /views/{id}/events": { body: never; data: ViewEvents };
   "POST /views/{id}/run": { body: RunInput; data: ViewRun };
+  "GET /wiki/search": { body: never; data: WikiSearchResult };
 }

@@ -10337,6 +10337,22 @@
         ],
         "type": "object"
       },
+      "SnippetPart": {
+        "description": "One part of a snippet: plain text, `hit` where a query term matched.\nRender the parts in order as text (no HTML), bold where `hit`.",
+        "properties": {
+          "hit": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "hit"
+        ],
+        "type": "object"
+      },
       "SortDir": {
         "enum": [
           "asc",
@@ -15637,6 +15653,82 @@
           "id",
           "key",
           "name"
+        ],
+        "type": "object"
+      },
+      "WikiSearchItem": {
+        "properties": {
+          "page_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "project": {
+            "$ref": "#/components/schemas/WikiProjectRef"
+          },
+          "snippet": {
+            "description": "About one line of the current text around the best match (the start\nof the page when only the title matched); empty for an empty page.",
+            "items": {
+              "$ref": "#/components/schemas/SnippetPart"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "The current title.",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url_title": {
+            "description": "The title as the page URL writes it: `/projects/{project.key}/wiki/{url_title}`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "page_id",
+          "title",
+          "url_title",
+          "snippet",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "WikiSearchResult": {
+        "properties": {
+          "available": {
+            "description": "You read at least one wiki (whatever `q` and `project` say): the\nweb app shows the Wiki tab of the search page only then.",
+            "type": "boolean"
+          },
+          "consistency": {
+            "$ref": "#/components/schemas/Consistency",
+            "description": "eventual (no token) | satisfied | lagging | not_applicable (no `q`)."
+          },
+          "items": {
+            "description": "Best first, at most 20.",
+            "items": {
+              "$ref": "#/components/schemas/WikiSearchItem"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "\"ok\", or \"search_lagging\": the wiki index has not caught up with\n`consistent_after` yet (no items; the write itself succeeded).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "available",
+          "consistency",
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -28037,6 +28129,55 @@
         "summary": "Run a view with your own visibility (K3). List: items with values, groups and totals over every visible match; board: lanes with their items, counts (at most 999, capped), wip and next_cursor (a board cursor goes with its lane). Counts and totals are null when out of the 2 s budget or with free text. override.q replaces the view's q; override.where_and narrows. A saved condition on a field you cannot read is invalid_filter (field_unavailable). POST so long cursors fit.",
         "x-access": "session",
         "x-csrf": true
+      }
+    },
+    "/wiki/search": {
+      "get": {
+        "operationId": "get_wiki_search",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WikiSearchResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 §3.14, §6.7: search the wikis you read (R-W1), wiki pages only (issues: POST /issues/search; the two rankings are not comparable). Query q (free text; absent or blank: no search, only available), project (id or key: one wiki; one you cannot read and one that does not exist give the same empty result), cursor (next_cursor), consistent_after (a wiki write receipt's search.consistent_after: wait for this index; invalid_consistency_token, consistency_epoch_changed), wait_ms (0-2000, default 1000), on_lag (return: outcome search_lagging with no items; error: search_not_caught_up). Items best first, 20 per page: project {id, key, name}, page_id, title, url_title (link /projects/{key}/wiki/{url_title}), snippet [{text, hit}] (plain text parts of the current text, hit = a query term; never HTML), updated_at. available: you read at least one wiki (shows the Wiki tab). invalid_query: q without searchable characters; invalid_cursor; search_unavailable while the wiki index cannot serve.",
+        "x-access": "session"
       }
     }
   },

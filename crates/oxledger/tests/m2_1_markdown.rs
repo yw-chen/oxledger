@@ -1858,6 +1858,7 @@ async fn t_m2_12_plain_text_search() {
     let app = Arc::new(App {
         pool: pool.clone(),
         index,
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     });
     app.index.sync_all(&pool).await.unwrap();
     assert_eq!(app.index.view().unwrap().layout(), Layout::RawText);

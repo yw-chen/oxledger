@@ -25,6 +25,8 @@ use uuid::Uuid;
 pub struct App {
     pub pool: PgPool,
     pub index: SearchIndex,
+    /// The wiki index (design 06 §3.14), followed like `index`.
+    pub wiki: crate::wiki_search::WikiIndex,
 }
 
 /// One read: a READ ONLY, REPEATABLE READ transaction, so the authorization
@@ -1032,7 +1034,7 @@ pub async fn search(app: &App, caller: AuthContext, p: SearchParams) -> Result<S
     Ok(r)
 }
 
-const LAG_RETRY_MS: u64 = 500;
+pub(crate) const LAG_RETRY_MS: u64 = 500;
 
 /// The SQL work budget of one request (03 §5.4 item 4, Q-S7 default 2 s).
 pub const QUERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
@@ -1177,7 +1179,7 @@ async fn choose_shape(
 }
 
 /// No generation can serve yet, or the sync loop stopped (03 §4.11).
-fn search_unavailable() -> anyhow::Error {
+pub(crate) fn search_unavailable() -> anyhow::Error {
     ApiError::new(
         ErrorCode::SearchUnavailable,
         "the search index is not available right now; try again later",
@@ -1214,17 +1216,45 @@ async fn consistency_wait(
     caller: AuthContext,
     p: &SearchParams,
 ) -> Result<Option<Wait>> {
-    let wait_ms = p.wait_ms.unwrap_or(DEFAULT_WAIT_MS);
+    let Some((x, wait)) = consistency_target(
+        &app.pool,
+        p.wait_ms,
+        p.on_lag.as_deref(),
+        p.consistent_after.as_deref(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    if !p.q.as_deref().is_some_and(|q| !q.trim().is_empty()) {
+        // SQL reads its own commits (03 §4.4): not_applicable, no wait.
+        return Ok(None);
+    }
+    Ok(Some(
+        app.index.wait_for(caller.principal_id(), x, wait).await,
+    ))
+}
+
+/// Checks `wait_ms`, `on_lag` and a `consistent_after` token (03 §4.11)
+/// for any index that follows the outbox (issues, the wiki): the token's
+/// xid and how long to wait for it, `None` without a token.
+pub(crate) async fn consistency_target(
+    pool: &PgPool,
+    wait_ms: Option<u32>,
+    on_lag: Option<&str>,
+    token: Option<&str>,
+) -> Result<Option<(u64, std::time::Duration)>> {
+    let wait_ms = wait_ms.unwrap_or(DEFAULT_WAIT_MS);
     if wait_ms > MAX_WAIT_MS {
         return Err(user_err(format!(
             "wait_ms {wait_ms}: use 0..={MAX_WAIT_MS}"
         )));
     }
-    match p.on_lag.as_deref() {
+    match on_lag {
         None | Some("return") | Some("error") => {}
         Some(other) => return Err(user_err(format!("on_lag {other:?}: use return or error"))),
     }
-    let Some(t) = p.consistent_after.as_deref() else {
+    let Some(t) = token else {
         return Ok(None);
     };
     let Some((epoch, x)) = parse_token(t.trim()) else {
@@ -1236,7 +1266,7 @@ async fn consistency_wait(
         .into());
     };
     let current: Uuid = sqlx::query_scalar("SELECT data_epoch FROM search_settings")
-        .fetch_one(&app.pool)
+        .fetch_one(pool)
         .await?;
     if epoch != current {
         return Err(api(
@@ -1245,19 +1275,7 @@ async fn consistency_wait(
              (the write itself is not affected)",
         ));
     }
-    if !p.q.as_deref().is_some_and(|q| !q.trim().is_empty()) {
-        // SQL reads its own commits (03 §4.4): not_applicable, no wait.
-        return Ok(None);
-    }
-    Ok(Some(
-        app.index
-            .wait_for(
-                caller.principal_id(),
-                x,
-                std::time::Duration::from_millis(wait_ms as u64),
-            )
-            .await,
-    ))
+    Ok(Some((x, std::time::Duration::from_millis(wait_ms as u64))))
 }
 
 /// What a saved view adds to a search (design 05 §3.3): conditions already

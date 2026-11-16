@@ -4,6 +4,8 @@
 	// and search_lagging shown as "剛建立・同步中" rather than "nothing found".
 	// Conditions (contract 05 §6.2, §6.14) come from the shared editor, live
 	// in the URL (`where=`), go to SearchParams.where and into 「存成視圖」.
+	// The site-wide page (no scopeProject) has a 「Wiki」 tab (`tab=wiki`, design
+	// 06 §6.7) when the person reads at least one wiki.
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import type { FilterFields, FilterOption, SearchItem, SearchParams, SearchResult, WhereInput } from '$api/types';
@@ -17,6 +19,8 @@
 	import { sourceOptions } from '#lib/filterOptions.js';
 	import { session } from '#lib/session.svelte.js';
 	import FilterEditor from './FilterEditor.svelte';
+	import WikiSearch from './WikiSearch.svelte';
+	import { wikiQuery } from '#lib/wikisearch.js';
 
 	let { scopeProject = null }: { scopeProject?: string | null } = $props();
 
@@ -31,6 +35,28 @@
 	let slow = $state(false);
 	let params: SearchParams = {};
 	let justCreated = $state<JustCreated[]>([]);
+	let parsed = $state<SearchParams | null>(null);
+
+	// ---- tabs (design 06 §6.7): Wiki only when the person reads some wiki;
+	// asked once without `q` (the answer is about the caller only).
+	let wikiAvailable = $state<boolean | null>(null);
+	$effect(() => {
+		if (scopeProject) return;
+		api('GET /wiki/search', {}).then(
+			(r) => (wikiAvailable = r.available),
+			() => (wikiAvailable = false)
+		);
+	});
+	const wantWiki = $derived(!scopeProject && url.searchParams.get('tab') === 'wiki');
+	const tab = $derived(wantWiki && wikiAvailable !== false ? 'wiki' : 'issues');
+	const wq = $derived(parsed ? wikiQuery(parsed) : null);
+	function setTab(t: 'issues' | 'wiki') {
+		const u = new URL(url);
+		if (t === 'wiki') u.searchParams.set('tab', 'wiki');
+		else u.searchParams.delete('tab');
+		u.searchParams.delete('after');
+		go(u);
+	}
 
 	const FIELDS = ['key', 'subject', 'project', 'tracker', 'status', 'status_category', 'assignee', 'priority', 'is_private', 'updated_at'];
 
@@ -92,12 +118,16 @@
 	$effect(() => {
 		text = url.searchParams.get('q') ?? '';
 		const p = build(url);
+		parsed = p ? { ...p } : null;
 		if (!p) {
 			items = [];
 			result = null;
 			return;
 		}
 		params = p;
+		// The Wiki tab searches by itself; no issue search behind it. (Reads
+		// wikiAvailable only then, so its answer does not search issues twice.)
+		if (wantWiki && wikiAvailable !== false) return;
 		run();
 	});
 
@@ -232,82 +262,99 @@
 
 <svelte:head><title>搜尋・oxledger</title></svelte:head>
 <div class={scopeProject ? '' : 'page'}>
-	{#if !scopeProject}<h1>議題</h1>{/if}
+	{#if !scopeProject}<h1>{tab === 'wiki' ? 'Wiki' : '議題'}</h1>{/if}
 	<form class="inline-form" onsubmit={submit} style="margin:8px 0" role="search">
 		<input type="search" bind:value={text} placeholder={scopeProject ? `在 ${scopeProject} 搜尋：status:open 登入 Safari` : 'project:AUTH status:open 登入 Safari'} style="flex:1;min-width:240px" aria-label="查詢" data-testid="search-input" />
 		<button class="btn pri" type="submit">搜尋</button>
 	</form>
-	<div class="row" style="margin-bottom:10px">
-		{#each quick as f (f.key)}
-			<button class="btn sm" class:on={url.searchParams.get(f.key) === f.value} onclick={() => toggle(f.key, f.value)}>{f.label}</button>
-		{/each}
-		<span class="hint">語法：project: status: tracker: assignee: version:，其他字是全文。</span>
-		<span style="flex:1"></span>
-		<button class="btn sm" onclick={openEditor} disabled={!!syntax} data-testid="search-conditions">條件{where ? `（${chipList.length || '…'}）` : ''}</button>
-		{#if !syntax}<button class="btn sm" onclick={() => ((saving = { name: text.trim().slice(0, 60) || '新視圖' }), (saveError = null))} data-testid="save-as-view">存成視圖</button>{/if}
-	</div>
-	{#if where}
-		<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px" data-testid="search-chips">
-			{#each chipList as c, i (i)}<button class="fchip" onclick={openEditor}>{c}</button>{:else}<span class="hint">條件載入中…</span>{/each}
-			<button class="btn sm ghost" onclick={() => setWhere(null)} data-testid="search-clear-conditions">清除條件</button>
+	{#if !scopeProject && wikiAvailable}
+		<div class="tabs" role="tablist" aria-label="搜尋範圍" style="margin-bottom:10px" data-testid="search-tabs">
+			<button role="tab" class:on={tab === 'issues'} aria-selected={tab === 'issues'} onclick={() => setTab('issues')} data-testid="tab-issues">議題</button>
+			<button role="tab" class:on={tab === 'wiki'} aria-selected={tab === 'wiki'} onclick={() => setTab('wiki')} data-testid="tab-wiki">Wiki</button>
 		</div>
 	{/if}
-	<ErrorBox error={ffError} onaction={openEditor} />
-	{#if syntax}
-		<div class="err" role="alert" data-testid="syntax-error">
-			<b>查詢語法有誤（第 {syntax.position + 1} 個字）：{syntax.message}</b>
-			<div class="mono" style="margin-top:4px">{Array.from(text).slice(0, syntax.position).join('')}<mark>{Array.from(text)[syntax.position] ?? '␣'}</mark>{Array.from(text).slice(syntax.position + 1).join('')}</div>
-		</div>
-	{/if}
-	<ErrorBox {error} onaction={(a) => (a === 'narrow' ? openEditor() : run())} />
-	{#if loading && slow}
-		<div class="sync" data-testid="search-slow"><span class="spin"></span>搜尋中…（條件很多時可以縮小範圍：加上 project: 或 status:）</div>
-	{/if}
-	{#each justCreated as c (c.key)}
-		<div class="card p" data-testid="just-created">
-			<div class="row" style="gap:8px"><span class="chip c-prop">剛建立・同步中</span><a class="key" href="/issue/{c.key}">{c.key}</a><b>{c.subject}</b></div>
-			<p class="hint" style="margin:4px 0 0">你剛建立的單可能還沒進搜尋索引，或不符合目前的條件；單本身已經可以開啟。</p>
-		</div>
-	{/each}
-	{#if result?.outcome === 'search_lagging'}
-		<div class="card p" data-testid="lagging">
-			<b>剛建立・搜尋同步中</b>
-			<p class="muted" style="margin:4px 0;font-size:13px">剛寫入的內容還沒進搜尋索引；這不是寫入失敗，也不是「找不到」。單本身已經可以開啟。</p>
-			<button class="btn sm" onclick={() => run()}>再找一次</button>
-		</div>
-	{:else if result}
-		{#if result.truncated}
-			<div class="banner w" data-testid="truncated">結果太多，系統只看過前面一部分候選；可能還有更多相符的單。請加上條件縮小範圍。</div>
+	{#if tab === 'wiki'}
+		{#if syntax}
+			<div class="err" role="alert" data-testid="syntax-error">
+				<b>查詢語法有誤（第 {syntax.position + 1} 個字）：{syntax.message}</b>
+				<div class="mono" style="margin-top:4px">{Array.from(text).slice(0, syntax.position).join('')}<mark>{Array.from(text)[syntax.position] ?? '␣'}</mark>{Array.from(text).slice(syntax.position + 1).join('')}</div>
+			</div>
+		{:else if wq && wikiAvailable}
+			<WikiSearch q={wq.q} project={wq.project} ignored={wq.ignored} />
 		{/if}
-		{#each items as it (it.key)}
-			<div class="card" style="padding:8px 12px" data-testid="hit">
-				<div class="row" style="gap:8px">
-					<a class="key" href="/issue/{it.key}">{it.key}</a>
-					<b>{it.subject}</b>
-					{#if it.is_private}<span class="chip c-warn">私有</span>{/if}
-					<span class="chip c-dim">{it.status}</span>
-					{#if it.match}
-						<span class="hint">命中：{it.match.fields.map((f) => FIELD[f] ?? f).join('、')}</span>
-						{#if it.match.strength === 'fallback'}<span class="chip c-prop" title="只有個別字元或識別字片段相符" data-testid="fallback">部分字元相符</span>{/if}
+	{:else}
+		<div class="row" style="margin-bottom:10px">
+			{#each quick as f (f.key)}
+				<button class="btn sm" class:on={url.searchParams.get(f.key) === f.value} onclick={() => toggle(f.key, f.value)}>{f.label}</button>
+			{/each}
+			<span class="hint">語法：project: status: tracker: assignee: version:，其他字是全文。</span>
+			<span style="flex:1"></span>
+			<button class="btn sm" onclick={openEditor} disabled={!!syntax} data-testid="search-conditions">條件{where ? `（${chipList.length || '…'}）` : ''}</button>
+			{#if !syntax}<button class="btn sm" onclick={() => ((saving = { name: text.trim().slice(0, 60) || '新視圖' }), (saveError = null))} data-testid="save-as-view">存成視圖</button>{/if}
+		</div>
+		{#if where}
+			<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px" data-testid="search-chips">
+				{#each chipList as c, i (i)}<button class="fchip" onclick={openEditor}>{c}</button>{:else}<span class="hint">條件載入中…</span>{/each}
+				<button class="btn sm ghost" onclick={() => setWhere(null)} data-testid="search-clear-conditions">清除條件</button>
+			</div>
+		{/if}
+		<ErrorBox error={ffError} onaction={openEditor} />
+		{#if syntax}
+			<div class="err" role="alert" data-testid="syntax-error">
+				<b>查詢語法有誤（第 {syntax.position + 1} 個字）：{syntax.message}</b>
+				<div class="mono" style="margin-top:4px">{Array.from(text).slice(0, syntax.position).join('')}<mark>{Array.from(text)[syntax.position] ?? '␣'}</mark>{Array.from(text).slice(syntax.position + 1).join('')}</div>
+			</div>
+		{/if}
+		<ErrorBox {error} onaction={(a) => (a === 'narrow' ? openEditor() : run())} />
+		{#if loading && slow}
+			<div class="sync" data-testid="search-slow"><span class="spin"></span>搜尋中…（條件很多時可以縮小範圍：加上 project: 或 status:）</div>
+		{/if}
+		{#each justCreated as c (c.key)}
+			<div class="card p" data-testid="just-created">
+				<div class="row" style="gap:8px"><span class="chip c-prop">剛建立・同步中</span><a class="key" href="/issue/{c.key}">{c.key}</a><b>{c.subject}</b></div>
+				<p class="hint" style="margin:4px 0 0">你剛建立的單可能還沒進搜尋索引，或不符合目前的條件；單本身已經可以開啟。</p>
+			</div>
+		{/each}
+		{#if result?.outcome === 'search_lagging'}
+			<div class="card p" data-testid="lagging">
+				<b>剛建立・搜尋同步中</b>
+				<p class="muted" style="margin:4px 0;font-size:13px">剛寫入的內容還沒進搜尋索引；這不是寫入失敗，也不是「找不到」。單本身已經可以開啟。</p>
+				<button class="btn sm" onclick={() => run()}>再找一次</button>
+			</div>
+		{:else if result}
+			{#if result.truncated}
+				<div class="banner w" data-testid="truncated">結果太多，系統只看過前面一部分候選；可能還有更多相符的單。請加上條件縮小範圍。</div>
+			{/if}
+			{#each items as it (it.key)}
+				<div class="card" style="padding:8px 12px" data-testid="hit">
+					<div class="row" style="gap:8px">
+						<a class="key" href="/issue/{it.key}">{it.key}</a>
+						<b>{it.subject}</b>
+						{#if it.is_private}<span class="chip c-warn">私有</span>{/if}
+						<span class="chip c-dim">{it.status}</span>
+						{#if it.match}
+							<span class="hint">命中：{it.match.fields.map((f) => FIELD[f] ?? f).join('、')}</span>
+							{#if it.match.strength === 'fallback'}<span class="chip c-prop" title="只有個別字元或識別字片段相符" data-testid="fallback">部分字元相符</span>{/if}
+						{/if}
+					</div>
+					{#each it.evidence as ev (ev.citation_id)}
+						<div class="hint" style="margin-top:3px">
+							<span class="k">{FIELD[ev.field] ?? ev.field}</span>
+							{#each splitHighlights(ev.text, ev.highlights) as part, i (i)}
+								{#if part.mark}<mark class:f={part.mark === 'fallback'}>{part.text}</mark>{:else}{part.text}{/if}
+							{/each}
+						</div>
+					{/each}
+					{#if !it.match}
+						<div class="hint">{it.project}・{it.tracker}・指派：{it.assignee ?? '—'}{it.priority ? `・${it.priority}` : ''}</div>
 					{/if}
 				</div>
-				{#each it.evidence as ev (ev.citation_id)}
-					<div class="hint" style="margin-top:3px">
-						<span class="k">{FIELD[ev.field] ?? ev.field}</span>
-						{#each splitHighlights(ev.text, ev.highlights) as part, i (i)}
-							{#if part.mark}<mark class:f={part.mark === 'fallback'}>{part.text}</mark>{:else}{part.text}{/if}
-						{/each}
-					</div>
-				{/each}
-				{#if !it.match}
-					<div class="hint">{it.project}・{it.tracker}・指派：{it.assignee ?? '—'}{it.priority ? `・${it.priority}` : ''}</div>
-				{/if}
-			</div>
-		{:else}
-			<div class="empty">沒有符合的議題。</div>
-		{/each}
-		{#if result.next_cursor}
-			<div class="pager"><button class="btn" onclick={() => run(true)} disabled={loading} data-testid="more">還有更多</button><span class="hint">不顯示總數</span></div>
+			{:else}
+				<div class="empty">沒有符合的議題。</div>
+			{/each}
+			{#if result.next_cursor}
+				<div class="pager"><button class="btn" onclick={() => run(true)} disabled={loading} data-testid="more">還有更多</button><span class="hint">不顯示總數</span></div>
+			{/if}
 		{/if}
 	{/if}
 </div>

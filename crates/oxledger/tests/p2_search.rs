@@ -27,6 +27,7 @@ fn app_with(w: &World, index: SearchIndex) -> Arc<App> {
     Arc::new(App {
         pool: w.pool.clone(),
         index,
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     })
 }
 

@@ -437,6 +437,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(redact_setting_event),
         )
         .route("/time-entries/{id}/redact", post(redact_time_entry))
+        .route("/wiki/search", get(wiki_search))
         .route("/projects/{id}/wiki", get(wiki_index))
         .route("/projects/{id}/wiki/pages/{title}", get(wiki_page))
         .route(
@@ -2694,6 +2695,32 @@ async fn wiki_page(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(crate::wiki::page(&st.app, ctx, &id, &title).await?))
+}
+
+async fn wiki_search(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let wait_ms = match int_param(&q, "wait_ms")? {
+        None => None,
+        Some(v) => Some(u32::try_from(v).map_err(|_| {
+            ApiFailure(api(
+                ErrorCode::InvalidArgument,
+                format!("wait_ms {v}: use 0..=2000"),
+            ))
+        })?),
+    };
+    let p = crate::wiki_search::WikiSearchParams {
+        q: q.get("q").cloned(),
+        project: q.get("project").cloned(),
+        cursor: q.get("cursor").cloned(),
+        consistent_after: q.get("consistent_after").cloned(),
+        wait_ms,
+        on_lag: q.get("on_lag").cloned(),
+    };
+    Ok(ok(crate::wiki_search::search(&st.app, ctx, p).await?))
 }
 
 async fn wiki_versions(

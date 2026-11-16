@@ -408,6 +408,119 @@ pub async fn project_perms(
     }))
 }
 
+/// [`project_perms`] for each of `projects` in a fixed number of queries,
+/// whatever the number of projects: the same roles (admins: every role;
+/// else the member roles when the actor or one of their groups is a member,
+/// else the built-in Non member / Anonymous role of a public project),
+/// with only the permissions in `only` loaded (the caller asks about no
+/// others). A project that does not exist is missing from the map.
+pub async fn projects_perms(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    projects: &[Uuid],
+    only: &[&str],
+) -> Result<BTreeMap<Uuid, ProjectPerms>> {
+    let rows: Vec<(Uuid, String, bool, bool)> = sqlx::query_as(
+        "SELECT p.id, p.status, p.is_public,
+                EXISTS (SELECT 1 FROM enabled_modules m WHERE m.project_id = p.id AND m.module = $2)
+         FROM projects p WHERE p.id = ANY($1)",
+    )
+    .bind(projects)
+    .bind(ISSUE_MODULE)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut project_roles: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+    if actor.is_admin {
+        let all: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM roles")
+            .fetch_all(&mut *conn)
+            .await?;
+        for (p, ..) in &rows {
+            project_roles.insert(*p, all.iter().copied().collect());
+        }
+    } else {
+        // A member row without roles still makes the project a member's
+        // (no built-in role), as in `project_perms`.
+        let member: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+            "SELECT DISTINCT m.project_id, mr.role_id
+             FROM members m LEFT JOIN member_roles mr ON mr.member_id = m.id
+             WHERE m.project_id = ANY($1) AND m.principal_id = ANY($2)",
+        )
+        .bind(projects)
+        .bind(&actor.principal_ids)
+        .fetch_all(&mut *conn)
+        .await?;
+        for (p, r) in member {
+            let roles = project_roles.entry(p).or_default();
+            roles.extend(r);
+        }
+        let builtin: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM roles WHERE builtin = $1")
+            .bind(if actor.user_id.is_some() {
+                "non_member"
+            } else {
+                "anonymous"
+            })
+            .fetch_all(&mut *conn)
+            .await?;
+        for (p, _, is_public, _) in &rows {
+            if *is_public && !project_roles.contains_key(p) {
+                project_roles.insert(*p, builtin.iter().copied().collect());
+            }
+        }
+    }
+    let role_ids: BTreeSet<Uuid> = project_roles.values().flatten().copied().collect();
+    let role_ids: Vec<Uuid> = role_ids.into_iter().collect();
+    let only: Vec<String> = only.iter().map(|p| p.to_string()).collect();
+    let perm_rows: Vec<(Uuid, String, bool, Vec<Uuid>)> = sqlx::query_as(
+        "SELECT rp.role_id, rp.permission, rp.all_trackers,
+                ARRAY(SELECT t.tracker_id FROM role_permission_trackers t
+                      WHERE t.role_id = rp.role_id AND t.permission = rp.permission)
+         FROM role_permissions rp WHERE rp.role_id = ANY($1) AND rp.permission = ANY($2)",
+    )
+    .bind(&role_ids)
+    .bind(&only)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut perms: BTreeMap<Uuid, RolePerms> = role_ids
+        .iter()
+        .map(|id| {
+            (
+                *id,
+                RolePerms {
+                    id: *id,
+                    perms: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+    for (role, perm, all, ts) in perm_rows {
+        if let Some(r) = perms.get_mut(&role) {
+            r.perms
+                .insert(perm, (!all).then(|| ts.into_iter().collect()));
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(|(id, status, _, issue_module)| {
+            let roles = project_roles
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .filter_map(|r| perms.get(r).cloned())
+                .collect();
+            (
+                id,
+                ProjectPerms {
+                    project_id: id,
+                    status,
+                    issue_module,
+                    admin: actor.is_admin,
+                    roles,
+                },
+            )
+        })
+        .collect())
+}
+
 /// What the signed-in person may do in one project, for the SPA to offer
 /// the right buttons (P3 gap G46). The server checks again on every write;
 /// these flags only decide what to show.

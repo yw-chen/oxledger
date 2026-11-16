@@ -520,6 +520,7 @@ async fn s3_permissions() {
     let app = Arc::new(App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     });
     let as_ = AuthContext::test_user;
     let schema = |who: AuthContext, p: &str, t: &str| {

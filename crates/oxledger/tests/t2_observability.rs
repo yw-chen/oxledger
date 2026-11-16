@@ -99,6 +99,7 @@ fn app(pool: &sqlx::PgPool) -> Arc<App> {
     Arc::new(App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     })
 }
 

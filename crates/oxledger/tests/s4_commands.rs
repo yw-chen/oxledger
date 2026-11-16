@@ -469,6 +469,7 @@ async fn s4_commands() {
     let app = App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     };
     let outbox = |issue: Uuid| {
         let pool = pool.clone();

@@ -195,6 +195,7 @@ async fn s0_scope_in_transaction_active_check_and_error_codes() {
     let app = App {
         pool: pool.clone(),
         index: SearchIndex::open(None).unwrap(),
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     };
     app.index.sync_all(&pool).await.unwrap();
     let root = AuthContext::test_user(admin);

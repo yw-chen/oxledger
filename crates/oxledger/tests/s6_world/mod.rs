@@ -240,6 +240,7 @@ impl World {
         let app = Arc::new(App {
             pool: pool.clone(),
             index: SearchIndex::open(None).unwrap(),
+            wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
         });
         let policy = SessionPolicy::default();
         let alice_ctx = sign_in(pool, &policy, "alice").await;

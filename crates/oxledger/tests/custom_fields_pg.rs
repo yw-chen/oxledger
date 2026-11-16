@@ -652,6 +652,7 @@ async fn custom_field_filters_match_reference_on_pg() {
     let app = App {
         pool: pool.clone(),
         index,
+        wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
     };
 
     let viewers = [None, Some(w.admin), Some(w.member), Some(w.outsider)];

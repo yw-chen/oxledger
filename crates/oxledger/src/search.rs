@@ -43,7 +43,7 @@ use tantivy::{
 };
 use uuid::Uuid;
 
-const TOKENIZER: &str = "cjk_bigram";
+pub(crate) const TOKENIZER: &str = "cjk_bigram";
 /// Waiters per caller and in all (design 03 §4.3); beyond them a search with
 /// a token reports lag at once.
 pub const MAX_WAITERS_PER_CALLER: usize = 4;
@@ -51,7 +51,7 @@ pub const MAX_WAITERS: usize = 1000;
 /// An outbox row as a sync round reads it: (id, xid8 as text, issue id).
 type OutboxEvent = (i64, String, Uuid);
 /// Outbox rows per sync round (03 §4.2).
-const SYNC_BATCH: i64 = 500;
+pub(crate) const SYNC_BATCH: i64 = 500;
 const NONE_TERM: &str = "none";
 
 // ---------------------------------------------------------------- tokenizer
@@ -362,7 +362,7 @@ pub const QUERY_SEMANTICS_VERSION: u32 = 2;
 /// still serves, with the old query semantics, until a blue-green rebuild
 /// replaces it (03 §4.8: "舊 generation 必須繼續用舊版的查詢").
 const LEGACY_VERSIONS: (u32, u32, u32) = (2, 1, 1);
-const PAYLOAD_V: u32 = 1;
+pub(crate) const PAYLOAD_V: u32 = 1;
 /// Field weights (design 05 §3.9; `key` and `cf_text` are inferences to be
 /// calibrated by E2).
 pub const KEY_WEIGHT: f32 = 5.0;
@@ -424,15 +424,15 @@ impl Layout {
     }
 }
 /// Serialises lease registration, retirement and the outbox GC bound (03 §4.8 step 1, §4.9).
-const LEASE_LOCK: i64 = 0x6f78_7365_6172_6368; // "oxsearch"
+pub(crate) const LEASE_LOCK: i64 = 0x6f78_7365_6172_6368; // "oxsearch"
 /// Issues per page of the snapshot scan.
-const BASELINE_PAGE: i64 = 2000;
+pub(crate) const BASELINE_PAGE: i64 = 2000;
 /// A rebuilt generation stays on disk this long after the switch (03 §4.8 step 7).
-const RETAIN_HOURS: i32 = 24;
+pub(crate) const RETAIN_HOURS: i32 = 24;
 /// Durable payload for frontier-only progress at most this often (03 §4.2).
-const DURABLE_INTERVAL: Duration = Duration::from_secs(10);
+pub(crate) const DURABLE_INTERVAL: Duration = Duration::from_secs(10);
 /// Issues the switch health check samples (03 §4.8 step 6).
-const HEALTH_SAMPLE: i64 = 200;
+pub(crate) const HEALTH_SAMPLE: i64 = 200;
 
 #[derive(Clone, Copy)]
 struct Fields {
@@ -753,50 +753,84 @@ pub struct Cursor {
 }
 
 /// The commit payload (03 §4.2 step 5, §4.8): what this generation durably holds.
+/// (schema_version, analyzer_version, query_semantics_version) of a payload.
+pub(crate) type Versions = (u32, u32, u32);
+
+/// The same payload format serves the wiki index (`wiki_search`), with
+/// its own versions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct Payload {
-    v: u32,
-    data_epoch: Uuid,
-    generation: Uuid,
-    schema_version: u32,
-    analyzer_version: u32,
-    query_semantics_version: u32,
+pub(crate) struct Payload {
+    pub(crate) v: u32,
+    pub(crate) data_epoch: Uuid,
+    pub(crate) generation: Uuid,
+    pub(crate) schema_version: u32,
+    pub(crate) analyzer_version: u32,
+    pub(crate) query_semantics_version: u32,
     /// xid8 as decimal strings (JSON numbers lose precision past 2^53 in JS).
-    cursor_xid: String,
-    cursor_id: i64,
-    complete_before_xid: String,
+    pub(crate) cursor_xid: String,
+    pub(crate) cursor_id: i64,
+    pub(crate) complete_before_xid: String,
 }
 
 impl Payload {
-    /// A payload this build can serve: the current versions, or the legacy
-    /// ones (served with the legacy query until a rebuild replaces it).
-    fn parse(s: &str) -> Option<(Payload, Layout, Cursor, u64)> {
+    /// A payload for `generation` at cursor `c` and frontier `f`.
+    pub(crate) fn new(
+        data_epoch: Uuid,
+        generation: Uuid,
+        versions: (u32, u32, u32),
+        c: Cursor,
+        f: u64,
+    ) -> Payload {
+        Payload {
+            v: PAYLOAD_V,
+            data_epoch,
+            generation,
+            schema_version: versions.0,
+            analyzer_version: versions.1,
+            query_semantics_version: versions.2,
+            cursor_xid: c.xid.to_string(),
+            cursor_id: c.id,
+            complete_before_xid: f.to_string(),
+        }
+    }
+
+    /// The payload in `s` if it is of this format, with its versions,
+    /// cursor and frontier.
+    pub(crate) fn parse_raw(s: &str) -> Option<(Payload, Versions, Cursor, u64)> {
         let p: Payload = serde_json::from_str(s).ok()?;
         if p.v != PAYLOAD_V {
             return None;
         }
-        let layout = Layout::of((
-            p.schema_version,
-            p.analyzer_version,
-            p.query_semantics_version,
-        ))?;
         let c = Cursor {
             xid: p.cursor_xid.parse().ok()?,
             id: p.cursor_id,
         };
         let f = p.complete_before_xid.parse().ok()?;
+        let versions = (
+            p.schema_version,
+            p.analyzer_version,
+            p.query_semantics_version,
+        );
+        Some((p, versions, c, f))
+    }
+
+    /// A payload this build can serve: the current versions, or the legacy
+    /// ones (served with the legacy query until a rebuild replaces it).
+    fn parse(s: &str) -> Option<(Payload, Layout, Cursor, u64)> {
+        let (p, versions, c, f) = Payload::parse_raw(s)?;
+        let layout = Layout::of(versions)?;
         Some((p, layout, c, f))
     }
 }
 
-struct GenState {
-    epoch: Uuid,
+pub(crate) struct GenState {
+    pub(crate) epoch: Uuid,
     /// Committed replay position (in the last durable payload).
-    cursor: Cursor,
+    pub(crate) cursor: Cursor,
     /// Exclusive frontier of what the reader shows (may run ahead of `durable_f`).
-    f: u64,
-    durable_f: u64,
-    durable_at: Instant,
+    pub(crate) f: u64,
+    pub(crate) durable_f: u64,
+    pub(crate) durable_at: Instant,
 }
 
 /// One index generation (03 §4.8): its own directory, writer and progress.
@@ -809,12 +843,12 @@ struct Gen {
     st: Mutex<GenState>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
     m.lock()
         .map_err(|_| anyhow::anyhow!("search index lock poisoned"))
 }
 
-fn register_tokenizer(index: &Index) {
+pub(crate) fn register_tokenizer(index: &Index) {
     index
         .tokenizers()
         .register(TOKENIZER, TextAnalyzer::builder(CjkBigram).build());
@@ -828,7 +862,7 @@ fn register_tokenizer(index: &Index) {
 
 impl Gen {
     fn consumer(&self) -> String {
-        format!("search@{}", self.id)
+        format!("{CONSUMER_PREFIX}{}", self.id)
     }
 
     fn layout(&self) -> Layout {
@@ -943,18 +977,13 @@ impl Gen {
     }
 
     fn payload(&self, epoch: Uuid, c: Cursor, f: u64) -> String {
-        let (schema_version, analyzer_version, query_semantics_version) = self.layout().versions();
-        serde_json::to_string(&Payload {
-            v: PAYLOAD_V,
-            data_epoch: epoch,
-            generation: self.id,
-            schema_version,
-            analyzer_version,
-            query_semantics_version,
-            cursor_xid: c.xid.to_string(),
-            cursor_id: c.id,
-            complete_before_xid: f.to_string(),
-        })
+        serde_json::to_string(&Payload::new(
+            epoch,
+            self.id,
+            self.layout().versions(),
+            c,
+            f,
+        ))
         .expect("payload serialises")
     }
 
@@ -1346,14 +1375,14 @@ pub enum Wait {
 
 /// Releases a waiter slot however the wait ends (also on cancellation).
 struct Slot<'a> {
-    index: &'a SearchIndex,
+    gate: &'a FrontierGate,
     who: Option<Uuid>,
 }
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        self.index.waiters.fetch_sub(1, Ordering::SeqCst);
-        if let Ok(mut m) = self.index.per_caller.lock()
+        self.gate.waiters.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(mut m) = self.gate.per_caller.lock()
             && let Some(n) = m.get_mut(&self.who)
         {
             *n -= 1;
@@ -1361,6 +1390,88 @@ impl Drop for Slot<'_> {
                 m.remove(&self.who);
             }
         }
+    }
+}
+
+/// The published exclusive frontier F of one index and the searches that
+/// wait for it (03 §4.1, §4.4). The issue index and the wiki index
+/// (`wiki_search`) each have one, with the same waiter limits.
+pub(crate) struct FrontierGate {
+    /// Every transaction with xid < F has its events applied to the
+    /// current view. Never moves backwards, also across a switch.
+    frontier: tokio::sync::watch::Sender<u64>,
+    waiters: AtomicUsize,
+    per_caller: Mutex<HashMap<Option<Uuid>, usize>>,
+}
+
+impl Default for FrontierGate {
+    fn default() -> Self {
+        FrontierGate {
+            frontier: tokio::sync::watch::Sender::new(0),
+            waiters: AtomicUsize::new(0),
+            per_caller: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl FrontierGate {
+    pub(crate) fn frontier(&self) -> u64 {
+        *self.frontier.borrow()
+    }
+
+    /// Moves F to `f` if that is ahead (waiters wake up).
+    pub(crate) fn advance(&self, f: u64) {
+        self.frontier.send_if_modified(|cur| {
+            if f > *cur {
+                *cur = f;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    fn take_slot(&self, who: Option<Uuid>) -> Option<Slot<'_>> {
+        let mut m = self.per_caller.lock().ok()?;
+        let mine = m.get(&who).copied().unwrap_or(0);
+        if mine >= MAX_WAITERS_PER_CALLER {
+            return None;
+        }
+        if self.waiters.fetch_add(1, Ordering::SeqCst) >= MAX_WAITERS {
+            self.waiters.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        *m.entry(who).or_insert(0) += 1;
+        Some(Slot { gate: self, who })
+    }
+
+    /// Waits at most `wait` until `x < F` (03 §4.4). All waiters share one
+    /// `watch` notification; over the waiter limits it reports lag at once.
+    pub(crate) async fn wait_for(&self, who: Option<Uuid>, x: u64, wait: Duration) -> Wait {
+        let start = Instant::now();
+        let ms = |s: Instant| s.elapsed().as_millis() as u64;
+        if x < self.frontier() {
+            return Wait::Satisfied { waited_ms: 0 };
+        }
+        if wait.is_zero() {
+            return Wait::Lagging { waited_ms: 0 };
+        }
+        let Some(_slot) = self.take_slot(who) else {
+            return Wait::Lagging { waited_ms: 0 };
+        };
+        let mut rx = self.frontier.subscribe();
+        match tokio::time::timeout(wait, rx.wait_for(|f| x < *f)).await {
+            Ok(Ok(_)) => Wait::Satisfied {
+                waited_ms: ms(start),
+            },
+            _ => Wait::Lagging {
+                waited_ms: ms(start),
+            },
+        }
+    }
+
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiters.load(Ordering::SeqCst)
     }
 }
 
@@ -1426,12 +1537,8 @@ pub struct SearchIndex {
     /// A generation being rebuilt (baseline done, catching up).
     pending: Mutex<Option<Arc<Gen>>>,
     view: RwLock<Option<Arc<SearchView>>>,
-    /// The published exclusive frontier F (03 §4.1): every transaction with
-    /// xid < F has its search events applied to the current view. Never
-    /// moves backwards, also across a switch.
-    frontier: tokio::sync::watch::Sender<u64>,
-    waiters: AtomicUsize,
-    per_caller: Mutex<HashMap<Option<Uuid>, usize>>,
+    /// The published exclusive frontier F (03 §4.1) and its waiters.
+    gate: FrontierGate,
     /// One round at a time (03 §4.2 has a single writer per generation);
     /// the switch also runs under it, so the old generation cannot move
     /// while the new one is compared with it.
@@ -1465,9 +1572,7 @@ impl SearchIndex {
             loaded: Mutex::new(loaded),
             pending: Mutex::new(None),
             view: RwLock::new(None),
-            frontier: tokio::sync::watch::Sender::new(0),
-            waiters: AtomicUsize::new(0),
-            per_caller: Mutex::new(HashMap::new()),
+            gate: FrontierGate::default(),
             round: tokio::sync::Mutex::new(()),
             rebuilding: tokio::sync::Mutex::new(()),
             durable_interval: Mutex::new(DURABLE_INTERVAL),
@@ -1527,7 +1632,7 @@ impl SearchIndex {
 
     /// The published frontier F.
     pub fn frontier(&self) -> u64 {
-        *self.frontier.borrow()
+        self.gate.frontier()
     }
 
     /// The view searches read now; `None` while no generation can serve
@@ -1568,60 +1673,20 @@ impl SearchIndex {
             .view
             .write()
             .map_err(|_| anyhow::anyhow!("view lock poisoned"))? = Some(v);
-        self.frontier.send_if_modified(|cur| {
-            if f > *cur {
-                *cur = f;
-                true
-            } else {
-                false
-            }
-        });
+        self.gate.advance(f);
         self.metrics.published(f);
         Ok(())
-    }
-
-    fn take_slot(&self, who: Option<Uuid>) -> Option<Slot<'_>> {
-        let mut m = self.per_caller.lock().ok()?;
-        let mine = m.get(&who).copied().unwrap_or(0);
-        if mine >= MAX_WAITERS_PER_CALLER {
-            return None;
-        }
-        if self.waiters.fetch_add(1, Ordering::SeqCst) >= MAX_WAITERS {
-            self.waiters.fetch_sub(1, Ordering::SeqCst);
-            return None;
-        }
-        *m.entry(who).or_insert(0) += 1;
-        Some(Slot { index: self, who })
     }
 
     /// Waits at most `wait` until `x < F` (03 §4.4). All waiters share one
     /// `watch` notification; over the waiter limits it reports lag at once.
     pub async fn wait_for(&self, who: Option<Uuid>, x: u64, wait: Duration) -> Wait {
-        let start = Instant::now();
-        let ms = |s: Instant| s.elapsed().as_millis() as u64;
-        if x < self.frontier() {
-            return Wait::Satisfied { waited_ms: 0 };
-        }
-        if wait.is_zero() {
-            return Wait::Lagging { waited_ms: 0 };
-        }
-        let Some(_slot) = self.take_slot(who) else {
-            return Wait::Lagging { waited_ms: 0 };
-        };
-        let mut rx = self.frontier.subscribe();
-        match tokio::time::timeout(wait, rx.wait_for(|f| x < *f)).await {
-            Ok(Ok(_)) => Wait::Satisfied {
-                waited_ms: ms(start),
-            },
-            _ => Wait::Lagging {
-                waited_ms: ms(start),
-            },
-        }
+        self.gate.wait_for(who, x, wait).await
     }
 
     /// Tests: waiters currently holding a slot.
     pub fn waiting(&self) -> usize {
-        self.waiters.load(Ordering::SeqCst)
+        self.gate.waiting()
     }
 
     /// Tests: sync until every outbox row written so far is indexed.
@@ -1765,43 +1830,8 @@ impl SearchIndex {
     /// search generation (an interrupted switch) is retained, and leftover
     /// `bootstrapping` rows (an interrupted rebuild) retire.
     async fn mark_active(&self, pool: &PgPool, g: &Gen, c: Cursor) -> Result<()> {
-        let mut tx = pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(LEASE_LOCK)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "UPDATE outbox_cursors SET state = 'retained', updated_at = now(),
-                    retained_until = now() + make_interval(hours => $2)
-             WHERE consumer LIKE 'search@%' AND consumer <> $1 AND state = 'active'",
-        )
-        .bind(g.consumer())
-        .bind(RETAIN_HOURS)
-        .execute(&mut *tx)
-        .await?;
         let pending = lock(&self.pending)?.as_ref().map(|p| p.consumer());
-        sqlx::query(
-            "UPDATE outbox_cursors SET state = 'retired', updated_at = now()
-             WHERE consumer LIKE 'search@%' AND consumer <> $1 AND state = 'bootstrapping'
-               AND ($2::text IS NULL OR consumer <> $2)",
-        )
-        .bind(g.consumer())
-        .bind(pending)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO outbox_cursors (consumer, last_xid, last_id, state)
-             VALUES ($1, $2::text::xid8, $3, 'active')
-             ON CONFLICT (consumer) DO UPDATE SET last_xid = EXCLUDED.last_xid,
-                 last_id = EXCLUDED.last_id, state = 'active', retained_until = NULL, updated_at = now()",
-        )
-        .bind(g.consumer())
-        .bind(c.xid.to_string())
-        .bind(c.id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
+        mark_active_consumer(pool, CONSUMER_PREFIX, &g.consumer(), pending, c).await
     }
 
     /// One 03 §4.2 round on `gen`; `serve` publishes the result.
@@ -1928,23 +1958,8 @@ impl SearchIndex {
             .fetch_one(pool)
             .await?;
         let g = Gen::create(self.root.as_deref(), epoch, layout)?;
-        // 1. The lease, before the snapshot: the GC sees it and keeps every
-        //    row from the slowest live consumer on.
-        let mut tx = pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(LEASE_LOCK)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "INSERT INTO outbox_cursors (consumer, last_xid, last_id, state)
-             VALUES ($1, COALESCE((SELECT last_xid FROM outbox_cursors
-                                   WHERE state IN ('active', 'bootstrapping', 'retained')
-                                   ORDER BY last_xid LIMIT 1), '0'::xid8), 0, 'bootstrapping')",
-        )
-        .bind(g.consumer())
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
+        // 1. The lease, before the snapshot.
+        lease_consumer(pool, &g.consumer()).await?;
         let r = self.scan_snapshot(pool, &g).await;
         match r {
             Ok(()) => Ok(g),
@@ -2035,19 +2050,7 @@ impl SearchIndex {
     /// A failed rebuild: the lease retires (stops holding back the GC) and
     /// the directory goes.
     async fn retire(&self, pool: &PgPool, g: &Gen) {
-        let r = sqlx::query(
-            "UPDATE outbox_cursors SET state = 'retired', retained_until = NULL, updated_at = now()
-             WHERE consumer = $1",
-        )
-        .bind(g.consumer())
-        .execute(pool)
-        .await;
-        if let Err(e) = r {
-            tracing::warn!("retiring search generation {}: {e:#}", g.id);
-        }
-        if let Some(d) = &g.dir {
-            let _ = std::fs::remove_dir_all(d);
-        }
+        retire_consumer(pool, &g.consumer(), g.dir.as_deref()).await;
     }
 
     /// Blue-green rebuild (03 §4.8): the serving generation keeps serving
@@ -2207,66 +2210,182 @@ impl SearchIndex {
     /// Outbox GC (03 §4.9) and retained generations past their window
     /// (§4.8 step 7). Returns (outbox rows deleted, generations removed).
     pub async fn gc(&self, pool: &PgPool) -> Result<(u64, usize)> {
-        let mut tx = pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(LEASE_LOCK)
-            .execute(&mut *tx)
-            .await?;
-        let expired: Vec<String> = sqlx::query_scalar(
-            "UPDATE outbox_cursors SET state = 'retired', retained_until = NULL, updated_at = now()
-             WHERE consumer LIKE 'search@%' AND state = 'retained' AND retained_until < now()
-             RETURNING consumer",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-        // Only durable progress counts (PostgreSQL's cursor trails the
-        // payload); no consumer at all means nothing may go.
-        let deleted = sqlx::query(
-            "WITH b AS (SELECT last_xid FROM outbox_cursors
-                        WHERE state IN ('active', 'bootstrapping', 'retained')
-                        ORDER BY last_xid LIMIT 1)
-             DELETE FROM outbox o USING b
-             WHERE o.xid < b.last_xid AND o.created_at < clock_timestamp() - interval '1 hour'",
-        )
+        let live: Vec<Uuid> = [
+            self.generation(),
+            lock(&self.pending)?.as_ref().map(|g| g.id),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        gc_generations(pool, CONSUMER_PREFIX, self.root.as_deref(), &live).await
+    }
+}
+
+/// Consumer names of issue index generations: `search@<generation>`.
+const CONSUMER_PREFIX: &str = "search@";
+
+// ------------------------------------------------- generation coordination
+//
+// The `outbox_cursors` side of a generation (03 §4.8–4.9, 0018), shared by
+// the issue index (`search@<uuid>`) and the wiki index (`wiki@<uuid>`,
+// design 06 §3.14, B-49). Each index only touches its own prefix; the
+// outbox GC bound is every live consumer of any kind.
+
+/// 03 §4.8 step 1: registers `consumer` as `bootstrapping` before its
+/// snapshot, at the slowest live consumer's cursor, so the GC keeps every
+/// row the new generation may replay.
+pub(crate) async fn lease_consumer(pool: &PgPool, consumer: &str) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(LEASE_LOCK)
         .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        let retired: Vec<String> = sqlx::query_scalar(
-            "DELETE FROM outbox_cursors WHERE consumer LIKE 'search@%' AND state = 'retired'
-             RETURNING consumer",
-        )
-        .fetch_all(&mut *tx)
         .await?;
-        tx.commit().await?;
-        let mut removed = 0;
-        if let Some(root) = &self.root {
-            let live: Vec<Uuid> = [
-                self.generation(),
-                lock(&self.pending)?.as_ref().map(|g| g.id),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            for c in retired.iter().chain(expired.iter()) {
-                if let Some(id) = c
-                    .strip_prefix("search@")
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                    && !live.contains(&id)
-                {
-                    let d = root.join(format!("gen-{id}"));
-                    if d.exists() && std::fs::remove_dir_all(&d).is_ok() {
-                        removed += 1;
-                    }
+    sqlx::query(
+        "INSERT INTO outbox_cursors (consumer, last_xid, last_id, state)
+         VALUES ($1, COALESCE((SELECT last_xid FROM outbox_cursors
+                               WHERE state IN ('active', 'bootstrapping', 'retained')
+                               ORDER BY last_xid LIMIT 1), '0'::xid8), 0, 'bootstrapping')",
+    )
+    .bind(consumer)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `consumer` becomes `active` at `c`; any other active consumer with the
+/// same `prefix` (an interrupted switch) is retained, and leftover
+/// `bootstrapping` ones of the prefix (an interrupted rebuild) retire,
+/// except `pending` (a rebuild in progress).
+pub(crate) async fn mark_active_consumer(
+    pool: &PgPool,
+    prefix: &str,
+    consumer: &str,
+    pending: Option<String>,
+    c: Cursor,
+) -> Result<()> {
+    let like = format!("{prefix}%");
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(LEASE_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE outbox_cursors SET state = 'retained', updated_at = now(),
+                retained_until = now() + make_interval(hours => $2)
+         WHERE consumer LIKE $3 AND consumer <> $1 AND state = 'active'",
+    )
+    .bind(consumer)
+    .bind(RETAIN_HOURS)
+    .bind(&like)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE outbox_cursors SET state = 'retired', updated_at = now()
+         WHERE consumer LIKE $3 AND consumer <> $1 AND state = 'bootstrapping'
+           AND ($2::text IS NULL OR consumer <> $2)",
+    )
+    .bind(consumer)
+    .bind(pending)
+    .bind(&like)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO outbox_cursors (consumer, last_xid, last_id, state)
+         VALUES ($1, $2::text::xid8, $3, 'active')
+         ON CONFLICT (consumer) DO UPDATE SET last_xid = EXCLUDED.last_xid,
+             last_id = EXCLUDED.last_id, state = 'active', retained_until = NULL, updated_at = now()",
+    )
+    .bind(consumer)
+    .bind(c.xid.to_string())
+    .bind(c.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A failed rebuild: the lease retires (stops holding back the GC) and
+/// the directory goes.
+pub(crate) async fn retire_consumer(pool: &PgPool, consumer: &str, dir: Option<&Path>) {
+    let r = sqlx::query(
+        "UPDATE outbox_cursors SET state = 'retired', retained_until = NULL, updated_at = now()
+         WHERE consumer = $1",
+    )
+    .bind(consumer)
+    .execute(pool)
+    .await;
+    if let Err(e) = r {
+        tracing::warn!("retiring {consumer}: {e:#}");
+    }
+    if let Some(d) = dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// Outbox GC (03 §4.9) and the `prefix` generations past their window
+/// (§4.8 step 7): retained ones expire, retired ones are removed with
+/// their directories under `root` (except `live`). Returns (outbox rows
+/// deleted, generations removed).
+pub(crate) async fn gc_generations(
+    pool: &PgPool,
+    prefix: &str,
+    root: Option<&Path>,
+    live: &[Uuid],
+) -> Result<(u64, usize)> {
+    let like = format!("{prefix}%");
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(LEASE_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let expired: Vec<String> = sqlx::query_scalar(
+        "UPDATE outbox_cursors SET state = 'retired', retained_until = NULL, updated_at = now()
+         WHERE consumer LIKE $1 AND state = 'retained' AND retained_until < now()
+         RETURNING consumer",
+    )
+    .bind(&like)
+    .fetch_all(&mut *tx)
+    .await?;
+    // Only durable progress counts (PostgreSQL's cursor trails the
+    // payload); no consumer at all means nothing may go.
+    let deleted = sqlx::query(
+        "WITH b AS (SELECT last_xid FROM outbox_cursors
+                    WHERE state IN ('active', 'bootstrapping', 'retained')
+                    ORDER BY last_xid LIMIT 1)
+         DELETE FROM outbox o USING b
+         WHERE o.xid < b.last_xid AND o.created_at < clock_timestamp() - interval '1 hour'",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let retired: Vec<String> = sqlx::query_scalar(
+        "DELETE FROM outbox_cursors WHERE consumer LIKE $1 AND state = 'retired'
+         RETURNING consumer",
+    )
+    .bind(&like)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let mut removed = 0;
+    if let Some(root) = root {
+        for c in retired.iter().chain(expired.iter()) {
+            if let Some(id) = c.strip_prefix(prefix).and_then(|s| Uuid::parse_str(s).ok())
+                && !live.contains(&id)
+            {
+                let d = root.join(format!("gen-{id}"));
+                if d.exists() && std::fs::remove_dir_all(&d).is_ok() {
+                    removed += 1;
                 }
             }
         }
-        Ok((deleted, removed))
     }
+    Ok((deleted, removed))
 }
 
 /// `CURRENT` names the serving generation: temp file, fsync, rename, fsync
 /// the directory (03 §4.8 step 6.2).
-fn write_current(root: &Path, id: Uuid) -> Result<()> {
+pub(crate) fn write_current(root: &Path, id: Uuid) -> Result<()> {
     use std::io::Write as _;
     let tmp = root.join("CURRENT.tmp");
     {

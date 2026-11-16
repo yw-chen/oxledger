@@ -612,6 +612,7 @@ async fn e4_visibility_sql_index_memory_agree_with_reference() {
         let app = App {
             pool: pool.clone(),
             index,
+            wiki: oxledger::wiki_search::WikiIndex::open(None).unwrap(),
         };
 
         let viewers: Vec<Option<&User>> = std::iter::once(None)
