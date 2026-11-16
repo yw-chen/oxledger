@@ -562,7 +562,7 @@ CREATE INDEX export_events_at_idx ON export_events (at);
 | GET | `/projects/{id}/wiki/pages/{title}/export.md` | 人（W；匯出權限依 A4） | 下載目前版本 Markdown；寫 `export_events` | R-W12 |
 | GET | `/wiki/search?q=&project=&cursor=` | 人 | wiki 全文搜尋，只含呼叫者讀得到的 wiki（§3.14）；不回總數 | §3.14 |
 | GET | `/projects/{id}/wiki/deleted`、`/projects/{id}/wiki/deleted/{page_id}` | 人（`manage_wiki`） | 30 天內刪除的頁清單；單頁刪除時的內容（另有 `view_wiki_edits` 才含版本清單） | R-W16 |
-| GET／PUT | `/projects/{id}/wiki/settings` | 人（`manage_wiki`） | `{start_page_id, lock_version}`；寫 `project_setting_events`（`wiki_start_page`） | R-W13 |
+| GET／PUT | `/projects/{id}/wiki/settings` | 人（GET：讀得到 wiki 的人，回 `can_manage`；PUT：`manage_wiki`。修訂 2026-11-16，使用者決定） | `{start_page_id, lock_version}`；寫 `project_setting_events`（`wiki_start_page`） | R-W13 |
 | POST | `/commands`（既有） | 人 | 新 op：`wiki_put`、`wiki_move`、`wiki_delete`、`wiki_restore`、`wiki_protect`、`attach`、`delete_attachment`；`create_issue`、`add_note`、`update_fields` 收 `format` 與 `attachments` | §3.11 |
 | POST | `/projects/{id}/uploads?filename=` | 人（專案內任一可附檔的權限） | 原始 body（不用 multipart）；`Content-Length` 必填；這條路由個別放寬 body 上限、邊收邊寫暫存檔；大小、配額、同時數、磁碟門檻見 R-A2；匿名不能上傳；回 `{upload_id, size, content_type, expires_at}` | §3.6 |
 | DELETE | `/uploads/{id}` | 上傳者本人 | 放棄暫存 | §3.6 |
