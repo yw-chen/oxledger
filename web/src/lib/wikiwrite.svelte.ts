@@ -3,9 +3,9 @@
 // last one the person made, so the wiki pages can offer its undo (R-W9)
 // after the page they land on has changed.
 
-import type { CommandResult, ErrorBody, WikiEffect, WikiOp } from '$api/types';
-import { api, ApiError, newOperationId } from './api';
-import { urlTitle, wikiDoc } from './wiki';
+import type { CommandResult, WikiEffect, WikiOp } from '$api/types';
+import { api, newOperationId } from './api';
+import { wikiDoc } from './wiki';
 
 export const wikiWrite = $state<{ last: { executionId: string; projectKey: string; text: string } | null }>({ last: null });
 
@@ -29,19 +29,14 @@ export async function runWiki(
 }
 
 /**
- * R-W8 「回復到這一版」: `wiki_put` with version `n`'s content on top of the
- * current one. A redacted version is never a source (the server cannot tell
- * a revert from an edit, so this refuses before sending anything).
+ * R-W8 「回復到這一版」: `wiki_put` with `revert_from: n` on top of the current
+ * version. The server copies version `n` (serialized with D12) and refuses a
+ * redacted one (`invalid_value`, `kind = redacted_source`).
  */
 export async function revertTo(projectKey: string, page: { id: string; title: string; lock_version: number }, n: number) {
-	const v = await api('GET /projects/{id}/wiki/pages/{title}/versions/{n}', { path: { id: projectKey, title: urlTitle(page.title), n } });
-	if (v.redacted) {
-		const body = { code: 'invalid_value', message: 'redacted source', details: { kind: 'redacted_source' }, next_actions: [], retryable: false, request_id: '' };
-		throw new ApiError(422, body as unknown as ErrorBody, null);
-	}
 	return runWiki(
 		projectKey,
-		{ kind: 'wiki_put', op_id: newOperationId(), target: { project: projectKey, page_id: page.id }, body: v.body, comment: `回復到第 ${n} 版` },
+		{ kind: 'wiki_put', op_id: newOperationId(), target: { project: projectKey, page_id: page.id }, revert_from: n, comment: `回復到第 ${n} 版` },
 		{ pageId: page.id, lock: page.lock_version },
 		`回復到第 ${n} 版`
 	);

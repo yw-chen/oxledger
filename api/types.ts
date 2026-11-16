@@ -4027,14 +4027,16 @@ export type WikiIndexCan = {
 export type WikiOp = {
   /** Attachments come with M2.4: any value is `invalid_argument`. */
   attachments?: unknown;
-  /** Markdown, at most 524288 bytes (`payload_too_large`). */
-  body: string;
+  /** Markdown, at most 524288 bytes (`payload_too_large`). Exactly one of `body` and `revert_from`. */
+  body?: string | null;
   /** At most 255 characters. */
   comment?: string | null;
   kind: "wiki_put";
   op_id: string;
   /** The parent; `null` is the top level, absent keeps it. */
   parent?: WikiPageRef | null;
+  /** R-W8 「回復到第 N 版」: the body is version N of this page, read in the write's transaction (serialized with D12); needs view_wiki_edits besides edit_wiki_pages (`forbidden_op`). An existing page only; a redacted version is `invalid_value` (`kind = redacted_source`), a version the page does not have `invalid_argument`. The comment defaults to 「回復到第 N 版」. */
+  revert_from?: number | null;
   target: WikiTarget;
   /** Rename too (an existing page; `rename_wiki_pages`). */
   title?: string | null;

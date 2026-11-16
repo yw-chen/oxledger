@@ -552,8 +552,17 @@ pub struct WikiPageRef {
 pub struct WikiPutOp {
     pub op_id: Uuid,
     pub target: WikiTarget,
-    /// Markdown, at most 524288 bytes (`payload_too_large`).
-    pub body: String,
+    /// Markdown, at most 524288 bytes (`payload_too_large`). Exactly one of
+    /// `body` and `revert_from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// R-W8 「回復到第 N 版」: the body is version N of this page, read in
+    /// the write's transaction (serialized with D12); needs view_wiki_edits
+    /// besides edit_wiki_pages (`forbidden_op`). An existing page only; a redacted version is
+    /// `invalid_value` (`kind = redacted_source`), a version the page does
+    /// not have `invalid_argument`. The comment defaults to 「回復到第 N 版」.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revert_from: Option<i32>,
     /// At most 255 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
@@ -732,6 +741,12 @@ fn parse(raw: &Json) -> Result<WikiCommandDoc> {
                 return Err(bad_argument(
                     "ops[0].attachments",
                     "wiki attachments are not available yet",
+                ));
+            }
+            if o.body.is_some() == o.revert_from.is_some() {
+                return Err(bad(
+                    "ops[0].body",
+                    "wiki_put carries exactly one of body and revert_from",
                 ));
             }
             check_ref("ops[0].parent", &o.parent)?;
@@ -1499,13 +1514,44 @@ async fn put(
     if retitled || reparented {
         cx.require(RENAME_WIKI_PAGES, "renaming or moving a wiki page")?;
     }
-    check_body("ops[0].body", &o.body)?;
-    let comment = o.comment.clone().unwrap_or_default();
+    // R-W8: a revert reads its source while holding the project row FOR
+    // SHARE (taken in `execute`), which a D12 redaction takes FOR UPDATE: the
+    // two run one after the other (R-W10), never copying a redacted body.
+    let (body, comment) = match o.revert_from {
+        Some(n) => {
+            // A revert reads an earlier version for the caller: the history
+            // right (R-W7) too, so it is no way around it (使用者決定 2026-11-16).
+            cx.require(VIEW_WIKI_EDITS, "reverting to an earlier version")?;
+            let Some((b, redacted)) = version_body(&mut *conn, page.id, n).await? else {
+                return Err(bad_argument(
+                    "ops[0].revert_from",
+                    format!("the page has no version {n}"),
+                ));
+            };
+            if redacted {
+                return Err(invalid_value(
+                    "ops[0].revert_from",
+                    "redacted_source",
+                    "a redacted version is no revert source",
+                ));
+            }
+            let c = o
+                .comment
+                .clone()
+                .unwrap_or_else(|| format!("回復到第 {n} 版"));
+            (b, c)
+        }
+        None => (
+            o.body.clone().unwrap_or_default(),
+            o.comment.clone().unwrap_or_default(),
+        ),
+    };
+    check_body("ops[0].body", &body)?;
     check_comment("ops[0].comment", &comment)?;
     let (old_body, _) = version_body(&mut *conn, page.id, page.current_version)
         .await?
         .unwrap_or_default();
-    let rewritten = old_body != o.body;
+    let rewritten = old_body != body;
     if rewritten && page.current_version >= MAX_VERSIONS {
         return Err(invalid_value(
             "ops[0].body",
@@ -1530,7 +1576,7 @@ async fn put(
         &mut *conn,
         &prov,
         &page,
-        rewritten.then_some((o.body.as_str(), comment.as_str())),
+        rewritten.then_some((body.as_str(), comment.as_str())),
         retitled.then_some(new_title.as_str()),
         reparented.then_some(new_parent),
         true,
@@ -1612,6 +1658,13 @@ async fn create(
             "a new page takes its title from target.page",
         ));
     }
+    if o.revert_from.is_some() {
+        return Err(bad_argument(
+            "ops[0].revert_from",
+            "a new page has no version to revert to",
+        ));
+    }
+    let body = o.body.clone().unwrap_or_default();
     let raw_title = o.target.page.as_deref().unwrap_or_default();
     let (count, _) = lock_settings(&mut *conn, project).await?;
     let parent = match &o.parent {
@@ -1620,7 +1673,7 @@ async fn create(
     };
     cx.require(EDIT_WIKI_PAGES, "creating a wiki page")?;
     let title = checked_title("ops[0].target.page", raw_title)?;
-    check_body("ops[0].body", &o.body)?;
+    check_body("ops[0].body", &body)?;
     let comment = o.comment.clone().unwrap_or_default();
     check_comment("ops[0].comment", &comment)?;
     // Under the settings lock: no create or restore of this project runs
@@ -1661,7 +1714,7 @@ async fn create(
     .bind(&title)
     .execute(&mut *conn)
     .await?;
-    insert_version(&mut *conn, id, 1, &o.body, &comment, &prov).await?;
+    insert_version(&mut *conn, id, 1, &body, &comment, &prov).await?;
     insert_event(
         &mut *conn,
         id,

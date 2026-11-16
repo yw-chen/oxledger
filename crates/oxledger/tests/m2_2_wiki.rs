@@ -2117,3 +2117,286 @@ async fn v_redaction_resolves_the_page_under_the_lock() {
         0
     );
 }
+
+// ---------------------------------------------------------------- R-W8 revert_from
+
+/// R-W8: `wiki_put` with `revert_from` copies version N under the page's
+/// lock; a redacted version is refused by the server (`redacted_source`),
+/// as are a version the page lacks, a new page, and body with revert_from.
+#[tokio::test]
+async fn v_revert_from_is_checked_by_the_server() {
+    let pool = test_pool().await;
+    let e = setup(&pool).await;
+    let app = &e.w.app;
+    let p = create(&e, e.alice, "WEB", "Rev", "first").await;
+    edit(&e, e.alice, p.page_id, "second").await.unwrap();
+    let revert = |n: i64, extra: Value| {
+        let mut o = op(
+            "wiki_put",
+            by_id("WEB", p.page_id),
+            json!({"revert_from": n}),
+        );
+        if let Value::Object(m) = extra {
+            for (k, v) in m {
+                o[k] = v;
+            }
+        }
+        o
+    };
+
+    // Back to version 1: a new version with its body and the default comment.
+    let l = lv(&e, p.page_id).await;
+    let r = run(
+        &e,
+        e.alice,
+        &doc(revert(1, json!({})), Some((p.page_id, l))),
+    )
+    .await
+    .unwrap();
+    assert!(r.wiki[0].changed);
+    assert_eq!(r.wiki[0].version, 3);
+    let v3 = wiki::version(app, e.alice, "WEB", "Rev", 3).await.unwrap();
+    assert_eq!(v3.body, "first");
+    assert_eq!(v3.comment, "回復到第 1 版");
+
+    // Shape errors: both, neither, a version the page lacks, a new page.
+    let l = lv(&e, p.page_id).await;
+    let both = err(run(
+        &e,
+        e.alice,
+        &doc(revert(1, json!({"body": "x"})), Some((p.page_id, l))),
+    )
+    .await);
+    assert_eq!(code(&both), ErrorCode::InvalidRequest);
+    let neither = err(run(
+        &e,
+        e.alice,
+        &doc(
+            op("wiki_put", by_id("WEB", p.page_id), json!({})),
+            Some((p.page_id, l)),
+        ),
+    )
+    .await);
+    assert_eq!(code(&neither), ErrorCode::InvalidRequest);
+    let missing = err(run(
+        &e,
+        e.alice,
+        &doc(revert(99, json!({})), Some((p.page_id, l))),
+    )
+    .await);
+    assert_eq!(code(&missing), ErrorCode::InvalidArgument);
+    assert_eq!(details(&missing)["path"], "ops[0].revert_from");
+    let fresh = err(run(
+        &e,
+        e.alice,
+        &doc(
+            op("wiki_put", at("WEB", "Not_Yet"), json!({"revert_from": 1})),
+            None,
+        ),
+    )
+    .await);
+    assert_eq!(code(&fresh), ErrorCode::InvalidArgument);
+
+    // Version 1 redacted: the server refuses it as a source, writes nothing.
+    redaction::redact(
+        app,
+        e.alice,
+        &e.w.policy,
+        Uuid::now_v7(),
+        &Target::WikiVersion {
+            project: "WEB".into(),
+            page: "Rev".into(),
+            version: 1,
+        },
+        &RedactInput {
+            reason_code: "confidential".into(),
+            reason: "a token".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let l = lv(&e, p.page_id).await;
+    let x = err(run(
+        &e,
+        e.alice,
+        &doc(revert(1, json!({})), Some((p.page_id, l))),
+    )
+    .await);
+    assert_eq!(code(&x), ErrorCode::InvalidValue);
+    assert_eq!(details(&x)["kind"], "redacted_source");
+    assert_eq!(lv(&e, p.page_id).await, l, "nothing was written");
+    assert_eq!(
+        wiki::page(app, e.alice, "WEB", "Rev")
+            .await
+            .unwrap()
+            .version,
+        3
+    );
+    // An unredacted version is still a source.
+    let r = run(
+        &e,
+        e.alice,
+        &doc(revert(2, json!({})), Some((p.page_id, l))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.wiki[0].version, 4);
+}
+
+// ---------------------------------------------------------------- R-W8 revert_from × D12
+
+fn rv(page: Uuid, n: Value) -> Value {
+    op("wiki_put", by_id("WEB", page), json!({"revert_from": n}))
+}
+
+fn spawn_redact(
+    e: &Env,
+    title: &'static str,
+    v: i32,
+) -> impl Future<Output = anyhow::Result<redaction::Redacted>> + Send + 'static {
+    let app = e.w.app.clone();
+    let policy = e.w.policy.clone();
+    let who = e.alice;
+    async move {
+        redaction::redact(
+            &app,
+            who,
+            &policy,
+            Uuid::now_v7(),
+            &Target::WikiVersion {
+                project: "WEB".into(),
+                page: title.into(),
+                version: v,
+            },
+            &RedactInput {
+                reason_code: "confidential".into(),
+                reason: "probe".into(),
+            },
+        )
+        .await
+    }
+}
+
+/// Redaction holds its locks (before_derived) when the revert arrives: the
+/// revert must wait and then see the redacted source.
+#[tokio::test]
+async fn v_revert_waits_for_a_redaction_and_sees_it() {
+    let pool = test_pool().await;
+    let e = setup(&pool).await;
+    let p = create(&e, e.alice, "WEB", "RaceA", "SECRET_ONE").await;
+    edit(&e, e.alice, p.page_id, "two").await.unwrap();
+    let l = lv(&e, p.page_id).await;
+    let (red, rev) = race(
+        &pool,
+        "redact.before_derived",
+        spawn_redact(&e, "RaceA", 1),
+        spawn_run(
+            &e,
+            e.bob,
+            doc(rv(p.page_id, json!(1)), Some((p.page_id, l))),
+        ),
+    )
+    .await;
+    red.unwrap();
+    let x = err(rev);
+    assert_eq!(code(&x), ErrorCode::InvalidValue, "{:?}", shape(&x));
+    assert_eq!(details(&x)["kind"], "redacted_source");
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM wiki_page_versions WHERE body LIKE '%SECRET_ONE%'"
+        )
+        .await,
+        0,
+        "the redacted text was copied"
+    );
+}
+
+/// The revert holds its locks (before_write, source already read) when the
+/// redaction arrives: the redaction waits; the copy happened before it.
+#[tokio::test]
+async fn v_redaction_after_a_revert_is_serial() {
+    let pool = test_pool().await;
+    let e = setup(&pool).await;
+    let p = create(&e, e.alice, "WEB", "RaceB", "SECRET_ONE").await;
+    edit(&e, e.alice, p.page_id, "two").await.unwrap();
+    let l = lv(&e, p.page_id).await;
+    let (rev, red) = race(
+        &pool,
+        "wiki.before_write",
+        spawn_run(
+            &e,
+            e.bob,
+            doc(rv(p.page_id, json!(1)), Some((p.page_id, l))),
+        ),
+        spawn_redact(&e, "RaceB", 1),
+    )
+    .await;
+    let r = rev.unwrap();
+    assert_eq!(r.wiki[0].version, 3);
+    assert!(red.unwrap().changed);
+    let v1: bool = sqlx::query_scalar(
+        "SELECT redaction_id IS NOT NULL FROM wiki_page_versions WHERE page_id=$1 AND version=1",
+    )
+    .bind(p.page_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(v1);
+    let b3: String =
+        sqlx::query_scalar("SELECT body FROM wiki_page_versions WHERE page_id=$1 AND version=3")
+            .bind(p.page_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(b3, "SECRET_ONE", "serial order revert -> redaction");
+}
+
+/// R-W8 × R-W7: an editor without view_wiki_edits cannot revert (the server
+/// would read an earlier version for them); an edit by body still works
+/// (使用者決定 2026-11-16).
+#[tokio::test]
+async fn v_revert_needs_view_wiki_edits() {
+    let pool = test_pool().await;
+    let e = setup(&pool).await;
+    let r = role(
+        &pool,
+        "WikiEditNoHistory",
+        &["view_wiki_pages", "edit_wiki_pages"],
+    )
+    .await;
+    let frank = auth::create_user(&pool, "frank", "frank", PW, false)
+        .await
+        .unwrap();
+    member(&pool, e.w.web, frank, r).await;
+    let frank = sign_in(&pool, &e.w.policy, "frank").await;
+    let p = create(&e, e.alice, "WEB", "Old", "OLD_SECRET").await;
+    edit(&e, e.alice, p.page_id, "clean").await.unwrap();
+    let l = lv(&e, p.page_id).await;
+    for n in [1, 99] {
+        let x = err(run(
+            &e,
+            frank,
+            &doc(
+                op(
+                    "wiki_put",
+                    by_id("WEB", p.page_id),
+                    json!({"revert_from": n}),
+                ),
+                Some((p.page_id, l)),
+            ),
+        )
+        .await);
+        assert_eq!(code(&x), ErrorCode::ForbiddenOp, "revert_from {n}");
+        assert_eq!(details(&x)["reason"], "permission");
+    }
+    assert_eq!(lv(&e, p.page_id).await, l, "nothing was written");
+    assert_eq!(
+        wiki::page(&e.w.app, frank, "WEB", "Old")
+            .await
+            .unwrap()
+            .body,
+        "clean"
+    );
+    edit(&e, frank, p.page_id, "frank's").await.unwrap();
+}

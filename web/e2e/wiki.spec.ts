@@ -204,6 +204,17 @@ test('wiki：歷史、單版、差異與回復；被遮蔽的版本不能回復'
 	await page.waitForURL((u) => decodeURIComponent(u.pathname) === '/project/AUTH/wiki/部署_與_回滾');
 	await expect(page.getByTestId('wiki-status')).toContainText('第 4 版');
 	await expect(page.getByTestId('wiki-body')).not.toContainText('alice 改');
+	// R-W8 on the server: a revert to the redacted version 2 is refused even
+	// when sent past the disabled button, and nothing is written.
+	const p = await getPage(page, '部署 與 回滾');
+	const r = await papi(page, 'POST', '/commands', {
+		command_schema_version: 1,
+		ops: [{ op_id: crypto.randomUUID(), kind: 'wiki_put', target: { project: 'AUTH', page_id: p.id }, revert_from: 2 }],
+		preconditions: [{ wiki_page: p.id, lock_version: p.lock_version }]
+	});
+	expect(r.json.error.code, JSON.stringify(r.json)).toBe('invalid_value');
+	expect(r.json.error.details.kind).toBe('redacted_source');
+	expect((await getPage(page, '部署 與 回滾')).version).toBe(4);
 });
 
 test('wiki：保護後別人的編輯停用並說明；復原保護', async ({ browser }) => {

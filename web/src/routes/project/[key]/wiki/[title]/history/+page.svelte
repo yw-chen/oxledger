@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Design 06 §6.6: a page's versions (newest first, 50 at a time) with two
 	// radios to compare, 「檢視」 and 「回復到這一版」 per row (off for a
-	// redacted version: the server cannot tell a revert from an edit), and the
+	// redacted version, which the server refuses as a revert source), and the
 	// non-content changes (rename, move, protect…). D12 (manage_project):
 	// 「遮蔽這一版」 and 「遮蔽」 on a change.
 	import { goto } from '$app/navigation';

@@ -15219,8 +15219,11 @@
                 "description": "Attachments come with M2.4: any value is `invalid_argument`."
               },
               "body": {
-                "description": "Markdown, at most 524288 bytes (`payload_too_large`).",
-                "type": "string"
+                "description": "Markdown, at most 524288 bytes (`payload_too_large`). Exactly one of\n`body` and `revert_from`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "comment": {
                 "description": "At most 255 characters.",
@@ -15248,6 +15251,14 @@
                 ],
                 "description": "The parent; `null` is the top level, absent keeps it."
               },
+              "revert_from": {
+                "description": "R-W8 「回復到第 N 版」: the body is version N of this page, read in\nthe write's transaction (serialized with D12); needs view_wiki_edits\nbesides edit_wiki_pages (`forbidden_op`). An existing page only; a redacted version is\n`invalid_value` (`kind = redacted_source`), a version the page does\nnot have `invalid_argument`. The comment defaults to 「回復到第 N 版」.",
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "target": {
                 "$ref": "#/components/schemas/WikiTarget"
               },
@@ -15262,8 +15273,7 @@
             "required": [
               "kind",
               "op_id",
-              "target",
-              "body"
+              "target"
             ],
             "type": "object"
           },
@@ -20539,7 +20549,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect, and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (attachments before M2.4; preconditions on a new page or without one on an update by page_id).",
+        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect (wiki_put carries exactly one of body and revert_from; revert_from N copies version N of the page, a redacted one being invalid_value kind redacted_source), and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (attachments before M2.4; preconditions on a new page or without one on an update by page_id).",
         "x-access": "session",
         "x-csrf": true
       }
