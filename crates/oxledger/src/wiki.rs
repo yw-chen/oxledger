@@ -788,7 +788,7 @@ pub(crate) fn is_wiki_doc(raw: &Json) -> bool {
     })
 }
 
-fn parse(raw: &Json) -> Result<WikiCommandDoc> {
+pub(crate) fn parse(raw: &Json) -> Result<WikiCommandDoc> {
     let n = raw
         .get("ops")
         .and_then(Json::as_array)
@@ -893,12 +893,87 @@ pub struct WikiEffect {
 
 // ---------------------------------------------------------------- writing
 
-/// Who writes (a person's `human_direct` execution).
+/// Who writes: a person's `human_direct` execution, or an agent's write
+/// (`agent` set): `agent_direct` from command_submit, `external_agent` when
+/// an approved proposal is applied (design 06 §2.3; the columns as 0034's
+/// CHECK wants them).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Prov {
+    /// The actor (the person, or the agent principal).
     pub user: Uuid,
     pub request: Uuid,
+    /// The execution ref: a command execution (`human_direct`,
+    /// `agent_direct`) or a ChangeSet execution (`external_agent`).
     pub exec: Uuid,
+    pub agent: Option<AgentProv>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentProv {
+    pub delegator: Uuid,
+    pub delegation: Uuid,
+    pub client: Uuid,
+    /// An approved proposal: (approver, changeset, version, op_id).
+    pub review: Option<(Uuid, Uuid, i32, Uuid)>,
+}
+
+impl Prov {
+    pub(crate) fn human(user: Uuid, request: Uuid, exec: Uuid) -> Prov {
+        Prov {
+            user,
+            request,
+            exec,
+            agent: None,
+        }
+    }
+
+    fn origin(&self) -> &'static str {
+        match self.agent {
+            None => "human_direct",
+            Some(AgentProv { review: None, .. }) => "agent_direct",
+            Some(_) => "external_agent",
+        }
+    }
+}
+
+/// The provenance columns shared by `wiki_page_versions` and `wiki_events`,
+/// from `$first` on (origin, actor_id, actor_kind, proposer_id,
+/// approver_id, on_behalf_of_id, delegation_id, agent_client_id,
+/// operation_request_id, command_execution_id, changeset_id,
+/// changeset_version, execution_id, op_id).
+const PROV_COLUMNS: &str =
+    "origin, actor_id, actor_kind, proposer_id, approver_id, on_behalf_of_id,
+     delegation_id, agent_client_id, operation_request_id, command_execution_id, changeset_id,
+     changeset_version, execution_id, op_id";
+
+fn prov_values(first: usize) -> String {
+    (first..first + 14)
+        .map(|i| format!("${i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn bind_prov<'q>(
+    q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    at: &Prov,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    let a = at.agent;
+    let review = a.and_then(|a| a.review);
+    let command_exec = review.is_none().then_some(at.exec);
+    q.bind(at.origin())
+        .bind(at.user)
+        .bind(if a.is_some() { "agent" } else { "user" })
+        .bind(review.map(|_| at.user))
+        .bind(review.map(|r| r.0))
+        .bind(a.map(|a| a.delegator))
+        .bind(a.map(|a| a.delegation))
+        .bind(a.map(|a| a.client))
+        .bind(at.request)
+        .bind(command_exec)
+        .bind(review.map(|r| r.1))
+        .bind(review.map(|r| r.2))
+        .bind(review.map(|_| at.exec))
+        .bind(review.map(|r| r.3))
 }
 
 async fn insert_version(
@@ -909,20 +984,17 @@ async fn insert_version(
     comment: &str,
     at: &Prov,
 ) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO wiki_page_versions (page_id, version, body, comment, origin, actor_id, actor_kind,
-                                         operation_request_id, command_execution_id)
-         VALUES ($1, $2, $3, $4, 'human_direct', $5, 'user', $6, $7)",
-    )
-    .bind(page)
-    .bind(version)
-    .bind(body)
-    .bind(comment)
-    .bind(at.user)
-    .bind(at.request)
-    .bind(at.exec)
-    .execute(&mut *conn)
-    .await?;
+    let sql = format!(
+        "INSERT INTO wiki_page_versions (page_id, version, body, comment, {PROV_COLUMNS})
+         VALUES ($1, $2, $3, $4, {})",
+        prov_values(5)
+    );
+    let q = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(page)
+        .bind(version)
+        .bind(body)
+        .bind(comment);
+    bind_prov(q, at).execute(&mut *conn).await?;
     Ok(())
 }
 
@@ -933,20 +1005,17 @@ async fn insert_event(
     payload: Json,
     at: &Prov,
 ) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO wiki_events (page_id, seq, kind, payload, origin, actor_id, actor_kind,
-                                  operation_request_id, command_execution_id)
+    let sql = format!(
+        "INSERT INTO wiki_events (page_id, seq, kind, payload, {PROV_COLUMNS})
          VALUES ($1, (SELECT COALESCE(max(seq), 0) + 1 FROM wiki_events WHERE page_id = $1),
-                 $2, $3, 'human_direct', $4, 'user', $5, $6)",
-    )
-    .bind(page)
-    .bind(kind)
-    .bind(payload)
-    .bind(at.user)
-    .bind(at.request)
-    .bind(at.exec)
-    .execute(&mut *conn)
-    .await?;
+                 $2, $3, {})",
+        prov_values(4)
+    );
+    let q = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(page)
+        .bind(kind)
+        .bind(payload);
+    bind_prov(q, at).execute(&mut *conn).await?;
     Ok(())
 }
 
@@ -1239,9 +1308,17 @@ async fn new_version(
 
 // ---------------------------------------------------------------- run (POST /commands)
 
+/// Who runs a wiki document: a person (`POST /commands`), or an agent
+/// writing directly through command_submit (design 06 §3.11, §3.12).
+#[derive(Clone, Copy)]
+pub(crate) enum Writer<'a> {
+    Human(&'a Executor),
+    Agent(&'a agent::AgentWriter),
+}
+
 struct Ctx<'a> {
     caller: AuthContext,
-    who: &'a Executor,
+    who: Writer<'a>,
     request: Uuid,
     hash: [u8; 32],
     a: Access,
@@ -1252,24 +1329,29 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     async fn begin(&self, conn: &mut PgConnection) -> Result<(Prov, String)> {
         commands::check_deadline(&mut *conn, self.deadline).await?;
+        if let Writer::Agent(w) = self.who {
+            commands::check_deadlines(&mut *conn, &w.deadlines).await?;
+        }
         fault("wiki.before_write").await?;
         let token = commands::search_token(&mut *conn).await?;
-        let exec = commands::record_human_execution(
-            &mut *conn,
-            self.request,
-            self.who.user_id,
-            &self.hash,
-            &token,
-        )
-        .await?;
-        Ok((
-            Prov {
-                user: self.who.user_id,
-                request: self.request,
-                exec,
-            },
-            token,
-        ))
+        let prov = match self.who {
+            Writer::Human(who) => {
+                let exec = commands::record_human_execution(
+                    &mut *conn,
+                    self.request,
+                    who.user_id,
+                    &self.hash,
+                    &token,
+                )
+                .await?;
+                Prov::human(who.user_id, self.request, exec)
+            }
+            Writer::Agent(w) => {
+                let exec = w.record_execution(&mut *conn, self.request, &token).await?;
+                w.prov(self.request, exec)
+            }
+        };
+        Ok((prov, token))
     }
 
     fn require(&self, perm: &str, what: &str) -> Result<()> {
@@ -1289,6 +1371,14 @@ impl Ctx<'_> {
     }
 
     fn require_unprotected(&self, page: &PageRow) -> Result<()> {
+        // R-AG5: an agent never writes a protected page, whatever the
+        // delegator holds.
+        if page.protected && matches!(self.who, Writer::Agent(_)) {
+            return Err(forbidden(
+                "wiki_protected",
+                "this page is protected: agents do not change it",
+            ));
+        }
         if page.protected && !self.a.has(PROTECT_WIKI_PAGES) {
             return Err(forbidden(
                 "wiki_protected",
@@ -1382,7 +1472,7 @@ pub(crate) async fn run(
     else {
         return replay(&mut *conn, caller, who.user_id, operation_id, &fp).await;
     };
-    let r = execute(&mut *conn, caller, who, request, hash, &doc).await?;
+    let r = execute(&mut *conn, caller, Writer::Human(who), request, hash, &doc).await?;
     let stored = json!({
         "execution_id": r.execution_id,
         "consistent_after": r.search.consistent_after,
@@ -1471,16 +1561,21 @@ async fn replay(
     })
 }
 
-async fn execute(
+pub(crate) async fn execute(
     conn: &mut PgConnection,
     caller: AuthContext,
-    who: &Executor,
+    who: Writer<'_>,
     request: Uuid,
     hash: [u8; 32],
     doc: &WikiCommandDoc,
 ) -> Result<CommandResult> {
     let op = &doc.ops[0];
-    let deadline = commands::lock_executor(&mut *conn, who).await?;
+    let deadline = match who {
+        Writer::Human(who) => commands::lock_executor(&mut *conn, who).await?,
+        // The agent's principals, credential and delegation are held by
+        // its step 1; its deadlines are checked before the write.
+        Writer::Agent(_) => None,
+    };
     let project = project_id(&mut *conn, &op.target().project)
         .await?
         .ok_or_else(not_found)?;
@@ -1489,9 +1584,13 @@ async fn execute(
         .execute(&mut *conn)
         .await?;
     commands::check_deadline(&mut *conn, deadline).await?;
-    let a = access_of(&mut *conn, caller, project)
-        .await?
-        .ok_or_else(not_found)?;
+    let a = match who {
+        Writer::Human(_) => access_of(&mut *conn, caller, project)
+            .await?
+            .ok_or_else(not_found)?,
+        Writer::Agent(w) if w.access.project == project => w.access.clone(),
+        Writer::Agent(_) => return Err(not_found()),
+    };
     let cx = Ctx {
         caller,
         who,
@@ -1608,6 +1707,16 @@ async fn put(
             // A revert reads an earlier version for the caller: the history
             // right (R-W7) too, so it is no way around it (使用者決定 2026-11-16).
             cx.require(VIEW_WIKI_EDITS, "reverting to an earlier version")?;
+            // R-AG1: a revert reads an older version, so an agent needs
+            // H(P) ⊇ A(P) too.
+            if let Writer::Agent(w) = cx.who
+                && !w.history
+            {
+                return Err(forbidden(
+                    "wiki_history_not_delegable",
+                    "this project's wiki history has fewer readers than its issues",
+                ));
+            }
             let Some((b, redacted)) = version_body(&mut *conn, page.id, n).await? else {
                 return Err(bad_argument(
                     "ops[0].revert_from",
@@ -2781,6 +2890,126 @@ pub async fn page_diff(
     })
 }
 
+/// Design 06 §3.12 審閱路徑: what a wiki proposal would do to the page as it
+/// is now (R-W7's diff of the current version and the proposed body).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct WikiProposalDiff {
+    /// `wiki_put` or `wiki_move`.
+    pub kind: String,
+    pub project_id: Uuid,
+    /// The page now; `None` for a page the proposal creates (or one gone
+    /// since).
+    pub page_id: Option<Uuid>,
+    /// The page's title now, or the new page's title.
+    pub title: String,
+    /// A rename: the proposed title.
+    pub new_title: Option<String>,
+    /// A move: the proposed parent as given (`null` is the top level).
+    pub new_parent: Option<Json>,
+    pub current_version: Option<i32>,
+    pub lock_version: Option<i64>,
+    /// The precondition's lock version; differs from `lock_version` when the
+    /// page changed since the agent read it (applying it is a `conflict`).
+    pub expected_lock_version: Option<i64>,
+    /// The page changed since the proposal was made.
+    pub stale: bool,
+    /// The proposed body against the current version (empty for a move).
+    pub hunks: Vec<DiffHunk>,
+    pub truncated: bool,
+    /// A revert to an older version the reader may not see (no
+    /// `view_wiki_edits` now): no hunks.
+    pub history_hidden: bool,
+}
+
+/// [`WikiProposalDiff`] of a stored wiki proposal body (its project is an
+/// id) as `caller` may read it: an older version (a revert) only with
+/// `view_wiki_edits`. `None` for a body that is not a wiki document, or a
+/// wiki the caller does not read.
+pub(crate) async fn proposal_diff(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    body: &Json,
+) -> Result<Option<WikiProposalDiff>> {
+    if !is_wiki_doc(body) {
+        return Ok(None);
+    }
+    let doc = parse(body)?;
+    let op = &doc.ops[0];
+    let Some(project) = project_id(&mut *conn, &op.target().project).await? else {
+        return Ok(None);
+    };
+    let Some(a) = access_of(&mut *conn, caller, project).await? else {
+        return Ok(None);
+    };
+    let mut history_hidden = false;
+    let t = op.target();
+    let page = resolve(&mut *conn, project, t.page.as_deref(), t.page_id).await?;
+    let expected = doc.preconditions.first().map(|p| p.lock_version);
+    let (kind, new_title, new_parent, new_body) = match op {
+        WikiOp::WikiPut(o) => {
+            let body = match (&o.body, o.revert_from, &page) {
+                (Some(b), _, _) => Some(b.clone()),
+                (None, Some(v), Some(p)) if a.has(VIEW_WIKI_EDITS) => {
+                    version_body(&mut *conn, p.id, v).await?.map(|x| x.0)
+                }
+                (None, Some(_), _) => {
+                    history_hidden = true;
+                    None
+                }
+                _ => None,
+            };
+            (
+                "wiki_put",
+                o.title.clone(),
+                o.parent.as_ref().map(|p| json!(p)),
+                body,
+            )
+        }
+        WikiOp::WikiMove(o) => (
+            "wiki_move",
+            o.title.clone(),
+            o.parent.as_ref().map(|p| json!(p)),
+            None,
+        ),
+        _ => return Ok(None),
+    };
+    let old = match &page {
+        Some(p) => version_body(&mut *conn, p.id, p.current_version)
+            .await?
+            .map(|x| x.0)
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    let (hunks, truncated) = match new_body {
+        Some(new) => tokio::task::spawn_blocking(move || diff(&old, &new)).await?,
+        None => (Vec::new(), false),
+    };
+    Ok(Some(WikiProposalDiff {
+        kind: kind.into(),
+        project_id: project,
+        page_id: page.as_ref().map(|p| p.id),
+        title: page
+            .as_ref()
+            .map(|p| p.title.clone())
+            .or_else(|| t.page.clone())
+            .unwrap_or_default(),
+        new_title,
+        new_parent,
+        current_version: page.as_ref().map(|p| p.current_version),
+        lock_version: page.as_ref().map(|p| p.lock_version),
+        expected_lock_version: expected,
+        stale: match (&page, expected) {
+            (Some(p), Some(e)) => p.lock_version != e,
+            // A new page whose title is taken by now.
+            (Some(_), None) => kind == "wiki_put",
+            _ => false,
+        },
+        hunks,
+        truncated,
+        history_hidden,
+    }))
+}
+
 // ---------------------------------------------------------------- events
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -3661,11 +3890,7 @@ pub(crate) async fn undo_apply(
     let h: [u8; 32] = Sha256::digest(payload).into();
     let exec =
         commands::record_undo_execution(&mut *conn, request, who.user_id, &h, &token, id).await?;
-    let at = Prov {
-        user: who.user_id,
-        request,
-        exec,
-    };
+    let at = Prov::human(who.user_id, request, exec);
     for w in &todo {
         let c = &rows[&w.page_id];
         let before = lock_page(&mut *conn, w.page_id).await?;

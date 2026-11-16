@@ -14,7 +14,7 @@
 
 use crate::agents::{
     self, BUILTIN_FIELDS, ClosedAs, DelegationInput, DelegationView, IssuedCredential,
-    NewPrincipal, PROPOSAL_OPS, PolicyInput, TIME_OPS, Target,
+    NewPrincipal, PROPOSAL_OPS, PolicyInput, TIME_OPS, Target, WIKI_PROPOSAL_OPS,
 };
 use crate::auth::{self, AuthContext, SessionPolicy};
 use crate::commands;
@@ -36,12 +36,13 @@ pub const TEMPLATE_VERSION: i32 = 1;
 /// B-31: active roles per sponsor.
 pub const MAX_ACTIVE_ROLES: i64 = 20;
 /// Templates a person may pick (`builtin_chat` is the built-in AI's own).
-pub const TEMPLATES: [&str; 7] = [
+pub const TEMPLATES: [&str; 8] = [
     "triage",
     "pm_assistant",
     "design_review",
     "qa",
     "release",
+    "docs",
     "personal",
     "custom",
 ];
@@ -85,6 +86,7 @@ pub fn default_role_key(template: &str) -> Option<&'static str> {
         "design_review" => "design_review",
         "qa" => "qa",
         "release" => "release",
+        "docs" => "docs",
         _ => return None,
     })
 }
@@ -166,6 +168,22 @@ pub async fn template_spec(conn: &mut PgConnection, template: &str) -> Result<Te
         "release" => &[("fixed_version_id", Review)],
         _ => &[],
     };
+    // Design 06 §4.4: the wiki ops are in no earlier template; 「文件維護」
+    // (`docs`) holds only them, every write reviewed.
+    if template == "docs" {
+        let ops: Vec<String> = WIKI_PROPOSAL_OPS.iter().map(|s| s.to_string()).collect();
+        return Ok(TemplateSpec {
+            template: template.to_string(),
+            template_version: TEMPLATE_VERSION,
+            policies: TemplatePolicies {
+                commands: ops.iter().map(|o| (o.clone(), Review)).collect(),
+                fields: BTreeMap::new(),
+            },
+            proposal_ops: ops,
+            writable_fields: Vec::new(),
+            read_own_time: false,
+        });
+    }
     let mut commands: BTreeMap<String, PolicyMode> = BTreeMap::new();
     for op in PROPOSAL_OPS {
         let mode = if template == "personal" {

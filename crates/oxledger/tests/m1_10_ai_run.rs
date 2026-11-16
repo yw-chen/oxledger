@@ -1018,6 +1018,152 @@ async fn m2_3_wiki_search_counts_the_delegated_projects() {
     assert_eq!(sources, want);
 }
 
+// ---------------------------------------------------------------- T-M2-47
+
+/// T-M2-47 (R-AG8): the built-in AI reads a wiki page and writes a note
+/// (W = A: as the policy says) and a page, both directly; after time_list
+/// its wiki write goes for review (time_taint). Its delegation reads time,
+/// but R-AG11 is for external agents only.
+#[tokio::test]
+async fn t_m2_47_builtin_wiki_writes_and_time_taint() {
+    let pool = test_pool().await;
+    let t = setup(&pool, |_| {}).await;
+    let w = &t.w;
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    exec(&pool, "INSERT INTO enabled_modules SELECT id, 'time_tracking' FROM projects ON CONFLICT DO NOTHING").await;
+    grant(
+        &pool,
+        w.dev,
+        &[
+            "view_wiki_pages",
+            "edit_wiki_pages",
+            "view_time_entries",
+            "log_time",
+        ],
+    )
+    .await;
+    let mut proposal_ops = ops();
+    proposal_ops.extend(["log_time", "wiki_put"].map(String::from));
+    oxledger::agents::create_delegation_for(
+        &w.pool,
+        &w.policy,
+        &w.alice_ctx,
+        t.ai,
+        oxledger::agents::DelegationInput {
+            agent_client_id: builtin_client(w).await,
+            project_id: w.web,
+            proposal_ops,
+            writable_fields: ["subject"].map(String::from).to_vec(),
+            max_ops: None,
+            expires_in_days: Some(30),
+            policies: Some(oxledger::agents::PolicyInput {
+                commands: [
+                    ("add_note".to_string(), Direct),
+                    ("wiki_put".to_string(), Direct),
+                ]
+                .into_iter()
+                .collect(),
+                fields: BTreeMap::new(),
+            }),
+            read_own_time: true,
+            read_own_time_ack: true,
+        },
+    )
+    .await
+    .unwrap();
+    let wiki_doc = |title: &str, body: &str| {
+        json!({"command_schema_version": 1, "ops": [{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+               "target": {"project": "WEB", "page": title}, "body": body}]})
+    };
+    oxledger::commands::submit(&w.app, w.alice_ctx, Uuid::now_v7(), &wiki_doc("Notes", "n"))
+        .await
+        .unwrap();
+    let i = w.issue(w.web, "wiki").await;
+
+    // wiki_get, a note, a page: all direct.
+    t.fake.push(turn(
+        P::Anth,
+        &[call(
+            "c1",
+            "wiki_get",
+            json!({"project": "WEB", "page": "Notes"}),
+        )],
+        Some((10, 5)),
+    ));
+    let note = json!({"command": note_doc(i, lv(w, i).await, "after the wiki")});
+    t.fake.push(turn(
+        P::Anth,
+        &[call("c2", "command_submit", note)],
+        Some((10, 5)),
+    ));
+    t.fake.push(turn(
+        P::Anth,
+        &[call(
+            "c3",
+            "command_submit",
+            json!({"command": wiki_doc("Direct", "d")}),
+        )],
+        Some((10, 5)),
+    ));
+    t.fake.push(turn(P::Anth, &[text("ok")], Some((10, 5))));
+    let c = conversation(w, w.alice_ctx, "t").await;
+    let (run, state, _) = t.ask(c, "讀 wiki 再寫", vec![]).await;
+    assert_eq!(state, "succeeded");
+    let r = runner::get_run(&w.app, w.alice_ctx, run).await.unwrap();
+    let outcomes: Vec<&str> = r
+        .writes
+        .iter()
+        .map(|x| x["outcome"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["applied", "applied"],
+        "{:?}",
+        tool_results(w, run).await
+    );
+
+    // time_list, then a page: review (time_taint).
+    t.fake.clear();
+    t.fake.push(turn(
+        P::Anth,
+        &[call(
+            "c1",
+            "time_list",
+            json!({"from": "2026-11-01", "to": "2026-11-30"}),
+        )],
+        Some((10, 5)),
+    ));
+    t.fake.push(turn(
+        P::Anth,
+        &[call(
+            "c2",
+            "command_submit",
+            json!({"command": wiki_doc("After time", "t")}),
+        )],
+        Some((10, 5)),
+    ));
+    t.fake.push(turn(P::Anth, &[text("ok")], Some((10, 5))));
+    let c2 = conversation(w, w.alice_ctx, "t2").await;
+    let (run, state, _) = t.ask(c2, "看工時再寫 wiki", vec![]).await;
+    assert_eq!(state, "succeeded");
+    let r = runner::get_run(&w.app, w.alice_ctx, run).await.unwrap();
+    assert_eq!(r.writes.len(), 1, "{:?}", tool_results(w, run).await);
+    assert_eq!(r.writes[0]["outcome"], "review_required");
+    assert_eq!(r.writes[0]["reason"], "time_taint");
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM wiki_pages WHERE title = 'After time'"
+        )
+        .await,
+        0
+    );
+}
+
 // ---------------------------------------------------------------- T-M1-122
 
 #[tokio::test]

@@ -270,8 +270,8 @@ pub struct ReviseParams {
 #[serde(deny_unknown_fields)]
 pub struct SubmitParams {
     pub operation_id: Uuid,
-    /// The command document (issue ops, or one version op).
-    #[schemars(with = "CommandDoc")]
+    /// The command document (issue ops, one version op, or one wiki op).
+    #[schemars(with = "crate::wiki::CommandBody")]
     pub command: serde_json::Value,
     /// Ask for review even where the delegation allows a direct write.
     #[serde(default)]
@@ -739,7 +739,7 @@ impl OxServer {
 
     #[tool(
         name = "command_submit",
-        description = "Write a command document as your delegation allows: when every command and field in it is `direct` (and require_review is false) it is applied now (outcome applied, with effects and search.consistent_after); when anything needs review a proposal is created instead (outcome review_required with review_url: a person approves it in the web app; you cannot). `off` commands are refused (forbidden_op, reason policy). Also takes one create_version or update_version op as its own document. Resend the same operation_id to retry; never invent ids. log_time records time for the person who delegated you only (user_id defaults to them). Time entries cannot be deleted by agents. If several agents keep writing the same issue without a person in between, further writes are sent for review (reason \"agent_chain\"); do not retry to get around it. Descriptions and notes are Markdown (describe scope=text_format): when you rewrite a description whose description_format is plain, send format \"markdown\". @mentions you write render but never notify anyone.",
+        description = "Write a command document as your delegation allows: when every command and field in it is `direct` (and require_review is false) it is applied now (outcome applied, with effects and search.consistent_after); when anything needs review a proposal is created instead (outcome review_required with review_url: a person approves it in the web app; you cannot). `off` commands are refused (forbidden_op, reason policy). Also takes one create_version or update_version op as its own document, or one wiki_put / wiki_move op (a delegated project whose wiki you may write: describe scope=agent_context, wiki.state writable); updating a page needs the precondition {wiki_page, lock_version} from wiki_get, and protected pages and attachments are for people only. Resend the same operation_id to retry; never invent ids. log_time records time for the person who delegated you only (user_id defaults to them). Time entries cannot be deleted by agents. If several agents keep writing the same issue without a person in between, further writes are sent for review (reason \"agent_chain\"); do not retry to get around it. Descriptions and notes are Markdown (describe scope=text_format): when you rewrite a description whose description_format is plain, send format \"markdown\". @mentions you write render but never notify anyone.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

@@ -286,6 +286,17 @@
 
 - **MCP 新工具 `wiki_list`、`wiki_get`**（agent token 與內建 AI）：只讀得到委派給這個 agent、委派者讀得到、而且 wiki 讀者包含所有議題讀者（W(P) ⊇ A(P)）的專案。wiki 讀者比議題讀者少的專案回 `forbidden_op`（`reason = wiki_not_delegable`），頁存不存在都一樣；讀舊版另外要歷史讀者包含議題讀者（`wiki_history_not_delegable`）。已刪除的頁讀不到。
 - **MCP `search` 多了 `kinds`（`["issue"]` 預設、`"wiki"`）與 `wiki_cursor`**：議題結果的欄位和以前一樣在最上層，wiki 結果在 `wiki`（和 `GET /wiki/search` 同一個形狀）。只送 `kinds: ["wiki"]` 時沒有議題欄位。不帶 `kinds` 的呼叫和以前完全相同。REST `POST /issues/search` 不變。舊 API key 帶 `"wiki"` 回 `forbidden_op`（`method_not_allowed`）；`kinds` 不含 `"issue"` 時，帶了只有議題搜尋才讀的參數（例如 `cursor`、`tracker`、`limit`）回 `invalid_argument`，不再靜默忽略。
-- **`describe` scope `agent_context` 的每個專案多了 `wiki: {state, reason}`**：`readable`、`writable`、`unavailable`。在寫入部分上線前，`writable` 不會出現（委派還不能加 wiki 操作，原因是 `not_delegated`）。
+- **`describe` scope `agent_context` 的每個專案多了 `wiki: {state, reason}`**：`readable`、`writable`、`unavailable`。委派含 `wiki_put`／`wiki_move` 且 W(P) = A(P) 時是 `writable`（見下一節）。
 - 內建 AI 的工具多了 `wiki_list`、`wiki_get`；對話紀錄的工具摘要是「列出 wiki 頁」「讀取 wiki「標題」」。
 - 角色權限改變（例如把 `view_wiki_pages` 授給成員用到的角色）照舊會讓專案的 security epoch 增加，讀過該專案的 agent 脈絡會變成 `context_unavailable`，要委派者開新脈絡。
+
+## 0035_agent_wiki_writes（M2.3b，agent 寫 wiki）
+
+規格見設計 06 §3.11、§3.12 R-AG3、R-AG5、R-AG6、R-AG11、§4.3、§4.4。
+
+- **migration 0035**：`agent_write_log` 多 `wiki_page_id`（舊列為 NULL）；暫停原因多 `wiki_write_burst`；角色範本多 `docs`。不動角色、權限、成員或專案，security epoch 不變。
+- **`command_submit` 收一個 `wiki_put` 或 `wiki_move` 的命令文件**：委派要含該 op、W(P) = A(P)、W(P) 包含在這個脈絡讀過的所有專案的議題讀者裡（否則 `audience_expansion_forbidden`）。改既有頁要帶 `{wiki_page, lock_version}` 前置條件。受保護的頁回 `forbidden_op`（`wiki_protected`），`attachments` 回 `forbidden_op`（`attachments_people_only`），`wiki_delete`／`wiki_restore`／`wiki_protect` 回 `invalid_request`；`revert_from` 另外要歷史讀者包含議題讀者。
+- **既有委派不會自動得到 wiki 操作**：委派頁「可用的指令」列出 `wiki_put`、`wiki_move` 為新操作，委派者自己加。新建的委派預設 `direct`（A5 (c)）。AI 團隊的範本只有新的「文件維護」（`docs`）帶 wiki 操作，預設 review。
+- **送審**：政策 review、`require_review`、委派開了 `read_own_time`（外部 agent，`review:time_read_delegated`）、內建 AI 這次 run 讀過工時（`review:time_taint`）時，wiki 寫入變成 ChangeSet。審閱詳情多一個 `wiki` 欄位（和目前版本的差異、`stale`）；這種提案不能批次勾選核准、不能修改（`invalid_request`，`reason = wiki_proposal`），要改請駁回讓 agent 重提。核准時頁已被改過，執行失敗為 `conflict`。
+- **同一頁 10 分鐘內第 11 次寫入**會暫停 agent 的工作脈絡（`agent_suspended`，原因 `wiki_write_burst`），和議題相同的處理方式。
+- 人與 agent 的 changeset validations 現在在可寫的交易裡試跑後回滾，回應不變。

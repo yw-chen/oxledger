@@ -7,6 +7,7 @@ CREATE INDEX agent_principals_delegator_idx ON public.agent_principals USING btr
 CREATE INDEX agent_write_log_agent_idx ON public.agent_write_log USING btree (agent_principal_id, kind, at)
 CREATE INDEX agent_write_log_delegation_idx ON public.agent_write_log USING btree (delegation_id, kind, at) WHERE (delegation_id IS NOT NULL)
 CREATE INDEX agent_write_log_issue_idx ON public.agent_write_log USING btree (issue_id, at) WHERE (issue_id IS NOT NULL)
+CREATE INDEX agent_write_log_wiki_page_idx ON public.agent_write_log USING btree (wiki_page_id, at) WHERE (wiki_page_id IS NOT NULL)
 CREATE INDEX ai_conversations_purge_idx ON public.ai_conversations USING btree (purge_after) WHERE (purged_at IS NULL)
 CREATE INDEX ai_conversations_user_idx ON public.ai_conversations USING btree (user_id, last_at DESC) WHERE (deleted_at IS NULL)
 CREATE INDEX ai_messages_run_idx ON public.ai_messages USING btree (run_id)

@@ -27,7 +27,8 @@
 
 use crate::auth::{AuthContext, PrincipalKind};
 use crate::commands::{
-    self, Attribution, CommandDoc, Effect, EvalCtx, ItemResult, Mode, Parsed, SearchReceipt,
+    self, Attribution, CommandDoc, CommandResult, Effect, EvalCtx, ItemResult, Mode, Parsed,
+    SearchReceipt,
 };
 use crate::db;
 use crate::describe::MAX_OPS;
@@ -280,6 +281,9 @@ pub struct ExecItem {
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue_id: Option<Uuid>,
+    /// The page an approved wiki proposal wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki_page_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -342,6 +346,11 @@ pub struct ChangesetView {
     /// `original` = when the agent proposed it, G13). Empty with
     /// `content_unavailable`.
     pub diff: Vec<crate::review_queue::DiffRow>,
+    /// Design 06 §3.12: a wiki proposal against the page as it is now
+    /// (R-W7's diff). Absent for issue proposals and with
+    /// `content_unavailable`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<crate::wiki::WikiProposalDiff>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -770,25 +779,40 @@ fn stored_validation(r: &Result<commands::Sim>, at: DateTime<Utc>) -> Json {
             "items": sim.items.iter().map(|i| json!({"op_id": i.op_id,
                 "status": if i.status == "applied" { "would_change" } else { "no_effect" }})).collect::<Vec<_>>(),
         }),
-        Err(e) => {
-            let a = classify(e);
-            let code = a
-                .as_ref()
-                .map_or(ErrorCode::TemporarilyUnavailable, |a| a.code);
-            let d = a.and_then(|a| a.details).unwrap_or(Json::Null);
-            let blocking = Blocking {
-                op_id: d
-                    .get("op_id")
-                    .and_then(Json::as_str)
-                    .and_then(|s| s.parse().ok()),
-                code: code.as_str().to_string(),
-                field: error_field(&d),
-            };
-            json!({
-                "status": if is_conflict(code) { "conflict" } else { "blocked" },
-                "checked_at": at, "blocking": [blocking], "items": [],
-            })
-        }
+        Err(e) => failed_validation(e, at),
+    }
+}
+
+/// The stored validation of a check that failed: `conflict` or `blocked`.
+fn failed_validation(e: &anyhow::Error, at: DateTime<Utc>) -> Json {
+    let a = classify(e);
+    let code = a
+        .as_ref()
+        .map_or(ErrorCode::TemporarilyUnavailable, |a| a.code);
+    let d = a.and_then(|a| a.details).unwrap_or(Json::Null);
+    let blocking = Blocking {
+        op_id: d
+            .get("op_id")
+            .and_then(Json::as_str)
+            .and_then(|s| s.parse().ok()),
+        code: code.as_str().to_string(),
+        field: error_field(&d),
+    };
+    json!({
+        "status": if is_conflict(code) { "conflict" } else { "blocked" },
+        "checked_at": at, "blocking": [blocking], "items": [],
+    })
+}
+
+/// The stored validation of a wiki proposal's trial write.
+fn wiki_validation(r: &Result<CommandResult>, at: DateTime<Utc>) -> Json {
+    match r {
+        Ok(c) => json!({
+            "status": "passed", "checked_at": at, "blocking": [],
+            "items": c.items.iter().map(|i| json!({"op_id": i.op_id,
+                "status": if i.status == "applied" { "would_change" } else { "no_effect" }})).collect::<Vec<_>>(),
+        }),
+        Err(e) => failed_validation(e, at),
     }
 }
 
@@ -863,6 +887,63 @@ async fn visible_keys(
         .collect())
 }
 
+/// Design 06 §3.12: a wiki proposal is approved or rejected as it is; a
+/// change is a new proposal of the agent (02's resubmit flow).
+fn wiki_not_revisable() -> anyhow::Error {
+    ApiError::new(
+        ErrorCode::InvalidRequest,
+        "a wiki proposal is not revised: approve it as it is, or reject it and let the agent propose again",
+    )
+    .with_details(json!({"reason": "wiki_proposal"}))
+    .into()
+}
+
+/// The project of a stored wiki proposal (its body names it by id);
+/// `None` for an issue document.
+fn wiki_project(body: &Json) -> Option<Uuid> {
+    if !crate::wiki::is_wiki_doc(body) {
+        return None;
+    }
+    body["ops"][0]["target"]["project"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+}
+
+/// Design 06 §3.12: who may read a wiki proposal. A person while they read
+/// that wiki (R-W1); an agent while R-AG1 holds for it. `None` for an issue
+/// document (its issues decide, [`readable_targets`]).
+async fn wiki_readable(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    body: &Json,
+) -> Result<Option<bool>> {
+    if !crate::wiki::is_wiki_doc(body) {
+        return Ok(None);
+    }
+    let Some(project) = wiki_project(body) else {
+        return Ok(Some(false));
+    };
+    if caller.context_id().is_some() {
+        return match crate::wiki::agent::agent_access(
+            &mut *conn,
+            caller,
+            &project.to_string(),
+            false,
+        )
+        .await
+        {
+            Ok(_) => Ok(Some(true)),
+            Err(e) if classify(&e).is_some() => Ok(Some(false)),
+            Err(e) => Err(e),
+        };
+    }
+    Ok(Some(
+        crate::wiki::access_of(&mut *conn, caller, project)
+            .await?
+            .is_some(),
+    ))
+}
+
 /// Existing target issues of a stored document.
 fn body_targets(body: &Json) -> Vec<Uuid> {
     body["preconditions"]
@@ -929,6 +1010,10 @@ async fn readable_targets(
     caller: AuthContext,
     body: &Json,
 ) -> Result<Option<Vec<TargetView>>> {
+    // A wiki proposal names no issue: it is readable while its wiki is.
+    if let Some(ok) = wiki_readable(&mut *conn, caller, body).await? {
+        return Ok(ok.then(Vec::new));
+    }
     let ids = body_targets(body);
     let keys = visible_keys(&mut *conn, caller, &ids).await?;
     if ids.iter().any(|i| !keys.contains_key(i)) {
@@ -1352,6 +1437,9 @@ pub enum SubmitResult {
         /// §3.5.4: the fields are read with `time_list`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         time_entries: Vec<crate::time_entries::TimeEntryEffect>,
+        /// A wiki document's page (design 06 §3.11).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        wiki: Vec<crate::wiki::WikiEffect>,
         search: commands::SearchReceipt,
         next_actions: Vec<NextAction>,
     },
@@ -1486,6 +1574,21 @@ async fn agent_write_tx(
     spa_origin: &str,
 ) -> Result<SubmitResult> {
     let who = agent_who(&mut *conn, caller).await?;
+    // Design 06 §3.11: a wiki document has its own path (one op, one page).
+    if crate::wiki::is_wiki_doc(proposal) {
+        return agent_wiki_tx(
+            &mut *conn,
+            caller,
+            &who,
+            operation_id,
+            proposal,
+            revise,
+            submit,
+            group,
+            spa_origin,
+        )
+        .await;
+    }
     // Steps 2–4.
     let action = match (revise, submit) {
         (Some(_), _) => ACTION_REVISE,
@@ -1573,6 +1676,7 @@ async fn agent_write_tx(
                 effects: c.effects,
                 versions: serde_json::from_value(r["versions"].clone()).unwrap_or_default(),
                 time_entries: c.time_entries,
+                wiki: Vec::new(),
                 search: c.search,
                 next_actions: Vec::new(),
             });
@@ -1630,6 +1734,9 @@ async fn agent_write_tx(
         let v = load_version(&mut *conn, cs.id, cs.current_version)
             .await?
             .ok_or_else(not_found)?;
+        if v.body.as_ref().is_some_and(crate::wiki::is_wiki_doc) {
+            return Err(wiki_not_revisable());
+        }
         old_ceiling = Some(v.authority_ceiling);
     }
 
@@ -1990,7 +2097,465 @@ async fn agent_direct(
             .collect(),
         versions,
         time_entries,
+        wiki: Vec::new(),
         search: commands::SearchReceipt { consistent_after },
+        next_actions: Vec::new(),
+    })
+}
+
+/// The wiki ops an agent may send (design 06 §3.11).
+pub const AGENT_WIKI_OPS: [&str; 2] = ["wiki_put", "wiki_move"];
+
+/// Design 06 §3.11: what an agent may not put in a wiki document, before
+/// it is parsed: the other wiki ops are not among its commands
+/// (`invalid_request`, as `delete_time_entry`); attachments are for people
+/// (`forbidden_op`, A2).
+fn agent_wiki_refusal(raw: &Json) -> Option<anyhow::Error> {
+    let ops = raw.get("ops").and_then(Json::as_array)?;
+    for (i, op) in ops.iter().enumerate() {
+        let kind = op.get("kind").and_then(Json::as_str).unwrap_or_default();
+        if !AGENT_WIKI_OPS.contains(&kind) {
+            return Some(
+                ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("{kind} is not among an agent's commands"),
+                )
+                .with_details(json!({"path": format!("ops[{i}].kind")}))
+                .into(),
+            );
+        }
+        if op.get("attachments").is_some() {
+            return Some(
+                ApiError::new(ErrorCode::ForbiddenOp, "only people attach files")
+                    .with_details(json!({"reason": "attachments_people_only",
+                                         "path": format!("ops[{i}].attachments")}))
+                    .into(),
+            );
+        }
+    }
+    None
+}
+
+/// Design 06 R-AG11 (A6 (b)): an external agent whose work context may read
+/// the delegator's time (05 A1(c)) sends every wiki write for review; the
+/// server keeps no record of what the agent read, and a wiki has no
+/// notifications. The whole context counts: the time it read is not tied
+/// to the delegation of the project it writes.
+async fn reads_own_time(conn: &mut PgConnection, who: &AgentWho) -> Result<bool> {
+    if who.run.is_some() {
+        return Ok(false);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM delegations WHERE context_id = $1 AND agent_principal_id = $2
+                          AND read_own_time AND revoked_at IS NULL AND expires_at > clock_timestamp())",
+    )
+    .bind(who.context)
+    .bind(who.agent)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// `command_submit` (and, from M2.3b's review half, propose and revise)
+/// with a wiki document (design 06 §3.11, §3.12): R-AG1 decides the
+/// project, then the steps of [`agent_write_tx`] in the same order; a
+/// direct write runs the wiki engine as `agent_direct`.
+#[allow(clippy::too_many_arguments)]
+async fn agent_wiki_tx(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &AgentWho,
+    operation_id: Uuid,
+    raw: &Json,
+    revise: Option<(Uuid, i32)>,
+    submit: Option<bool>,
+    group: Option<&GroupRef>,
+    spa_origin: &str,
+) -> Result<SubmitResult> {
+    if let Some(e) = agent_wiki_refusal(raw) {
+        return Err(e);
+    }
+    let doc = crate::wiki::parse(raw)?;
+    let (kind, project_text) = match &doc.ops[0] {
+        crate::wiki::WikiOp::WikiPut(o) => ("wiki_put", o.target.project.clone()),
+        crate::wiki::WikiOp::WikiMove(o) => ("wiki_move", o.target.project.clone()),
+        _ => unreachable!("refused above"),
+    };
+    let hash: [u8; 32] = Sha256::digest(commands::canonical_json(raw).as_bytes()).into();
+    let (Some(require_review), None, None) = (submit, revise, group) else {
+        // M2.3b's review half: wiki proposals through propose / revise.
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "wiki documents go through command_submit",
+        )
+        .with_details(json!({"path": "ops[0].kind"}))
+        .into());
+    };
+    let fp: [u8; 32] = {
+        let payload: [u8; 32] = Sha256::digest(
+            [
+                &hash[..],
+                who.context.as_bytes(),
+                Uuid::nil().as_bytes(),
+                &0i32.to_be_bytes(),
+                &[1 + require_review as u8][..],
+            ]
+            .concat(),
+        )
+        .into();
+        commands::fingerprint(ACTION_SUBMIT, &payload)
+    };
+
+    // R-AG1 (and §6.7 step 1's `not_found`): the project is delegated, its
+    // wiki is the delegator's to read, and W(P) ⊇ A(P).
+    let (access, delegable) =
+        crate::wiki::agent::agent_access_d(&mut *conn, caller, &project_text, false).await?;
+    let dest = access.project;
+    let (deleg, sources) = agent_step1(&mut *conn, who, dest, false).await?;
+
+    let Some(request_id) =
+        commands::open_request(&mut *conn, who.agent, operation_id, ACTION_SUBMIT, &fp).await?
+    else {
+        let r = commands::stored_result(&mut *conn, who.agent, operation_id, ACTION_SUBMIT, &fp)
+            .await?;
+        // §16.5: a key that answered review_required keeps that answer.
+        if let Some(id) = r["changeset_id"].as_str().and_then(|s| s.parse().ok()) {
+            let reason = r["reason"].as_str().unwrap_or("requested").to_string();
+            let v = r["version"].as_i64().unwrap_or(1) as i32;
+            let proposal = agent_view(&mut *conn, caller, id, v, spa_origin).await?;
+            return Ok(SubmitResult::ReviewRequired { reason, proposal });
+        }
+        return wiki_replay(&mut *conn, caller, &r).await;
+    };
+
+    quota::check_not_suspended(&mut *conn, who.context).await?;
+    crate::ai_team::check_not_paused(&mut *conn, who.agent, deleg.id).await?;
+    quota::take_proposal_slot(&mut *conn, deleg.id).await?;
+
+    // §16.3: the delegation's policy for the op (an existing delegation has
+    // no wiki op: `off`, design 06 T-M2-48).
+    let decision = wiki_decision(&mut *conn, deleg.id, &deleg.proposal_ops, kind).await?;
+    if let Some(e) = decision.refusal() {
+        return Err(e);
+    }
+
+    // Step 8, R-AG3: W(P) ⊆ ∩ A(R).
+    let source_ids: Vec<Uuid> = sources.iter().map(|s| s.0).collect();
+    crate::audience::check_wiki(&mut *conn, dest, &source_ids).await?;
+
+    let reason = if require_review {
+        Some("requested")
+    } else if decision == policy::Decision::Review {
+        Some("policy")
+    } else if reads_own_time(&mut *conn, who).await? {
+        Some("time_read_delegated")
+    } else {
+        match who.run {
+            Some(run) if crate::ai::runner::run_time_tainted(&mut *conn, run).await? => {
+                quota::log_time_taint_review(&mut *conn, who.agent, who.context, deleg.id).await?;
+                Some("time_taint")
+            }
+            _ => None,
+        }
+    };
+
+    let client: Uuid = sqlx::query_scalar(
+        "SELECT c.id FROM agent_clients c JOIN agent_principals ap ON ap.agent_client_id = c.id
+         WHERE ap.agent_principal_id = $1 AND c.enabled FOR SHARE OF c",
+    )
+    .bind(who.agent)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(delegation_gone)?;
+    let mut deadlines = vec![(deleg.expires_at, ErrorCode::DelegationUnavailable)];
+    if let Some(c) = who.credential {
+        let exp: DateTime<Utc> =
+            sqlx::query_scalar("SELECT expires_at FROM agent_credentials WHERE id = $1")
+                .bind(c)
+                .fetch_one(&mut *conn)
+                .await?;
+        deadlines.push((exp, ErrorCode::Unauthenticated));
+    }
+    let writer = crate::wiki::agent::AgentWriter {
+        agent: who.agent,
+        delegator: who.delegator,
+        delegation: deleg.id,
+        client,
+        context: who.context,
+        policy_version: deleg.policy_version,
+        hash,
+        sources: sources.clone(),
+        deadlines,
+        history: delegable.history,
+        access,
+        review: None,
+    };
+
+    if let Some(reason) = reason {
+        return wiki_propose(
+            &mut *conn, caller, who, &deleg, &sources, &writer, request_id, &doc, kind, reason,
+            spa_origin,
+        )
+        .await;
+    }
+
+    // The direct write (§16.5): the counters, then the engine as the agent.
+    quota::reserve_direct(
+        &mut *conn,
+        who.agent,
+        who.context,
+        &[],
+        0,
+        quota::VersionWrite::default(),
+    )
+    .await?;
+    let r = crate::wiki::execute(
+        &mut *conn,
+        caller,
+        crate::wiki::Writer::Agent(&writer),
+        request_id,
+        hash,
+        &doc,
+    )
+    .await?;
+    let page = r.wiki[0].page_id;
+    // R-AG6: more than 10 writes to one page in 10 minutes trip the breaker.
+    quota::wiki_page_burst(&mut *conn, who.agent, who.context, page).await?;
+    quota::record_direct(&mut *conn, who.agent, who.context, deleg.id, &[], &[], None).await?;
+    quota::record_wiki_write(&mut *conn, who.agent, who.context, deleg.id, page).await?;
+    commands::complete_request(
+        &mut *conn,
+        request_id,
+        &json!({
+            "execution_id": r.execution_id,
+            "consistent_after": r.search.consistent_after,
+            "wiki": r.wiki.iter().map(|w| json!({
+                "page_id": w.page_id, "project_id": w.project_id, "version": w.version,
+                "lock_version": w.lock_version, "changed": w.changed, "created": w.created,
+            })).collect::<Vec<_>>(),
+        }),
+    )
+    .await?;
+    Ok(SubmitResult::Applied {
+        execution_id: r.execution_id,
+        effects: Vec::new(),
+        versions: Vec::new(),
+        time_entries: Vec::new(),
+        wiki: r.wiki,
+        search: r.search,
+        next_actions: Vec::new(),
+    })
+}
+
+/// §16.3 for a wiki op: `off` unless the delegation holds it (an older
+/// delegation has no wiki op, design 06 T-M2-48), else its policy.
+async fn wiki_decision(
+    conn: &mut PgConnection,
+    delegation: Uuid,
+    proposal_ops: &[String],
+    kind: &str,
+) -> Result<policy::Decision> {
+    Ok(if proposal_ops.iter().any(|o| o == kind) {
+        policy::load(&mut *conn, delegation)
+            .await?
+            .decide_items(&[(0, kind, Vec::new())])
+    } else {
+        policy::Decision::Off {
+            op_index: 0,
+            command: kind.to_string(),
+            field: None,
+        }
+    })
+}
+
+/// The trial write of a wiki document (in a savepoint, rolled back): the
+/// engine's own checks, nothing kept. Rejections (§6.7: forbidden, not
+/// found, invalid) come back as `Err`; a conflict or a block as the inner
+/// `Err`.
+async fn wiki_trial(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    writer: &crate::wiki::agent::AgentWriter,
+    request: Option<Uuid>,
+    doc: &crate::wiki::WikiCommandDoc,
+) -> Result<Result<CommandResult>> {
+    sqlx::query("SAVEPOINT wiki_trial")
+        .execute(&mut *conn)
+        .await?;
+    // A validation has no request of its own: a throwaway one, rolled back
+    // with the rest.
+    let request = match request {
+        Some(r) => r,
+        None => commands::open_request(
+            &mut *conn,
+            writer.agent,
+            Uuid::now_v7(),
+            "validate",
+            &[0; 32],
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("a fresh operation id is free"))?,
+    };
+    let r = crate::wiki::execute(
+        &mut *conn,
+        caller,
+        crate::wiki::Writer::Agent(writer),
+        request,
+        writer.hash,
+        doc,
+    )
+    .await;
+    sqlx::query("ROLLBACK TO SAVEPOINT wiki_trial")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("RELEASE SAVEPOINT wiki_trial")
+        .execute(&mut *conn)
+        .await?;
+    match r {
+        Err(e) if commands::is_rejection(&e) => Err(e),
+        r => Ok(r),
+    }
+}
+
+/// Design 06 §3.12 審閱路徑: a wiki op for review becomes a ChangeSet with
+/// the whole document (its project by id), checked by a trial write.
+#[allow(clippy::too_many_arguments)]
+async fn wiki_propose(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &AgentWho,
+    deleg: &DelegRow,
+    sources: &[(Uuid, i64)],
+    writer: &crate::wiki::agent::AgentWriter,
+    request_id: Uuid,
+    doc: &crate::wiki::WikiCommandDoc,
+    kind: &str,
+    reason: &str,
+    spa_origin: &str,
+) -> Result<SubmitResult> {
+    let dest = writer.access.project;
+    let trial = wiki_trial(&mut *conn, caller, writer, Some(request_id), doc).await?;
+    let checked_at = clock(&mut *conn).await?;
+    let validation = wiki_validation(&trial, checked_at);
+    let mut body = serde_json::to_value(doc)?;
+    body["ops"][0]["target"]["project"] = json!(dest.to_string());
+    let op_id = body["ops"][0]["op_id"]
+        .as_str()
+        .and_then(|s| s.parse::<Uuid>().ok())
+        .ok_or_else(|| anyhow::anyhow!("a parsed wiki op has its op_id"))?;
+    let expires_at: DateTime<Utc> =
+        sqlx::query_scalar("SELECT LEAST(clock_timestamp() + make_interval(days => $1), $2)")
+            .bind(DEFAULT_DAYS)
+            .bind(deleg.expires_at)
+            .fetch_one(&mut *conn)
+            .await?;
+    quota::reserve_proposal(&mut *conn, who.agent, deleg.id, true).await?;
+    quota::record_proposal(&mut *conn, who.agent, who.context, deleg.id).await?;
+    let cs_id = Uuid::now_v7();
+    let ceiling = ceiling_json(deleg);
+    let stored = StoreVersion {
+        origin: who.origin(),
+        group_id: None,
+        cs_id,
+        version: 1,
+        new_changeset: true,
+        context_project_id: dest,
+        proposer: who.agent,
+        on_behalf_of: who.delegator,
+        delegation: deleg.id,
+        context: who.context,
+        expires_at,
+        ceiling: &ceiling,
+        sources,
+        editor: who.agent,
+        edit_method: "agent_propose",
+        based_on: None,
+        validation: &validation,
+        rules_version: None,
+        baseline: None,
+    };
+    let hash = store_body(&mut *conn, &body, &[(op_id, kind)], &stored).await?;
+    commands::complete_request(
+        &mut *conn,
+        request_id,
+        &json!({"changeset_id": cs_id, "version": 1, "reason": reason, "details": null}),
+    )
+    .await?;
+    let status = validation["status"]
+        .as_str()
+        .unwrap_or("blocked")
+        .to_string();
+    Ok(SubmitResult::ReviewRequired {
+        reason: reason.to_string(),
+        proposal: ProposeResult {
+            changeset_id: cs_id,
+            version: 1,
+            proposal_hash: hash_str(&hash),
+            state: "proposed".into(),
+            group_id: None,
+            targets: Vec::new(),
+            validation: Some(compact(&validation)),
+            content_unavailable: None,
+            review_url: format!("{spa_origin}{}", review_path(cs_id, 1)),
+            expires_at,
+            next_actions: next_for(&status),
+            details: None,
+        },
+    })
+}
+
+/// A resent wiki `command_submit`: the stored result; the page only while
+/// the agent may still read that wiki (R-AG1), with its title now.
+async fn wiki_replay(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    r: &Json,
+) -> Result<SubmitResult> {
+    let mut wiki = Vec::new();
+    for e in r["wiki"].as_array().cloned().unwrap_or_default() {
+        let (Some(page), Some(project)) = (
+            e["page_id"].as_str().and_then(|s| s.parse::<Uuid>().ok()),
+            e["project_id"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok()),
+        ) else {
+            continue;
+        };
+        if crate::wiki::agent::agent_access(&mut *conn, caller, &project.to_string(), false)
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        let title: String = sqlx::query_scalar("SELECT title FROM wiki_pages WHERE id = $1")
+            .bind(page)
+            .fetch_one(&mut *conn)
+            .await?;
+        wiki.push(crate::wiki::WikiEffect {
+            page_id: page,
+            project_id: project,
+            title,
+            version: e["version"].as_i64().unwrap_or_default() as i32,
+            lock_version: e["lock_version"].as_i64().unwrap_or_default(),
+            changed: e["changed"].as_bool().unwrap_or_default(),
+            created: e["created"].as_bool().unwrap_or_default(),
+            reparented: Vec::new(),
+        });
+    }
+    Ok(SubmitResult::Applied {
+        execution_id: r["execution_id"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default(),
+        effects: Vec::new(),
+        versions: Vec::new(),
+        time_entries: Vec::new(),
+        wiki,
+        search: commands::SearchReceipt {
+            consistent_after: r["consistent_after"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        },
         next_actions: Vec::new(),
     })
 }
@@ -2138,9 +2703,20 @@ async fn store_version(
         private_defaults.insert(i, p);
     }
     let body = canonical_doc(&parsed.norm, &private_defaults)?;
-    let body_sha: [u8; 32] = Sha256::digest(commands::canonical_json(&body)).into();
+    store_body(conn, &body, &parsed.op_list(), s).await
+}
+
+/// [`store_version`] of a body already normalized, with its ops in order
+/// (a wiki proposal: one `wiki_put` or `wiki_move`, design 06 §3.12).
+async fn store_body(
+    conn: &mut PgConnection,
+    body: &Json,
+    ops: &[(Uuid, &str)],
+    s: &StoreVersion<'_>,
+) -> Result<[u8; 32]> {
+    let body_sha: [u8; 32] = Sha256::digest(commands::canonical_json(body)).into();
     let hash = proposal_hash(&HashInput {
-        document: &body,
+        document: body,
         expires_at: s.expires_at,
         ceiling: s.ceiling,
         origin: s.origin,
@@ -2177,7 +2753,7 @@ async fn store_version(
     let content: Uuid = sqlx::query_scalar(
         "INSERT INTO proposal_contents (body, body_sha256, baseline) VALUES ($1, $2, $3) RETURNING id",
     )
-    .bind(&body)
+    .bind(body)
     .bind(&body_sha[..])
     .bind(s.baseline)
     .fetch_one(&mut *conn)
@@ -2221,16 +2797,16 @@ async fn store_version(
         .execute(&mut *conn)
         .await?;
     }
-    for (pos, (op_id, kind)) in parsed.op_list().into_iter().enumerate() {
+    for (pos, (op_id, kind)) in ops.iter().enumerate() {
         sqlx::query(
             "INSERT INTO changeset_version_ops (changeset_id, version, op_id, position, kind)
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(s.cs_id)
         .bind(s.version)
-        .bind(op_id)
+        .bind(*op_id)
         .bind(pos as i32)
-        .bind(kind)
+        .bind(*kind)
         .execute(&mut *conn)
         .await?;
     }
@@ -2262,7 +2838,8 @@ async fn agent_view(
         Some(b) => {
             let ids = body_targets(b);
             let k = visible_keys(&mut *conn, caller, &ids).await?;
-            let all = ids.iter().all(|i| k.contains_key(i));
+            let all = ids.iter().all(|i| k.contains_key(i))
+                && wiki_readable(&mut *conn, caller, b).await?.unwrap_or(true);
             (k, all)
         }
         None => (BTreeMap::new(), false),
@@ -2538,8 +3115,13 @@ async fn filter_for_agent(
     // §8.8 (T-M12): issues the version created are targets too.
     let created = created_issues(&mut *conn, cs.id, version).await?;
     let created_visible = visible_keys(&mut *conn, caller, &created).await?;
+    let wiki_ok = match &ver.body {
+        Some(b) => wiki_readable(&mut *conn, caller, b).await?.unwrap_or(true),
+        None => true,
+    };
     let all_readable = ids.iter().all(|i| visible.contains_key(i))
-        && created.iter().all(|i| created_visible.contains_key(i));
+        && created.iter().all(|i| created_visible.contains_key(i))
+        && wiki_ok;
     let shows_body = own && all_readable && ver.body.is_some();
     let content_unavailable = if !own {
         Some("owner_revised".to_string())
@@ -2733,7 +3315,7 @@ pub async fn agent_validate(
             quota::reserve_validate(&app.pool, agent, context, d).await?;
         }
     }
-    let mut tx = read_tx(app).await?;
+    let mut tx = trial_tx(app).await?;
     let cs = agent_cs(&mut tx, caller, id).await?;
     let ver = load_version(&mut tx, id, version)
         .await?
@@ -2766,6 +3348,16 @@ pub async fn validate_command(
 ) -> Result<crate::forms::ValidateResult> {
     let raw = crate::forms::command_of(input);
     quota::check_raw_payload(&raw)?;
+    if crate::wiki::is_wiki_doc(&raw) {
+        // Design 06 §3.11: wiki ops go through command_submit only; a
+        // proposal for review carries its own check.
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "validate takes issue documents; command_submit checks a wiki document",
+        )
+        .with_details(json!({"path": "ops[0].kind"}))
+        .into());
+    }
     // Step 1 first (who, where, the delegation), then the quota, then the
     // trial run in a transaction that is rolled back.
     let deleg_id = {
@@ -2951,9 +3543,26 @@ async fn exec_view(
             commands::effect_from_stored(e, id, visible.get(&id)?.clone())
         })
         .collect();
+    // A wiki page only while its wiki is the viewer's to read (R-W1).
+    let mut wiki_ok: BTreeSet<Uuid> = BTreeSet::new();
+    for page in items.iter().filter_map(|i| i.wiki_page_id) {
+        let project: Option<Uuid> =
+            sqlx::query_scalar("SELECT project_id FROM wiki_pages WHERE id = $1")
+                .bind(page)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if let Some(p) = project
+            && crate::wiki::access_of(&mut *conn, caller, p)
+                .await?
+                .is_some()
+        {
+            wiki_ok.insert(page);
+        }
+    }
     let items = items
         .into_iter()
         .filter(|i| i.issue_id.is_none_or(|id| visible.contains_key(&id)))
+        .filter(|i| i.wiki_page_id.is_none_or(|p| wiki_ok.contains(&p)))
         .collect();
     Ok(ExecutionView {
         execution_id: ex.id,
@@ -3193,8 +3802,13 @@ pub async fn get(
         }
         None => Vec::new(),
     };
+    let wiki = match &proposal {
+        Some(b) => crate::wiki::proposal_diff(&mut tx, caller, b).await?,
+        None => None,
+    };
     Ok(ChangesetView {
         diff,
+        wiki,
         changeset_id: id,
         state: cs.state,
         current_version: cs.current_version,
@@ -3229,7 +3843,7 @@ pub async fn validate(
     input: &ValidateInput,
 ) -> Result<Validation> {
     let user = owner_of(&caller)?;
-    let mut tx = read_tx(app).await?;
+    let mut tx = trial_tx(app).await?;
     db::effective(&mut tx, caller).await?;
     let cs = load_owned(&mut tx, user, id, false).await?;
     // Only something still approvable is worth a trial run (§8.5).
@@ -3288,6 +3902,9 @@ async fn validate_in(
             "you can no longer read every issue this proposal changes",
         ));
     }
+    if crate::wiki::is_wiki_doc(&body) {
+        return wiki_validate(&mut *tx, caller, cs, version, ver, &body).await;
+    }
     let parsed = commands::parse(&mut *tx, &body, MAX_OPS as usize).await?;
     let ectx = EvalCtx {
         mode: Mode::Validate,
@@ -3328,31 +3945,8 @@ async fn validate_in(
             None,
         ),
         Err(e) => {
-            let code = classify(e).map(|a| a.code);
-            let failed = match code {
-                Some(ErrorCode::InvalidRequest) => 0,
-                Some(ErrorCode::NotFound) => 1,
-                Some(ErrorCode::ForbiddenOp) => 2,
-                Some(c) if is_conflict(c) => 3,
-                _ => 4,
-            };
-            for (i, n) in names.iter().enumerate() {
-                let s = match i.cmp(&failed) {
-                    std::cmp::Ordering::Less => "passed",
-                    std::cmp::Ordering::Equal => "failed",
-                    std::cmp::Ordering::Greater => "not_checked",
-                };
-                checks.insert(n.to_string(), s.into());
-            }
-            (
-                if code.is_some_and(is_conflict) {
-                    "conflict"
-                } else {
-                    "blocked"
-                },
-                Vec::new(),
-                Some(error_view(e)),
-            )
+            let (status, error) = failed_checks(&mut checks, e);
+            (status, Vec::new(), Some(error))
         }
     };
     Ok(Validation {
@@ -3365,6 +3959,166 @@ async fn validate_in(
         effects,
         error,
     })
+}
+
+const CHECK_NAMES: [&str; 5] = [
+    "structure",
+    "visibility",
+    "permissions",
+    "preconditions",
+    "workflow",
+];
+
+/// §8.5's checks up to the failing one; the status and the error.
+fn failed_checks(
+    checks: &mut BTreeMap<String, String>,
+    e: &anyhow::Error,
+) -> (&'static str, ErrorView) {
+    let code = classify(e).map(|a| a.code);
+    let failed = match code {
+        Some(ErrorCode::InvalidRequest) => 0,
+        Some(ErrorCode::NotFound) => 1,
+        Some(ErrorCode::ForbiddenOp) => 2,
+        Some(c) if is_conflict(c) => 3,
+        _ => 4,
+    };
+    for (i, n) in CHECK_NAMES.iter().enumerate() {
+        let s = match i.cmp(&failed) {
+            std::cmp::Ordering::Less => "passed",
+            std::cmp::Ordering::Equal => "failed",
+            std::cmp::Ordering::Greater => "not_checked",
+        };
+        checks.insert(n.to_string(), s.into());
+    }
+    (
+        if code.is_some_and(is_conflict) {
+            "conflict"
+        } else {
+            "blocked"
+        },
+        error_view(e),
+    )
+}
+
+/// §8.5 for a wiki proposal: a trial write (rolled back) as the agent for
+/// the delegator — through the owner's view of the wiki, or R-AG1's for
+/// the agent itself — within the version's sources (R-AG3).
+async fn wiki_validate(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    cs: &CsRow,
+    version: i32,
+    ver: &VerRow,
+    body: &Json,
+) -> Result<Validation> {
+    let r: Result<CommandResult> = async {
+        let doc = crate::wiki::parse(body)?;
+        let project = wiki_project(body).ok_or_else(not_found)?;
+        let (access, delegable) = if caller.context_id().is_some() {
+            crate::wiki::agent::agent_access_d(&mut *conn, caller, &project.to_string(), false)
+                .await?
+        } else {
+            let a = crate::wiki::access_of(&mut *conn, caller, project)
+                .await?
+                .ok_or_else(not_found)?;
+            let d = crate::audience::wiki_delegable(&mut *conn, project).await?;
+            if !d.pages {
+                return Err(crate::wiki::agent::not_delegable());
+            }
+            (a, d)
+        };
+        let sources: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT project_id, security_epoch FROM changeset_version_source_projects
+             WHERE changeset_id = $1 AND version = $2 ORDER BY project_id",
+        )
+        .bind(cs.id)
+        .bind(version)
+        .fetch_all(&mut *conn)
+        .await?;
+        let ids: Vec<Uuid> = sources.iter().map(|x| x.0).collect();
+        crate::audience::check_wiki(&mut *conn, project, &ids).await?;
+        let delegation = cs.delegation_id.ok_or_else(delegation_gone)?;
+        let policy_version: i64 =
+            sqlx::query_scalar("SELECT policy_version FROM delegations WHERE id = $1")
+                .bind(delegation)
+                .fetch_one(&mut *conn)
+                .await?;
+        let client: Uuid = sqlx::query_scalar(
+            "SELECT agent_client_id FROM agent_principals WHERE agent_principal_id = $1",
+        )
+        .bind(cs.proposer_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(delegation_gone)?;
+        let writer = crate::wiki::agent::AgentWriter {
+            agent: cs.proposer_id,
+            delegator: cs.on_behalf_of_id,
+            delegation,
+            client,
+            context: cs.context_id.ok_or_else(not_found)?,
+            policy_version,
+            hash: ver
+                .proposal_hash
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("a proposal hash is 32 bytes"))?,
+            sources,
+            deadlines: Vec::new(),
+            history: delegable.history,
+            access,
+            review: None,
+        };
+        wiki_trial(&mut *conn, caller, &writer, None, &doc).await?
+    }
+    .await;
+    let checked_at = clock(&mut *conn).await?;
+    let mut checks: BTreeMap<String, String> = CHECK_NAMES
+        .iter()
+        .map(|n| (n.to_string(), "passed".to_string()))
+        .collect();
+    checks.insert("audience".into(), "passed".into());
+    let (status, effects, error) = match &r {
+        Ok(c) => (
+            "passed",
+            c.items
+                .iter()
+                .map(|i| OpEffect {
+                    op_id: i.op_id,
+                    status: if i.status == "applied" {
+                        "would_change"
+                    } else {
+                        "no_effect"
+                    }
+                    .into(),
+                })
+                .collect(),
+            None,
+        ),
+        Err(e) => {
+            let (status, error) = failed_checks(&mut checks, e);
+            (status, Vec::new(), Some(error))
+        }
+    };
+    Ok(Validation {
+        version,
+        proposal_hash: hash_str(&ver.proposal_hash),
+        status: status.into(),
+        checked_at,
+        checks,
+        warnings: Vec::new(),
+        effects,
+        error,
+    })
+}
+
+/// A transaction for a trial run: writable (a wiki proposal is checked by
+/// a write that is rolled back), never committed.
+async fn trial_tx(app: &App) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut tx = app.pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
 }
 
 /// The browser session of the owner (decisions record it).
@@ -3802,6 +4556,9 @@ async fn owner_version_in(
     let old = load_version(&mut *conn, id, cs.current_version)
         .await?
         .ok_or_else(not_found)?;
+    if old.body.as_ref().is_some_and(crate::wiki::is_wiki_doc) {
+        return Err(wiki_not_revisable());
+    }
     sources_kept(&mut *conn, cs, sources).await?;
     let ceiling = ceiling_map(&old.authority_ceiling);
     if !ceiling.contains_key(&dest) {
@@ -4353,6 +5110,19 @@ async fn apply_tx(
         return Err(delegation_gone());
     };
     fault("apply.after_step5").await?;
+    if crate::wiki::is_wiki_doc(&body) {
+        let mut deadlines = vec![
+            (cs.expires_at, ErrorCode::ChangesetExpired),
+            (deleg_expires, ErrorCode::DelegationUnavailable),
+        ];
+        if let Some(d) = session_deadline {
+            deadlines.push((d, ErrorCode::Unauthenticated));
+        }
+        return apply_wiki(
+            &mut *conn, caller, who, &cs, &ex, &ver, &body, client_id, deadlines,
+        )
+        .await;
+    }
     // Step 6: R and the destination, epochs as recorded.
     let parsed = commands::parse(&mut *conn, &body, MAX_OPS as usize).await?;
     // §16.3: an operation the delegator has since turned off is not applied
@@ -4503,6 +5273,165 @@ async fn apply_tx(
     Ok(())
 }
 
+/// Transaction B for an approved wiki proposal (design 06 §3.12): the
+/// delegation's policy, R-AG1 (the approver reads the wiki, W(P) ⊇ A(P)) and
+/// R-AG3 against the version's sources again, then the write as the agent
+/// for the delegator, approved by the owner (`external_agent`). A page
+/// changed since the proposal is a `conflict` (the execution fails).
+#[allow(clippy::too_many_arguments)]
+async fn apply_wiki(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    who: &commands::Executor,
+    cs: &CsRow,
+    ex: &ExecRow,
+    ver: &VerRow,
+    body: &Json,
+    client: Uuid,
+    deadlines: Vec<(DateTime<Utc>, ErrorCode)>,
+) -> Result<()> {
+    let doc = crate::wiki::parse(body)?;
+    let (kind, op_id) = match &doc.ops[0] {
+        crate::wiki::WikiOp::WikiPut(o) => ("wiki_put", o.op_id),
+        crate::wiki::WikiOp::WikiMove(o) => ("wiki_move", o.op_id),
+        _ => return Err(api(ErrorCode::InvalidRequest, "not an agent wiki op")),
+    };
+    let project = wiki_project(body).ok_or_else(not_found)?;
+    let context = cs.context_id.ok_or_else(not_found)?;
+    let delegation = cs.delegation_id.ok_or_else(delegation_gone)?;
+    // §16.3: an op the delegator has since turned off is not applied.
+    let ops: Vec<String> = sqlx::query_scalar("SELECT proposal_ops FROM delegations WHERE id = $1")
+        .bind(delegation)
+        .fetch_one(&mut *conn)
+        .await?;
+    if let Some(e) = wiki_decision(&mut *conn, delegation, &ops, kind)
+        .await?
+        .refusal()
+    {
+        return Err(e);
+    }
+    if !ceiling_map(&ver.authority_ceiling).contains_key(&project) {
+        return Err(not_found());
+    }
+    let dest: BTreeMap<Uuid, bool> = [(project, false)].into_iter().collect();
+    lock_sources(&mut *conn, context, &dest).await?;
+
+    sqlx::query(
+        "UPDATE changeset_executions SET status = 'running', started_at = clock_timestamp() WHERE id = $1",
+    )
+    .bind(ex.id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE changesets SET state = 'executing' WHERE id = $1")
+        .bind(cs.id)
+        .execute(&mut *conn)
+        .await?;
+
+    // R-W1 for the approver (the delegator), R-AG1's W(P) ⊇ A(P), R-AG3
+    // against this version's sources.
+    let access = crate::wiki::access_of(&mut *conn, caller, project)
+        .await?
+        .ok_or_else(|| {
+            api(
+                ErrorCode::ProposalUnavailable,
+                "you can no longer read this wiki",
+            )
+        })?;
+    let delegable = crate::audience::wiki_delegable(&mut *conn, project).await?;
+    if !delegable.pages {
+        return Err(crate::wiki::agent::not_delegable());
+    }
+    let snapshot: Vec<(Uuid, i64)> = sqlx::query_as(
+        "SELECT project_id, security_epoch FROM changeset_version_source_projects
+         WHERE changeset_id = $1 AND version = $2 ORDER BY project_id",
+    )
+    .bind(cs.id)
+    .bind(ex.version)
+    .fetch_all(&mut *conn)
+    .await?;
+    let ids: Vec<Uuid> = snapshot.iter().map(|x| x.0).collect();
+    crate::audience::check_wiki(&mut *conn, project, &ids).await?;
+    fault("apply.after_locks").await?;
+
+    let hash: [u8; 32] = ver
+        .proposal_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("a proposal hash is 32 bytes"))?;
+    let writer = crate::wiki::agent::AgentWriter {
+        agent: cs.proposer_id,
+        delegator: cs.on_behalf_of_id,
+        delegation,
+        client,
+        context,
+        policy_version: 0,
+        hash,
+        sources: snapshot,
+        deadlines,
+        history: delegable.history,
+        access,
+        review: Some(crate::wiki::agent::ReviewApply {
+            approver: who.user_id,
+            changeset: cs.id,
+            version: ex.version,
+            op_id,
+            exec: ex.id,
+        }),
+    };
+    let r = crate::wiki::execute(
+        &mut *conn,
+        caller,
+        crate::wiki::Writer::Agent(&writer),
+        ex.operation_request_id,
+        hash,
+        &doc,
+    )
+    .await?;
+    let token = r.search.consistent_after.clone();
+    let item_results = json!({
+        "items": r.items.iter().map(|i| json!({
+            "op_id": i.op_id, "status": i.status, "wiki_page_id": i.wiki_page_id})).collect::<Vec<_>>(),
+        "wiki": r.wiki.iter().map(|w| json!({
+            "page_id": w.page_id, "project_id": w.project_id, "version": w.version,
+            "lock_version": w.lock_version, "changed": w.changed, "created": w.created,
+        })).collect::<Vec<_>>(),
+        "effects": [],
+    });
+    sqlx::query(
+        "INSERT INTO changeset_applications (changeset_id, version, execution_id, effect_count)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(cs.id)
+    .bind(ex.version)
+    .bind(ex.id)
+    .bind(r.wiki.iter().filter(|w| w.changed).count() as i32)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE changeset_executions SET status = 'succeeded', item_results = $2,
+                consistent_after = $3, finished_at = clock_timestamp()
+         WHERE id = $1",
+    )
+    .bind(ex.id)
+    .bind(&item_results)
+    .bind(&token)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE changesets SET state = 'succeeded' WHERE id = $1")
+        .bind(cs.id)
+        .execute(&mut *conn)
+        .await?;
+    commands::complete_request(
+        &mut *conn,
+        ex.operation_request_id,
+        &json!({"changeset_id": cs.id, "version": ex.version, "execution_id": ex.id,
+                "consistent_after": token}),
+    )
+    .await?;
+    fault("apply.before_commit").await?;
+    Ok(())
+}
+
 /// Per-op results of a failed execution: the failing op `failed` with its
 /// code, earlier ops `rolled_back`, later ones `not_run`.
 fn failure_items(ops: &[(Uuid, i32)], e: &anyhow::Error) -> (String, Vec<ExecItem>) {
@@ -4529,6 +5458,7 @@ fn failure_items(ops: &[(Uuid, i32)], e: &anyhow::Error) -> (String, Vec<ExecIte
                 status: status.into(),
                 code: c,
                 issue_id: None,
+                wiki_page_id: None,
             }
         })
         .collect();
@@ -4899,6 +5829,9 @@ pub async fn preview_revision(
             ErrorCode::ProposalUnavailable,
             "you can no longer read every issue this proposal changes",
         ));
+    }
+    if crate::wiki::is_wiki_doc(&body) {
+        return Err(wiki_not_revisable());
     }
     let ids = body_targets(&body);
     let locks = target_locks(&mut tx, &ids, false).await?;

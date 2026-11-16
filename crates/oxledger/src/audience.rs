@@ -274,6 +274,22 @@ fn forbidden(kind: &str, op_index: usize) -> anyhow::Error {
     .into()
 }
 
+/// Design 06 R-AG3: a wiki write reaches W(P); M9 needs W(P) ⊆ ∩ A(sources).
+pub(crate) async fn check_wiki(
+    conn: &mut PgConnection,
+    project: Uuid,
+    sources: &[Uuid],
+) -> Result<()> {
+    let allowed = allowed_readers(&mut *conn, sources).await?;
+    if !wiki_audience(&mut *conn, project, "view_wiki_pages")
+        .await?
+        .is_subset(&allowed)
+    {
+        return Err(forbidden("wiki", 0));
+    }
+    Ok(())
+}
+
 /// Step 8 / step 14: every destination of `doc` must be read by no one
 /// outside ∩ A(sources). Existing private issues are left to the visibility
 /// check (the agent cannot read them: `not_found`, T-Q5).

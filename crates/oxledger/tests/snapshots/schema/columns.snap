@@ -78,6 +78,7 @@ agent_write_log.kind text NOT NULL
 agent_write_log.issue_id uuid
 agent_write_log.version_id uuid
 agent_write_log.at timestamp with time zone NOT NULL DEFAULT clock_timestamp()
+agent_write_log.wiki_page_id uuid
 ai_budget_months.month date NOT NULL
 ai_budget_months.reserved_usd numeric(12,6) NOT NULL DEFAULT 0
 ai_budget_months.spent_usd numeric(12,6) NOT NULL DEFAULT 0

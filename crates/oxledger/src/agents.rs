@@ -35,10 +35,24 @@ pub const PROPOSAL_OPS: [&str; 10] = [
     "log_time",
     "update_time_entry",
 ];
-/// Design 06 §3.11, §2.3: the wiki ops agents get in M2.3. Migration 0034
-/// already lists them in the op CHECKs (the union rule); until M2.3 they are
-/// not offered and the engine refuses them from an agent.
+/// Design 06 §3.11, §2.3: the wiki ops agents get in M2.3 (0034 lists them
+/// in the op CHECKs). A wiki document has its own path in command_submit.
 pub const WIKI_PROPOSAL_OPS: [&str; 2] = ["wiki_put", "wiki_move"];
+/// Every op a delegation may hold: [`PROPOSAL_OPS`] and [`WIKI_PROPOSAL_OPS`].
+pub const DELEGABLE_OPS: [&str; 12] = [
+    "create_issue",
+    "update_fields",
+    "transition",
+    "add_note",
+    "duplicate_of",
+    "create_version",
+    "update_version",
+    "triage_decide",
+    "log_time",
+    "update_time_entry",
+    "wiki_put",
+    "wiki_move",
+];
 /// Contract 05 §4.3 (A1(b)): time commands default to `review` on a new
 /// delegation (and when added later).
 pub const TIME_OPS: [&str; 2] = ["log_time", "update_time_entry"];
@@ -931,12 +945,12 @@ pub(crate) fn check_spec(input: &DelegationInput) -> Result<(i32, Duration)> {
         return Err(invalid("proposal_ops", "choose at least one operation"));
     }
     for op in &input.proposal_ops {
-        if !PROPOSAL_OPS.contains(&op.as_str()) {
+        if !DELEGABLE_OPS.contains(&op.as_str()) {
             return Err(ApiError::new(
                 ErrorCode::InvalidValue,
                 format!("unknown operation {op:?}"),
             )
-            .with_details(json!({"path": "proposal_ops", "allowed": PROPOSAL_OPS}))
+            .with_details(json!({"path": "proposal_ops", "allowed": DELEGABLE_OPS}))
             .into());
         }
     }
@@ -1260,7 +1274,8 @@ async fn policy_view_in(conn: &mut PgConnection, user: Uuid, id: Uuid) -> Result
         return Err(api(ErrorCode::NotFound, "no such delegation"));
     };
     let p = policy::load(&mut *conn, id).await?;
-    let available_commands = PROPOSAL_OPS
+    // Design 06 §4.3: an older delegation shows the wiki ops as new ones.
+    let available_commands = DELEGABLE_OPS
         .iter()
         .filter(|o| !p.commands.contains_key(**o))
         .map(|o| o.to_string())
@@ -1339,10 +1354,10 @@ pub async fn set_delegation_policies(
         ));
     }
     for k in input.commands.keys() {
-        if !PROPOSAL_OPS.contains(&k.as_str()) {
+        if !DELEGABLE_OPS.contains(&k.as_str()) {
             return Err(
                 ApiError::new(ErrorCode::InvalidValue, format!("unknown operation {k:?}"))
-                    .with_details(json!({"path": "commands", "allowed": PROPOSAL_OPS}))
+                    .with_details(json!({"path": "commands", "allowed": DELEGABLE_OPS}))
                     .into(),
             );
         }

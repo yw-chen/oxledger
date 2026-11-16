@@ -58,6 +58,9 @@ pub mod limits {
     pub const VERSION_CREATES_PER_HOUR: i64 = 10;
     /// §17.9a: agent writes to one version per 10 minutes (more trips the breaker).
     pub const VERSION_WRITES_PER_10_MIN: i64 = 5;
+    /// Design 06 R-AG6: agent writes to one wiki page per 10 minutes (more
+    /// trips the breaker).
+    pub const WIKI_PAGE_WRITES_PER_10_MIN: i64 = 10;
     /// Contract 05 §4.3: time entries an agent logs per hour.
     pub const LOG_TIME_PER_HOUR: i64 = 20;
     /// §8.9: validate per delegation per hour.
@@ -340,6 +343,56 @@ pub async fn record_direct(
             .execute(&mut *conn)
             .await?;
     }
+    Ok(())
+}
+
+/// Design 06 R-AG6: an agent's writes to one wiki page in 10 minutes; the
+/// write that would be one more than [`limits::WIKI_PAGE_WRITES_PER_10_MIN`]
+/// trips the breaker (checked once the engine knows the page, before the
+/// write is counted; the breaker's rollback undoes the write).
+pub async fn wiki_page_burst(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    page: Uuid,
+) -> Result<()> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agent_write_log
+         WHERE wiki_page_id = $1 AND kind = 'wiki_write' AND agent_principal_id = $2
+           AND at > clock_timestamp() - interval '10 minutes'",
+    )
+    .bind(page)
+    .bind(agent)
+    .fetch_one(&mut *conn)
+    .await?;
+    if n >= limits::WIKI_PAGE_WRITES_PER_10_MIN {
+        return Err(TripBreaker {
+            context,
+            reason: "wiki_write_burst",
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Counts a direct wiki write to `page` for [`wiki_page_burst`].
+pub async fn record_wiki_write(
+    conn: &mut PgConnection,
+    agent: Uuid,
+    context: Uuid,
+    delegation: Uuid,
+    page: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_write_log (agent_principal_id, context_id, delegation_id, kind, wiki_page_id)
+         VALUES ($1, $2, $3, 'wiki_write', $4)",
+    )
+    .bind(agent)
+    .bind(context)
+    .bind(delegation)
+    .bind(page)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 

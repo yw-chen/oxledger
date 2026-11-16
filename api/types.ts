@@ -296,6 +296,8 @@ export type ChangesetView = {
   validation: unknown;
   version: number;
   version_created_at: string;
+  /** Design 06 §3.12: a wiki proposal against the page as it is now (R-W7's diff). Absent for issue proposals and with `content_unavailable`. */
+  wiki?: WikiProposalDiff | null;
 };
 
 export type ColumnHead = {
@@ -812,6 +814,8 @@ export type ExecItem = {
   op_id: string;
   /** `applied`, `no_effect`, `failed`, `rolled_back` or `not_run`. */
   status: string;
+  /** The page an approved wiki proposal wrote. */
+  wiki_page_id?: string | null;
 };
 
 export type ExecutionView = {
@@ -4137,6 +4141,32 @@ export type WikiProjectRef = {
   id: string;
   key: string;
   name: string;
+};
+
+/** Design 06 §3.12 審閱路徑: what a wiki proposal would do to the page as it is now (R-W7's diff of the current version and the proposed body). */
+export type WikiProposalDiff = {
+  current_version: number | null;
+  /** The precondition's lock version; differs from `lock_version` when the page changed since the agent read it (applying it is a `conflict`). */
+  expected_lock_version: number | null;
+  /** A revert to an older version the reader may not see (no `view_wiki_edits` now): no hunks. */
+  history_hidden: boolean;
+  /** The proposed body against the current version (empty for a move). */
+  hunks: Array<DiffHunk>;
+  /** `wiki_put` or `wiki_move`. */
+  kind: string;
+  lock_version: number | null;
+  /** A move: the proposed parent as given (`null` is the top level). */
+  new_parent: unknown;
+  /** A rename: the proposed title. */
+  new_title: string | null;
+  /** The page now; `None` for a page the proposal creates (or one gone since). */
+  page_id: string | null;
+  project_id: string;
+  /** The page changed since the proposal was made. */
+  stale: boolean;
+  /** The page's title now, or the new page's title. */
+  title: string;
+  truncated: boolean;
 };
 
 export type WikiSearchItem = {

@@ -1050,6 +1050,17 @@
           "version_created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "wiki": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WikiProposalDiff"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Design 06 §3.12: a wiki proposal against the page as it is now\n(R-W7's diff). Absent for issue proposals and with\n`content_unavailable`."
           }
         },
         "required": [
@@ -3223,6 +3234,14 @@
           "status": {
             "description": "`applied`, `no_effect`, `failed`, `rolled_back` or `not_run`.",
             "type": "string"
+          },
+          "wiki_page_id": {
+            "description": "The page an approved wiki proposal wrote.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -15653,6 +15672,97 @@
           "id",
           "key",
           "name"
+        ],
+        "type": "object"
+      },
+      "WikiProposalDiff": {
+        "description": "Design 06 §3.12 審閱路徑: what a wiki proposal would do to the page as it\nis now (R-W7's diff of the current version and the proposed body).",
+        "properties": {
+          "current_version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expected_lock_version": {
+            "description": "The precondition's lock version; differs from `lock_version` when the\npage changed since the agent read it (applying it is a `conflict`).",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "history_hidden": {
+            "description": "A revert to an older version the reader may not see (no\n`view_wiki_edits` now): no hunks.",
+            "type": "boolean"
+          },
+          "hunks": {
+            "description": "The proposed body against the current version (empty for a move).",
+            "items": {
+              "$ref": "#/components/schemas/DiffHunk"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "`wiki_put` or `wiki_move`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "new_parent": {
+            "description": "A move: the proposed parent as given (`null` is the top level)."
+          },
+          "new_title": {
+            "description": "A rename: the proposed title.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_id": {
+            "description": "The page now; `None` for a page the proposal creates (or one gone\nsince).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "stale": {
+            "description": "The page changed since the proposal was made.",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "The page's title now, or the new page's title.",
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "project_id",
+          "page_id",
+          "title",
+          "new_title",
+          "new_parent",
+          "current_version",
+          "lock_version",
+          "expected_lock_version",
+          "stale",
+          "hunks",
+          "truncated",
+          "history_hidden"
         ],
         "type": "object"
       },

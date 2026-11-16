@@ -102,6 +102,16 @@ pub(crate) async fn agent_access(
     project: &str,
     history: bool,
 ) -> Result<Access> {
+    Ok(agent_access_d(conn, caller, project, history).await?.0)
+}
+
+/// [`agent_access`] with the project's [`WikiDelegable`].
+pub(crate) async fn agent_access_d(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    project: &str,
+    history: bool,
+) -> Result<(Access, WikiDelegable)> {
     let actor = perm::actor(&mut *conn, caller).await?;
     let Some(delegated) = &actor.delegations else {
         return Err(not_agent());
@@ -133,7 +143,111 @@ pub(crate) async fn agent_access(
             ));
         }
     }
-    Ok(a)
+    Ok((a, d))
+}
+
+// ---------------------------------------------------------------- writing
+
+/// An agent's direct wiki write (design 06 §3.11, §3.12): who it is, for
+/// whom, under which delegation, and what it read (R) — everything the
+/// `agent_direct` execution records. Built by `command_submit` after its
+/// step 1 and the policy, audience and quota checks.
+pub(crate) struct AgentWriter {
+    pub agent: Uuid,
+    pub delegator: Uuid,
+    pub delegation: Uuid,
+    pub client: Uuid,
+    pub context: Uuid,
+    pub policy_version: i64,
+    pub hash: [u8; 32],
+    /// R as locked by step 1: (project, security epoch).
+    pub sources: Vec<(Uuid, i64)>,
+    /// The delegation's and the credential's ends.
+    pub deadlines: Vec<(DateTime<Utc>, ErrorCode)>,
+    /// H(P) ⊇ A(P): a revert (which reads an older version) is allowed.
+    pub history: bool,
+    /// The delegator's view of the wiki (R-AG1 holds).
+    pub access: Access,
+    /// An approved proposal (`external_agent`): the write is the ChangeSet
+    /// execution's, not a command execution of its own.
+    pub review: Option<ReviewApply>,
+}
+
+/// What an approved wiki proposal's write records (design 06 §3.12, 02
+/// §16.2 `external_agent`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReviewApply {
+    pub approver: Uuid,
+    pub changeset: Uuid,
+    pub version: i32,
+    pub op_id: Uuid,
+    /// The ChangeSet execution (an `execution_refs` row of kind changeset).
+    pub exec: Uuid,
+}
+
+impl AgentWriter {
+    /// The `agent_direct` command execution (05 §16.2) and its R; for an
+    /// approved proposal the ChangeSet execution already recorded.
+    pub(crate) async fn record_execution(
+        &self,
+        conn: &mut PgConnection,
+        request: Uuid,
+        consistent_after: &str,
+    ) -> Result<Uuid> {
+        if let Some(r) = &self.review {
+            return Ok(r.exec);
+        }
+        let exec = Uuid::now_v7();
+        sqlx::query("INSERT INTO execution_refs (id, kind) VALUES ($1, 'command')")
+            .bind(exec)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(
+            "INSERT INTO command_executions (id, operation_request_id, actor_id, on_behalf_of_id, origin,
+                                             delegation_id, context_id, policy_version, command_hash,
+                                             consistent_after)
+             VALUES ($1, $2, $3, $4, 'agent_direct', $5, $6, $7, $8, $9)",
+        )
+        .bind(exec)
+        .bind(request)
+        .bind(self.agent)
+        .bind(self.delegator)
+        .bind(self.delegation)
+        .bind(self.context)
+        .bind(self.policy_version)
+        .bind(&self.hash[..])
+        .bind(consistent_after)
+        .execute(&mut *conn)
+        .await?;
+        for (p, e) in &self.sources {
+            sqlx::query(
+                "INSERT INTO command_execution_source_projects (execution_id, project_id, security_epoch)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(exec)
+            .bind(p)
+            .bind(e)
+            .execute(&mut *conn)
+            .await?;
+        }
+        Ok(exec)
+    }
+
+    pub(crate) fn prov(&self, request: Uuid, exec: Uuid) -> super::Prov {
+        super::Prov {
+            user: self.agent,
+            request,
+            exec,
+            agent: Some(super::AgentProv {
+                delegator: self.delegator,
+                delegation: self.delegation,
+                client: self.client,
+                review: self
+                    .review
+                    .map(|r| (r.approver, r.changeset, r.version, r.op_id)),
+            }),
+        }
+    }
 }
 
 // ---------------------------------------------------------------- wiki_list
