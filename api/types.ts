@@ -222,6 +222,95 @@ export type AssistantStatus = {
   runtime_id: string;
 };
 
+/** Where `attach` puts the files: exactly one of `{"issue": key}`, `{"note": note_id}` and `{"project", "page"|"page_id"}`. */
+export type AttachTarget = {
+  /** An issue key (`AUTH-12`): the issue's own attachments. */
+  issue?: string | null;
+  /** A note id: read as the note is (private notes included). */
+  note?: string | null;
+  page?: string | null;
+  page_id?: string | null;
+  /** A project id or key, with `page` or `page_id`: a wiki page. */
+  project?: string | null;
+};
+
+/** An attachment document: exactly one `attach` or `delete_attachment` (people only; no preconditions: attachments are not fields). */
+export type AttachmentCommandDoc = {
+  /** Always 1. */
+  command_schema_version: number;
+  /** Exactly one attachment op. */
+  ops: Array<AttachmentOp>;
+  /** Always empty. */
+  preconditions?: Array<unknown>;
+  title?: string | null;
+};
+
+/** One file to attach: an upload of the caller's in the same project, not used yet and not expired (R-A1). */
+export type AttachmentInput = {
+  /** Another name than the upload's (the same rules as an upload's name). */
+  filename?: string | null;
+  upload_id: string;
+};
+
+/** One attachment as its readers see it (R-A9: agents too, through `get` and `wiki_get`). */
+export type AttachmentMeta = {
+  /** Who attached it. */
+  author: string;
+  /** Web app only: whether the caller may delete it now (R-A7, R-W14). */
+  can_delete?: boolean | null;
+  /** R-A3: one of the four image types, or `application/octet-stream`. */
+  content_type: string;
+  created_at: string;
+  /** `[已遮蔽]` once redacted. */
+  filename: string;
+  id: string;
+  /** The content was redacted (D12): it cannot be downloaded. */
+  redacted?: boolean;
+  size: number;
+};
+
+export type AttachmentOp = {
+  /** 1–10 files. */
+  attachments: Array<AttachmentInput>;
+  kind: "attach";
+  op_id: string;
+  target: AttachTarget;
+} | {
+  kind: "delete_attachment";
+  op_id: string;
+  /** `{"attachment": id}`. */
+  target: AttachmentRef;
+};
+
+export type AttachmentRef = {
+  attachment: string;
+};
+
+/** `GET /attachments/{id}`: the metadata and where it hangs. */
+export type AttachmentView = {
+  /** Who attached it. */
+  author: string;
+  /** Web app only: whether the caller may delete it now (R-A7, R-W14). */
+  can_delete?: boolean | null;
+  /** R-A3: one of the four image types, or `application/octet-stream`. */
+  content_type: string;
+  created_at: string;
+  /** `[已遮蔽]` once redacted. */
+  filename: string;
+  id: string;
+  /** An issue's (or its note's) attachment: the issue's current key. */
+  issue_key?: string | null;
+  note_id?: string | null;
+  project_key: string;
+  /** The content was redacted (D12): it cannot be downloaded. */
+  redacted?: boolean;
+  size: number;
+  /** A wiki page's attachment: the page, its title, and the page's version when it was attached. */
+  wiki_page_id?: string | null;
+  wiki_title?: string | null;
+  wiki_version?: number | null;
+};
+
 export type AuthorRef = {
   id: string;
   /** `user` or `agent`. */
@@ -325,7 +414,7 @@ export type ColumnHead = {
 };
 
 /** The body of `POST /commands`: an issue command document or a wiki one (OpenAPI only; the engine tells them apart by the op kinds). */
-export type CommandBody = CommandDoc | WikiCommandDoc;
+export type CommandBody = CommandDoc | WikiCommandDoc | AttachmentCommandDoc;
 
 /** A command document, `command_schema_version = 1`. */
 export type CommandDoc = {
@@ -1307,6 +1396,8 @@ export type IssuedCredential = {
 };
 
 export type ItemResult = {
+  /** The attachments the op added or deleted (design 06 R-A7); omitted when none. */
+  attachment_ids?: Array<string>;
   /** The issue the op wrote (issue ops). */
   issue_id?: string | null;
   op_id: string;
@@ -1607,6 +1698,8 @@ export type NoteActions = {
 };
 
 export type NoteView = {
+  /** Design 06 R-A5, R-A9: the note's attachments (none on a retracted note); omitted when none. */
+  attachments?: Array<AttachmentMeta>;
   author: string;
   body: string;
   /** `markdown`, or `plain` for notes written before M2 (design 06 R-M9). */
@@ -1717,6 +1810,8 @@ export type OpEffect = {
 };
 
 export type OpInput = {
+  /** Design 06 R-A7: uploads to attach to the new issue (people only; at most 10 in the whole document). */
+  attachments?: Array<AttachmentInput> | null;
   /** A name later ops use as `{"type": "temp", "ref": …}`. */
   bind?: string | null;
   /** `subject` (required), `description`, `is_private`, `assigned_to_id`, `priority_id`, `fixed_version_id`, `start_date`, `due_date`, `estimated_hours` (decimal string, ≤ 2 decimals), `cf:<id>`. */
@@ -1741,6 +1836,8 @@ export type OpInput = {
   target: TargetRef;
   to_status_id: string;
 } | {
+  /** Design 06 R-A7: uploads to attach to the note (people only; at most 10 in the whole document). */
+  attachments?: Array<AttachmentInput> | null;
   body: string;
   /** Design 06 R-M9: omitted = `markdown`; agents may write only `markdown`. A note's format never changes (notes are not edited). */
   format?: TextFormat | null;
@@ -2776,6 +2873,10 @@ export type SpaIssue = {
   assignee?: string | null;
   /** user | group (a group assignee is not a person). */
   assignee_kind?: string | null;
+  /** Design 06 R-A9: the issue's own attachments (not its notes'), oldest first. In the full detail only when there are any. */
+  attachments?: Array<AttachmentMeta> | null;
+  /** Design 06 R-A11: the server keeps files (`OXLEDGER_FILES_DIR`); off, the page shows no upload controls. */
+  attachments_enabled: boolean;
   author?: string | null;
   children?: Array<IssueBrief> | null;
   /** Field → citation_id of the whole field (`citations`). */
@@ -4065,8 +4166,8 @@ export type WikiIndexCan = {
 };
 
 export type WikiOp = {
-  /** Attachments come with M2.4: any value is `invalid_argument`. */
-  attachments?: unknown;
+  /** R-W14, R-A7: uploads to attach to the page (people only; at most 10). */
+  attachments?: Array<AttachmentInput> | null;
   /** Markdown, at most 524288 bytes (`payload_too_large`). Exactly one of `body` and `revert_from`. */
   body?: string | null;
   /** At most 255 characters. */
@@ -4109,8 +4210,8 @@ export type WikiOp = {
 
 /** `GET /projects/{id}/wiki/pages/{title}`. */
 export type WikiPage = {
-  /** Attachments come with M2.4: always empty. */
-  attachments: Array<unknown>;
+  /** R-W14: the page's attachments, oldest first (with `can_delete`). */
+  attachments: Array<AttachmentMeta>;
   body: string;
   /** Sanitized HTML, references resolved for the caller. */
   body_html: string;
@@ -4135,6 +4236,8 @@ export type WikiPage = {
 };
 
 export type WikiPageCan = {
+  /** Upload and attach files (R-W14; the server keeps files, R-A11). */
+  attach: boolean;
   delete: boolean;
   edit: boolean;
   /** Versions and diffs (`view_wiki_edits`): a read permission. */
@@ -4382,6 +4485,8 @@ export interface Endpoints {
   "POST /ai/runs/{id}/cancel": { body: Empty; data: RunView };
   "GET /ai/runs/{id}/stream": { body: never; data: Empty };
   "GET /ai/status": { body: never; data: AiStatus };
+  "GET /attachments/{id}": { body: never; data: AttachmentView };
+  "GET /attachments/{id}/content": { body: never; data: unknown };
   "POST /auth/login": { body: LoginBody; data: LoginData };
   "GET /auth/login-context": { body: never; data: LoginContextData };
   "POST /auth/logout": { body: never; data: Done };

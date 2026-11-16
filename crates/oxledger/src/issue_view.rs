@@ -47,6 +47,7 @@ pub const GET_FIELDS: &[&str] = &[
     "last_activity_at",
     "lock_version",
     "triage",
+    "attachments",
 ];
 pub const INCLUDES: &[&str] = &["actions", "recent_notes", "recent_events", "dev"];
 pub const MAX_NOTE_LIMIT: u32 = 10;
@@ -128,6 +129,10 @@ pub struct NoteView {
     /// Cites the whole note (source kind issue_note).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub citation_id: Option<String>,
+    /// Design 06 R-A5, R-A9: the note's attachments (none on a retracted
+    /// note); omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attachments::read::AttachmentMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -293,6 +298,10 @@ pub struct IssueView {
     pub recent_notes: Option<RecentNotes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_events: Option<RecentEvents>,
+    /// Design 06 R-A9: the issue's own attachments (not its notes'), oldest
+    /// first. In the full detail only when there are any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<crate::attachments::read::AttachmentMeta>>,
     /// `include: ["dev"]`: pull requests that name this issue (§19.7), a
     /// read-only projection that may lag GitHub by minutes (`synced_at`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -513,6 +522,9 @@ pub struct SpaIssue {
     pub status_id: Uuid,
     pub assigned_to_id: Option<Uuid>,
     pub priority_id: Option<Uuid>,
+    /// Design 06 R-A11: the server keeps files (`OXLEDGER_FILES_DIR`); off,
+    /// the page shows no upload controls.
+    pub attachments_enabled: bool,
 }
 
 pub async fn spa_view(
@@ -560,6 +572,7 @@ pub async fn spa_view(
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
+    fill_can_delete(&mut tx, caller, id, &mut v).await?;
     tx.commit().await?;
     Ok(SpaIssue {
         view: v,
@@ -571,7 +584,48 @@ pub async fn spa_view(
         status_id: ids.3,
         assigned_to_id: ids.4,
         priority_id: ids.5,
+        attachments_enabled: crate::attachments::enabled(),
     })
+}
+
+/// Web app only: whether the caller may delete each attachment shown
+/// (R-A7), for the delete control.
+async fn fill_can_delete(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    issue: Uuid,
+    v: &mut IssueView,
+) -> Result<()> {
+    let rows = crate::attachments::read::of_issue(&mut *conn, issue).await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let (project, tracker, author, obo): (Uuid, Uuid, Uuid, Option<Uuid>) = sqlx::query_as(
+        "SELECT project_id, tracker_id, author_id, created_on_behalf_of_id FROM issues WHERE id = $1",
+    )
+    .bind(issue)
+    .fetch_one(&mut *conn)
+    .await?;
+    let actor = crate::perm::actor(&mut *conn, caller).await?;
+    let Some(pp) = crate::perm::project_perms(&mut *conn, &actor, project).await? else {
+        return Ok(());
+    };
+    let me = caller.user_id();
+    let own = crate::perm::is_own(me, author, obo);
+    let may = |id: Uuid| {
+        rows.iter()
+            .find(|r| r.id == id)
+            .is_some_and(|r| crate::attachments::read::issue_may_delete(&pp, tracker, own, me, r))
+    };
+    for a in v.attachments.iter_mut().flatten() {
+        a.can_delete = Some(may(a.id));
+    }
+    for n in v.recent_notes.iter_mut().flat_map(|n| n.items.iter_mut()) {
+        for a in &mut n.attachments {
+            a.can_delete = Some(may(a.id));
+        }
+    }
+    Ok(())
 }
 
 /// Design 06 R-M10: the `*_html` fields of the web app's issue page (the
@@ -752,6 +806,8 @@ async fn get_one(
             form_rule_marks: (!d.form_rule_marks.is_empty()).then_some(d.form_rule_marks),
             ..Default::default()
         };
+        let own = issue_attachments(&mut *conn, id).await?;
+        v.attachments = (!own.is_empty()).then_some(own);
         attach_blocks(conn, reader, caller, &mut v, id, plan).await?;
         return Ok(v);
     };
@@ -853,6 +909,7 @@ async fn get_one(
             "updated_at" => v.updated_at = Some(row.try_get("updated_at")?),
             "lock_version" => v.lock_version = Some(row.try_get("lock_version")?),
             "triage" => v.triage = Some(row.try_get("triage")?),
+            "attachments" => v.attachments = Some(issue_attachments(&mut *conn, id).await?),
             "status_since" => {
                 let status: Uuid = row.try_get("status_id")?;
                 let since = status_since(&mut *conn, id, status, created).await?;
@@ -989,6 +1046,19 @@ async fn attach_blocks(
     Ok(())
 }
 
+/// The issue's own live attachments (R-A9), oldest first.
+async fn issue_attachments(
+    conn: &mut PgConnection,
+    issue: Uuid,
+) -> Result<Vec<crate::attachments::read::AttachmentMeta>> {
+    Ok(crate::attachments::read::of_issue(&mut *conn, issue)
+        .await?
+        .iter()
+        .filter(|r| r.note_id.is_none())
+        .map(|r| r.meta())
+        .collect())
+}
+
 // ---------------------------------------------------------------- status_since
 
 /// Contract 02 用法 4, T-U8: when the issue last entered its current status.
@@ -1052,6 +1122,7 @@ async fn recent_notes(
 ) -> Result<RecentNotes> {
     let mut items = Vec::new();
     let mut before: Option<(DateTime<Utc>, Uuid)> = None;
+    let files = crate::attachments::read::of_issue(&mut *conn, issue.id).await?;
     loop {
         let rows: Vec<NoteRow> = sqlx::query_as(
             "SELECT n.id, p.name AS author, n.author_id, n.created_on_behalf_of_id, n.created_at,
@@ -1121,6 +1192,15 @@ async fn recent_notes(
                 redacted: r.redacted,
                 retracted: r.retracted,
                 retracted_by: r.retracted_by,
+                attachments: if r.retracted {
+                    Vec::new()
+                } else {
+                    files
+                        .iter()
+                        .filter(|f| f.note_id == Some(r.id))
+                        .map(|f| f.meta())
+                        .collect()
+                },
             });
         }
         if n < PAGE {
@@ -1391,6 +1471,22 @@ pub(crate) async fn event_view(
     {
         return Ok(None);
     }
+    // R-A5: a retracted note's files are out of sight, names included,
+    // redacted or not (the note's own event stays, as an empty note).
+    if matches!(r.kind.as_str(), "attachment_added" | "attachment_removed")
+        && let Some(note) = r.note_id
+    {
+        let retracted: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM issue_notes
+                            WHERE id = $1 AND retracted_at IS NOT NULL)",
+        )
+        .bind(note)
+        .fetch_one(&mut *conn)
+        .await?;
+        if retracted {
+            return Ok(None);
+        }
+    }
     let detail = if r.redacted {
         None
     } else {
@@ -1435,6 +1531,12 @@ pub(crate) async fn event_view(
                 "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
             })),
             "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
+            // Design 06 R-A7: which file (the note's, when on a note).
+            "attachment_added" | "attachment_removed" => Some(json!({
+            "attachment_id": r.payload["attachment_id"],
+            "filename": r.payload["filename"],
+            "note_id": r.note_id,
+            })),
             "duplicate_added" | "duplicate_removed" => {
                 let other = r.payload["other_issue_id"]
                     .as_str()

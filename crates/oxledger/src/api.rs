@@ -440,6 +440,8 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/wiki/search", get(wiki_search))
         .route("/wiki/agent-changes", get(wiki_agent_changes))
         .route("/projects/{id}/uploads", post(upload_file))
+        .route("/attachments/{id}", get(attachment_get))
+        .route("/attachments/{id}/content", get(attachment_content))
         .route("/projects/{id}/wiki", get(wiki_index))
         .route("/projects/{id}/wiki/pages/{title}", get(wiki_page))
         .route(
@@ -645,7 +647,120 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .nest("/api/v1", v1)
         .merge(mcp)
         .route("/healthz", get(|| async { "ok" }))
+        .merge(files_routes(app.clone()))
         .merge(readyz_routes(app, expected_migrations().into()))
+}
+
+/// Design 06 R-A6 (B-16): `GET /files/{id}?u=&e=&s=`, the signed links
+/// `/attachments/{id}/content` redirects to when `OXLEDGER_FILES_ORIGIN`
+/// is set (that origin serves this path). Without the setting no link is
+/// ever signed.
+fn files_routes(app: Arc<App>) -> Router {
+    Router::new().route(
+        "/files/{id}",
+        get(
+            move |id: Result<Path<String>, axum::extract::rejection::PathRejection>,
+                  Query(q): Query<std::collections::HashMap<String, String>>| {
+                let app = app.clone();
+                async move {
+                    use crate::attachments::read::{Signed, signed_content};
+                    // A malformed id or query is the same not_found as a bad
+                    // signature (no plain-text 400 from the extractors).
+                    let parsed = id
+                        .ok()
+                        .and_then(|Path(id)| id.parse::<Uuid>().ok())
+                        .zip(Signed::parse(&q));
+                    let result = match parsed {
+                        Some((id, q)) => signed_content(&app, id, &q).await,
+                        None => Err(crate::attachments::ops::attachment_not_found()),
+                    };
+                    let mut resp = match result {
+                        Ok(f) => file_response(f).await,
+                        Err(e) => ApiFailure(e).into_response(),
+                    };
+                    resp.headers_mut()
+                        .entry(header::CACHE_CONTROL)
+                        .or_insert(HeaderValue::from_static("no-store"));
+                    resp
+                }
+            },
+        ),
+    )
+}
+
+/// R-A6: the file with its headers: `nosniff`, `CSP: sandbox`, `private,
+/// no-store`, the sniffed type, and `inline` only for the four image types;
+/// the name as `filename*` (and an ASCII fallback without quotes or
+/// control characters). Streamed, never read whole.
+async fn file_response(f: crate::attachments::read::FileBody) -> Response {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    let file = match tokio::fs::File::open(&f.path).await {
+        Ok(file) => file,
+        Err(e) => {
+            tracing::error!(path = %f.path.display(), error = %e, "attachment file missing");
+            return ApiFailure(crate::attachments::ops::attachment_not_found()).into_response();
+        }
+    };
+    let stream = futures_util::stream::unfold(Some(file), |state| async move {
+        use tokio::io::AsyncReadExt;
+        let mut file = state?;
+        let mut buf = vec![0u8; 64 * 1024];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((
+                    Ok::<_, std::io::Error>(axum::body::Bytes::from(buf)),
+                    Some(file),
+                ))
+            }
+            Err(e) => Some((Err(e), None)),
+        }
+    });
+    const ATTR: &percent_encoding::AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    let fallback: String = f
+        .filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' && c != '%' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let disposition = format!(
+        "{}; filename=\"{fallback}\"; filename*=UTF-8''{}",
+        if crate::attachments::is_image(&f.content_type) {
+            "inline"
+        } else {
+            "attachment"
+        },
+        utf8_percent_encode(&f.filename, ATTR)
+    );
+    let mut resp = axum::body::Body::from_stream(stream).into_response();
+    let h = resp.headers_mut();
+    let val = |s: &str| HeaderValue::from_str(s).unwrap_or(HeaderValue::from_static("attachment"));
+    h.insert(header::CONTENT_TYPE, val(&f.content_type));
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(f.size as u64));
+    h.insert(header::CONTENT_DISPOSITION, val(&disposition));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'"),
+    );
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    resp
 }
 
 // ---------------------------------------------------------------- responses
@@ -2731,6 +2846,39 @@ async fn upload_file(
         )
         .await?,
     ))
+}
+
+async fn attachment_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let Ok(id) = id.parse::<Uuid>() else {
+        return Err(ApiFailure(crate::attachments::ops::attachment_not_found()));
+    };
+    Ok(ok(crate::attachments::read::get(&st.app, ra.ctx, id).await?))
+}
+
+/// R-A5, R-A6: the file (or a 302 to the download origin).
+async fn attachment_content(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let Ok(id) = id.parse::<Uuid>() else {
+        return Err(ApiFailure(crate::attachments::ops::attachment_not_found()));
+    };
+    match crate::attachments::read::content(&st.app, ra.ctx, id).await? {
+        crate::attachments::read::Download::File(f) => Ok(file_response(f).await),
+        crate::attachments::read::Download::Redirect(to) => {
+            let mut r = StatusCode::FOUND.into_response();
+            r.headers_mut().insert(
+                header::LOCATION,
+                HeaderValue::from_str(&to).map_err(anyhow::Error::from)?,
+            );
+            Ok(r)
+        }
+    }
 }
 
 async fn wiki_index(

@@ -773,6 +773,312 @@
         ],
         "type": "object"
       },
+      "AttachTarget": {
+        "additionalProperties": false,
+        "description": "Where `attach` puts the files: exactly one of `{\"issue\": key}`,\n`{\"note\": note_id}` and `{\"project\", \"page\"|\"page_id\"}`.",
+        "properties": {
+          "issue": {
+            "description": "An issue key (`AUTH-12`): the issue's own attachments.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "description": "A note id: read as the note is (private notes included).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "A project id or key, with `page` or `page_id`: a wiki page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AttachmentCommandDoc": {
+        "additionalProperties": false,
+        "description": "An attachment document: exactly one `attach` or `delete_attachment`\n(people only; no preconditions: attachments are not fields).",
+        "properties": {
+          "command_schema_version": {
+            "description": "Always 1.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ops": {
+            "description": "Exactly one attachment op.",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentOp"
+            },
+            "type": "array"
+          },
+          "preconditions": {
+            "description": "Always empty.",
+            "items": true,
+            "type": "array"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command_schema_version",
+          "ops"
+        ],
+        "type": "object"
+      },
+      "AttachmentInput": {
+        "additionalProperties": false,
+        "description": "One file to attach: an upload of the caller's in the same project, not\nused yet and not expired (R-A1).",
+        "properties": {
+          "filename": {
+            "description": "Another name than the upload's (the same rules as an upload's name).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upload_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "type": "object"
+      },
+      "AttachmentMeta": {
+        "description": "One attachment as its readers see it (R-A9: agents too, through `get`\nand `wiki_get`).",
+        "properties": {
+          "author": {
+            "description": "Who attached it.",
+            "type": "string"
+          },
+          "can_delete": {
+            "description": "Web app only: whether the caller may delete it now (R-A7, R-W14).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "content_type": {
+            "description": "R-A3: one of the four image types, or `application/octet-stream`.",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "filename": {
+            "description": "`[已遮蔽]` once redacted.",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "redacted": {
+            "description": "The content was redacted (D12): it cannot be downloaded.",
+            "type": "boolean"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "filename",
+          "size",
+          "content_type",
+          "author",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "AttachmentOp": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "description": "1–10 files.",
+                "items": {
+                  "$ref": "#/components/schemas/AttachmentInput"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "attach",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/AttachTarget"
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "delete_attachment",
+                "type": "string"
+              },
+              "op_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/components/schemas/AttachmentRef",
+                "description": "`{\"attachment\": id}`."
+              }
+            },
+            "required": [
+              "kind",
+              "op_id",
+              "target"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AttachmentRef": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment"
+        ],
+        "type": "object"
+      },
+      "AttachmentView": {
+        "description": "`GET /attachments/{id}`: the metadata and where it hangs.",
+        "properties": {
+          "author": {
+            "description": "Who attached it.",
+            "type": "string"
+          },
+          "can_delete": {
+            "description": "Web app only: whether the caller may delete it now (R-A7, R-W14).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "content_type": {
+            "description": "R-A3: one of the four image types, or `application/octet-stream`.",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "filename": {
+            "description": "`[已遮蔽]` once redacted.",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "issue_key": {
+            "description": "An issue's (or its note's) attachment: the issue's current key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_key": {
+            "type": "string"
+          },
+          "redacted": {
+            "description": "The content was redacted (D12): it cannot be downloaded.",
+            "type": "boolean"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "wiki_page_id": {
+            "description": "A wiki page's attachment: the page, its title, and the page's\nversion when it was attached.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wiki_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wiki_version": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "filename",
+          "size",
+          "content_type",
+          "author",
+          "created_at",
+          "project_key"
+        ],
+        "type": "object"
+      },
       "AuthorRef": {
         "properties": {
           "id": {
@@ -1193,6 +1499,9 @@
           },
           {
             "$ref": "#/components/schemas/WikiCommandDoc"
+          },
+          {
+            "$ref": "#/components/schemas/AttachmentCommandDoc"
           }
         ],
         "description": "The body of `POST /commands`: an issue command document or a wiki one\n(OpenAPI only; the engine tells them apart by the op kinds)."
@@ -5169,6 +5478,14 @@
       },
       "ItemResult": {
         "properties": {
+          "attachment_ids": {
+            "description": "The attachments the op added or deleted (design 06 R-A7); omitted\nwhen none.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "issue_id": {
             "description": "The issue the op wrote (issue ops).",
             "format": "uuid",
@@ -6197,6 +6514,13 @@
       },
       "NoteView": {
         "properties": {
+          "attachments": {
+            "description": "Design 06 R-A5, R-A9: the note's attachments (none on a retracted\nnote); omitted when none.",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentMeta"
+            },
+            "type": "array"
+          },
           "author": {
             "type": "string"
           },
@@ -6567,6 +6891,16 @@
           {
             "additionalProperties": false,
             "properties": {
+              "attachments": {
+                "description": "Design 06 R-A7: uploads to attach to the new issue (people only; at\nmost 10 in the whole document).",
+                "items": {
+                  "$ref": "#/components/schemas/AttachmentInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
               "bind": {
                 "description": "A name later ops use as `{\"type\": \"temp\", \"ref\": …}`.",
                 "type": [
@@ -6685,6 +7019,16 @@
           {
             "additionalProperties": false,
             "properties": {
+              "attachments": {
+                "description": "Design 06 R-A7: uploads to attach to the note (people only; at most\n10 in the whole document).",
+                "items": {
+                  "$ref": "#/components/schemas/AttachmentInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
               "body": {
                 "type": "string"
               },
@@ -10544,6 +10888,20 @@
               "null"
             ]
           },
+          "attachments": {
+            "description": "Design 06 R-A9: the issue's own attachments (not its notes'), oldest\nfirst. In the full detail only when there are any.",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentMeta"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "attachments_enabled": {
+            "description": "Design 06 R-A11: the server keeps files (`OXLEDGER_FILES_DIR`); off,\nthe page shows no upload controls.",
+            "type": "boolean"
+          },
           "author": {
             "type": [
               "string",
@@ -10828,7 +11186,8 @@
           "tracker_id",
           "status_id",
           "assigned_to_id",
-          "priority_id"
+          "priority_id",
+          "attachments_enabled"
         ],
         "type": "object"
       },
@@ -15370,7 +15729,14 @@
             "additionalProperties": false,
             "properties": {
               "attachments": {
-                "description": "Attachments come with M2.4: any value is `invalid_argument`."
+                "description": "R-W14, R-A7: uploads to attach to the page (people only; at most\n10).",
+                "items": {
+                  "$ref": "#/components/schemas/AttachmentInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
               },
               "body": {
                 "description": "Markdown, at most 524288 bytes (`payload_too_large`). Exactly one of\n`body` and `revert_from`.",
@@ -15561,8 +15927,10 @@
         "description": "`GET /projects/{id}/wiki/pages/{title}`.",
         "properties": {
           "attachments": {
-            "description": "Attachments come with M2.4: always empty.",
-            "items": true,
+            "description": "R-W14: the page's attachments, oldest first (with `can_delete`).",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentMeta"
+            },
             "type": "array"
           },
           "body": {
@@ -15672,6 +16040,10 @@
       },
       "WikiPageCan": {
         "properties": {
+          "attach": {
+            "description": "Upload and attach files (R-W14; the server keeps files, R-A11).",
+            "type": "boolean"
+          },
           "delete": {
             "type": "boolean"
           },
@@ -15694,7 +16066,8 @@
           "rename",
           "delete",
           "protect",
-          "history"
+          "history",
+          "attach"
         ],
         "type": "object"
       },
@@ -19799,6 +20172,113 @@
         "x-access": "session"
       }
     },
+    "/attachments/{id}": {
+      "get": {
+        "operationId": "get_attachments_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AttachmentView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-A5: one attachment's metadata {id, filename, size, content_type, author, created_at, redacted, project_key, issue_key or wiki_page_id, wiki_title, wiki_version; note_id on a note}. Readable when its container is: the issue, the note too (a private note needs view_private_notes or being its author; a retracted note's are not), the wiki (R-W1; a deleted page's are not). Missing, deleted and unreadable are one not_found. People only (agents: forbidden_op attachments_people_only).",
+        "x-access": "session"
+      }
+    },
+    "/attachments/{id}/content": {
+      "get": {
+        "operationId": "get_attachments_id_content",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-A6: the file itself (not JSON), under the read rule of GET /attachments/{id}; redacted content is not_found too. Headers: X-Content-Type-Options nosniff, Content-Security-Policy sandbox; default-src 'none', Cache-Control private, no-store, Content-Type from the first bytes (R-A3), Content-Disposition inline for png, jpeg, gif and webp, attachment otherwise, with filename*. With OXLEDGER_FILES_ORIGIN set: 302 to a link on that origin signed for you and this attachment (5 minutes). Without OXLEDGER_FILES_DIR: forbidden_op (reason attachments_disabled).",
+        "x-access": "session"
+      }
+    },
     "/auth/login": {
       "post": {
         "operationId": "post_auth_login",
@@ -20899,7 +21379,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect (wiki_put carries exactly one of body and revert_from; revert_from N copies version N of the page, a redacted one being invalid_value kind redacted_source), and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (attachments before M2.4; preconditions on a new page or without one on an update by page_id).",
+        "summary": "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect (wiki_put carries exactly one of body and revert_from; revert_from N copies version N of the page, a redacted one being invalid_value kind redacted_source), and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (preconditions on a new page or without one on an update by page_id). An attachment document (design 06 §3.11, R-A7) has exactly one op: attach {target: {issue: key} | {note: note_id} | {project, page or page_id}, attachments: [{upload_id, filename?}] (1-10)} or delete_attachment {target: {attachment: id}}; no preconditions. create_issue, add_note and wiki_put take attachments too (at most 10 in a document). Uploads must be yours, in the target's project, unused and not expired: anything else is invalid_value kind upload_unknown (one shape); more than 10 is invalid_value kind attachment_limit. attach needs edit_issues (edit_own_issues on your own issue) on an issue, that or being the note's author with add_issue_notes on a note, edit_wiki_pages on a page (protect_wiki_pages on a protected one). delete_attachment needs edit_issues, or being its author with the permission that added it (add_issues, add_issue_notes); on a wiki, delete_wiki_pages, or being its author with edit_wiki_pages. The attachment ids are in items[].attachment_ids; the issue keeps its lock_version.",
         "x-access": "session",
         "x-csrf": true
       }
@@ -26372,7 +26852,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "One page by title ({title}: the title with spaces as _, percent-encoded; case, width and runs of _ or spaces do not matter, R-W2). An old title follows its redirect and sets redirected_from. A missing or deleted page is not_found (the same not_found as an unreadable wiki). body (Markdown) and body_html (sanitized, references resolved for you), version, lock_version (the wiki_put precondition), protected, parent, breadcrumbs, children, updated_by, by_agent, attachments (empty until M2.4), read_only, can {edit, rename, delete, protect, history}.",
+        "summary": "One page by title ({title}: the title with spaces as _, percent-encoded; case, width and runs of _ or spaces do not matter, R-W2). An old title follows its redirect and sets redirected_from. A missing or deleted page is not_found (the same not_found as an unreadable wiki). body (Markdown) and body_html (sanitized, references resolved for you), version, lock_version (the wiki_put precondition), protected, parent, breadcrumbs, children, updated_by, by_agent, attachments (R-W14: [{id, filename, size, content_type, author, created_at, redacted, can_delete}], oldest first), read_only, can {edit, rename, delete, protect, history, attach}.",
         "x-access": "session"
       }
     },

@@ -662,9 +662,10 @@ pub struct WikiPutOp {
         skip_serializing_if = "Option::is_none"
     )]
     pub parent: Option<Option<WikiPageRef>>,
-    /// Attachments come with M2.4: any value is `invalid_argument`.
+    /// R-W14, R-A7: uploads to attach to the page (people only; at most
+    /// 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attachments: Option<Json>,
+    pub attachments: Option<Vec<crate::attachments::ops::AttachmentInput>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -775,6 +776,7 @@ pub struct WikiCommandDoc {
 pub enum CommandBody {
     Issue(commands::CommandDoc),
     Wiki(WikiCommandDoc),
+    Attachment(crate::attachments::ops::AttachmentCommandDoc),
 }
 
 /// Whether `raw` is a wiki document (any op kind is a wiki kind).
@@ -823,11 +825,8 @@ pub(crate) fn parse(raw: &Json) -> Result<WikiCommandDoc> {
     }
     match &doc.ops[0] {
         WikiOp::WikiPut(o) => {
-            if o.attachments.is_some() {
-                return Err(bad_argument(
-                    "ops[0].attachments",
-                    "wiki attachments are not available yet",
-                ));
+            if let Some(list) = &o.attachments {
+                crate::attachments::ops::check_inputs("ops[0].attachments", list)?;
             }
             if o.body.is_some() == o.revert_from.is_some() {
                 return Err(bad(
@@ -1306,6 +1305,63 @@ async fn new_version(
     Ok(())
 }
 
+// ---------------------------------------------------------------- attachments (R-W14)
+
+/// A live page attachments go on (locked FOR UPDATE).
+pub(crate) struct AttachPage {
+    pub id: Uuid,
+    /// The page's version (attachments record it, R-W14).
+    pub version: i32,
+    protected: bool,
+}
+
+impl AttachPage {
+    /// A protected page takes attachments from people with
+    /// protect_wiki_pages only (as its writes, R-W11).
+    pub(crate) fn require_unprotected(&self, a: &Access) -> Result<()> {
+        if self.protected && !a.has(PROTECT_WIKI_PAGES) {
+            return Err(forbidden(
+                "wiki_protected",
+                "this page is protected: only people with protect_wiki_pages change it",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The live page of `a`'s wiki by title or id (`not_found` otherwise),
+/// locked.
+pub(crate) async fn page_for_attachments(
+    conn: &mut PgConnection,
+    a: &Access,
+    title: Option<&str>,
+    id: Option<Uuid>,
+) -> Result<AttachPage> {
+    let p = resolve(&mut *conn, a.project, title, id)
+        .await?
+        .ok_or_else(not_found)?;
+    let p = lock_page(&mut *conn, p.id).await?;
+    if p.deleted_at.is_some() {
+        return Err(not_found());
+    }
+    Ok(AttachPage {
+        id: p.id,
+        version: p.current_version,
+        protected: p.protected,
+    })
+}
+
+/// `attachment_added` / `attachment_removed` on a page (R-A7).
+pub(crate) async fn attachment_event(
+    conn: &mut PgConnection,
+    page: Uuid,
+    kind: &str,
+    payload: Json,
+    at: &Prov,
+) -> Result<()> {
+    insert_event(&mut *conn, page, kind, payload, at).await
+}
+
 // ---------------------------------------------------------------- run (POST /commands)
 
 /// Who runs a wiki document: a person (`POST /commands`), or an agent
@@ -1601,7 +1657,7 @@ pub(crate) async fn execute(
         deadline,
     };
     let pre = doc.preconditions.first();
-    let (prov, token, effect, applied) = match op {
+    let (prov, token, effect, mut applied) = match op {
         WikiOp::WikiPut(o) => put(&mut *conn, &cx, o, pre).await?,
         WikiOp::WikiMove(o) => move_page(&mut *conn, &cx, o, pre).await?,
         WikiOp::WikiDelete(o) => delete(&mut *conn, &cx, o, pre).await?,
@@ -1609,6 +1665,43 @@ pub(crate) async fn execute(
         WikiOp::WikiProtect(o) => protect(&mut *conn, &cx, o, pre).await?,
     };
     let _ = cx.caller;
+    // R-W14, R-A7: the attachments go on the page, recording its version
+    // after the write, in the same transaction.
+    let mut attachment_ids = Vec::new();
+    if let WikiOp::WikiPut(o) = op
+        && let Some(list) = o.attachments.as_deref().filter(|l| !l.is_empty())
+    {
+        let path = "ops[0].attachments";
+        let Writer::Human(h) = who else {
+            return Err(crate::attachments::ops::people_only(path));
+        };
+        let planned =
+            crate::attachments::ops::take(&mut *conn, h.user_id, project, list, path).await?;
+        crate::attachments::ops::insert(
+            &mut *conn,
+            project,
+            crate::attachments::ops::Container::Wiki {
+                page: effect.page_id,
+                version: effect.version,
+            },
+            &planned,
+            h.user_id,
+            prov.exec,
+        )
+        .await?;
+        for p in &planned {
+            insert_event(
+                &mut *conn,
+                effect.page_id,
+                "attachment_added",
+                crate::attachments::ops::event_payload(p.id, &p.filename),
+                &prov,
+            )
+            .await?;
+            attachment_ids.push(p.id);
+        }
+        applied = true;
+    }
     Ok(CommandResult {
         status: "succeeded".into(),
         execution_id: prov.exec,
@@ -1620,6 +1713,7 @@ pub(crate) async fn execute(
             version_id: None,
             time_entry_id: None,
             wiki_page_id: Some(effect.page_id),
+            attachment_ids,
         }],
         search: SearchReceipt {
             consistent_after: token,
@@ -2269,6 +2363,8 @@ pub struct WikiPageCan {
     pub protect: bool,
     /// Versions and diffs (`view_wiki_edits`): a read permission.
     pub history: bool,
+    /// Upload and attach files (R-W14; the server keeps files, R-A11).
+    pub attach: bool,
 }
 
 /// `GET /projects/{id}/wiki/pages/{title}`.
@@ -2291,8 +2387,8 @@ pub struct WikiPage {
     pub updated_by: Option<WikiPerson>,
     /// The current version is an agent's (R-M3).
     pub by_agent: bool,
-    /// Attachments come with M2.4: always empty.
-    pub attachments: Vec<Json>,
+    /// R-W14: the page's attachments, oldest first (with `can_delete`).
+    pub attachments: Vec<crate::attachments::read::AttachmentMeta>,
     /// The title asked for, when it was an old title (a redirect).
     pub redirected_from: Option<String>,
     pub read_only: bool,
@@ -2459,6 +2555,7 @@ fn page_can(a: &Access, p: &PageRow) -> WikiPageCan {
         delete: a.may(DELETE_WIKI_PAGES) && unlocked,
         protect: a.may(PROTECT_WIKI_PAGES),
         history: a.has(VIEW_WIKI_EDITS),
+        attach: a.may(EDIT_WIKI_PAGES) && unlocked && crate::attachments::enabled(),
     }
 }
 
@@ -2498,13 +2595,39 @@ pub async fn page(app: &App, caller: AuthContext, project: &str, title: &str) ->
         updated_at: p.updated_at,
         updated_by,
         by_agent,
-        attachments: Vec::new(),
+        attachments: page_attachments(&mut tx, caller, &a, &p).await?,
         redirected_from,
         read_only: !a.writable(),
         can: page_can(&a, &p),
     };
     tx.commit().await?;
     Ok(out)
+}
+
+/// R-W14: a page's attachments; `can_delete` with delete_wiki_pages, or
+/// for their author with edit_wiki_pages, on a page the caller may change.
+async fn page_attachments(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    a: &Access,
+    p: &PageRow,
+) -> Result<Vec<crate::attachments::read::AttachmentMeta>> {
+    let unlocked = !p.protected || a.has(PROTECT_WIKI_PAGES);
+    let me = caller.user_id();
+    Ok(crate::attachments::read::of_page(&mut *conn, p.id)
+        .await?
+        .iter()
+        .map(|r| {
+            let mut m = r.meta();
+            m.can_delete = Some(
+                a.writable()
+                    && unlocked
+                    && (a.has(DELETE_WIKI_PAGES)
+                        || (me == Some(r.author_id) && a.has(EDIT_WIKI_PAGES))),
+            );
+            m
+        })
+        .collect())
 }
 
 fn need_history(a: &Access) -> Result<()> {

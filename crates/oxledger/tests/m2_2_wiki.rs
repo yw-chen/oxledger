@@ -632,7 +632,7 @@ async fn t_m2_26a_title_keys_and_format_chars() {
         assert_eq!(code(&bad), ErrorCode::WikiTitleInvalid, "{t:?}");
         assert_eq!(details(&bad)["reason"], reason);
     }
-    // Attachment file names are M2.4: any attachments are refused now.
+    // Attachment file names refuse format characters too (R-W2).
     let att = err(run(
         &e,
         e.bob,
@@ -640,13 +640,13 @@ async fn t_m2_26a_title_keys_and_format_chars() {
             op(
                 "wiki_put",
                 at("WEB", "Files"),
-                json!({"body": "x", "attachments": [{"filename": "a\u{202E}gpj.exe"}]}),
+                json!({"body": "x", "attachments": [{"upload_id": Uuid::now_v7(), "filename": "a\u{202E}gpj.exe"}]}),
             ),
             None,
         ),
     )
     .await);
-    assert_eq!(code(&att), ErrorCode::InvalidArgument);
+    assert_eq!(code(&att), ErrorCode::InvalidValue);
     assert_eq!(
         count(&pool, "SELECT count(*) FROM wiki_pages").await,
         2,

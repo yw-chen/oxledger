@@ -397,8 +397,9 @@ pub struct AgentWikiPage {
     pub protected: bool,
     pub parent: Option<AgentPageLink>,
     pub children: Vec<AgentPageLink>,
-    /// Attachment metadata (none before M2.4).
-    pub attachments: Vec<serde_json::Value>,
+    /// The page's attachments (metadata only: agents cannot download,
+    /// R-A9), oldest first.
+    pub attachments: Vec<crate::attachments::read::AttachmentMeta>,
     /// When `version` was written.
     pub updated_at: DateTime<Utc>,
     pub updated_by: Option<WikiPerson>,
@@ -438,6 +439,11 @@ pub async fn get(app: &App, caller: AuthContext, p: WikiGetParams) -> Result<Age
     let mut children: Vec<AgentPageLink> = kids.iter().map(link).collect();
     children.sort_by(|x, y| x.title.cmp(&y.title));
     let updated_by = person(&mut tx, actor).await?;
+    let attachments = crate::attachments::read::of_page(&mut tx, page.id)
+        .await?
+        .iter()
+        .map(|r| r.meta())
+        .collect();
     tx.commit().await?;
     Ok(AgentWikiPage {
         page_id: page.id,
@@ -451,7 +457,7 @@ pub async fn get(app: &App, caller: AuthContext, p: WikiGetParams) -> Result<Age
         protected: page.protected,
         parent: page.parent_id.as_ref().map(link),
         children,
-        attachments: Vec::new(),
+        attachments,
         updated_at: at,
         updated_by,
         comment,

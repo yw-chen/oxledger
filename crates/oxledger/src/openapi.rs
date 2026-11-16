@@ -340,7 +340,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "POST",
             "/commands",
-            "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect (wiki_put carries exactly one of body and revert_from; revert_from N copies version N of the page, a redacted one being invalid_value kind redacted_source), and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (attachments before M2.4; preconditions on a new page or without one on an update by page_id).",
+            "Run a command document now (human_direct, §6.8). Header Idempotency-Key: a uuid; resending it returns the same result. A wiki document (design 06 §3.11) has exactly one op of wiki_put, wiki_move, wiki_delete, wiki_restore, wiki_protect (wiki_put carries exactly one of body and revert_from; revert_from N copies version N of the page, a redacted one being invalid_value kind redacted_source), and its result names the page in wiki[] and items[].wiki_page_id. Errors of wiki documents: not_found (a wiki you cannot read, exactly like a missing page), conflict (details page_id, expected_lock_version, lock_version, current_version, updated_by), forbidden_op (reason permission, project_not_writable, wiki_protected; deleting with children: 'reparent' a page with a protected child needs protect_wiki_pages too), wiki_page_exists (details.page_id; titles compare with runs of spaces and _ as one _, so 'a b', 'a_b' and 'a__b' are one title), wiki_has_children, wiki_title_invalid (details.reason length, char with details.char, leading_dot), payload_too_large (details.limit), invalid_value (kinds wiki_cycle, wiki_depth, wiki_version_limit, wiki_page_limit, wiki_comment), invalid_argument (preconditions on a new page or without one on an update by page_id). An attachment document (design 06 §3.11, R-A7) has exactly one op: attach {target: {issue: key} | {note: note_id} | {project, page or page_id}, attachments: [{upload_id, filename?}] (1-10)} or delete_attachment {target: {attachment: id}}; no preconditions. create_issue, add_note and wiki_put take attachments too (at most 10 in a document). Uploads must be yours, in the target's project, unused and not expired: anything else is invalid_value kind upload_unknown (one shape); more than 10 is invalid_value kind attachment_limit. attach needs edit_issues (edit_own_issues on your own issue) on an issue, that or being the note's author with add_issue_notes on a note, edit_wiki_pages on a page (protect_wiki_pages on a protected one). delete_attachment needs edit_issues, or being its author with the permission that added it (add_issues, add_issue_notes); on a wiki, delete_wiki_pages, or being its author with edit_wiki_pages. The attachment ids are in items[].attachment_ids; the issue keeps its lock_version.",
             Session,
             Some(s::<crate::wiki::CommandBody>),
             s::<crate::commands::CommandResult>,
@@ -867,6 +867,22 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "GET",
+            "/attachments/{id}",
+            "Design 06 R-A5: one attachment's metadata {id, filename, size, content_type, author, created_at, redacted, project_key, issue_key or wiki_page_id, wiki_title, wiki_version; note_id on a note}. Readable when its container is: the issue, the note too (a private note needs view_private_notes or being its author; a retracted note's are not), the wiki (R-W1; a deleted page's are not). Missing, deleted and unreadable are one not_found. People only (agents: forbidden_op attachments_people_only).",
+            Session,
+            None,
+            s::<crate::attachments::read::AttachmentView>,
+        ),
+        r(
+            "GET",
+            "/attachments/{id}/content",
+            "Design 06 R-A6: the file itself (not JSON), under the read rule of GET /attachments/{id}; redacted content is not_found too. Headers: X-Content-Type-Options nosniff, Content-Security-Policy sandbox; default-src 'none', Cache-Control private, no-store, Content-Type from the first bytes (R-A3), Content-Disposition inline for png, jpeg, gif and webp, attachment otherwise, with filename*. With OXLEDGER_FILES_ORIGIN set: 302 to a link on that origin signed for you and this attachment (5 minutes). Without OXLEDGER_FILES_DIR: forbidden_op (reason attachments_disabled).",
+            Session,
+            None,
+            s::<String>,
+        ),
+        r(
+            "GET",
             "/projects/{id}/wiki",
             "The project's wiki (design 06 R-W1): readable when the project is not archived, has the wiki module and you hold view_wiki_pages (or are a system administrator); otherwise not_found, exactly like a missing project. {project, start_page (R-W13: the set start page, else the page titled Wiki, else null), read_only (closed project), can {create, manage}, tree [{id, title, parent_id, updated_at}] (every live page, at most 5000)}.",
             Session,
@@ -876,7 +892,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/projects/{id}/wiki/pages/{title}",
-            "One page by title ({title}: the title with spaces as _, percent-encoded; case, width and runs of _ or spaces do not matter, R-W2). An old title follows its redirect and sets redirected_from. A missing or deleted page is not_found (the same not_found as an unreadable wiki). body (Markdown) and body_html (sanitized, references resolved for you), version, lock_version (the wiki_put precondition), protected, parent, breadcrumbs, children, updated_by, by_agent, attachments (empty until M2.4), read_only, can {edit, rename, delete, protect, history}.",
+            "One page by title ({title}: the title with spaces as _, percent-encoded; case, width and runs of _ or spaces do not matter, R-W2). An old title follows its redirect and sets redirected_from. A missing or deleted page is not_found (the same not_found as an unreadable wiki). body (Markdown) and body_html (sanitized, references resolved for you), version, lock_version (the wiki_put precondition), protected, parent, breadcrumbs, children, updated_by, by_agent, attachments (R-W14: [{id, filename, size, content_type, author, created_at, redacted, can_delete}], oldest first), read_only, can {edit, rename, delete, protect, history, attach}.",
             Session,
             None,
             s::<crate::wiki::WikiPage>,
@@ -1675,6 +1691,9 @@ pub const CREATED_ROUTES: &[(&str, &str)] = &[
 /// Routes whose body is the raw bytes (R-A1 uploads), not JSON.
 pub const RAW_BODY_ROUTES: &[(&str, &str)] = &[("POST", "/projects/{id}/uploads")];
 
+/// Routes whose answer is a file, not the `{data, meta}` envelope (R-A6).
+pub const FILE_ROUTES: &[(&str, &str)] = &[("GET", "/attachments/{id}/content")];
+
 /// The OpenAPI 3.1 document.
 pub fn document() -> Value {
     let mut g = generator(true);
@@ -1703,6 +1722,10 @@ pub fn document() -> Value {
         if let Some(b) = r.body {
             op["requestBody"] =
                 json!({"required": true, "content": {"application/json": {"schema": b(&mut req)}}});
+        }
+        if FILE_ROUTES.contains(&(r.method, r.path)) {
+            op["responses"][status] = json!({"description": "The file (R-A6 headers)",
+                "content": {"*/*": {"schema": {"type": "string", "format": "binary"}}}});
         }
         if RAW_BODY_ROUTES.contains(&(r.method, r.path)) {
             op["requestBody"] = json!({"required": true, "content": {"application/octet-stream": {

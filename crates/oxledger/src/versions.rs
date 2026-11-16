@@ -1872,6 +1872,7 @@ impl Plan {
             version_id: Some(self.id),
             time_entry_id: None,
             wiki_page_id: None,
+            attachment_ids: Vec::new(),
         }
     }
 

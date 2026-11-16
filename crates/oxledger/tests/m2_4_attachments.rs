@@ -532,3 +532,820 @@ async fn upload_over_http() {
     assert_eq!(v["error"]["code"], "csrf_failed");
     assert_eq!(count(&pool, "SELECT count(*) FROM uploads").await, 1);
 }
+
+// ---------------------------------------------------------------- a2: attaching and reading
+
+const HTML: &[u8] = b"<html><script>alert(1)</script></html>";
+
+async fn key_of(pool: &sqlx::PgPool, issue: Uuid) -> String {
+    sqlx::query_scalar("SELECT key FROM issue_keys WHERE issue_id = $1 AND is_current")
+        .bind(issue)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn run(w: &World, who: AuthContext, ops: Value) -> anyhow::Result<Value> {
+    let mut doc = json!({"command_schema_version": 1, "ops": ops});
+    // add_note on an existing issue carries its lock_version.
+    if let Some(i) = doc["ops"][0]["target"]["id"].as_str() {
+        let i: Uuid = i.parse().unwrap();
+        let lv = lock_version(&w.pool, i).await;
+        doc["preconditions"] = json!([{"target": {"type": "issue", "id": i}, "lock_version": lv}]);
+    }
+    oxledger::commands::submit(&w.app, who, Uuid::now_v7(), &doc)
+        .await
+        .map(|r| serde_json::to_value(r).unwrap())
+}
+
+fn details(e: &anyhow::Error) -> Value {
+    oxledger::error::classify(e)
+        .unwrap()
+        .details
+        .unwrap_or(Value::Null)
+}
+
+fn ids_of(r: &Value) -> Vec<Uuid> {
+    serde_json::from_value(r["items"][0]["attachment_ids"].clone()).unwrap()
+}
+
+async fn view(w: &World, who: AuthContext, key: &str) -> Value {
+    let p = serde_json::from_value(json!({"key": key, "include": ["recent_notes"]})).unwrap();
+    serde_json::to_value(oxledger::issue_view::get(&w.app, who, p).await.unwrap()).unwrap()
+}
+
+async fn first_note(pool: &sqlx::PgPool, issue: Uuid) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM issue_notes WHERE issue_id = $1 ORDER BY created_at LIMIT 1")
+        .bind(issue)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn lock_version(pool: &sqlx::PgPool, issue: Uuid) -> i64 {
+    count(
+        pool,
+        &format!("SELECT lock_version::bigint FROM issues WHERE id = '{issue}'"),
+    )
+    .await
+}
+
+/// R-A7, R-A5, T-M2-52, T-M2-53: create_issue and add_note with
+/// attachments, attach, delete_attachment, who reads what.
+#[tokio::test]
+async fn attach_read_and_delete() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    let a = w.alice_ctx;
+
+    // create_issue with an attachment (renamed).
+    let u = up(&w, a, "WEB", "shot.png", PNG).await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "create_issue", "project_id": w.web,
+                "tracker_id": w.bug, "fields": {"subject": "with a file"},
+                "attachments": [{"upload_id": u.upload_id, "filename": "畫面.png"}]}]),
+    )
+    .await
+    .unwrap();
+    let issue: Uuid = serde_json::from_value(r["items"][0]["issue_id"].clone()).unwrap();
+    let on_issue = ids_of(&r)[0];
+    assert_eq!(
+        r["effects"][0]["events"],
+        json!(["created", "attachment_added"])
+    );
+    let key = key_of(&pool, issue).await;
+    let v = view(&w, a, &key).await;
+    assert_eq!(v["attachments"][0]["filename"], "畫面.png");
+    assert_eq!(v["attachments"][0]["content_type"], "image/png");
+    assert_eq!(v["attachments"][0]["author"], "alice");
+    // An upload is used once.
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&e), "upload_unknown");
+
+    // A private note with an HTML file named .png.
+    let h = up(&w, a, "WEB", "evil.png", HTML).await.unwrap();
+    assert_eq!(h.content_type, "application/octet-stream");
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": issue},
+                "body": "see file", "is_private": true,
+                "attachments": [{"upload_id": h.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let on_note = ids_of(&r)[0];
+    let v = view(&w, a, &key).await;
+    assert_eq!(
+        v["recent_notes"]["items"][0]["attachments"][0]["id"],
+        json!(on_note)
+    );
+    assert_eq!(
+        v["attachments"].as_array().unwrap().len(),
+        1,
+        "a note's attachments stay on the note"
+    );
+
+    // zed reads the issue but not private notes (T-M2-52).
+    let viewer = id(
+        &pool,
+        "INSERT INTO roles (name, issues_visibility) VALUES ('Viewer','all') RETURNING id",
+    )
+    .await;
+    grant(&pool, viewer, &["view_issues"]).await;
+    let zed = oxledger::auth::create_user(&pool, "zed", "zed", PW, false)
+        .await
+        .unwrap();
+    member(&pool, w.web, zed, viewer).await;
+    let z = sign_in(&pool, &w.policy, "zed").await;
+    attachments::read::get(&w.app, z, on_issue).await.unwrap();
+    let hidden = attachments::read::get(&w.app, z, on_note)
+        .await
+        .unwrap_err();
+    let missing = attachments::read::get(&w.app, z, Uuid::now_v7())
+        .await
+        .unwrap_err();
+    assert_eq!(code(&hidden), ErrorCode::NotFound);
+    assert_eq!(format!("{hidden}"), format!("{missing}"));
+    let v = view(&w, z, &key).await;
+    assert!(v["recent_notes"]["items"].as_array().unwrap().is_empty());
+    // A private issue zed cannot see.
+    let secret = w.issue(w.web, "secret").await;
+    exec(
+        &pool,
+        &format!("UPDATE issues SET is_private = true WHERE id = '{secret}'"),
+    )
+    .await;
+    exec(
+        &pool,
+        "UPDATE roles SET issues_visibility = 'default' WHERE name = 'Viewer'",
+    )
+    .await;
+    let s = up(&w, a, "WEB", "s.png", b"secret bytes").await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach",
+                "target": {"issue": key_of(&pool, secret).await},
+                "attachments": [{"upload_id": s.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let on_secret = ids_of(&r)[0];
+    let e = attachments::read::get(&w.app, z, on_secret)
+        .await
+        .unwrap_err();
+    assert_eq!(format!("{e}"), format!("{missing}"));
+
+    // T-M2-53: another's upload, an expired one, another project's, none:
+    // one shape.
+    let bob = sign_in(&pool, &w.policy, "bob").await;
+    let theirs = up(&w, bob, "WEB", "b.png", b"bob's").await.unwrap();
+    let expired = up(&w, a, "WEB", "x.png", b"expired").await.unwrap();
+    exec(
+        &pool,
+        &format!(
+            "UPDATE uploads SET expires_at = now() - interval '1 second' WHERE id = '{}'",
+            expired.upload_id
+        ),
+    )
+    .await;
+    let elsewhere = up(&w, a, "AUTH", "y.png", PNG).await.unwrap();
+    let mut shapes = Vec::new();
+    for u in [
+        theirs.upload_id,
+        expired.upload_id,
+        elsewhere.upload_id,
+        Uuid::now_v7(),
+    ] {
+        let e = run(
+            &w,
+            a,
+            json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                    "attachments": [{"upload_id": u}]}]),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(&e), ErrorCode::InvalidValue);
+        shapes.push((format!("{e}"), details(&e)));
+    }
+    assert!(shapes.iter().all(|s| *s == shapes[0]), "{shapes:?}");
+    assert_eq!(shapes[0].1["kind"], "upload_unknown");
+    // More than 10 in a document.
+    let many: Vec<Value> = (0..11)
+        .map(|_| json!({"upload_id": Uuid::now_v7()}))
+        .collect();
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": issue}, "body": "x", "attachments": many}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&e), "attachment_limit");
+
+    // attach keeps the issue's lock_version.
+    let lv = lock_version(&pool, issue).await;
+    let f = up(&w, a, "WEB", "later.txt", b"later").await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": f.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["effects"][0]["lock_version"], json!(lv));
+    assert_eq!(lock_version(&pool, issue).await, lv);
+    let later = ids_of(&r)[0];
+    // attach to the private note.
+    let g = up(&w, a, "WEB", "g.png", b"gg").await.unwrap();
+    run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach",
+                "target": {"note": first_note(&pool, issue).await},
+                "attachments": [{"upload_id": g.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    // zed may not delete.
+    let e = run(
+        &w,
+        z,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": on_issue}}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ForbiddenOp);
+    // bob (edit_issues) deletes alice's; then it is gone.
+    let r = run(
+        &w,
+        bob,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": later}}]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["effects"][0]["events"], json!(["attachment_removed"]));
+    let e = attachments::read::get(&w.app, a, later).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+    let e = run(
+        &w,
+        bob,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": later}}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM issue_events WHERE issue_id = $1 AND kind LIKE 'attachment%' ORDER BY seq",
+    )
+    .bind(issue)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        kinds,
+        [
+            "attachment_added",
+            "attachment_added",
+            "attachment_added",
+            "attachment_added",
+            "attachment_removed"
+        ]
+    );
+}
+
+/// R-A9: agents never attach (refused before parsing) nor send the
+/// attachment ops; the routes are for people.
+#[tokio::test]
+async fn agents_do_not_attach() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    let issue = w.issue(w.web, "x").await;
+    let d = w.delegate(w.web).await.unwrap();
+    let (_, agent) = w.token(d.context_id).await;
+    let doc = json!({"command_schema_version": 1,
+                     "ops": [{"op_id": Uuid::now_v7(), "kind": "add_note",
+                              "target": {"type": "issue", "id": issue}, "body": "x",
+                              "attachments": [{"upload_id": Uuid::now_v7()}]}],
+                     "preconditions": [{"target": {"type": "issue", "id": issue}, "lock_version": 0}]});
+    let e =
+        oxledger::changesets::command_submit(&w.app, agent, Uuid::now_v7(), &doc, false, ORIGIN)
+            .await
+            .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ForbiddenOp);
+    assert_eq!(details(&e)["reason"], "attachments_people_only");
+    let doc = json!({"command_schema_version": 1,
+                     "ops": [{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                              "target": {"attachment": Uuid::now_v7()}}]});
+    let e =
+        oxledger::changesets::command_submit(&w.app, agent, Uuid::now_v7(), &doc, false, ORIGIN)
+            .await
+            .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidRequest);
+    let e = attachments::read::get(&w.app, agent, Uuid::now_v7())
+        .await
+        .unwrap_err();
+    assert_eq!(details(&e)["reason"], "attachments_people_only");
+}
+
+/// R-W14: wiki_put with attachments; the page lists them; who deletes.
+#[tokio::test]
+async fn wiki_attachments() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(
+        &pool,
+        w.dev,
+        &["view_wiki_pages", "view_wiki_edits", "edit_wiki_pages"],
+    )
+    .await;
+    let a = w.alice_ctx;
+    let u = up(&w, a, "WEB", "plan.png", PNG).await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                "target": {"project": "WEB", "page": "Plan"},
+                "body": "# Plan", "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let page: Uuid = serde_json::from_value(r["items"][0]["wiki_page_id"].clone()).unwrap();
+    let att = ids_of(&r)[0];
+    let p = oxledger::wiki::page(&w.app, a, "WEB", "Plan")
+        .await
+        .unwrap();
+    assert_eq!(p.attachments.len(), 1);
+    assert_eq!(p.attachments[0].can_delete, Some(true));
+    assert!(p.can.attach);
+    let v = attachments::read::get(&w.app, a, att).await.unwrap();
+    assert_eq!(v.wiki_title.as_deref(), Some("Plan"));
+    assert_eq!(v.wiki_version, Some(1));
+    // bob holds no delete_wiki_pages and is not the author.
+    let bob = sign_in(&pool, &w.policy, "bob").await;
+    let p = oxledger::wiki::page(&w.app, bob, "WEB", "Plan")
+        .await
+        .unwrap();
+    assert_eq!(p.attachments[0].can_delete, Some(false));
+    let del = json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                      "target": {"attachment": att}}]);
+    let e = run(&w, bob, del.clone()).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ForbiddenOp);
+    run(&w, a, del).await.unwrap();
+    let p = oxledger::wiki::page(&w.app, a, "WEB", "Plan")
+        .await
+        .unwrap();
+    assert!(p.attachments.is_empty());
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM wiki_events WHERE page_id = $1 AND kind LIKE 'attachment%' ORDER BY seq",
+    )
+    .bind(page)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(kinds, ["attachment_added", "attachment_removed"]);
+}
+
+async fn get_raw(
+    r: &Router,
+    who: Option<&(String, String)>,
+    path: &str,
+) -> axum::response::Response {
+    let mut b = Request::get(path.to_string());
+    if let Some((s, _)) = who {
+        b = b.header(header::COOKIE, format!("{SESSION_COOKIE}={s}"));
+    }
+    r.clone()
+        .oneshot(b.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// T-M2-50, T-M2-51: download headers; the signed redirect (R-A6).
+#[tokio::test]
+async fn downloads() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    let a = w.alice_ctx;
+    let issue = w.issue(w.web, "files").await;
+    let key = key_of(&pool, issue).await;
+    let png = up(&w, a, "WEB", "截圖 \"1\".png", PNG).await.unwrap();
+    let html = up(&w, a, "WEB", "page.png", HTML).await.unwrap();
+    let svg = up(
+        &w,
+        a,
+        "WEB",
+        "logo.svg",
+        b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+    )
+    .await
+    .unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": png.upload_id}, {"upload_id": html.upload_id},
+                                {"upload_id": svg.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let ids = ids_of(&r);
+    let router = api::router(
+        w.app.clone(),
+        ApiConfig {
+            spa_origin: ORIGIN.into(),
+            session: SessionPolicy::default(),
+        },
+    );
+    let alice = login(&router, "alice").await;
+    let content = |id: Uuid| format!("/api/v1/attachments/{id}/content");
+    let resp = get_raw(&router, Some(&alice), &content(ids[0])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let h = resp.headers().clone();
+    assert_eq!(h[header::CONTENT_TYPE], "image/png");
+    assert_eq!(h[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        h[header::CONTENT_SECURITY_POLICY],
+        "sandbox; default-src 'none'"
+    );
+    assert_eq!(h[header::CACHE_CONTROL], "private, no-store");
+    let cd = h[header::CONTENT_DISPOSITION].to_str().unwrap();
+    assert!(cd.starts_with("inline; "), "{cd}");
+    assert!(
+        cd.contains("filename*=UTF-8''%E6%88%AA%E5%9C%96%20%221%22.png"),
+        "{cd}"
+    );
+    assert!(!cd.contains("\"1\""), "{cd}");
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], PNG);
+    for id in &ids[1..] {
+        let resp = get_raw(&router, Some(&alice), &content(*id)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "application/octet-stream"
+        );
+        let cd = resp.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(cd.starts_with("attachment; "), "{cd}");
+    }
+    let resp = get_raw(&router, Some(&alice), &content(Uuid::now_v7())).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = get_raw(
+        &router,
+        Some(&alice),
+        &format!("/api/v1/attachments/{}", ids[0]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // A download origin: a signed 302, served there; a changed link is
+    // not_found.
+    attachments::install(FilesConfig {
+        origin: Some("https://files.test".into()),
+        ..files(dir.path())
+    });
+    let resp = get_raw(&router, Some(&alice), &content(ids[0])).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let to = resp.headers()[header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let path = to.strip_prefix("https://files.test").unwrap().to_string();
+    assert!(path.starts_with(&format!("/files/{}?u=", ids[0])), "{path}");
+    let resp = get_raw(&router, None, &path).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()[header::CONTENT_SECURITY_POLICY],
+        "sandbox; default-src 'none'"
+    );
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], PNG);
+    let other = path.replace(&ids[0].to_string(), &ids[1].to_string());
+    assert_eq!(
+        get_raw(&router, None, &other).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let last = if path.ends_with('0') { "1" } else { "0" };
+    let forged = format!("{}{last}", &path[..path.len() - 1]);
+    assert_eq!(
+        get_raw(&router, None, &forged).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// The review's findings: a retracted note's files leave the history; a
+/// closed project's reason; duplicate uploads; unknown uploads on every
+/// path (a purged blob too); owner revisions refuse attachments; `/files`
+/// with a malformed link; an anonymous reader's signed link; PDF is a
+/// download.
+#[tokio::test]
+async fn review_fixes() {
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(&pool, w.dev, &["view_wiki_pages", "edit_wiki_pages"]).await;
+    let a = w.alice_ctx;
+    let issue = w.issue(w.web, "review").await;
+    let key = key_of(&pool, issue).await;
+
+    // The same upload twice in one op: invalid_request, as across ops.
+    let u = up(&w, a, "WEB", "twice.txt", b"twice").await.unwrap();
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": u.upload_id}, {"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidRequest, "{e:#}");
+
+    // upload_unknown on create_issue, add_note and wiki_put; and for an
+    // upload whose blob is gone.
+    let nobody = json!([{"upload_id": Uuid::now_v7()}]);
+    for ops in [
+        json!([{"op_id": Uuid::now_v7(), "kind": "create_issue", "project_id": w.web,
+                "tracker_id": w.bug, "fields": {"subject": "s"}, "attachments": nobody}]),
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": issue}, "body": "b", "attachments": nobody}]),
+        json!([{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                "target": {"project": "WEB", "page": "P"}, "body": "b", "attachments": nobody}]),
+    ] {
+        let e = run(&w, a, ops).await.unwrap_err();
+        assert_eq!(kind(&e), "upload_unknown", "{e:#}");
+    }
+    let gone = up(&w, a, "WEB", "gone.txt", b"gone").await.unwrap();
+    exec(
+        &pool,
+        &format!(
+            "UPDATE attachment_blobs SET state = 'purged', purged_at = now(), purge_reason = 'gc'
+             WHERE id = (SELECT blob_id FROM uploads WHERE id = '{}')",
+            gone.upload_id
+        ),
+    )
+    .await;
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": gone.upload_id}]}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&e), "upload_unknown", "{e:#}");
+
+    // A retracted note: its files leave the history, names included, and
+    // nothing more is attached to it.
+    let h = up(&w, a, "WEB", "hidden-name.txt", b"hidden")
+        .await
+        .unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": issue}, "body": "with a file",
+                "attachments": [{"upload_id": h.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let exec_id = r["execution_id"].as_str().unwrap().to_string();
+    let note = first_note(&pool, issue).await;
+    let history = |w: &World| {
+        let p = serde_json::from_value(json!({"key": key, "include": ["recent_events"]})).unwrap();
+        let app = w.app.clone();
+        async move {
+            serde_json::to_value(oxledger::issue_view::get(&app, a, p).await.unwrap())
+                .unwrap()
+                .to_string()
+        }
+    };
+    assert!(history(&w).await.contains("hidden-name.txt"));
+    exec(
+        &pool,
+        &format!(
+            "UPDATE issue_notes SET retracted_at = now(), retracted_by_execution_id = '{exec_id}'
+             WHERE id = '{note}'"
+        ),
+    )
+    .await;
+    assert!(!history(&w).await.contains("hidden-name.txt"));
+    let more = up(&w, a, "WEB", "more.txt", b"more").await.unwrap();
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"note": note},
+                "attachments": [{"upload_id": more.upload_id}]}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound, "{e:#}");
+
+    // A closed project: project_not_writable, for attach and delete.
+    let pdf = up(&w, a, "WEB", "report.pdf", b"%PDF-1.4\n%%EOF\n")
+        .await
+        .unwrap();
+    assert_eq!(pdf.content_type, "application/octet-stream");
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": pdf.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let pdf_id = ids_of(&r)[0];
+    exec(
+        &pool,
+        &format!(
+            "UPDATE projects SET status = 'closed' WHERE id = '{}'",
+            w.web
+        ),
+    )
+    .await;
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": more.upload_id}]}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(details(&e)["reason"], "project_not_writable", "{e:#}");
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": pdf_id}}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(details(&e)["reason"], "project_not_writable", "{e:#}");
+    exec(
+        &pool,
+        &format!(
+            "UPDATE projects SET status = 'active' WHERE id = '{}'",
+            w.web
+        ),
+    )
+    .await;
+
+    // An owner's revision of an agent's proposal takes no attachments.
+    let d = w.delegate(w.web).await.unwrap();
+    let (_, agent) = w.token(d.context_id).await;
+    let lv = lock_version(&pool, issue).await as i32;
+    let p = oxledger::changesets::command_submit(
+        &w.app,
+        agent,
+        Uuid::now_v7(),
+        &note_doc(issue, lv, "proposed"),
+        true,
+        ORIGIN,
+    )
+    .await
+    .unwrap();
+    let cs: Uuid =
+        serde_json::from_value(serde_json::to_value(p).unwrap()["changeset_id"].clone()).unwrap();
+    let mut revised = note_doc(issue, lv, "revised");
+    revised["ops"][0]["attachments"] = json!([{"upload_id": more.upload_id}]);
+    let input = json!({"expected_current_version": 1, "proposal": revised.clone()});
+    let e = oxledger::changesets::owner_revise(&w.app, a, Uuid::now_v7(), cs, &input)
+        .await
+        .unwrap_err();
+    assert_eq!(details(&e)["reason"], "attachments_people_only", "{e:#}");
+    let input = json!({"version": 1, "expected_current_version": 1, "proposal": revised,
+                       "revision_review_token": "t"});
+    let e = oxledger::changesets::revise_and_apply(&w.app, a, Uuid::now_v7(), cs, &input)
+        .await
+        .unwrap_err();
+    assert_eq!(details(&e)["reason"], "attachments_people_only", "{e:#}");
+
+    // Over HTTP: a PDF downloads; another's unreadable file and a
+    // malformed signed link are not_found.
+    let router = api::router(
+        w.app.clone(),
+        ApiConfig {
+            spa_origin: ORIGIN.into(),
+            session: SessionPolicy::default(),
+        },
+    );
+    let alice = login(&router, "alice").await;
+    let resp = get_raw(
+        &router,
+        Some(&alice),
+        &format!("/api/v1/attachments/{pdf_id}/content"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cd = resp.headers()[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(cd.starts_with("attachment; "), "{cd}");
+    let hidden_id: Uuid = sqlx::query_scalar("SELECT id FROM attachments WHERE note_id = $1")
+        .bind(note)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let resp = get_raw(
+        &router,
+        Some(&alice),
+        &format!("/api/v1/attachments/{hidden_id}/content"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    for path in [
+        "/files/not-a-uuid?u=x&e=1&s=00".to_string(),
+        format!("/files/{pdf_id}"),
+        format!("/files/{pdf_id}?u=nope&e=soon&s=zz"),
+        "/files/%FF?u=x&e=1&s=00".to_string(),
+    ] {
+        let resp = get_raw(&router, None, &path).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).expect("a JSON error body");
+        assert!(v.to_string().contains("not_found"), "{v}");
+    }
+
+    // An anonymous reader of a public project is redirected too, and the
+    // link is checked again as anonymous.
+    let anon_role = id(
+        &pool,
+        "INSERT INTO roles (name, issues_visibility, builtin)
+         VALUES ('Anonymous','default','anonymous') RETURNING id",
+    )
+    .await;
+    grant(&pool, anon_role, &["view_issues"]).await;
+    exec(
+        &pool,
+        &format!(
+            "UPDATE projects SET is_public = true WHERE id = '{}'",
+            w.web
+        ),
+    )
+    .await;
+    attachments::install(FilesConfig {
+        origin: Some("https://files.test".into()),
+        ..files(dir.path())
+    });
+    let to = match attachments::read::content(&w.app, AuthContext::anonymous(), pdf_id)
+        .await
+        .unwrap()
+    {
+        attachments::read::Download::Redirect(to) => to,
+        attachments::read::Download::File(_) => panic!("not redirected"),
+    };
+    let path = to.strip_prefix("https://files.test").unwrap().to_string();
+    assert!(path.contains(&format!("u={}", Uuid::nil())), "{path}");
+    assert_eq!(get_raw(&router, None, &path).await.status(), StatusCode::OK);
+    // The project turns private: the same link no longer serves.
+    exec(
+        &pool,
+        &format!(
+            "UPDATE projects SET is_public = false WHERE id = '{}'",
+            w.web
+        ),
+    )
+    .await;
+    assert_eq!(
+        get_raw(&router, None, &path).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}

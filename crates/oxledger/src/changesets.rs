@@ -1574,6 +1574,10 @@ async fn agent_write_tx(
     spa_origin: &str,
 ) -> Result<SubmitResult> {
     let who = agent_who(&mut *conn, caller).await?;
+    // Design 06 R-A9: files are for people, whatever the document.
+    if let Some(e) = agent_attachment_refusal(proposal) {
+        return Err(e);
+    }
     // Design 06 §3.11: a wiki document has its own path (one op, one page).
     if crate::wiki::is_wiki_doc(proposal) {
         return agent_wiki_tx(
@@ -2131,6 +2135,33 @@ fn agent_wiki_refusal(raw: &Json) -> Option<anyhow::Error> {
                                          "path": format!("ops[{i}].attachments")}))
                     .into(),
             );
+        }
+    }
+    None
+}
+
+/// Design 06 R-A9, §3.11: before any parsing, an op with `attachments` is
+/// `forbidden_op` (`attachments_people_only`), and `attach` /
+/// `delete_attachment` are not among an agent's commands
+/// (`invalid_request`, as `delete_time_entry`).
+fn agent_attachment_refusal(raw: &Json) -> Option<anyhow::Error> {
+    let ops = raw.get("ops").and_then(Json::as_array)?;
+    for (i, op) in ops.iter().enumerate() {
+        let kind = op.get("kind").and_then(Json::as_str).unwrap_or_default();
+        if crate::attachments::ops::KINDS.contains(&kind) {
+            return Some(
+                ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("{kind} is not among an agent's commands"),
+                )
+                .with_details(json!({"path": format!("ops[{i}].kind")}))
+                .into(),
+            );
+        }
+        if op.get("attachments").is_some() {
+            return Some(crate::attachments::ops::people_only(&format!(
+                "ops[{i}].attachments"
+            )));
         }
     }
     None
@@ -3348,6 +3379,10 @@ pub async fn validate_command(
 ) -> Result<crate::forms::ValidateResult> {
     let raw = crate::forms::command_of(input);
     quota::check_raw_payload(&raw)?;
+    // As command_submit, before any quota is spent (R-A9).
+    if let Some(e) = agent_attachment_refusal(&raw) {
+        return Err(e);
+    }
     if crate::wiki::is_wiki_doc(&raw) {
         // Design 06 §3.11: wiki ops go through command_submit only; a
         // proposal for review carries its own check.
@@ -4452,6 +4487,11 @@ pub async fn owner_revise(
             .with_details(json!({"kind": "invalid_body"}))
     })?;
     let proposal = input["proposal"].clone();
+    // R-A9: a proposal stays the agent's write; files are attached by
+    // people, with their own documents.
+    if let Some(e) = agent_attachment_refusal(&proposal) {
+        return Err(e);
+    }
     let expected = parsed_input.expected_current_version;
     let version: i32 = retrying!(
         app,
@@ -5888,6 +5928,9 @@ pub async fn revise_and_apply(
         .with_details(json!({"kind": "invalid_body"}))
     })?;
     let proposal = input["proposal"].clone();
+    if let Some(e) = agent_attachment_refusal(&proposal) {
+        return Err(e);
+    }
     let token = parsed_input.revision_review_token.clone();
     let accepted = retrying!(
         app,

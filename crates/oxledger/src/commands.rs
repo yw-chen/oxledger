@@ -288,6 +288,10 @@ pub struct CreateIssueOp {
     /// Agents may write only `markdown`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<TextFormat>,
+    /// Design 06 R-A7: uploads to attach to the new issue (people only; at
+    /// most 10 in the whole document).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<crate::attachments::ops::AttachmentInput>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -372,6 +376,10 @@ pub struct AddNoteOp {
     /// `markdown`. A note's format never changes (notes are not edited).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<TextFormat>,
+    /// Design 06 R-A7: uploads to attach to the note (people only; at most
+    /// 10 in the whole document).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<crate::attachments::ops::AttachmentInput>>,
 }
 
 /// `source` is the duplicate, `target` the original. Must be the only op.
@@ -559,6 +567,10 @@ pub struct ItemResult {
     /// The wiki page the op wrote (wiki ops, design 06 §3.11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wiki_page_id: Option<Uuid>,
+    /// The attachments the op added or deleted (design 06 R-A7); omitted
+    /// when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<Uuid>,
 }
 
 /// What a version command did (§17.9a: the new id is in the response).
@@ -1017,6 +1029,7 @@ enum Op {
         fields: Vec<Write>,
         is_private: Option<bool>,
         format: TextFormat,
+        attachments: Vec<crate::attachments::ops::AttachmentInput>,
     },
     Update {
         op_id: Uuid,
@@ -1036,6 +1049,7 @@ enum Op {
         body: String,
         private: bool,
         format: TextFormat,
+        attachments: Vec<crate::attachments::ops::AttachmentInput>,
     },
     Duplicate {
         op_id: Uuid,
@@ -1776,6 +1790,7 @@ async fn parse_seen(
     let mut set_fields: BTreeSet<(Target, Key)> = BTreeSet::new();
     let mut transitions: BTreeSet<Target> = BTreeSet::new();
     let mut has_dup = false;
+    let mut attached: BTreeSet<Uuid> = BTreeSet::new();
     let mut has_version = false;
     let mut has_time = false;
     let mut has_time_edit = false;
@@ -1846,6 +1861,7 @@ async fn parse_seen(
                     fields,
                     is_private,
                     format: o.format.unwrap_or(TextFormat::Markdown),
+                    attachments: attachments_of(&o.attachments, &p("attachments"), &mut attached)?,
                 }
             }
             OpInput::UpdateFields(o) => {
@@ -1897,6 +1913,7 @@ async fn parse_seen(
                     body: o.body.clone(),
                     private: o.is_private,
                     format: o.format.unwrap_or(TextFormat::Markdown),
+                    attachments: attachments_of(&o.attachments, &p("attachments"), &mut attached)?,
                 }
             }
             OpInput::DuplicateOf(o) => {
@@ -2482,6 +2499,9 @@ struct Work {
     /// Form rules the actor was held to and the final state meets (step
     /// 14): a write clears only their marks (§3.6.3).
     form_passed: Vec<String>,
+    /// Design 06 R-A7: the uploads attached by this document (to the
+    /// issue, or to one of its new notes), taken and locked.
+    attachments: Vec<(Option<Uuid>, crate::attachments::ops::Planned)>,
 }
 
 /// A planned `issue_triage` change.
@@ -2694,6 +2714,12 @@ async fn run(
     // locks, R-W10).
     if crate::wiki::is_wiki_doc(doc) {
         return crate::wiki::run(&mut *tx, caller, who, operation_id, doc)
+            .await
+            .map(Outcome::Done);
+    }
+    // Design 06 §3.11, R-A7: so is an attachment document (people only).
+    if crate::attachments::ops::is_attachment_doc(doc) {
+        return crate::attachments::ops::run(&mut *tx, caller, who, operation_id, doc)
             .await
             .map(Outcome::Done);
     }
@@ -3657,6 +3683,7 @@ pub(crate) async fn simulate(conn: &mut PgConnection, ectx: &EvalCtx, doc: &Pars
                 enters_triage: false,
                 triage: None,
                 form_passed: Vec::new(),
+                attachments: Vec::new(),
             },
         );
     }
@@ -3904,6 +3931,71 @@ fn check_preconditions(
     Ok(())
 }
 
+/// Design 06 R-A7: an op's `attachments` (checked once per document: at
+/// most 10 in all, each upload once).
+fn attachments_of(
+    list: &Option<Vec<crate::attachments::ops::AttachmentInput>>,
+    path: &str,
+    seen: &mut BTreeSet<Uuid>,
+) -> Result<Vec<crate::attachments::ops::AttachmentInput>> {
+    let Some(list) = list else {
+        return Ok(Vec::new());
+    };
+    crate::attachments::ops::check_inputs(path, list)?;
+    for (i, a) in list.iter().enumerate() {
+        if !seen.insert(a.upload_id) {
+            return Err(bad(
+                &format!("{path}[{i}].upload_id"),
+                "the same upload is named twice in this document",
+            ));
+        }
+    }
+    if seen.len() > crate::attachments::MAX_PER_DOCUMENT {
+        return Err(crate::attachments::ops::limit(path));
+    }
+    Ok(list.clone())
+}
+
+/// The uploads of op `i` (people only, R-A9), taken and locked.
+async fn take_attachments(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    project: Uuid,
+    list: &[crate::attachments::ops::AttachmentInput],
+    i: usize,
+) -> Result<Vec<crate::attachments::ops::Planned>> {
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+    let path = format!("ops[{i}].attachments");
+    let Some(me) = actor.user_id.filter(|_| !actor.is_agent()) else {
+        return Err(crate::attachments::ops::people_only(&path));
+    };
+    crate::attachments::ops::take(&mut *conn, me, project, list, &path).await
+}
+
+/// Plans the attachment rows and their `attachment_added` events.
+fn add_attachments(
+    w: &mut Work,
+    note: Option<Uuid>,
+    op_id: Uuid,
+    planned: Vec<crate::attachments::ops::Planned>,
+) -> Vec<Uuid> {
+    let mut ids = Vec::new();
+    for p in planned {
+        ids.push(p.id);
+        w.events.push(PendingEvent {
+            kind: "attachment_added",
+            op_id,
+            payload: crate::attachments::ops::event_payload(p.id, &p.filename),
+            note_id: note,
+            fields: Vec::new(),
+        });
+        w.attachments.push((note, p));
+    }
+    ids
+}
+
 /// Steps 13–14: every op in order on the loaded state, then the final checks.
 #[allow(clippy::too_many_arguments)]
 async fn run_ops(
@@ -3973,6 +4065,7 @@ async fn run_ops(
                 fields,
                 is_private,
                 format,
+                attachments,
             } => {
                 if actor.is_agent() && *format != TextFormat::Markdown {
                     return Err(agent_format(fail));
@@ -4057,6 +4150,7 @@ async fn run_ops(
                     enters_triage: false,
                     triage: None,
                     form_passed: Vec::new(),
+                    attachments: Vec::new(),
                 };
                 let r = &rules[&(*project_id, *tracker_id)];
                 let ro = r.at(initial);
@@ -4117,6 +4211,9 @@ async fn run_ops(
                 if let Some(b) = bind {
                     temps.insert(b.clone(), id);
                 }
+                let planned =
+                    take_attachments(&mut *conn, actor, *project_id, attachments, i).await?;
+                let attachment_ids = add_attachments(&mut w, None, *op_id, planned);
                 work.insert(id, w);
                 items.push(ItemResult {
                     op_id: *op_id,
@@ -4125,6 +4222,7 @@ async fn run_ops(
                     version_id: None,
                     time_entry_id: None,
                     wiki_page_id: None,
+                    attachment_ids,
                 });
             }
             Op::Update {
@@ -4217,6 +4315,7 @@ async fn run_ops(
                     version_id: None,
                     time_entry_id: None,
                     wiki_page_id: None,
+                    attachment_ids: Vec::new(),
                 });
             }
             Op::Transition { op_id, target, to } => {
@@ -4275,6 +4374,7 @@ async fn run_ops(
                     version_id: None,
                     time_entry_id: None,
                     wiki_page_id: None,
+                    attachment_ids: Vec::new(),
                 });
             }
             Op::Note {
@@ -4283,6 +4383,7 @@ async fn run_ops(
                 body,
                 private,
                 format,
+                attachments,
             } => {
                 if actor.is_agent() && *format != TextFormat::Markdown {
                     return Err(agent_format(fail));
@@ -4307,6 +4408,8 @@ async fn run_ops(
                     ));
                 }
                 let note_id = Uuid::now_v7();
+                let project = w.project_id;
+                let planned = take_attachments(&mut *conn, actor, project, attachments, i).await?;
                 let w = work.get_mut(&id).expect("target");
                 w.notes.push((note_id, body.clone(), *private, *format));
                 w.events.push(PendingEvent {
@@ -4316,6 +4419,7 @@ async fn run_ops(
                     note_id: Some(note_id),
                     fields: Vec::new(),
                 });
+                let attachment_ids = add_attachments(w, Some(note_id), *op_id, planned);
                 w.effect = true;
                 items.push(ItemResult {
                     op_id: *op_id,
@@ -4324,6 +4428,7 @@ async fn run_ops(
                     version_id: None,
                     time_entry_id: None,
                     wiki_page_id: None,
+                    attachment_ids,
                 });
             }
             Op::Duplicate {
@@ -4342,6 +4447,7 @@ async fn run_ops(
                     version_id: None,
                     time_entry_id: None,
                     wiki_page_id: None,
+                    attachment_ids: Vec::new(),
                 });
             }
             Op::Triage {
@@ -4432,6 +4538,7 @@ async fn run_ops(
                     version_id: None,
                     time_entry_id: None,
                     wiki_page_id: None,
+                    attachment_ids: Vec::new(),
                 });
             }
         }
@@ -4759,6 +4866,22 @@ pub(crate) async fn write_effects(
                 .bind(private)
                 .bind(format.as_str())
                 .execute(&mut *conn)
+                .await?;
+            }
+            // Design 06 R-A7: after the issue and its notes (the rows refer
+            // to them), before the events that name them.
+            for (note, p) in &w.attachments {
+                crate::attachments::ops::insert(
+                    &mut *conn,
+                    w.project_id,
+                    crate::attachments::ops::Container::Issue {
+                        issue: id,
+                        note: *note,
+                    },
+                    std::slice::from_ref(p),
+                    at.author_id,
+                    execution_id,
+                )
                 .await?;
             }
             for (rel, s, t) in &w.dups {

@@ -34,6 +34,9 @@ use tokio::io::AsyncWriteExt;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
+pub mod ops;
+pub mod read;
+
 const MB: u64 = 1024 * 1024;
 /// R-A2: the default and the largest allowed single-file limit.
 pub const DEFAULT_MAX_BYTES: u64 = 20 * MB;

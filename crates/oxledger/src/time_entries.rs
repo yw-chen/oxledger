@@ -309,6 +309,7 @@ impl EntryPlan {
             version_id: None,
             time_entry_id: Some(self.id),
             wiki_page_id: None,
+            attachment_ids: Vec::new(),
         }
     }
 }
