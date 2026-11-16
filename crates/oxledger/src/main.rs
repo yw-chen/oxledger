@@ -29,6 +29,10 @@
 //! OXLEDGER_SPA_ORIGIN (default http://<OXLEDGER_BIND>; non-GET /api/v1 requests must come from it),
 //! OXLEDGER_METRICS_TOKEN (enables GET /metrics with `Authorization: Bearer <token>`),
 //! OXLEDGER_LOG_FORMAT (`text`, the default, or `json`), OXLEDGER_DB_MAX_CONNECTIONS.
+//! Attachments (design 06 R-A2, R-A11): OXLEDGER_FILES_DIR (unset: attachments off; back it
+//! up at the same point in time as PostgreSQL), OXLEDGER_ATTACHMENT_MAX_BYTES (default 20 MB,
+//! at most 100 MB), OXLEDGER_UPLOAD_DAILY_BYTES (per person, default 1 GB),
+//! OXLEDGER_FILES_MIN_FREE_BYTES (default 5 GB), OXLEDGER_FILES_ORIGIN (optional download origin).
 //! `serve` also answers GET /readyz (database, migrations, workers started).
 
 use anyhow::{Context, Result, bail};
@@ -310,6 +314,20 @@ async fn serve() -> Result<()> {
         );
         oxledger::ai::config::install(ai);
         oxledger::ai::runner::spawn_jobs(app.pool.clone());
+    }
+    // Attachments (design 06 R-A11): off without OXLEDGER_FILES_DIR.
+    {
+        let (files, warnings) = oxledger::attachments::from_vars(|k| std::env::var(k).ok());
+        for w in warnings {
+            tracing::warn!("{w}");
+        }
+        match &files.dir {
+            Some(d) => {
+                tracing::info!(dir = %d.display(), max_bytes = files.max_bytes, "attachments on")
+            }
+            None => tracing::info!("attachments off (OXLEDGER_FILES_DIR is not set)"),
+        }
+        oxledger::attachments::install(files);
     }
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let cfg = ApiConfig {

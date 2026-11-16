@@ -118,7 +118,10 @@ async fn s6_direct() {
             "update_version",
             "triage_decide",
             "log_time",
-            "update_time_entry"
+            "update_time_entry",
+            // Design 06 §4.4 (M2.3b): the wiki ops are offered, not given.
+            "wiki_put",
+            "wiki_move"
         ]
     );
     // status_id is not a field (a status change is the transition command).

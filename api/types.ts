@@ -787,7 +787,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -3571,6 +3571,17 @@ export type UnreadCount = {
   stale: boolean;
 };
 
+/** `POST /projects/{id}/uploads` (R-A1). The same shape whatever happened to the content before (R-A12: never "this was redacted"). */
+export type UploadView = {
+  /** R-A3: from the first bytes only. */
+  content_type: string;
+  /** Attach it before this, or it goes (R-A1). */
+  expires_at: string;
+  filename: string;
+  size: number;
+  upload_id: string;
+};
+
 /** `GET /admin/ai/usage?month=YYYY-MM`: counts and costs only, never conversation content (P2). */
 export type Usage = {
   days: Array<UsageDay>;
@@ -4470,6 +4481,7 @@ export interface Endpoints {
   "GET /projects/{id}/triage": { body: never; data: TriageList };
   "GET /projects/{id}/triage-settings": { body: never; data: TriageSettings };
   "PUT /projects/{id}/triage-settings": { body: TriageSettingsPut; data: TriageSettings };
+  "POST /projects/{id}/uploads": { body: never; data: UploadView };
   "GET /projects/{id}/versions": { body: never; data: VersionList };
   "POST /projects/{id}/versions": { body: NewVersion; data: VersionWriteResult };
   "GET /projects/{id}/wiki": { body: never; data: WikiIndex };

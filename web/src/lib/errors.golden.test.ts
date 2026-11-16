@@ -85,6 +85,7 @@ const CODES = {
 	ai_provider_changed: true,
 	ai_run_in_progress: true,
 	payload_too_large: true,
+	insufficient_storage: true,
 	wiki_page_exists: true,
 	wiki_has_children: true,
 	wiki_title_invalid: true

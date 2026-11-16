@@ -190,6 +190,32 @@ api_keys.created_at timestamp with time zone NOT NULL DEFAULT now()
 api_keys.id uuid NOT NULL DEFAULT uuidv7()
 api_keys.revoked_at timestamp with time zone
 api_keys.expires_at timestamp with time zone
+attachment_blobs.id uuid NOT NULL DEFAULT uuidv7()
+attachment_blobs.project_id uuid NOT NULL
+attachment_blobs.sha256 bytea NOT NULL
+attachment_blobs.size bigint NOT NULL
+attachment_blobs.sniffed_type text NOT NULL
+attachment_blobs.state text NOT NULL DEFAULT 'present'::text
+attachment_blobs.created_at timestamp with time zone NOT NULL DEFAULT now()
+attachment_blobs.purged_at timestamp with time zone
+attachment_blobs.purge_reason text
+attachments.id uuid NOT NULL DEFAULT uuidv7()
+attachments.project_id uuid NOT NULL
+attachments.issue_id uuid
+attachments.note_id uuid
+attachments.wiki_page_id uuid
+attachments.wiki_version integer
+attachments.blob_id uuid NOT NULL
+attachments.filename text NOT NULL
+attachments.size bigint NOT NULL
+attachments.content_type text NOT NULL
+attachments.author_id uuid NOT NULL
+attachments.created_execution_id uuid NOT NULL
+attachments.created_at timestamp with time zone NOT NULL DEFAULT now()
+attachments.deleted_at timestamp with time zone
+attachments.deleted_by_execution_id uuid
+attachments.redacted_at timestamp with time zone
+attachments.redaction_id uuid
 auth_events.id uuid NOT NULL DEFAULT uuidv7()
 auth_events.kind text NOT NULL
 auth_events.actor_id uuid
@@ -887,6 +913,18 @@ trackers.name text NOT NULL
 trackers.default_status_id uuid
 trackers.position integer NOT NULL DEFAULT 0
 trackers.private_by_default boolean NOT NULL DEFAULT false
+upload_daily_usage.user_id uuid NOT NULL
+upload_daily_usage.day date NOT NULL
+upload_daily_usage.bytes bigint NOT NULL DEFAULT 0
+uploads.id uuid NOT NULL DEFAULT uuidv7()
+uploads.project_id uuid NOT NULL
+uploads.uploader_id uuid NOT NULL
+uploads.blob_id uuid NOT NULL
+uploads.filename text NOT NULL
+uploads.size bigint NOT NULL
+uploads.created_at timestamp with time zone NOT NULL DEFAULT now()
+uploads.expires_at timestamp with time zone NOT NULL
+uploads.consumed_at timestamp with time zone
 user_passwords.user_id uuid NOT NULL
 user_passwords.password_phc text NOT NULL
 user_passwords.credential_version bigint NOT NULL DEFAULT 1

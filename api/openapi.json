@@ -3160,6 +3160,11 @@
             "type": "string"
           },
           {
+            "const": "insufficient_storage",
+            "description": "Design 06 §5 (R-A2): the disk of the attachment directory is below\nits free-space threshold; try again later.",
+            "type": "string"
+          },
+          {
             "const": "wiki_page_exists",
             "description": "Design 06 §5: a wiki page of this project already has that title\n(create, rename, restore); `details.page_id`.",
             "type": "string"
@@ -13540,6 +13545,39 @@
           "count",
           "capped",
           "stale"
+        ],
+        "type": "object"
+      },
+      "UploadView": {
+        "description": "`POST /projects/{id}/uploads` (R-A1). The same shape whatever happened\nto the content before (R-A12: never \"this was redacted\").",
+        "properties": {
+          "content_type": {
+            "description": "R-A3: from the first bytes only.",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "Attach it before this, or it goes (R-A1).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "upload_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "filename",
+          "size",
+          "content_type",
+          "expires_at"
         ],
         "type": "object"
       },
@@ -25884,6 +25922,77 @@
           }
         },
         "summary": "Replace the Triage settings (manage_project, active project). Header Idempotency-Key. responsible_user_id: an active assignable user of the project; decline_status_id: a done status, required when enabled. invalid_value kinds: triage_entry_rule, triage_decline_status_required, triage_decline_status_invalid, triage_responsible_invalid. conflict carries details.current and current_lock_version. With enabled true, warnings (kind decline_transition_missing) name roles with triage_issues and no workflow transition from a tracker's initial status to the decline status; they do not block.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/uploads": {
+      "post": {
+        "operationId": "post_projects_id_uploads",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/UploadView"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-A1: upload a file to attach later (a command document's attachments [{upload_id, filename?}]). The body is the raw file (Content-Type: application/octet-stream); query filename (1-255 characters, no control or format characters, no slash or backslash). Needs a permission that attaches files in the project (add_issues, edit_issues, add_issue_notes or edit_wiki_pages, project taking writes): a project you cannot see is not_found, otherwise forbidden_op. Signed-in people only (401). Not a content write: no history, no notification; unused for 24 hours it goes. Limits (R-A2): one file over OXLEDGER_ATTACHMENT_MAX_BYTES (default 20 MB) is payload_too_large (a Content-Length over it is refused unread), so are your unused uploads over 200 MB together and today's uploads over OXLEDGER_UPLOAD_DAILY_BYTES (default 1 GB); a fourth upload at the same time is rate_limited; a nearly full disk is insufficient_storage (507). Without OXLEDGER_FILES_DIR: forbidden_op (reason attachments_disabled). content_type is from the first bytes only (R-A3: png, jpeg, gif, webp, else application/octet-stream). The same content in the same project is stored once.",
         "x-access": "session",
         "x-csrf": true
       }

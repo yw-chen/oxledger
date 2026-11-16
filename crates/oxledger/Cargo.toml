@@ -30,8 +30,12 @@ chrono = "0.4.45"
 comrak = { version = "=0.59.0", default-features = false }
 csv = "=1.4.0"
 encoding_rs = "=0.8.44"
+# Attachments (design 06 §2.4, R-A2): free space of the files directory.
+fs4 = "0.13.1"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 hex = "0.4.3"
 hmac = "0.13"
+percent-encoding = "2.3.2"
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", optional = true, features = ["client", "http1"] }
 hyper-rustls = { version = "0.27", optional = true, default-features = false, features = ["http1", "ring", "tls12", "webpki-roots"] }
@@ -61,6 +65,7 @@ webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 http-body-util = "0.1"
+tempfile = "3.27.0"
 # Golden tests (docs/research/09b G1/G2): no `redactions` (it pulls pest;
 # tests/common/snap.rs normalizes instead).
 insta = { version = "=1.49.0", default-features = false, features = ["json", "glob"] }

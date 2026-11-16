@@ -187,7 +187,7 @@
   - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
   - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 
-## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0038）
+## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0039）
 
 - **不會讓 agent 工作脈絡失效**：授予新權限時暫停了 `role_permissions_epoch` trigger（契約 06 B-37），每個專案的 `security_epoch` 不變。理由：新權限不改既有議題內容的讀者集合，升級前也沒有任何 wiki 內容。
 - **新權限與自動授予**（之後管理者可以自己調整；調整會照常讓 epoch 加一）：
@@ -301,3 +301,13 @@
 - **同一頁 10 分鐘內第 11 次寫入**會暫停 agent 的工作脈絡（`agent_suspended`，原因 `wiki_write_burst`），和議題相同的處理方式。
 - 人與 agent 的 changeset validations 現在在可寫的交易裡試跑後回滾，回應不變。
 - **新端點 `GET /wiki/agent-changes`**（`project` 可選）：agent 最近 7 天寫的 wiki 版本，只列你有 `view_wiki_edits` 的 wiki；wiki 版本歷史的項目多 `on_behalf_of` 與 `approver`（舊版本為 `null`）。前端首頁與 wiki 首頁有這份清單，審閱頁顯示 wiki 提案差異，委派精靈多「文件維護」範本。
+
+## 0036_attachments（M2.4，附件；草稿，M2.4 完成時補完）
+
+規格見設計 06 §2.4、§3.6 R-A1–R-A12（A2 (a)）。原設計編號 0035，因 M2.3b 用掉 0035 而改為 0036。
+
+- **migration 0036**：新表 `attachment_blobs`、`uploads`、`upload_daily_usage`、`attachments`；`issue_events_kind_check` 加 `attachment_added`、`attachment_removed`。不動角色、權限、成員或專案，security epoch 不變。
+- **預設關閉**：沒設 `OXLEDGER_FILES_DIR` 時附件功能關閉（上傳回 `forbidden_op`，`reason = attachments_disabled`）。要開就設一個伺服器可寫的目錄，**並和 PostgreSQL 同一時間點備份**。
+- **其他設定**：`OXLEDGER_ATTACHMENT_MAX_BYTES`（單檔，預設 20 MB，最大 100 MB）、`OXLEDGER_UPLOAD_DAILY_BYTES`（每人每日，預設 1 GB，組織時區換日）、`OXLEDGER_FILES_MIN_FREE_BYTES`（磁碟剩餘低於此值拒收，預設 5 GB）、`OXLEDGER_FILES_ORIGIN`（可選的下載網域）。
+- **新端點** `POST /projects/{id}/uploads?filename=`：body 是原始檔案（`Content-Type: application/octet-stream`），仍要 Origin 與 CSRF token。新錯誤碼 `insufficient_storage`（507）。
+- 反向代理若限制 request body 大小，要放寬到單檔上限以上。

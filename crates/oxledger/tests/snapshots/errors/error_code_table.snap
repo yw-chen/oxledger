@@ -31,6 +31,7 @@ form_publish_blocked          409     no         ask_human
 form_rules_changed            409     no         fix_input
 human_session_required        403     no         ask_human,stop
 idempotency_key_reused        409     no         fix_input
+insufficient_storage          507     yes        wait_and_retry
 invalid_argument              400     no         fix_input
 invalid_citation              400     no         fix_input
 invalid_consistency_token     400     no         fix_input

@@ -858,6 +858,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
             s::<crate::wiki_search::WikiSearchResult>,
         ),
         r(
+            "POST",
+            "/projects/{id}/uploads",
+            "Design 06 R-A1: upload a file to attach later (a command document's attachments [{upload_id, filename?}]). The body is the raw file (Content-Type: application/octet-stream); query filename (1-255 characters, no control or format characters, no slash or backslash). Needs a permission that attaches files in the project (add_issues, edit_issues, add_issue_notes or edit_wiki_pages, project taking writes): a project you cannot see is not_found, otherwise forbidden_op. Signed-in people only (401). Not a content write: no history, no notification; unused for 24 hours it goes. Limits (R-A2): one file over OXLEDGER_ATTACHMENT_MAX_BYTES (default 20 MB) is payload_too_large (a Content-Length over it is refused unread), so are your unused uploads over 200 MB together and today's uploads over OXLEDGER_UPLOAD_DAILY_BYTES (default 1 GB); a fourth upload at the same time is rate_limited; a nearly full disk is insufficient_storage (507). Without OXLEDGER_FILES_DIR: forbidden_op (reason attachments_disabled). content_type is from the first bytes only (R-A3: png, jpeg, gif, webp, else application/octet-stream). The same content in the same project is stored once.",
+            Session,
+            None,
+            s::<crate::attachments::UploadView>,
+        ),
+        r(
             "GET",
             "/projects/{id}/wiki",
             "The project's wiki (design 06 R-W1): readable when the project is not archived, has the wiki module and you hold view_wiki_pages (or are a system administrator); otherwise not_found, exactly like a missing project. {project, start_page (R-W13: the set start page, else the page titled Wiki, else null), read_only (closed project), can {create, manage}, tree [{id, title, parent_id, updated_at}] (every live page, at most 5000)}.",
@@ -1654,6 +1662,7 @@ fn path_params(path: &str) -> Vec<Value> {
 
 /// Routes answering 201 Created instead of 200 (design 05 §3.3).
 pub const CREATED_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/projects/{id}/uploads"),
     ("POST", "/views"),
     ("POST", "/views/{id}/copy"),
     ("POST", "/admin/custom-fields"),
@@ -1662,6 +1671,9 @@ pub const CREATED_ROUTES: &[(&str, &str)] = &[
     ("POST", "/admin/concepts"),
     ("POST", "/admin/concepts/{id}/labels"),
 ];
+
+/// Routes whose body is the raw bytes (R-A1 uploads), not JSON.
+pub const RAW_BODY_ROUTES: &[(&str, &str)] = &[("POST", "/projects/{id}/uploads")];
 
 /// The OpenAPI 3.1 document.
 pub fn document() -> Value {
@@ -1691,6 +1703,10 @@ pub fn document() -> Value {
         if let Some(b) = r.body {
             op["requestBody"] =
                 json!({"required": true, "content": {"application/json": {"schema": b(&mut req)}}});
+        }
+        if RAW_BODY_ROUTES.contains(&(r.method, r.path)) {
+            op["requestBody"] = json!({"required": true, "content": {"application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}}}});
         }
         let params = path_params(r.path);
         if !params.is_empty() {

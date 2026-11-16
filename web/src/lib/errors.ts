@@ -235,6 +235,8 @@ export function describeError(e: unknown): Shown {
 			return { title: '操作太頻繁，請稍後再試', changed: NOTHING, next: '稍後重試', action: 'retry' };
 		case 'payload_too_large':
 			return { title: '內容太大，超過上限', changed: NOTHING };
+		case 'insufficient_storage':
+			return { title: '伺服器的儲存空間不足，暫時不能上傳', changed: NOTHING, next: '稍後重試', action: 'retry' };
 		case 'version_not_open':
 			return { title: '這個里程碑已鎖定或關閉，不能指定', changed: NOTHING };
 		case 'version_in_use':

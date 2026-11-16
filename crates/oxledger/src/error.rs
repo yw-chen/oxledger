@@ -186,6 +186,9 @@ pub enum ErrorCode {
     /// Design 06 §5: the body is over a size limit (`POST /markdown/preview`
     /// text, later uploads, imports and wiki pages); `details.limit` in bytes.
     PayloadTooLarge,
+    /// Design 06 §5 (R-A2): the disk of the attachment directory is below
+    /// its free-space threshold; try again later.
+    InsufficientStorage,
     /// Design 06 §5: a wiki page of this project already has that title
     /// (create, rename, restore); `details.page_id`.
     WikiPageExists,
@@ -211,7 +214,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 76] = [
+    pub const ALL: [ErrorCode; 77] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -285,6 +288,7 @@ impl ErrorCode {
         Self::AiProviderChanged,
         Self::AiRunInProgress,
         Self::PayloadTooLarge,
+        Self::InsufficientStorage,
         Self::WikiPageExists,
         Self::WikiHasChildren,
         Self::WikiTitleInvalid,
@@ -365,6 +369,7 @@ impl ErrorCode {
             Self::AiProviderChanged => "ai_provider_changed",
             Self::AiRunInProgress => "ai_run_in_progress",
             Self::PayloadTooLarge => "payload_too_large",
+            Self::InsufficientStorage => "insufficient_storage",
             Self::WikiPageExists => "wiki_page_exists",
             Self::WikiHasChildren => "wiki_has_children",
             Self::WikiTitleInvalid => "wiki_title_invalid",
@@ -438,6 +443,7 @@ impl ErrorCode {
             Self::AiModelDisallowed | Self::AiEndpointInvalid => 422,
             Self::AiConversationReadOnly | Self::AiProviderChanged | Self::AiRunInProgress => 409,
             Self::PayloadTooLarge => 413,
+            Self::InsufficientStorage => 507,
             Self::WikiPageExists | Self::WikiHasChildren => 409,
             Self::WikiTitleInvalid => 422,
         }
@@ -453,6 +459,7 @@ impl ErrorCode {
                 | Self::SearchNotCaughtUp
                 | Self::AiProviderError
                 | Self::AiRunInProgress
+                | Self::InsufficientStorage
         )
     }
 
@@ -529,6 +536,7 @@ impl ErrorCode {
             Self::AiProviderChanged => &[AskHuman],
             Self::AiRunInProgress => &[WaitAndRetry],
             Self::PayloadTooLarge => &[FixInput],
+            Self::InsufficientStorage => &[WaitAndRetry],
             Self::WikiPageExists | Self::WikiTitleInvalid => &[FixInput],
             // Design 06 §5: "(SPA)": the person decides in the dialog.
             Self::WikiHasChildren => &[AskHuman],

@@ -5,6 +5,7 @@ pub mod agents;
 pub mod ai;
 pub mod ai_team;
 pub mod api;
+pub mod attachments;
 pub mod audience;
 pub mod auth;
 pub mod changesets;

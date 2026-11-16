@@ -150,6 +150,12 @@ changed: 沒有改到任何資料。
 next:    重新整理
 action:  refresh
 
+## insufficient_storage
+title:   伺服器的儲存空間不足，暫時不能上傳
+changed: 沒有改到任何資料。
+next:    稍後重試
+action:  retry
+
 ## invalid_argument
 title:   送出的內容有誤
 changed: 沒有改到任何資料。

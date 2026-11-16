@@ -439,6 +439,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/time-entries/{id}/redact", post(redact_time_entry))
         .route("/wiki/search", get(wiki_search))
         .route("/wiki/agent-changes", get(wiki_agent_changes))
+        .route("/projects/{id}/uploads", post(upload_file))
         .route("/projects/{id}/wiki", get(wiki_index))
         .route("/projects/{id}/wiki/pages/{title}", get(wiki_page))
         .route(
@@ -782,9 +783,29 @@ async fn api_guard(State(st): State<Arc<ApiState>>, mut req: Request, next: Next
         Ok(()) => next.run(req).await,
         Err(e) => e.into_response(),
     };
-    resp.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // Every /api/v1 response is no-store; a handler's own value is kept
+    // only when it says no-store too (a download's `private, no-store`, R-A6).
+    let keep = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|d| d.trim().eq_ignore_ascii_case("no-store"))
+        });
+    if !keep {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     resp
+}
+
+/// R-A1: an upload's body is the raw file (`application/octet-stream`),
+/// not JSON; the origin and CSRF checks still apply.
+fn is_upload(path: &str) -> bool {
+    // `/projects/{id}/uploads`, with or without the `/api/v1` prefix.
+    let parts: Vec<&str> = path.split('/').filter(|x| !x.is_empty()).collect();
+    matches!(parts.as_slice(), [.., "projects", _, "uploads"])
 }
 
 async fn guard(st: &ApiState, req: &mut Request) -> Result<(), ApiFailure> {
@@ -817,13 +838,18 @@ async fn guard(st: &ApiState, req: &mut Request) -> Result<(), ApiFailure> {
 
     if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         let csrf = |msg: &str| ApiFailure(api(ErrorCode::CsrfFailed, msg));
-        let json_type = headers
+        let media = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(';').next())
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"));
-        if !json_type {
-            return Err(csrf("Content-Type must be application/json"));
+            .map(|v| v.trim().to_ascii_lowercase());
+        let wanted = if *req.method() == Method::POST && is_upload(req.uri().path()) {
+            "application/octet-stream"
+        } else {
+            "application/json"
+        };
+        if media.as_deref() != Some(wanted) {
+            return Err(csrf(&format!("Content-Type must be {wanted}")));
         }
         let origin_ok = headers
             .get(header::ORIGIN)
@@ -2678,6 +2704,33 @@ fn opt_version(q: &HashMap<String, String>, name: &str) -> Result<Option<i32>, A
                 )
             }),
     }
+}
+
+async fn upload_file(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+    req: Request,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let len = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let body = req.into_body().into_data_stream();
+    Ok(created(
+        crate::attachments::upload(
+            &st.app,
+            ctx,
+            &id,
+            q.get("filename").map(String::as_str),
+            len,
+            body,
+        )
+        .await?,
+    ))
 }
 
 async fn wiki_index(
