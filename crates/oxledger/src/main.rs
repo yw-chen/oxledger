@@ -11,6 +11,11 @@
 //!   oxledger user revoke-sessions <login>        end all of the user's browser sessions
 //!   oxledger agent-client add <name> <egress-policy-ref>   created disabled
 //!   oxledger agent-client enable|disable <name>
+//!   oxledger setup init-defaults   default roles, trackers, statuses, workflow (empty site only)
+//!   oxledger project add <KEY> <name> [--public] [--modules issue_tracking,time_tracking,wiki]
+//!   oxledger project list
+//!   oxledger member add <KEY> <login> <role>[,<role>...]   roles by name (`role list`)
+//!   oxledger role list
 //!   oxledger api-spec [dir]  write <dir>/openapi.json and <dir>/types.ts (default dir: api)
 //!   oxledger seed-demo    fill an empty database with demo data, print API keys
 //!                         (only with --features test-support)
@@ -361,7 +366,7 @@ async fn stdio() -> Result<()> {
 fn read_password() -> Result<String> {
     let mut s = String::new();
     std::io::stdin().read_to_string(&mut s)?;
-    let p = s.trim_end_matches(['\r', '\n']).to_string();
+    let p = oxledger::setup::password_from_input(&s).to_string();
     auth::check_password_policy(&p)?;
     Ok(p)
 }
@@ -400,6 +405,34 @@ async fn admin(args: &[String]) -> Result<()> {
         }
         ["agent-client", verb @ ("enable" | "disable"), name] => {
             oxledger::agents::set_agent_client_enabled(&pool, name, *verb == "enable").await?;
+        }
+        ["setup", "init-defaults"] => {
+            oxledger::setup::init_defaults(&pool).await?;
+            eprintln!("default roles, trackers, statuses and workflow loaded");
+        }
+        ["project", "add", key, name, rest @ ..] => {
+            let (public, modules) = oxledger::setup::parse_project_flags(rest)?;
+            let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+            let id = oxledger::setup::add_project(&pool, key, name, public, &modules).await?;
+            println!("{id}");
+        }
+        ["project", "list"] => {
+            for line in oxledger::setup::list_projects(&pool).await? {
+                println!("{line}");
+            }
+        }
+        // PowerShell turns an unquoted `a,b` into two arguments: take every
+        // argument after the login and split each at commas.
+        ["member", "add", key, login, roles @ ..] => {
+            let roles = oxledger::setup::split_list(roles);
+            let roles: Vec<&str> = roles.iter().map(String::as_str).collect();
+            oxledger::setup::add_member(&pool, key, login, &roles).await?;
+            eprintln!("{login} is a member of {key}: {}", roles.join(", "));
+        }
+        ["role", "list"] => {
+            for line in oxledger::setup::list_roles(&pool).await? {
+                println!("{line}");
+            }
         }
         _ => bail!("unknown command; see `oxledger` with no arguments"),
     }
@@ -451,7 +484,7 @@ async fn main() -> Result<()> {
             eprintln!("wrote {}/openapi.json and types.ts", dir.display());
             Ok(())
         }
-        Some("user" | "agent-client") => {
+        Some("user" | "agent-client" | "setup" | "project" | "member" | "role") => {
             let args: Vec<String> = std::env::args().skip(1).collect();
             admin(&args).await
         }
@@ -488,7 +521,9 @@ async fn main() -> Result<()> {
             )
         }
         _ => {
-            eprintln!("usage: oxledger <serve|stdio|seed-demo|reindex|user|agent-client|api-spec>");
+            eprintln!(
+                "usage: oxledger <serve|stdio|seed-demo|reindex|user|agent-client|setup|project|member|role|api-spec>"
+            );
             std::process::exit(2);
         }
     }

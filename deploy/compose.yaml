@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Local single-machine deployment: http://localhost:${OX_PORT:-8088}
+# (deploy/README.md). Only 127.0.0.1 is published; PostgreSQL is not.
+name: oxledger
+
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: oxledger
+      POSTGRES_PASSWORD: ${OX_DB_PASSWORD:?set OX_DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: oxledger
+    volumes:
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oxledger -d oxledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: server
+    image: oxledger-server:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://oxledger:${OX_DB_PASSWORD}@db:5432/oxledger
+      OXLEDGER_SPA_ORIGIN: http://localhost:${OX_PORT:-8088}
+      OXLEDGER_LOG_FORMAT: text
+      # Optional AI endpoints and keys (docs: OXLEDGER_AI_*) go in deploy/.env
+      # and are listed here when used.
+    volumes:
+      - data:/data
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+    image: oxledger-web:local
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "127.0.0.1:${OX_PORT:-8088}:80"
+
+volumes:
+  db:
+  data:

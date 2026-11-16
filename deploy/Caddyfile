@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# One origin for the SPA and the API: the server checks Origin against
+# OXLEDGER_SPA_ORIGIN on every non-GET /api/v1 request, and the session cookie
+# is __Host- (Secure; browsers accept it over http only on localhost).
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	@backend path /api/* /mcp /mcp/* /healthz /readyz
+	handle @backend {
+		# Host and Origin pass through unchanged.
+		reverse_proxy app:8080 {
+			flush_interval -1
+		}
+	}
+
+	# Only the static files are compressed: the API streams (AI answers are
+	# text/event-stream) go through untouched.
+	handle {
+		encode zstd gzip
+		root * /srv
+		@immutable path /_app/immutable/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		@html not path /_app/immutable/*
+		header @html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
