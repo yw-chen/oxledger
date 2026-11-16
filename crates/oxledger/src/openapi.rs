@@ -843,6 +843,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "GET",
+            "/wiki/agent-changes",
+            "Design 06 §6.5 A5 (c): the wiki versions agents wrote in the last 7 days, newest first, at most 50, in the wikis whose history you view (R-W1 and view_wiki_edits, K3); deleted pages are left out. Query project (id or key): one wiki (one you cannot read is not_found, one without view_wiki_edits forbidden_op). Items {page_id, project {id, key, name}, title (now), version, agent, on_behalf_of, approver (reviewed writes), at}.",
+            Session,
+            None,
+            s::<crate::wiki::AgentWikiChanges>,
+        ),
+        r(
+            "GET",
             "/wiki/search",
             "Design 06 §3.14, §6.7: search the wikis you read (R-W1), wiki pages only (issues: POST /issues/search; the two rankings are not comparable). Query q (free text; absent or blank: no search, only available), project (id or key: one wiki; one you cannot read and one that does not exist give the same empty result), cursor (next_cursor), consistent_after (a wiki write receipt's search.consistent_after: wait for this index; invalid_consistency_token, consistency_epoch_changed), wait_ms (0-2000, default 1000), on_lag (return: outcome search_lagging with no items; error: search_not_caught_up). Items best first, 20 per page: project {id, key, name}, page_id, title, url_title (link /projects/{key}/wiki/{url_title}), snippet [{text, hit}] (plain text parts of the current text, hit = a query term; never HTML), updated_at. available: you read at least one wiki (shows the Wiki tab). invalid_query: q without searchable characters; invalid_cursor; search_unavailable while the wiki index cannot serve.",
             Session,

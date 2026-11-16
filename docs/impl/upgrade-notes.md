@@ -300,3 +300,4 @@
 - **送審**：政策 review、`require_review`、委派開了 `read_own_time`（外部 agent，`review:time_read_delegated`）、內建 AI 這次 run 讀過工時（`review:time_taint`）時，wiki 寫入變成 ChangeSet。審閱詳情多一個 `wiki` 欄位（和目前版本的差異、`stale`）；這種提案不能批次勾選核准、不能修改（`invalid_request`，`reason = wiki_proposal`），要改請駁回讓 agent 重提。核准時頁已被改過，執行失敗為 `conflict`。
 - **同一頁 10 分鐘內第 11 次寫入**會暫停 agent 的工作脈絡（`agent_suspended`，原因 `wiki_write_burst`），和議題相同的處理方式。
 - 人與 agent 的 changeset validations 現在在可寫的交易裡試跑後回滾，回應不變。
+- **新端點 `GET /wiki/agent-changes`**（`project` 可選）：agent 最近 7 天寫的 wiki 版本，只列你有 `view_wiki_edits` 的 wiki；wiki 版本歷史的項目多 `on_behalf_of` 與 `approver`（舊版本為 `null`）。前端首頁與 wiki 首頁有這份清單，審閱頁顯示 wiki 提案差異，委派精靈多「文件維護」範本。

@@ -18,6 +18,8 @@
 	import { toast } from '#lib/toast.svelte.js';
 	import { projectLookups } from '#lib/trackers.js';
 	import ErrorBox from '#lib/components/ErrorBox.svelte';
+	import WikiDiffView from '#lib/components/WikiDiffView.svelte';
+	import { wikiPath } from '#lib/wiki.js';
 
 	type Op = Record<string, unknown> & { kind: string; op_id: string };
 	type Doc = { title?: string; ops: Op[]; preconditions?: { target: { id?: string; key?: string }; lock_version: number; field_values?: Record<string, unknown> }[]; evidence?: { citation_id: string; quote?: string; note?: string }[] };
@@ -45,6 +47,10 @@
 	const current = $derived(!!cs && !!shown && shown.version === cs.current_version);
 	/** Still decidable: waiting, or its last apply failed (§8). */
 	const isOpen = (state: string | undefined) => state === 'proposed' || state === 'failed';
+	/** Design 06 §3.12: a wiki proposal (one wiki_put / wiki_move). It has no
+	 * per-field revision: a page changed since is rejected and re-proposed. */
+	const wiki = $derived(shown?.wiki ?? null);
+	const wikiKey = $derived(wiki?.project_key ?? null);
 
 	async function lookupsFor(projectId: string, trackerId: string): Promise<Lookups> {
 		const [s, a, v] = await Promise.all([
@@ -72,7 +78,7 @@
 			validation = null;
 			if (isOpen(c.state) && shown.version === c.current_version && shown.proposal) {
 				validation = await api('POST /changesets/{id}/validations', { path: { id }, body: { version: c.current_version } }).catch(() => null);
-				if (validation?.status === 'conflict') conflictOpen = true;
+				if (validation?.status === 'conflict' && !shown.wiki) conflictOpen = true;
 			}
 		} catch (e) {
 			loadError = e;
@@ -145,7 +151,7 @@
 		if (ex.status === 'succeeded') {
 			toast('已套用', 'ok');
 			refreshCounts();
-		} else if (ex.error?.code === 'conflict') conflictOpen = true;
+		} else if (ex.error?.code === 'conflict' && !wiki) conflictOpen = true;
 		await load();
 		result = ex;
 	}
@@ -154,7 +160,7 @@
 		if (!(e instanceof ApiError)) return;
 		if (e.code === 'execution_in_progress') return follow(op);
 		if (!e.retryable) last = null;
-		if (e.code === 'conflict') conflictOpen = true;
+		if (e.code === 'conflict' && !wiki) conflictOpen = true;
 	}
 	/** §15.5: "結果確認中" looks the original operation up. */
 	async function follow(op: string): Promise<void> {
@@ -300,7 +306,7 @@
 
 	function onAction(a: string | undefined) {
 		if (a === 'latest') location.href = `/cs/${id}`;
-		else if (a === 'conflict') conflictOpen = true;
+		else if (a === 'conflict' && !wiki) conflictOpen = true;
 		else if (a === 'retry') last?.kind === 'revise' ? reviseAndApply(true) : approve(true);
 		else if (a === 'delegations') goto('/ai-team');
 		else if (a === 'queue') goto('/review');
@@ -382,6 +388,33 @@
 				{:else if op.kind === 'duplicate_of'}
 					{@const s = (op.source as { id?: string })?.id}
 					<div><b>標為重複</b>：<a class="key" href="/issue/{keyOf(s)}">{keyOf(s)}</a> 是 <a class="key" href="/issue/{keyOf(tid)}">{keyOf(tid)}</a> 的重複（不會關單）</div>
+				{:else if (op.kind === 'wiki_put' || op.kind === 'wiki_move') && wiki}
+					<div data-testid="wiki-op">
+						<b>{op.kind === 'wiki_put' ? (wiki.page_id ? '修改 wiki 頁' : '新增 wiki 頁') : '改名或移動 wiki 頁'}</b>・{#if wikiKey && wiki.page_id}<a href={wikiPath(wikiKey, wiki.title)} data-testid="wiki-page-link">〈{wiki.title}〉</a>{:else}〈{wiki.title}〉{/if}{#if wikiKey}<span class="hint">（{wikiKey} Wiki）</span>{/if}
+					</div>
+					{#if wiki.new_title}<div>改名為〈<b>{wiki.new_title}</b>〉</div>{/if}
+					{#if 'parent' in op}<div class="hint">移到{op.parent === null ? '最上層' : '另一頁底下'}</div>{/if}
+					{#if typeof op.revert_from === 'number'}<div class="hint">回復到第 {op.revert_from} 版</div>{/if}
+					{#if op.comment}<div class="hint">說明：{String(op.comment)}</div>{/if}
+					{#if !(isOpen(cs.state) && current)}
+						<!-- Decided (or an older version): the page has moved on; comparing with it now says nothing about the proposal. -->
+						{#if wikiKey && wiki.page_id}<div class="hint">要看這頁後來的變化，請到<a href={wikiPath(wikiKey, wiki.title, '/history')}>這頁的歷史</a>。</div>{/if}
+					{:else}
+					{#if wiki.stale}
+						<div class="banner w" data-testid="wiki-stale">
+							{#if wiki.expected_lock_version === null}已經有人建立了同名的頁，這份新頁提案不能套用。{:else}這頁在提案之後被改過（提案依據的版本已不是現在的版本），不能直接套用。{/if}請拒絕，讓 agent 依最新內容重新提案。
+						</div>
+					{/if}
+					{#if wiki.history_hidden}
+						<div class="hint" data-testid="wiki-history-hidden">這是回復到舊版本的提案；你目前看不到這頁的歷史，所以不顯示差異。</div>
+					{:else if op.kind === 'wiki_put'}
+						{#if wiki.hunks.length}
+							<WikiDiffView hunks={wiki.hunks} truncated={wiki.truncated} newText={typeof op.body === 'string' ? op.body : null} leftLabel={wiki.current_version ? `現在（第 ${wiki.current_version} 版）` : '（新頁）'} rightLabel="提案" testid="wiki-proposal-diff" />
+						{:else}
+							<div class="hint">內容和現在相同。</div>
+						{/if}
+					{/if}
+					{/if}
 				{:else}
 					<div><b>{op.kind}</b></div>
 				{/if}
@@ -435,7 +468,11 @@
 				{#if result.status === 'succeeded'}
 					<span class="chip c-ok">已套用</span>
 					{#each result.effects as e (e.issue_id)}<a class="btn sm" href="/issue/{e.key}">開啟 {e.key}</a>{/each}
-					<div class="hint">搜尋可能要幾秒才找得到；單本身已經可以開啟。</div>
+					{#if wiki}
+						{#if wikiKey && result.items.some((i) => i.wiki_page_id)}<a class="btn sm" href={wikiPath(wikiKey, wiki.new_title ?? wiki.title)} data-testid="open-wiki-page">開啟〈{wiki.new_title ?? wiki.title}〉</a>{/if}
+					{:else}
+						<div class="hint">搜尋可能要幾秒才找得到；單本身已經可以開啟。</div>
+					{/if}
 				{:else if result.status === 'failed'}
 					<span class="chip c-bad">沒有套用</span> <span class="hint">{describeFailure(result.error)}</span>
 				{:else}

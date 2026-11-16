@@ -20,7 +20,7 @@
 	import TokenOnce from '#lib/components/TokenOnce.svelte';
 
 	const STEPS = ['範本', '名稱與軟體', '執行環境', '專案與政策', '讀取範圍', '確認'];
-	const DEFAULT_KEY: Record<string, string> = { triage: 'triage', pm_assistant: 'pm', design_review: 'design_review', qa: 'qa', release: 'release' };
+	const DEFAULT_KEY: Record<string, string> = { triage: 'triage', pm_assistant: 'pm', design_review: 'design_review', qa: 'qa', release: 'release', docs: 'docs' };
 
 	let step = $state(1);
 	let templates = $state<TemplateSpec[]>([]);

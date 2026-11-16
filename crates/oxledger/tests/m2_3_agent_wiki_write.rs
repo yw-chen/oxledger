@@ -1134,3 +1134,126 @@ async fn a_revert_diff_needs_the_history() {
     assert!(d.history_hidden);
     assert!(d.hunks.is_empty(), "{d:?}");
 }
+
+/// Design 06 §6.5 (A5 (c)): the agents' wiki versions of the last 7 days,
+/// only in wikis the reader reads; the history names the delegator and,
+/// for a reviewed write, the approver.
+#[tokio::test]
+async fn agent_changes_and_the_history() {
+    let pool = test_pool().await;
+    let w = setup(&pool).await;
+    let p = page(&w, "WEB", "Doc", "x").await;
+    let a = agent(&w, &[w.web]).await;
+    submit(&w, a, &update("WEB", p, lock_version(&w, p).await, "y"))
+        .await
+        .unwrap();
+    submit(&w, a, &update("WEB", p, lock_version(&w, p).await, "z"))
+        .await
+        .unwrap();
+    let r = submit_as(&w, a, Uuid::now_v7(), &put("WEB", "Reviewed", "r"), true)
+        .await
+        .unwrap();
+    approve(&w, cs_of(&r), &r, None).await.unwrap();
+    // An old agent version does not count.
+    exec(
+        &pool,
+        &format!("UPDATE wiki_page_versions SET created_at = now() - interval '8 days' WHERE page_id = '{p}' AND version = 2"),
+    )
+    .await;
+
+    let c = oxledger::wiki::agent_changes(&w.app, w.alice_ctx, None)
+        .await
+        .unwrap();
+    let got: Vec<(&str, i32, Option<&str>)> = c
+        .items
+        .iter()
+        .map(|i| {
+            (
+                i.title.as_str(),
+                i.version,
+                i.approver.as_ref().map(|x| x.name.as_str()),
+            )
+        })
+        .collect();
+    assert_eq!(got.len(), 2, "{c:?}");
+    assert!(got.contains(&("Doc", 3, None)), "{got:?}");
+    assert!(
+        c.items
+            .iter()
+            .any(|i| i.title == "Reviewed" && i.approver.as_ref().map(|x| x.id) == Some(w.alice)),
+        "{c:?}"
+    );
+    assert!(
+        c.items
+            .iter()
+            .all(|i| i.on_behalf_of.as_ref().map(|x| x.id) == Some(w.alice))
+    );
+    let one = oxledger::wiki::agent_changes(&w.app, w.alice_ctx, Some("WEB"))
+        .await
+        .unwrap();
+    assert_eq!(one.items.len(), 2);
+
+    // Someone who does not read WEB's wiki sees none of it.
+    let reader = role(&pool, "IssuesOnly", "all", &["view_issues"]).await;
+    let zed = user(&pool, "zed").await;
+    member(&pool, w.web, zed, reader).await;
+    let zctx = sign_in(&pool, &w.policy, "zed").await;
+    let c = oxledger::wiki::agent_changes(&w.app, zctx, None)
+        .await
+        .unwrap();
+    assert!(c.items.is_empty(), "{c:?}");
+    let e = oxledger::wiki::agent_changes(&w.app, zctx, Some("WEB"))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+
+    // Reading the pages is not seeing their history (K3): none of it, and
+    // the one wiki asked for is forbidden.
+    let pages_only = role(
+        &pool,
+        "PagesOnly",
+        "all",
+        &["view_issues", "view_wiki_pages"],
+    )
+    .await;
+    let yan = user(&pool, "yan").await;
+    member(&pool, w.web, yan, pages_only).await;
+    let yctx = sign_in(&pool, &w.policy, "yan").await;
+    let c = oxledger::wiki::agent_changes(&w.app, yctx, None)
+        .await
+        .unwrap();
+    assert!(c.items.is_empty(), "{c:?}");
+    let e = oxledger::wiki::agent_changes(&w.app, yctx, Some("WEB"))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ForbiddenOp);
+
+    // A deleted page drops out.
+    exec(
+        &pool,
+        &format!("UPDATE wiki_pages SET deleted_at = now(), deleted_by_execution_id = (SELECT id FROM execution_refs LIMIT 1) WHERE id = '{p}'"),
+    )
+    .await;
+    let c = oxledger::wiki::agent_changes(&w.app, w.alice_ctx, None)
+        .await
+        .unwrap();
+    assert_eq!(c.items.len(), 1, "{c:?}");
+    assert_eq!(c.items[0].title, "Reviewed");
+    exec(
+        &pool,
+        &format!("UPDATE wiki_pages SET deleted_at = NULL, deleted_by_execution_id = NULL WHERE id = '{p}'"),
+    )
+    .await;
+
+    let h = oxledger::wiki::versions(&w.app, w.alice_ctx, "WEB", "Doc", None)
+        .await
+        .unwrap();
+    let v2 = h.items.iter().find(|v| v.version == 3).unwrap();
+    assert_eq!(v2.origin, "agent_direct");
+    assert_eq!(v2.on_behalf_of.as_ref().map(|x| x.id), Some(w.alice));
+    assert_eq!(v2.approver, None);
+    let h = oxledger::wiki::versions(&w.app, w.alice_ctx, "WEB", "Reviewed", None)
+        .await
+        .unwrap();
+    assert_eq!(h.items[0].approver.as_ref().map(|x| x.id), Some(w.alice));
+}

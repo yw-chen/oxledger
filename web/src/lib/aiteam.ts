@@ -11,6 +11,7 @@ export const TEMPLATE_LABEL: Record<string, string> = {
 	design_review: '設計審查',
 	qa: 'QA',
 	release: '發布管家',
+	docs: '文件維護',
 	personal: '個人 agent',
 	custom: '自訂',
 	builtin_chat: '內建 AI 助理'
@@ -21,11 +22,12 @@ export const TEMPLATE_DUTY: Record<string, string> = {
 	design_review: '在議題上留下審查意見',
 	qa: '回報測試結果、建議轉狀態',
 	release: '整理里程碑與發布內容',
+	docs: '整理與更新專案 wiki，每次修改預設要你核准',
 	personal: '以你的名義處理日常工作',
 	custom: '從全部不允許開始，自己決定'
 };
 /** The wizard's template cards (`personal` is the 02 path; not offered for a new role). */
-export const WIZARD_TEMPLATES = ['triage', 'pm_assistant', 'design_review', 'qa', 'release', 'custom'];
+export const WIZARD_TEMPLATES = ['triage', 'pm_assistant', 'design_review', 'qa', 'release', 'docs', 'custom'];
 
 export const STATUS_LABEL: Record<string, { t: string; c: string; tip?: string }> = {
 	active: { t: '運作中', c: 'c-ok' },

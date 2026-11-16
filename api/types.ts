@@ -124,6 +124,25 @@ export type AgentToday = {
   label: string;
 };
 
+/** One wiki version an agent wrote (design 06 §6.5, A5 (c)). */
+export type AgentWikiChange = {
+  agent: WikiPerson | null;
+  /** Who approved it, for a reviewed write. */
+  approver: WikiPerson | null;
+  at: string;
+  /** The person the agent wrote for. */
+  on_behalf_of: WikiPerson | null;
+  page_id: string;
+  project: WikiProjectRef;
+  /** The page's title now. */
+  title: string;
+  version: number;
+};
+
+export type AgentWikiChanges = {
+  items: Array<AgentWikiChange>;
+};
+
 /** An `ai_budget` notification (§3.13.4): amounts are read now, not stored. */
 export type AiBudgetNotice = {
   /** The current monthly budget, USD as a decimal string (null when unset). */
@@ -4162,6 +4181,8 @@ export type WikiProposalDiff = {
   /** The page now; `None` for a page the proposal creates (or one gone since). */
   page_id: string | null;
   project_id: string;
+  /** The project's key, for links to the page. */
+  project_key: string;
   /** The page changed since the proposal was made. */
   stale: boolean;
   /** The page's title now, or the new page's title. */
@@ -4233,9 +4254,13 @@ export type WikiTreeItem = {
 };
 
 export type WikiVersionItem = {
+  /** An approved proposal (`external_agent`): who approved it (§6.5 「Alice 核准」). */
+  approver: WikiPerson | null;
   author: WikiPerson | null;
   comment: string;
   created_at: string;
+  /** An agent's version: the person it wrote for (its delegator). */
+  on_behalf_of: WikiPerson | null;
   /** `human_direct`, `agent_direct` or `external_agent`. */
   origin: string;
   redacted: boolean;
@@ -4484,5 +4509,6 @@ export interface Endpoints {
   "POST /views/{id}/copy": { body: ViewCopy; data: ViewDetail };
   "GET /views/{id}/events": { body: never; data: ViewEvents };
   "POST /views/{id}/run": { body: RunInput; data: ViewRun };
+  "GET /wiki/agent-changes": { body: never; data: AgentWikiChanges };
   "GET /wiki/search": { body: never; data: WikiSearchResult };
 }

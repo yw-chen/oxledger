@@ -438,6 +438,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         )
         .route("/time-entries/{id}/redact", post(redact_time_entry))
         .route("/wiki/search", get(wiki_search))
+        .route("/wiki/agent-changes", get(wiki_agent_changes))
         .route("/projects/{id}/wiki", get(wiki_index))
         .route("/projects/{id}/wiki/pages/{title}", get(wiki_page))
         .route(
@@ -2695,6 +2696,20 @@ async fn wiki_page(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(crate::wiki::page(&st.app, ctx, &id, &title).await?))
+}
+
+async fn wiki_agent_changes(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::wiki::agent_changes(
+        &st.app,
+        ctx,
+        q.get("project").map(String::as_str),
+    )
+    .await?))
 }
 
 async fn wiki_search(

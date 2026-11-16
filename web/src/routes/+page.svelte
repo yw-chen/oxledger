@@ -8,6 +8,7 @@
 	import { me } from '#lib/me.svelte.js';
 	import { session } from '#lib/session.svelte.js';
 	import { toast } from '#lib/toast.svelte.js';
+	import AgentWikiChanges from '#lib/components/AgentWikiChanges.svelte';
 	import HomeWidget from '#lib/components/HomeWidget.svelte';
 	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
@@ -108,6 +109,7 @@
 		{/if}
 	</div>
 	<ErrorBox {error} onaction={load} />
+	{#if !editing}<AgentWikiChanges style="margin-bottom:12px" />{/if}
 	{#if editing}
 		<div class="card" data-testid="home-editor">
 			<div class="row" style="gap:6px;flex-wrap:wrap">

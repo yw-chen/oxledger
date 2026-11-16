@@ -52,6 +52,10 @@ describe('edge cases', () => {
 	it('the wizard never offers the personal assistant template', () => {
 		expect(WIZARD_TEMPLATES).not.toContain('personal');
 		expect(WIZARD_TEMPLATES).toContain('custom');
+		// Design 06 §4.4: 「文件維護」 holds the wiki ops.
+		expect(WIZARD_TEMPLATES).toContain('docs');
+		expect(commandLabel('wiki_put')).toBe('寫 wiki 頁');
+		expect(commandLabel('wiki_move')).toBe('改名或移動 wiki 頁');
 	});
 	it('only a full issue key goes to the server', () => {
 		expect(fullIssueKey(' auth-12 ')).toBe('AUTH-12');

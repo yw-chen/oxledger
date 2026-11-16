@@ -11,6 +11,7 @@
 	import { toast } from '#lib/toast.svelte.js';
 	import { buildTree, flatTree, wikiPath } from '#lib/wiki.js';
 	import { runWiki } from '#lib/wikiwrite.svelte.js';
+	import AgentWikiChanges from './AgentWikiChanges.svelte';
 	import ErrorBox from './ErrorBox.svelte';
 	import WikiLayout from './WikiLayout.svelte';
 	import WikiPageView from './WikiPageView.svelte';
@@ -63,6 +64,7 @@
 </script>
 
 {#snippet trash()}
+	<AgentWikiChanges project={projectKey} style="margin-top:14px" />
 	{#if index?.can.manage && deleted !== null}
 		<section class="card" style="margin-top:14px" data-testid="wiki-deleted">
 			<h2 style="font-size:14px;margin:0 0 6px">最近刪除（30 天內）</h2>

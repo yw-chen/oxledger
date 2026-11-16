@@ -100,7 +100,7 @@ describe('wiki command documents (§3.11)', () => {
 });
 
 describe('history', () => {
-	const v = (version: number, size: number): WikiVersionItem => ({ version, size, author: null, comment: '', created_at: '', origin: 'human_direct', redacted: false });
+	const v = (version: number, size: number): WikiVersionItem => ({ version, size, author: null, comment: '', created_at: '', origin: 'human_direct', on_behalf_of: null, approver: null, redacted: false });
 	it('size change against the version below, null when not loaded', () => {
 		expect(sizeDeltas([v(5, 120), v(4, 160), v(2, 10)])).toEqual([-40, null, null]);
 		expect(sizeDeltas([v(2, 30), v(1, 10)])).toEqual([20, 10]);

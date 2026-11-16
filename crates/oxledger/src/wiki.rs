@@ -2523,6 +2523,11 @@ pub struct WikiVersionItem {
     pub author: Option<WikiPerson>,
     /// `human_direct`, `agent_direct` or `external_agent`.
     pub origin: String,
+    /// An agent's version: the person it wrote for (its delegator).
+    pub on_behalf_of: Option<WikiPerson>,
+    /// An approved proposal (`external_agent`): who approved it (§6.5
+    /// 「Alice 核准」).
+    pub approver: Option<WikiPerson>,
     pub comment: String,
     /// Bytes of the body.
     pub size: i64,
@@ -2546,9 +2551,20 @@ async fn version_items(
     before: Option<i32>,
     limit: i64,
 ) -> Result<Vec<WikiVersionItem>> {
-    let rows: Vec<(i32, Uuid, String, String, i64, DateTime<Utc>, bool)> = sqlx::query_as(
+    type Row = (
+        i32,
+        Uuid,
+        String,
+        String,
+        i64,
+        DateTime<Utc>,
+        bool,
+        Option<Uuid>,
+        Option<Uuid>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
         "SELECT version, actor_id, origin, comment, octet_length(body)::bigint, created_at,
-                redaction_id IS NOT NULL
+                redaction_id IS NOT NULL, on_behalf_of_id, approver_id
          FROM wiki_page_versions WHERE page_id = $1 AND ($2::int IS NULL OR version < $2)
          ORDER BY version DESC LIMIT $3",
     )
@@ -2558,11 +2574,19 @@ async fn version_items(
     .fetch_all(&mut *conn)
     .await?;
     let mut out = Vec::new();
-    for (version, actor, origin, comment, size, created_at, redacted) in rows {
+    for (version, actor, origin, comment, size, created_at, redacted, behalf, approver) in rows {
         out.push(WikiVersionItem {
             version,
             author: person(&mut *conn, actor).await?,
             origin,
+            on_behalf_of: match behalf {
+                Some(b) => person(&mut *conn, b).await?,
+                None => None,
+            },
+            approver: match approver {
+                Some(a) => person(&mut *conn, a).await?,
+                None => None,
+            },
             comment,
             size,
             created_at,
@@ -2897,6 +2921,8 @@ pub struct WikiProposalDiff {
     /// `wiki_put` or `wiki_move`.
     pub kind: String,
     pub project_id: Uuid,
+    /// The project's key, for links to the page.
+    pub project_key: String,
     /// The page now; `None` for a page the proposal creates (or one gone
     /// since).
     pub page_id: Option<Uuid>,
@@ -2987,6 +3013,7 @@ pub(crate) async fn proposal_diff(
     Ok(Some(WikiProposalDiff {
         kind: kind.into(),
         project_id: project,
+        project_key: a.key.clone(),
         page_id: page.as_ref().map(|p| p.id),
         title: page
             .as_ref()
@@ -3008,6 +3035,109 @@ pub(crate) async fn proposal_diff(
         truncated,
         history_hidden,
     }))
+}
+
+// ---------------------------------------------------------------- agent changes (A5 (c))
+
+/// One wiki version an agent wrote (design 06 §6.5, A5 (c)).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentWikiChange {
+    pub page_id: Uuid,
+    pub project: WikiProjectRef,
+    /// The page's title now.
+    pub title: String,
+    pub version: i32,
+    pub agent: Option<WikiPerson>,
+    /// The person the agent wrote for.
+    pub on_behalf_of: Option<WikiPerson>,
+    /// Who approved it, for a reviewed write.
+    pub approver: Option<WikiPerson>,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentWikiChanges {
+    pub items: Vec<AgentWikiChange>,
+}
+
+/// How far back the A5 (c) list looks, and how long it is.
+pub const AGENT_CHANGES_DAYS: i32 = 7;
+pub const AGENT_CHANGES_LIMIT: i64 = 50;
+
+/// `GET /wiki/agent-changes` (design 06 §6.5 A5 (c)): the wiki versions
+/// agents wrote in the last 7 days, newest first, in the wikis the caller
+/// reads and whose history it views (R-W1, `view_wiki_edits`; deleted
+/// pages left out). `project` (id or key) narrows it to one wiki; one the
+/// caller cannot read is `not_found`, one without the history `forbidden_op`.
+pub async fn agent_changes(
+    app: &App,
+    caller: AuthContext,
+    project: Option<&str>,
+) -> Result<AgentWikiChanges> {
+    let mut tx = read_tx(app).await?;
+    let projects: Vec<Uuid> = match project {
+        Some(p) => {
+            let a = access(&mut tx, caller, p).await?;
+            need_history(&a)?;
+            vec![a.project]
+        }
+        // Versions are history (K3): only the wikis whose edits the caller
+        // views (view_wiki_edits), like Redmine's activity.
+        None => readable_wikis(&mut tx, caller)
+            .await?
+            .into_iter()
+            .filter(|(_, a)| a.has(VIEW_WIKI_EDITS))
+            .map(|(id, _)| id)
+            .collect(),
+    };
+    type Row = (
+        Uuid,
+        Uuid,
+        String,
+        String,
+        String,
+        i32,
+        Uuid,
+        Option<Uuid>,
+        Option<Uuid>,
+        DateTime<Utc>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT p.id, pr.id, pr.key, pr.name, p.title, v.version, v.actor_id, v.on_behalf_of_id,
+                v.approver_id, v.created_at
+         FROM wiki_page_versions v
+         JOIN wiki_pages p ON p.id = v.page_id
+         JOIN projects pr ON pr.id = p.project_id
+         WHERE v.actor_kind = 'agent' AND p.deleted_at IS NULL AND p.project_id = ANY($1)
+           AND v.created_at > now() - make_interval(days => $2)
+         ORDER BY v.created_at DESC, p.id, v.version DESC LIMIT $3",
+    )
+    .bind(&projects)
+    .bind(AGENT_CHANGES_DAYS)
+    .bind(AGENT_CHANGES_LIMIT)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut items = Vec::new();
+    for (page_id, pid, key, name, title, version, agent, behalf, approver, at) in rows {
+        items.push(AgentWikiChange {
+            page_id,
+            project: WikiProjectRef { id: pid, key, name },
+            title,
+            version,
+            agent: person(&mut tx, agent).await?,
+            on_behalf_of: match behalf {
+                Some(b) => person(&mut tx, b).await?,
+                None => None,
+            },
+            approver: match approver {
+                Some(a) => person(&mut tx, a).await?,
+                None => None,
+            },
+            at,
+        });
+    }
+    tx.commit().await?;
+    Ok(AgentWikiChanges { items })
 }
 
 // ---------------------------------------------------------------- events

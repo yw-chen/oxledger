@@ -58,7 +58,9 @@ export const COMMAND_LABELS: Record<string, string> = {
 	add_note: '新增 note',
 	duplicate_of: '標為重複',
 	create_version: '建立里程碑',
-	update_version: '修改里程碑'
+	update_version: '修改里程碑',
+	wiki_put: '寫 wiki 頁',
+	wiki_move: '改名或移動 wiki 頁'
 };
 
 export const MODE_LABELS: Record<string, string> = { direct: '直接寫入', review: '需要核准', off: '不允許' };

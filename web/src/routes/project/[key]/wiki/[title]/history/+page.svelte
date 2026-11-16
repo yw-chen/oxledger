@@ -149,7 +149,7 @@
 								<td><input type="radio" name="to" value={v.version} bind:group={to} aria-label="比較到第 {v.version} 版" /></td>
 								<td>第 {v.version} 版{#if v.version === page.version}<span class="chip c-ok" style="margin-left:4px">目前</span>{/if}</td>
 								<td class="hint">{fmtShort(v.created_at)}</td>
-								<td>{#if v.author}{#if v.author.kind === 'agent'}<span class="agname">{v.author.name}</span><span class="agent-label">agent</span>{:else}{v.author.name}{/if}{:else}（不明）{/if}</td>
+								<td>{#if v.author}{#if v.author.kind === 'agent'}<span class="agname">{v.author.name}</span><span class="agent-label">agent</span>{#if v.on_behalf_of}<span class="hint" data-testid="wiki-version-behalf">代 {v.on_behalf_of.name}</span>{/if}{:else}{v.author.name}{/if}{:else}（不明）{/if}{#if v.approver}<span class="hint" data-testid="wiki-version-approver">・{v.approver.name} 核准</span>{/if}</td>
 								<td>{v.comment}{#if v.redacted}<span class="chip c-dim" style="margin-left:4px" data-testid="wiki-version-redacted">[已遮蔽]</span>{/if}</td>
 								<td class="mono" title="位元組">{deltaText(deltas[i])}</td>
 								<td class="row" style="gap:4px;flex-wrap:nowrap">
