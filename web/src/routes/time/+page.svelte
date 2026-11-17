@@ -9,12 +9,26 @@
 	import { submit } from '#lib/commands.js';
 	import { addHours, dayLabel, deleteTimeDoc, isoWeek, logTimeDoc, parseHours, shiftWeek, showHours, todayLocal, updateTimeDoc } from '#lib/hours.js';
 	import { toast } from '#lib/toast.svelte.js';
+	import { exportProblem, fetchExport, saveBlob } from '#lib/exports.js';
 	import ErrorBox from '#lib/components/ErrorBox.svelte';
 
 	type Row = { project: ProjectRef; issue: IssueRef | null; activity: Named; cells: TimesheetRow['cells']; local?: boolean };
 
 	let week = $state(isoWeek(todayLocal()));
 	let sheet = $state<Timesheet | null>(null);
+	let exporting = $state(false);
+	/** 匯出 CSV (design 06 §6.11): my own entries of the week on screen. */
+	async function exportCsv() {
+		exporting = true;
+		try {
+			const f = await fetchExport('/exports/time-entries', { user: 'me', from: sheet?.days[0], to: sheet?.days[6] });
+			saveBlob(f.blob, f.filename);
+		} catch (e) {
+			toast(exportProblem(e) ?? '匯出失敗，請稍後再試', 'w');
+		} finally {
+			exporting = false;
+		}
+	}
 	let rules = $state<TimelogSettings | null>(null);
 	let error = $state<unknown>(null);
 	let cellError = $state<unknown>(null);
@@ -234,6 +248,7 @@
 		<button class="btn sm" onclick={() => (week = isoWeek(todayLocal()))} data-testid="week-this">本週</button>
 		<button class="btn sm" onclick={() => (week = shiftWeek(week, 1))} aria-label="下一週" data-testid="week-next">›</button>
 		<input type="date" onchange={pickDate} aria-label="跳到某一天所在的週" />
+		<button class="btn sm" onclick={exportCsv} disabled={exporting || !sheet} data-testid="time-export">{exporting ? '匯出中…' : '匯出 CSV'}</button>
 		<span class="mono dim" data-testid="week">{week}</span>
 	</div>
 	<ErrorBox {error} onaction={load} />

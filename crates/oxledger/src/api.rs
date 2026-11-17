@@ -445,6 +445,13 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(redact_setting_event),
         )
         .route("/time-entries/{id}/redact", post(redact_time_entry))
+        .route("/exports/issues", post(export_issues))
+        .route("/exports/time-entries", post(export_time_entries))
+        .route("/admin/export-events", get(admin_export_events))
+        .route(
+            "/projects/{id}/wiki/pages/{title}/export.md",
+            get(wiki_export_md),
+        )
         .route("/wiki/search", get(wiki_search))
         .route("/wiki/agent-changes", get(wiki_agent_changes))
         .route("/projects/{id}/uploads", post(upload_file))
@@ -2985,6 +2992,116 @@ async fn wiki_page(
 ) -> ApiResult {
     let ctx = human(&ra)?;
     Ok(ok(crate::wiki::page(&st.app, ctx, &id, &title).await?))
+}
+
+/// A started export as the response: `text/csv`, written piece by piece.
+/// A piece that is an error cuts the connection (R-E6): the browser sees
+/// an incomplete download, never a file that looks whole.
+fn export_response(e: crate::exports::Export) -> Response {
+    // R-E11: the name is ASCII (a project key, a date).
+    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", e.filename));
+    // A file that stops before its end mark is an error piece: the
+    // connection is cut and the browser keeps nothing.
+    let stream = futures_util::stream::unfold(e, |mut e| async move {
+        e.next()
+            .await
+            .map(|piece| (piece.map(axum::body::Bytes::from), e))
+    });
+    let mut resp = axum::body::Body::from_stream(stream).into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    if let Ok(v) = disposition {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    resp
+}
+
+async fn export_issues(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::exports::IssueExport>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(export_response(
+        crate::exports::issues(st.app.clone(), ctx, &body).await?,
+    ))
+}
+
+async fn export_time_entries(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    ApiJson(body): ApiJson<crate::exports::TimeExport>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(export_response(
+        crate::exports::time_entries(st.app.clone(), ctx, &body).await?,
+    ))
+}
+
+async fn admin_export_events(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::exports::events(
+        &st.app,
+        ctx,
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+/// R-W12: the page's current Markdown as a file; an audit row per download.
+async fn wiki_export_md(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path((id, title)): Path<(String, String)>,
+) -> ApiResult {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    let ctx = human(&ra)?;
+    let (user, _) = ctx.require_human_session()?;
+    let page = crate::wiki::page(&st.app, ctx, &id, &title).await?;
+    crate::exports::wiki_downloaded(&st.app, user, page.project.id, page.body.len() as u64).await?;
+    const ATTR: &percent_encoding::AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    let name = format!("{}-{}.md", page.project.key, page.title);
+    let mut resp = page.body.into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/markdown; charset=utf-8"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "attachment; filename=\"{}-page.md\"; filename*=UTF-8''{}",
+        page.project.key,
+        utf8_percent_encode(&name, ATTR)
+    )) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(resp)
 }
 
 async fn wiki_agent_changes(

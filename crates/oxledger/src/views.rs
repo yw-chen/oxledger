@@ -4164,6 +4164,296 @@ pub async fn agent_run(app: &App, caller: AuthContext, p: &ViewRunParams) -> Res
     r.1.ok_or_else(|| anyhow::anyhow!("agent run without agent output"))
 }
 
+// ---------------------------------------------------------------- export (design 06 §3.9)
+
+/// Columns an export may name besides the view's own.
+pub(crate) const MAX_EXPORT_COLUMNS: usize = 60;
+
+/// What an issue export reads (R-E1).
+pub(crate) enum ExportSource<'a> {
+    /// A saved or built-in view, run with the caller's sight.
+    View(&'a str),
+    /// A Filter AST v2, optionally inside one project.
+    Where {
+        where_: Option<&'a Json>,
+        project: Option<&'a str>,
+    },
+}
+
+/// An export after every check: what to read and how to label it.
+pub(crate) struct ExportPlan {
+    p: Prepared,
+    b: Base,
+    /// Column keys, in order.
+    pub columns: Vec<String>,
+    /// The header row (R-E3: the names the screen shows).
+    pub labels: Vec<String>,
+    /// Numbers and dates oxledger formats itself: never formula-escaped (R-E4).
+    pub plain: Vec<bool>,
+    pub project: Option<Uuid>,
+    /// The saved view's id (`None`: built-in, or conditions).
+    pub view_id: Option<Uuid>,
+    /// What the audit row's HMAC is taken of: never stored itself (R-E8).
+    pub audit: Json,
+}
+
+fn export_arg(path: String, reason: &str, msg: &str) -> anyhow::Error {
+    ApiError::new(ErrorCode::InvalidArgument, msg)
+        .with_details(json!({"path": path, "reason": reason}))
+        .into()
+}
+
+/// R-E1, R-E2: the source as the caller may run it, and the columns.
+pub(crate) async fn export_plan(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    src: ExportSource<'_>,
+    columns: Option<&[String]>,
+) -> Result<ExportPlan> {
+    let p = match src {
+        ExportSource::View(id) => {
+            let l = load(&mut *conn, caller, id, false).await?;
+            require_bound_project(&mut *conn, caller, &l).await?;
+            prepared(&l)?
+        }
+        ExportSource::Where { where_, project } => {
+            let project = target_project(&mut *conn, caller, project).await?;
+            let mut query = Map::new();
+            if let Some(w) = where_ {
+                query.insert("where".into(), w.clone());
+            }
+            let def = normalize(
+                &mut *conn,
+                caller,
+                &json!({"kind": "list", "query": query}),
+                None,
+                SaveCtx {
+                    project,
+                    public: false,
+                },
+            )
+            .await?;
+            Prepared {
+                head: ViewHead {
+                    id: "export".into(),
+                    kind: "list".into(),
+                    name: String::new(),
+                },
+                def_hash: def.hash(),
+                def,
+                project,
+                involving: false,
+            }
+        }
+    };
+    let b = base(&mut *conn, caller, &p, None).await?;
+    let columns: Vec<String> = match columns {
+        // The view's own; a field the caller cannot read is left out, as
+        // on the screen (05).
+        None => {
+            let own: Vec<String> = match p.def.kind {
+                Kind::List => p.def.columns.clone(),
+                Kind::Board => DEFAULT_LIST_COLUMNS.iter().map(|c| c.to_string()).collect(),
+            };
+            let own = if own.is_empty() {
+                DEFAULT_LIST_COLUMNS.iter().map(|c| c.to_string()).collect()
+            } else {
+                own
+            };
+            own.into_iter()
+                .filter(|c| !c.starts_with("cf:") || find_cf(&b.fields, c).is_some())
+                .collect()
+        }
+        Some(asked) => {
+            if asked.is_empty() || asked.len() > MAX_EXPORT_COLUMNS {
+                return Err(export_arg(
+                    "columns".into(),
+                    "out_of_range",
+                    "columns has 1 to 60 keys",
+                ));
+            }
+            let mut out: Vec<String> = Vec::new();
+            for (i, c) in asked.iter().enumerate() {
+                // One answer for a field that does not exist and one the
+                // caller cannot read (T-M2-81).
+                let key = if COLUMNS.contains(&c.as_str()) {
+                    c.clone()
+                } else {
+                    match find_cf(&b.fields, c) {
+                        Some((row, _)) if c.starts_with("cf:") => format!("cf:{}", row.id),
+                        _ => {
+                            return Err(export_arg(
+                                format!("columns[{i}]"),
+                                "unknown_field",
+                                "columns: an unknown column",
+                            ));
+                        }
+                    }
+                };
+                if !out.contains(&key) {
+                    out.push(key);
+                }
+            }
+            out
+        }
+    };
+    let labels = columns.iter().map(|c| column_label(&b.fields, c)).collect();
+    let plain = columns
+        .iter()
+        .map(|c| match c.as_str() {
+            "estimated_hours" | "spent_hours" | "start_date" | "due_date" | "created_at"
+            | "updated_at" => true,
+            k => find_cf(&b.fields, k)
+                .and_then(|(r, _)| r.field_type().ok())
+                .is_some_and(|t| matches!(t, FieldType::Int | FieldType::Float | FieldType::Date)),
+        })
+        .collect();
+    let audit = json!({
+        "view": p.head.id, "def": p.def_hash, "project": p.project, "columns": columns,
+    });
+    Ok(ExportPlan {
+        view_id: p.head.id.parse().ok(),
+        project: p.project,
+        p,
+        b,
+        columns,
+        labels,
+        plain,
+        audit,
+    })
+}
+
+/// R-E6: the ids in the view's order, or `None` when there are more than
+/// `max` (the count is never told).
+pub(crate) async fn export_ids(
+    conn: &mut PgConnection,
+    app: &App,
+    caller: AuthContext,
+    plan: &ExportPlan,
+    max: usize,
+) -> Result<Option<Vec<Uuid>>> {
+    let hash = json!({"view": plan.p.head.id, "def": plan.p.def_hash, "mode": "export"});
+    let mut ids: Vec<Uuid> = Vec::new();
+    let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let sort = run_sort(&plan.b.fields, Vec::new(), None, plan.p.def.sort.as_ref())?;
+        let res = service::search_with(
+            &mut *conn,
+            app,
+            caller,
+            SearchParams {
+                q: plan.b.q.clone(),
+                limit: Some(MAX_LIMIT),
+                cursor: cursor.take(),
+                fields: Some(vec!["key".into(), "lock_version".into()]),
+                explain: Some("none".into()),
+                ..Default::default()
+            },
+            Extra {
+                chosen: plan.b.chosen.clone(),
+                fixed: plan.b.fixed.clone(),
+                sort,
+                hash: Some(hash.clone()),
+            },
+        )
+        .await?;
+        // A text search past its candidate limit has more matches than it
+        // returns: that is not a whole export (R-E7), so it is refused like
+        // one over the row limit.
+        if res.truncated {
+            return Ok(None);
+        }
+        // A page boundary that moved between two reads (the text index is
+        // outside the snapshot) repeats no row.
+        ids.extend(res.items.iter().map(|i| i.id).filter(|i| seen.insert(*i)));
+        if ids.len() > max {
+            return Ok(None);
+        }
+        match res.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return Ok(Some(ids)),
+        }
+    }
+}
+
+/// R-E3: one cell's text. People, statuses and the like by name; several
+/// values joined with `, `; 是／否.
+fn export_cell(col: &str, v: &Json) -> String {
+    match v {
+        Json::Null => String::new(),
+        Json::Bool(b) => if *b { "是" } else { "否" }.to_string(),
+        Json::Number(n) => n.to_string(),
+        Json::String(s) if col == "status_category" => category_label(s),
+        Json::String(s) => s.clone(),
+        Json::Array(a) => a
+            .iter()
+            .map(|x| export_cell(col, x))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Json::Object(o) => ["name", "label", "key"]
+            .iter()
+            .find_map(|k| o.get(*k).and_then(Json::as_str))
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+/// The rows of `ids`, in that order, one text per column of the plan, plus
+/// the description when asked (R-E2). Issues that went away are left out.
+pub(crate) async fn export_rows(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    plan: &ExportPlan,
+    ids: &[Uuid],
+    description: bool,
+) -> Result<Vec<Vec<String>>> {
+    let rows = displays(&mut *conn, caller.user_id(), ids).await?;
+    let cf_keys: Vec<String> = plan
+        .columns
+        .iter()
+        .filter(|c| c.starts_with("cf:"))
+        .cloned()
+        .collect();
+    let cfs = cf_values(&mut *conn, caller, &plan.b.fields, &rows, &cf_keys).await?;
+    // U42: timestamps in the organisation's time zone, with its offset.
+    type More = (Uuid, String, String, String, Option<String>);
+    let more: Vec<More> = sqlx::query_as(
+        "SELECT i.id, k.key, org_iso(i.created_at), org_iso(i.updated_at),
+                CASE WHEN $2 THEN i.description END
+         FROM issues i JOIN issue_keys k ON k.issue_id = i.id AND k.is_current
+         WHERE i.id = ANY($1)",
+    )
+    .bind(ids)
+    .bind(description)
+    .fetch_all(&mut *conn)
+    .await?;
+    let more: HashMap<Uuid, More> = more.into_iter().map(|m| (m.0, m)).collect();
+    let empty = HashMap::new();
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let (Some(r), Some(m)) = (rows.get(id), more.get(id)) else {
+            continue;
+        };
+        let cf = cfs.get(id).unwrap_or(&empty);
+        let mut line: Vec<String> = plan
+            .columns
+            .iter()
+            .map(|c| match c.as_str() {
+                "key" => m.1.clone(),
+                "created_at" => m.2.clone(),
+                "updated_at" => m.3.clone(),
+                c => export_cell(c, &value_of(c, r, cf)),
+            })
+            .collect();
+        if description {
+            line.push(m.4.clone().unwrap_or_default());
+        }
+        out.push(line);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

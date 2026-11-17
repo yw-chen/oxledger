@@ -203,6 +203,8 @@ pub enum ErrorCode {
     /// `too_many_keywords`, `status_unknown`, `tracker_not_in_project`,
     /// `too_many_rules`), `details.index` of the rule.
     FixRuleInvalid,
+    /// Design 06 R-E6: more rows than one export holds (`details.limit`).
+    ExportTooLarge,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -219,7 +221,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 78] = [
+    pub const ALL: [ErrorCode; 79] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -298,6 +300,7 @@ impl ErrorCode {
         Self::WikiHasChildren,
         Self::WikiTitleInvalid,
         Self::FixRuleInvalid,
+        Self::ExportTooLarge,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -380,6 +383,7 @@ impl ErrorCode {
             Self::WikiHasChildren => "wiki_has_children",
             Self::WikiTitleInvalid => "wiki_title_invalid",
             Self::FixRuleInvalid => "fix_rule_invalid",
+            Self::ExportTooLarge => "export_too_large",
         }
     }
 
@@ -452,7 +456,7 @@ impl ErrorCode {
             Self::PayloadTooLarge => 413,
             Self::InsufficientStorage => 507,
             Self::WikiPageExists | Self::WikiHasChildren => 409,
-            Self::WikiTitleInvalid | Self::FixRuleInvalid => 422,
+            Self::WikiTitleInvalid | Self::FixRuleInvalid | Self::ExportTooLarge => 422,
         }
     }
 
@@ -544,7 +548,10 @@ impl ErrorCode {
             Self::AiRunInProgress => &[WaitAndRetry],
             Self::PayloadTooLarge => &[FixInput],
             Self::InsufficientStorage => &[WaitAndRetry],
-            Self::WikiPageExists | Self::WikiTitleInvalid | Self::FixRuleInvalid => &[FixInput],
+            Self::WikiPageExists
+            | Self::WikiTitleInvalid
+            | Self::FixRuleInvalid
+            | Self::ExportTooLarge => &[FixInput],
             // Design 06 §5: "(SPA)": the person decides in the dialog.
             Self::WikiHasChildren => &[AskHuman],
         }

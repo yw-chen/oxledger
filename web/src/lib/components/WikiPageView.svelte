@@ -11,6 +11,7 @@
 	import { fmtShort } from '#lib/format.js';
 	import { session } from '#lib/session.svelte.js';
 	import { toast } from '#lib/toast.svelte.js';
+	import { downloadFile } from '#lib/exports.js';
 	import { buildTree, flatTree, subtreeIds, titleFromParam, urlTitle, wikiPath, type RedactTarget } from '#lib/wiki.js';
 	import { runWiki } from '#lib/wikiwrite.svelte.js';
 	import ErrorBox from './ErrorBox.svelte';
@@ -82,6 +83,16 @@
 
 	// ------------------------------------------------------------ keys
 	let menu = $state(false);
+	/** 下載 Markdown (design 06 R-W12): the page's source as a file. */
+	async function downloadMd() {
+		menu = false;
+		if (!page) return;
+		try {
+			await downloadFile(`/projects/${encodeURIComponent(projectKey)}/wiki/pages/${encodeURIComponent(page.title)}/export.md`, `${page.title}.md`);
+		} catch {
+			toast('下載失敗，請重新整理後再試', 'w');
+		}
+	}
 	let dialog = $state<'move' | 'delete' | null>(null);
 	let redact = $state<RedactTarget | null>(null);
 	function keys(e: KeyboardEvent) {
@@ -268,6 +279,7 @@
 							<button role="menuitem" disabled={!page.can.rename} title={why('rename')} onclick={openMove} data-testid="wiki-move">改名／移動</button>
 							<button role="menuitem" disabled={!page.can.protect || busy} title={why('protect')} onclick={protect} data-testid="wiki-protect">{page.protected ? '取消保護' : '保護此頁'}</button>
 							{#if page.can.history}<button role="menuitem" onclick={() => goto(wikiPath(projectKey, page!.title, '/history'))} data-testid="wiki-history">歷史</button>{/if}
+							{#if session.user}<button role="menuitem" onclick={downloadMd} data-testid="wiki-download">下載 Markdown</button>{/if}
 							{#if canRedact}<button role="menuitem" onclick={() => ((menu = false), (redact = { kind: 'title', title: page!.title }))} data-testid="wiki-redact-title-open">遮蔽標題</button>{/if}
 							<button role="menuitem" disabled={!page.can.delete} title={why('delete')} onclick={openDelete} data-testid="wiki-delete">刪除</button>
 						</div>

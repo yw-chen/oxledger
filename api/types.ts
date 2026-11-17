@@ -939,7 +939,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid" | "fix_rule_invalid";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid" | "fix_rule_invalid" | "export_too_large";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -1020,6 +1020,28 @@ export type Expansion = {
   label: string;
   /** The concept's preferred label. */
   via: string;
+};
+
+export type ExportEvent = {
+  actor: Named;
+  at: string;
+  bytes: number;
+  /** Column keys, never values. */
+  columns: Array<string>;
+  id: string;
+  /** `issues`, `time_entries` or `wiki_page`. */
+  kind: string;
+  /** The project's key; null for an export across projects. */
+  project: string | null;
+  row_count: number;
+  /** The file did not go out whole: cut at the byte or time limit, an error, or the reader went away. `row_count` and `bytes` are what was sent. */
+  truncated: boolean;
+  view_id: string | null;
+};
+
+export type ExportEvents = {
+  items: Array<ExportEvent>;
+  next_cursor: string | null;
 };
 
 export type FieldAction = {
@@ -1481,6 +1503,20 @@ export type IssueDev = {
   synced_at: string | null;
   /** More than 20 PRs: the rest are on GitHub. */
   truncated: boolean;
+};
+
+/** `POST /exports/issues`: a view, or conditions (R-E1). */
+export type IssueExport = {
+  /** Column keys (`key`, `subject`, …, `cf:<id>`), in order; default: the view's columns. */
+  columns?: Array<string> | null;
+  /** Adds the description (as written) as the last column. */
+  include_description?: boolean;
+  /** A project id or key the conditions stay in. */
+  project_id?: string | null;
+  /** A view id (`builtin:<name>` too). Not with `where` or `project_id`. */
+  view_id?: string | null;
+  /** A Filter AST v2; without it and without `view_id`: every issue the caller sees (of `project_id`). */
+  where?: unknown;
 };
 
 export type IssueRef = {
@@ -3356,6 +3392,22 @@ export type TimeEntryView = {
   user: Named;
 };
 
+/** `POST /exports/time-entries`: the time report's filters (05 §3.5.2). */
+export type TimeExport = {
+  activity?: string | null;
+  /** A version id or `none`. */
+  fixed_version?: string | null;
+  /** `YYYY-MM-DD`. */
+  from?: string | null;
+  issue?: string | null;
+  project?: string | null;
+  to?: string | null;
+  /** A tracker id or `none`. */
+  tracker?: string | null;
+  /** A user id or `me`. */
+  user?: string | null;
+};
+
 /** A time entry's fields (contract 05 §3.10.2). `hours` is a decimal string; `author_id`, `created_on_behalf_of_id` and `project_id` cannot be set here. */
 export type TimeFields = {
   /** Omitted = the project's default activity. */
@@ -4602,6 +4654,7 @@ export interface Endpoints {
   "POST /admin/custom-fields/{id}/options": { body: NewOption; data: FieldAdminView };
   "DELETE /admin/custom-fields/{id}/options/{oid}": { body: never; data: FieldAdminView };
   "PATCH /admin/custom-fields/{id}/options/{oid}": { body: OptionPatch; data: FieldAdminView };
+  "GET /admin/export-events": { body: never; data: ExportEvents };
   "GET /admin/forms": { body: never; data: Array<FormSummary> };
   "POST /admin/forms": { body: NewForm; data: FormDetail };
   "GET /admin/github": { body: never; data: AdminGithub };
@@ -4664,6 +4717,8 @@ export interface Endpoints {
   "GET /executions/{id}": { body: never; data: ExecutionView };
   "POST /executions/{id}/undo": { body: UndoInput; data: UndoResult };
   "GET /executions/{id}/undo-preview": { body: never; data: UndoPreview };
+  "POST /exports/issues": { body: IssueExport; data: unknown };
+  "POST /exports/time-entries": { body: TimeExport; data: unknown };
   "GET /filter-fields": { body: never; data: FilterFields };
   "GET /forms/{id}": { body: never; data: FormDetail };
   "PUT /forms/{id}/drafts/{part}": { body: DraftInput; data: FormVersionView };
@@ -4749,6 +4804,7 @@ export interface Endpoints {
   "GET /projects/{id}/wiki/pages/{title}/diff": { body: never; data: WikiDiff };
   "GET /projects/{id}/wiki/pages/{title}/events": { body: never; data: Array<WikiEventItem> };
   "POST /projects/{id}/wiki/pages/{title}/events/{event}/redact": { body: RedactInput; data: Redacted };
+  "GET /projects/{id}/wiki/pages/{title}/export.md": { body: never; data: unknown };
   "POST /projects/{id}/wiki/pages/{title}/title/redact": { body: WikiTitleRedactInput; data: Redacted };
   "GET /projects/{id}/wiki/pages/{title}/versions": { body: never; data: WikiVersionList };
   "GET /projects/{id}/wiki/pages/{title}/versions/{n}": { body: never; data: WikiVersionView };

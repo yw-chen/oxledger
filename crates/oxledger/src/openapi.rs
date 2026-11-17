@@ -922,6 +922,38 @@ pub fn session_routes() -> Vec<RouteDoc> {
             s::<String>,
         ),
         r(
+            "POST",
+            "/exports/issues",
+            "Design 06 §3.9: the issues of a view (view_id, run with your sight) or of conditions (where: Filter AST v2, project_id) as a CSV file (not JSON): UTF-8 with BOM, CRLF, RFC 4180. Columns: the view's, or columns (key, subject, …, cf:<id>; a field you cannot read is unknown_field like one that does not exist); include_description adds the description as written. Notes are never exported. Dates YYYY-MM-DD, timestamps ISO 8601 with the organisation's offset, people by name, several values joined with ', ', 是／否. A text cell that starts with = + - @ tab or CR (or their full-width forms) gets a leading apostrophe. At most 10,000 rows: more is export_too_large (details.limit, never the count) before anything is sent. Past 50 MB the connection is cut: an incomplete download is not a file. 30 seconds (query_timeout), 5 a minute and one at a time per person (rate_limited, details.reason export_rate / export_running). People only: agents and anonymous get unauthenticated. Every export leaves a row for GET /admin/export-events.",
+            Session,
+            Some(s::<crate::exports::IssueExport>),
+            s::<String>,
+        ),
+        r(
+            "POST",
+            "/exports/time-entries",
+            "Design 06 §3.9: the time entries you may read that match the report's filters (as GET /time-entries) as a CSV file: 日期, 專案, 單號, 標題, 使用者, 活動, 時數, 說明. The limits, the format and the audit row of POST /exports/issues.",
+            Session,
+            Some(s::<crate::exports::TimeExport>),
+            s::<String>,
+        ),
+        r(
+            "GET",
+            "/admin/export-events",
+            "Design 06 R-E8 (system administrators): who exported what range, newest first, 50 a page (cursor). kind issues, time_entries or wiki_page; column keys, row count, bytes, truncated. Neither the content nor the conditions are kept (only an HMAC of them, not shown).",
+            Session,
+            None,
+            s::<crate::exports::ExportEvents>,
+        ),
+        r(
+            "GET",
+            "/projects/{id}/wiki/pages/{title}/export.md",
+            "Design 06 R-W12: the page's current Markdown as a file (not JSON), under the read rule of GET /projects/{id}/wiki/pages/{title} (not_found alike). Content-Disposition attachment, <project key>-<title>.md. Leaves an export-events row (wiki_page).",
+            Session,
+            None,
+            s::<String>,
+        ),
+        r(
             "GET",
             "/projects/{id}/wiki",
             "The project's wiki (design 06 R-W1): readable when the project is not archived, has the wiki module and you hold view_wiki_pages (or are a system administrator); otherwise not_found, exactly like a missing project. {project, start_page (R-W13: the set start page, else the page titled Wiki, else null), read_only (closed project), can {create, manage}, tree [{id, title, parent_id, updated_at}] (every live page, at most 5000)}.",
@@ -1732,7 +1764,12 @@ pub const CREATED_ROUTES: &[(&str, &str)] = &[
 pub const RAW_BODY_ROUTES: &[(&str, &str)] = &[("POST", "/projects/{id}/uploads")];
 
 /// Routes whose answer is a file, not the `{data, meta}` envelope (R-A6).
-pub const FILE_ROUTES: &[(&str, &str)] = &[("GET", "/attachments/{id}/content")];
+pub const FILE_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/attachments/{id}/content"),
+    ("POST", "/exports/issues"),
+    ("POST", "/exports/time-entries"),
+    ("GET", "/projects/{id}/wiki/pages/{title}/export.md"),
+];
 
 /// The OpenAPI 3.1 document.
 pub fn document() -> Value {

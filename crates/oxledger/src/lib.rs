@@ -18,6 +18,7 @@ pub mod db;
 pub mod describe;
 pub mod error;
 pub mod evidence;
+pub mod exports;
 pub mod field_admin;
 pub mod filter;
 pub mod forms;

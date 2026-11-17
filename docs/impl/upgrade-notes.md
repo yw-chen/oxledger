@@ -349,3 +349,15 @@
 - 需要 GitHub App 已訂閱 `pull_request` 與 `push` 事件（見 0039）。
 - **還沒有在真實的 GitHub App 與測試 repo 上跑過**（push、PR 合併、fixes）；目前只有用假的 GitHub API 的整合測試。
 - **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`。
+
+## 0041_import_export（M2.7，CSV 匯出；匯入的表先建好，功能在 M2.8）
+
+- **migration 0041**：新表 `export_events`（匯出稽核）、`imports`、`import_rows`；`command_executions.import_id` 加 FK；新 SQL 函式 `org_iso(timestamptz)`。不動角色、權限、成員或專案，security epoch 不變。
+- **新端點**：`POST /exports/issues`（一個視圖，或一組條件）、`POST /exports/time-entries`（工時報表的條件）回傳 CSV 檔（UTF-8 加 BOM、CRLF，Excel 可直接開）；`GET /projects/{id}/wiki/pages/{title}/export.md` 下載 wiki 頁的 Markdown；`GET /admin/export-events`（系統管理員）列出誰匯出了什麼範圍。
+- **沒有新的權限**：讀得到的人就能匯出，內容和他在畫面上看到的一樣（私有議題、受限自訂欄位、工時可見範圍都照舊）；不匯出留言。agent 與未登入的人不能匯出。
+- **上限**：一次最多 10,000 列（超過就拒絕，不回實際數量）、50 MB（超過時連線中斷，瀏覽器不會存下不完整的檔案）、30 秒；每人每分鐘 5 次、同時 1 個。這些目前是固定值，還不能在站台設定調整。次數記在伺服器行程的記憶體裡：同時跑多個伺服器行程時，每個行程各自計算。
+- **稽核**：每次匯出寫一列 `export_events`（誰、哪個專案或視圖、哪些欄位、列數、位元組數）；不存匯出內容，條件只存 HMAC（金鑰在 `server_secrets` 的 `export_filter`，第一次匯出時自動產生）。這一列在送出第一個位元組前就寫入，寫不進去就不匯出；`truncated = true` 表示檔案沒有完整送出（超過上限、逾時、出錯或對方中途斷線），此時列數與位元組數是實際送出的量。這張表目前不會自動清理。
+- 文字欄位開頭是 `=`、`+`、`-`、`@`、Tab、CR（或全形的 ＝＋－＠）時，前面會加一個 `'`，避免試算表把它當成公式；數字與日期欄位不加。
+- 反向代理若設了回應逾時或緩衝，匯出最長 30 秒、最大 50 MB，請不要設得比這個短或小。超過上限時伺服器會直接中斷連線，讓瀏覽器不存檔；反向代理對上游必須用 HTTP/1.1 以上（`deploy/Caddyfile` 的 Caddy 已是如此；nginx 要設 `proxy_http_version 1.1`），用 HTTP/1.0 時中斷和正常結束分不出來，不完整的檔案會被當成完整。
+- **還沒有用真的 Excel 開過匯出的檔案**；目前只有用程式讀回比對。系統管理員的匯出稽核只有 API，還沒有畫面。
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`。

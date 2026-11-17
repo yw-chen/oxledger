@@ -48,6 +48,7 @@ member_roles_epoch() RETURNS trigger plpgsql v body=acc52f46e721
 members_epoch() RETURNS trigger plpgsql v body=0af101b5f271
 members_principal_guard() RETURNS trigger plpgsql v body=05d5746c5074
 on_behalf_of_guard() RETURNS trigger plpgsql v body=58ab080c504f
+org_iso(ts timestamp with time zone) RETURNS text sql s body=8e9c7daa6d27
 outbox_issue_once(i uuid) RETURNS void sql v body=2a2d2c50cb1e
 principal_kind_is(id uuid, allowed text[]) RETURNS boolean sql s body=2673777efea2
 principals_freeze_kind() RETURNS trigger plpgsql v body=548ff3cfc7e6

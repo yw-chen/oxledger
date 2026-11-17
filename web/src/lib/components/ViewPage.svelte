@@ -20,6 +20,8 @@
 	import ViewTable from './ViewTable.svelte';
 	import Board from './Board.svelte';
 	import BoardSettings from './BoardSettings.svelte';
+	import ExportDialog from './ExportDialog.svelte';
+	import { DEFAULT_EXPORT_COLUMNS, EXPORT_COLUMNS } from '#lib/exports.js';
 
 	let { viewId, projectKey = null, inFrame = false }: { viewId: string; projectKey?: string | null; inFrame?: boolean } = $props();
 
@@ -44,6 +46,15 @@
 	let badField = $state<string | null>(null);
 	let saving = $state(false);
 	let menu = $state(false);
+	/** 匯出 CSV (design 06 §6.11): the saved view, as the person sees it. */
+	let exporting = $state(false);
+	/** Custom fields the person can read; a view's column outside them is not offered. */
+	const exportExtra = $derived((ff?.fields ?? []).filter((f) => f.field.startsWith('cf:')).map((f) => ({ key: f.field, label: f.label })));
+	const exportInitial = $derived.by(() => {
+		const known = new Set([...EXPORT_COLUMNS, ...exportExtra].map((c) => c.key));
+		const own = def?.kind === 'list' && Array.isArray(def.columns) ? (def.columns as string[]).filter((c) => known.has(c)) : [];
+		return own.length ? own : DEFAULT_EXPORT_COLUMNS;
+	});
 	/** This session's sort (§6.1): not part of the definition or the draft. */
 	let sortOverride = $state<SortKey[] | null>(null);
 	let sortMenu = $state(false);
@@ -409,6 +420,7 @@
 					<button role="menuitem" disabled={!view.editable || denied.rename} title={denied.rename ? FORBIDDEN : view.editable ? '' : '內建視圖不能改，可以複製'} onclick={() => ((menu = false), (rename = view!.name))} data-testid="view-rename">改名稱</button>
 					<button role="menuitem" onclick={() => openSaveAs('copy', 'personal')} data-testid="copy-personal">複製成個人視圖</button>
 					{#if pkey}<button role="menuitem" onclick={() => openSaveAs('copy', 'project')} disabled={denied.project} title={denied.project ? FORBIDDEN : ''} data-testid="copy-project">複製成專案視圖</button>{/if}
+					<button role="menuitem" disabled={dirty} title={dirty ? '先儲存或捨棄修改，再匯出' : ''} onclick={() => ((menu = false), (exporting = true))} data-testid="view-export">匯出 CSV</button>
 					<button role="menuitem" disabled={view.scope === 'builtin'} onclick={openHistory}>歷史</button>
 					<button role="menuitem" disabled={!view.editable || denied.delete} title={denied.delete ? FORBIDDEN : view.editable ? '' : '你不能刪除這個視圖'} onclick={remove} data-testid="view-delete">刪除</button>
 				</div>
@@ -472,6 +484,14 @@
 	{/if}
 {/if}
 
+{#if exporting && view}
+	<ExportDialog
+		source={{ view_id: view.id }}
+		initial={exportInitial}
+		extra={exportExtra}
+		onclose={() => (exporting = false)}
+	/>
+{/if}
 {#if saveAs}
 	<div class="modal-bg" role="presentation">
 		<div class="modal" role="dialog" aria-modal="true" aria-label="另存為新視圖" data-testid="save-as">

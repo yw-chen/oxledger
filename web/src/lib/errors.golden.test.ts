@@ -89,7 +89,8 @@ const CODES = {
 	wiki_page_exists: true,
 	wiki_has_children: true,
 	wiki_title_invalid: true,
-	fix_rule_invalid: true
+	fix_rule_invalid: true,
+	export_too_large: true
 } satisfies Record<ErrorCode, true>;
 
 /** The server's message is English; a code that reaches `default` shows it. */
@@ -158,6 +159,7 @@ const VARIANTS: Variant[] = [
 	['wiki_title_invalid', 'reason=char, char=#', { reason: 'char', char: '#', codepoint: 'U+0023' }],
 	['wiki_title_invalid', 'reason=char, char=U+202E', { reason: 'char', char: '‮', codepoint: 'U+202E' }],
 	['wiki_title_invalid', 'reason=char, char=U+200B', { reason: 'char', char: '​', codepoint: 'U+200B' }],
+	['export_too_large', 'limit=10000', { limit: 10000 }],
 	...each('fix_rule_invalid', 'reason', ['keywords_empty', 'keyword_invalid', 'keyword_duplicate', 'too_many_keywords', 'status_unknown', 'tracker_not_in_project', 'too_many_rules'], { index: 0 })
 ];
 

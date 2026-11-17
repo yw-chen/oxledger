@@ -2106,6 +2106,14 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
             reason.clone(),
             nf,
         ),
+        // M2.7: a wiki page as Markdown, of a wiki frank cannot read.
+        (
+            "GET",
+            format!("/projects/{}/wiki/pages/Gate_Page/export.md", w.auth_p),
+            format!("/projects/{missing_uuid}/wiki/pages/Gate_Page/export.md"),
+            json!({}),
+            nf,
+        ),
         // M2.2 wiki: start page settings and D12 on a wiki frank cannot read.
         (
             "PUT",
@@ -2543,8 +2551,14 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
             deleg(&r.principal.id.to_string()),
             deleg(&missing_uuid),
         ),
+        // M2.7: an export of alice's personal view.
+        (
+            "/exports/issues",
+            json!({"view_id": view}),
+            json!({"view_id": missing_uuid}),
+        ),
     ];
-    let real_ids = [hkey.clone(), r.principal.id.to_string()];
+    let real_ids = [hkey.clone(), r.principal.id.to_string(), view.to_string()];
     for (p, real, miss) in &body_rows {
         let a = call(
             &router,
@@ -2654,6 +2668,10 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         // M2.6: the fix rules (m2_6_fixed_by rules_are_validated_and_sponsored:
         // manage_project only, a setting event per change).
         "PUT /projects/{id}/fix-rules",
+        // M2.7: exports read only what the caller sees and write nothing but
+        // their own audit row (m2_7_export: sight, limits, people only).
+        "POST /exports/issues",
+        "POST /exports/time-entries",
     ];
     let mut tested: BTreeSet<String> = rows
         .iter()
@@ -2675,6 +2693,163 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
             });
         assert!(covered, "{k} is not classified in the M1.11 gate");
     }
+}
+
+// ---------------------------------------------------------------- M2.7 exports over HTTP
+
+/// A response as it left the router: status, headers, raw body (`Err` when
+/// the body was cut).
+async fn raw(
+    r: &Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    who: Cred<'_>,
+) -> (StatusCode, axum::http::HeaderMap, Result<Vec<u8>, String>) {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(format!("/api/v1{path}"))
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::CONTENT_TYPE, "application/json");
+    match who {
+        Cred::Session(s) => {
+            b = b
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", s.session))
+                .header("x-csrf-token", &s.csrf)
+        }
+        Cred::Bearer(t) => b = b.header(header::AUTHORIZATION, format!("Bearer {t}")),
+        Cred::None => {}
+    }
+    let body = Body::from(body.unwrap_or_else(|| json!({})).to_string());
+    let resp = r.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .map(|b| b.to_bytes().to_vec())
+        .map_err(|e| e.to_string());
+    (status, headers, bytes)
+}
+
+/// T-M2-86, T-M2-86a over HTTP (design 06 R-E9–R-E11): the files as a
+/// browser gets them, the wiki page download with its audit row, a file
+/// past the byte limit cut instead of ended, and no file for an agent or
+/// for nobody.
+#[tokio::test]
+async fn t_m2_86_exports_over_http() {
+    use oxledger::exports::LIMIT_BYTES;
+    use std::sync::atomic::Ordering;
+    let pool = test_pool().await;
+    let g = gate_world(&pool).await;
+    let w = &g.w;
+    let router = api::router(
+        w.app.clone(),
+        ApiConfig {
+            spa_origin: ORIGIN.into(),
+            session: SessionPolicy::default(),
+        },
+    );
+    for subject in ["exported 0", "exported 1", "exported 2"] {
+        w.issue(w.web, subject).await;
+    }
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules SELECT id, 'wiki' FROM projects ON CONFLICT DO NOTHING",
+    )
+    .await;
+    grant(&pool, w.dev, &["view_wiki_pages", "edit_wiki_pages"]).await;
+    commands::submit(
+        &w.app,
+        w.alice_ctx,
+        Uuid::now_v7(),
+        &json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "wiki_put", "target": {"project": "WEB", "page": "匯出 頁"},
+             "body": "# 內文\n=not a formula here"}]}),
+    )
+    .await
+    .unwrap();
+    let alice = login(&router, "alice").await;
+    let c = new_client(w, "client-export").await;
+    let r = create_role(w, &role(new_rt("export"), c, "x", &[w.web], Direct)).await;
+    let token = r.token.clone().unwrap();
+    let events = || count(&pool, "SELECT count(*) FROM export_events");
+    let md = "/projects/WEB/wiki/pages/%E5%8C%AF%E5%87%BA_%E9%A0%81/export.md";
+
+    // Nobody and no agent: 401 on all three, nothing on record.
+    for (m, p) in [
+        ("POST", "/exports/issues"),
+        ("POST", "/exports/time-entries"),
+        ("GET", md),
+    ] {
+        for who in [Cred::Bearer(&token), Cred::None] {
+            let (status, _, _) = raw(&router, m, p, None, who).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{m} {p}");
+        }
+    }
+    assert_eq!(events().await, 0);
+
+    // A person: the CSV, as a download.
+    let (status, h, body) = raw(
+        &router,
+        "POST",
+        "/exports/issues",
+        Some(json!({"project_id": "WEB"})),
+        Cred::Session(&alice),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/csv; charset=utf-8");
+    let cd = h[header::CONTENT_DISPOSITION].to_str().unwrap();
+    assert!(
+        cd.starts_with("attachment; filename=\"WEB-issues-") && cd.ends_with(".csv\""),
+        "{cd}"
+    );
+    assert_eq!(h[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(h[header::CACHE_CONTROL], "private, no-store");
+    let body = body.unwrap();
+    assert!(body.starts_with(b"\xEF\xBB\xBF"));
+    assert!(String::from_utf8(body).unwrap().contains("exported 2"));
+    assert_eq!(events().await, 1);
+
+    // The wiki page as Markdown: the source, a name that survives, a row.
+    let (status, h, body) = raw(&router, "GET", md, None, Cred::Session(&alice)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "text/markdown; charset=utf-8");
+    let cd = h[header::CONTENT_DISPOSITION].to_str().unwrap();
+    assert!(cd.starts_with("attachment; filename=\"WEB-page.md\"; filename*=UTF-8''WEB-"));
+    assert_eq!(h[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        String::from_utf8(body.unwrap()).unwrap(),
+        "# 內文\n=not a formula here"
+    );
+    assert_eq!(events().await, 2);
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM export_events WHERE kind = 'wiki_page' AND row_count = 1"
+        )
+        .await,
+        1
+    );
+
+    // T-M2-86a: past the byte limit the body is cut, not ended.
+    LIMIT_BYTES.store(60, Ordering::Relaxed);
+    let (status, _, body) = raw(
+        &router,
+        "POST",
+        "/exports/issues",
+        Some(json!({"project_id": "WEB"})),
+        Cred::Session(&alice),
+    )
+    .await;
+    LIMIT_BYTES.store(0, Ordering::Relaxed);
+    assert_eq!(status, StatusCode::OK, "the limit is met after the headers");
+    assert!(body.is_err(), "a cut body is an error to the reader");
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM export_events WHERE truncated").await,
+        1
+    );
 }
 
 // ---------------------------------------------------------------- existence oracles beyond the matrix

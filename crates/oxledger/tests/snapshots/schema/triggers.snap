@@ -56,6 +56,7 @@ CREATE TRIGGER field_trackers_schema_version AFTER INSERT OR DELETE OR UPDATE OR
 CREATE TRIGGER form_defs_schema_version AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.form_defs FOR EACH STATEMENT EXECUTE FUNCTION bump_schema_version()
 CREATE TRIGGER group_members_epoch AFTER INSERT OR DELETE OR UPDATE ON public.group_members FOR EACH ROW EXECUTE FUNCTION group_members_epoch()
 CREATE TRIGGER group_members_guard BEFORE INSERT OR UPDATE ON public.group_members FOR EACH ROW EXECUTE FUNCTION group_members_guard()
+CREATE TRIGGER imports_owner_guard BEFORE INSERT OR UPDATE OF owner_id ON public.imports FOR EACH ROW EXECUTE FUNCTION user_column_guard('owner_id')
 CREATE TRIGGER issue_agent_chains_reset AFTER INSERT ON public.issue_events FOR EACH ROW WHEN ((new.origin = ANY (ARRAY['human_direct'::text, 'external_agent'::text]))) EXECUTE FUNCTION issue_agent_chains_reset()
 CREATE TRIGGER issue_cf_check BEFORE INSERT OR UPDATE ON public.issue_cf FOR EACH ROW EXECUTE FUNCTION issue_cf_check()
 CREATE TRIGGER issue_cf_outbox_del AFTER DELETE ON public.issue_cf REFERENCING OLD TABLE AS changed_rows FOR EACH STATEMENT EXECUTE FUNCTION issue_cf_outbox()

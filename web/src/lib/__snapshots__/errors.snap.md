@@ -116,6 +116,10 @@ title:   結果確認中，請勿重複按；會自動更新
 changed: 尚未確認是否完成。
 action:  wait
 
+## export_too_large
+title:   超過 10,000 列，請縮小篩選範圍。
+changed: 沒有改到任何資料。
+
 ## field_definition_changed
 title:   條件用到的自訂欄位設定剛被改過，請重新選擇條件
 changed: 沒有改到任何資料。
@@ -729,6 +733,10 @@ changed: 沒有改到任何資料。
 
 ## wiki_title_invalid: reason=char, char=U+200B
 title:   標題有看不見的控制字元 U+200B，請刪掉後再試
+changed: 沒有改到任何資料。
+
+## export_too_large: limit=10000
+title:   超過 10,000 列，請縮小篩選範圍。
 changed: 沒有改到任何資料。
 
 ## fix_rule_invalid: reason=keywords_empty, index=0

@@ -3699,6 +3699,11 @@
             "const": "fix_rule_invalid",
             "description": "Design 06 §5 (R-F2): a fix rule is not valid; `details.reason`\n(`keywords_empty`, `keyword_invalid`, `keyword_duplicate`,\n`too_many_keywords`, `status_unknown`, `tracker_not_in_project`,\n`too_many_rules`), `details.index` of the rule.",
             "type": "string"
+          },
+          {
+            "const": "export_too_large",
+            "description": "Design 06 R-E6: more rows than one export holds (`details.limit`).",
+            "type": "string"
           }
         ]
       },
@@ -3987,6 +3992,92 @@
           "from",
           "via",
           "label"
+        ],
+        "type": "object"
+      },
+      "ExportEvent": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Named"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "columns": {
+            "description": "Column keys, never values.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`issues`, `time_entries` or `wiki_page`.",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project's key; null for an export across projects.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "row_count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "The file did not go out whole: cut at the byte or time limit, an\nerror, or the reader went away. `row_count` and `bytes` are what\nwas sent.",
+            "type": "boolean"
+          },
+          "view_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "actor",
+          "kind",
+          "project",
+          "view_id",
+          "columns",
+          "row_count",
+          "bytes",
+          "truncated",
+          "at"
+        ],
+        "type": "object"
+      },
+      "ExportEvents": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExportEvent"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -5803,6 +5894,49 @@
           "synced_at",
           "fix_links"
         ],
+        "type": "object"
+      },
+      "IssueExport": {
+        "additionalProperties": false,
+        "description": "`POST /exports/issues`: a view, or conditions (R-E1).",
+        "properties": {
+          "columns": {
+            "default": null,
+            "description": "Column keys (`key`, `subject`, …, `cf:<id>`), in order; default: the\nview's columns.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "include_description": {
+            "default": false,
+            "description": "Adds the description (as written) as the last column.",
+            "type": "boolean"
+          },
+          "project_id": {
+            "default": null,
+            "description": "A project id or key the conditions stay in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_id": {
+            "default": null,
+            "description": "A view id (`builtin:<name>` too). Not with `where` or `project_id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "where": {
+            "default": null,
+            "description": "A Filter AST v2; without it and without `view_id`: every issue the\ncaller sees (of `project_id`)."
+          }
+        },
         "type": "object"
       },
       "IssueRef": {
@@ -12737,6 +12871,74 @@
         ],
         "type": "object"
       },
+      "TimeExport": {
+        "additionalProperties": false,
+        "description": "`POST /exports/time-entries`: the time report's filters (05 §3.5.2).",
+        "properties": {
+          "activity": {
+            "default": null,
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fixed_version": {
+            "default": null,
+            "description": "A version id or `none`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "default": null,
+            "description": "`YYYY-MM-DD`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issue": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tracker": {
+            "default": null,
+            "description": "A tracker id or `none`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "A user id or `me`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "TimeFields": {
         "additionalProperties": false,
         "description": "A time entry's fields (contract 05 §3.10.2). `hours` is a decimal\nstring; `author_id`, `created_on_behalf_of_id` and `project_id` cannot be\nset here.",
@@ -18861,6 +19063,55 @@
         "x-csrf": true
       }
     },
+    "/admin/export-events": {
+      "get": {
+        "operationId": "get_admin_export_events",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ExportEvents"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-E8 (system administrators): who exported what range, newest first, 50 a page (cursor). kind issues, time_entries or wiki_page; column keys, row count, bytes, truncated. Neither the content nor the conditions are kept (only an HMAC of them, not shown).",
+        "x-access": "session"
+      }
+    },
     "/admin/forms": {
       "get": {
         "operationId": "get_admin_forms",
@@ -22611,6 +22862,104 @@
         },
         "summary": "What undoing one of your agent's executions, your undo, or your own wiki write (design 06 R-W9) would restore now (§16.7): per field before, after, current and whether it can be restored (reasons changed_since, value_no_longer_valid, permission, redacted, expired); notes to retract, relations to remove, transitions to choose; wiki[] per page (change created, updated, deleted, restored, reparented; reasons also redacted_source, title_taken, has_children, dependency, wiki_depth, wiki_page_limit, wiki_version_limit; the last two make the undo invalid_value of that kind). Writes nothing.",
         "x-access": "session"
+      }
+    },
+    "/exports/issues": {
+      "post": {
+        "operationId": "post_exports_issues",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueExport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 §3.9: the issues of a view (view_id, run with your sight) or of conditions (where: Filter AST v2, project_id) as a CSV file (not JSON): UTF-8 with BOM, CRLF, RFC 4180. Columns: the view's, or columns (key, subject, …, cf:<id>; a field you cannot read is unknown_field like one that does not exist); include_description adds the description as written. Notes are never exported. Dates YYYY-MM-DD, timestamps ISO 8601 with the organisation's offset, people by name, several values joined with ', ', 是／否. A text cell that starts with = + - @ tab or CR (or their full-width forms) gets a leading apostrophe. At most 10,000 rows: more is export_too_large (details.limit, never the count) before anything is sent. Past 50 MB the connection is cut: an incomplete download is not a file. 30 seconds (query_timeout), 5 a minute and one at a time per person (rate_limited, details.reason export_rate / export_running). People only: agents and anonymous get unauthenticated. Every export leaves a row for GET /admin/export-events.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/exports/time-entries": {
+      "post": {
+        "operationId": "post_exports_time_entries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimeExport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 §3.9: the time entries you may read that match the report's filters (as GET /time-entries) as a CSV file: 日期, 專案, 單號, 標題, 使用者, 活動, 時數, 說明. The limits, the format and the audit row of POST /exports/issues.",
+        "x-access": "session",
+        "x-csrf": true
       }
     },
     "/filter-fields": {
@@ -27958,6 +28307,62 @@
         "summary": "D12 (design 06 §3.13): one wiki event's payload becomes [已遮蔽]. Same rules as the other redactions. Header Idempotency-Key.",
         "x-access": "session",
         "x-csrf": true
+      }
+    },
+    "/projects/{id}/wiki/pages/{title}/export.md": {
+      "get": {
+        "operationId": "get_projects_id_wiki_pages_title_export_md",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-W12: the page's current Markdown as a file (not JSON), under the read rule of GET /projects/{id}/wiki/pages/{title} (not_found alike). Content-Disposition attachment, <project key>-<title>.md. Leaves an export-events row (wiki_page).",
+        "x-access": "session"
       }
     },
     "/projects/{id}/wiki/pages/{title}/title/redact": {

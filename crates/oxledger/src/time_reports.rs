@@ -575,6 +575,53 @@ async fn list_in(
     })
 }
 
+/// Design 06 R-E6: how many entries the export's filters match, counted
+/// no further than `cap + 1`; and the project they stay in.
+pub(crate) async fn export_count(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    q: &ListQuery,
+    cap: i64,
+) -> Result<(i64, Option<Uuid>)> {
+    let v = viewer(&mut *conn, caller).await?;
+    let f = filters(
+        &mut *conn,
+        caller,
+        &v,
+        q.project.as_deref(),
+        q.issue.as_deref(),
+        q.user.as_deref(),
+        q.from.as_deref(),
+        q.to.as_deref(),
+    )
+    .await?;
+    let tracker = id_or_none("tracker", q.tracker.as_deref())?;
+    let fixed_version = id_or_none("fixed_version", q.fixed_version.as_deref())?;
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT count(*) FROM (SELECT 1");
+    qb.push(FROM).push(" WHERE");
+    push_visible(&mut qb, &v);
+    push_filters(&mut qb, &f);
+    if let Some(a) = q.activity {
+        qb.push(" AND te.activity_id = ").push_bind(a);
+    }
+    push_id_or_none(&mut qb, "i.tracker_id", tracker);
+    push_id_or_none(&mut qb, "i.fixed_version_id", fixed_version);
+    qb.push(" LIMIT ").push_bind(cap + 1).push(") x");
+    let n: i64 = qb.build_query_scalar().fetch_one(&mut *conn).await?;
+    Ok((n, f.project))
+}
+
+/// One page of the export, in the list's order, inside the export's snapshot.
+pub(crate) async fn export_page(
+    conn: &mut PgConnection,
+    app: &App,
+    caller: AuthContext,
+    q: &ListQuery,
+) -> Result<TimeEntryPage> {
+    let v = viewer(&mut *conn, caller).await?;
+    list_in(&mut *conn, app, caller, &v, q).await
+}
+
 /// MCP `time_list` (§3.5.4 A1): an agent reads its delegator's own time,
 /// in delegated projects with `read_own_time`, on issues it may read.
 pub async fn list_for_tool(app: &App, caller: AuthContext, q: &ListQuery) -> Result<TimeEntryPage> {

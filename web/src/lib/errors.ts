@@ -390,6 +390,10 @@ export function describeError(e: unknown): Shown {
 			return { title: wikiTitleProblem(d), changed: NOTHING };
 		case 'fix_rule_invalid':
 			return { title: fixRuleProblem(d), changed: NOTHING };
+		case 'export_too_large': {
+			const n = Number(d.limit);
+			return { title: `超過 ${Number.isFinite(n) && n > 0 ? n.toLocaleString('en-US') : '10,000'} 列，請縮小篩選範圍。`, changed: NOTHING };
+		}
 		case 'ai_run_in_progress':
 			return { title: '你還有一個 AI 回覆在進行中；等它完成或取消後再送', changed: NOTHING, action: 'wait' };
 		default:

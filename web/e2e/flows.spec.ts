@@ -1772,3 +1772,26 @@ test('AI 助理：管理員設定服務（測試、預算、啟用），使用�
 	await expect(page.getByTestId('tab-activity')).toBeVisible();
 	await expect(page.getByTestId('tab-ai')).toHaveCount(0);
 });
+
+test('匯出 CSV：視圖的資料下載成檔案，內容是看得到的議題', async ({ browser }) => {
+	// Design 06 §6.11: the dialog, then a real download; UTF-8 with BOM.
+	const page = await alice(browser, `/views/${encodeURIComponent('builtin:involving_me')}`);
+	await page.getByTestId('view-menu').click();
+	await page.getByTestId('view-export').click();
+	const dialog = page.getByTestId('export-dialog');
+	await expect(dialog).toContainText('最多 10,000 列');
+	await expect(dialog.locator('[data-testid=export-col][data-key=key]')).toBeChecked();
+	await dialog.getByTestId('export-description').check();
+	const [download] = await Promise.all([page.waitForEvent('download'), dialog.getByTestId('export-run').click()]);
+	expect(download.suggestedFilename()).toMatch(/^all-issues-\d{8}\.csv$/);
+	const stream = await download.createReadStream();
+	const chunks: Buffer[] = [];
+	for await (const c of stream) chunks.push(c as Buffer);
+	const bytes = Buffer.concat(chunks);
+	expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+	const text = bytes.toString('utf8');
+	expect(text.split('\r\n')[0]).toContain('單號');
+	expect(text.split('\r\n')[0]).toContain('說明');
+	expect(text).toMatch(/\n[A-Z]+-\d+,/);
+	await expect(dialog).toHaveCount(0);
+});

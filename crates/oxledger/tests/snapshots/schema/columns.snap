@@ -437,6 +437,17 @@ execution_wiki_changes.after_protected boolean NOT NULL
 execution_wiki_changes.before_lock_version bigint
 execution_wiki_changes.after_lock_version bigint NOT NULL
 execution_wiki_changes.reverted_by uuid
+export_events.id uuid NOT NULL DEFAULT uuidv7()
+export_events.actor_id uuid NOT NULL
+export_events.kind text NOT NULL
+export_events.project_id uuid
+export_events.view_id uuid
+export_events.filter_hash bytea
+export_events.columns text[] NOT NULL DEFAULT '{}'::text[]
+export_events.row_count integer NOT NULL
+export_events.bytes bigint NOT NULL DEFAULT 0
+export_events.truncated boolean NOT NULL DEFAULT false
+export_events.at timestamp with time zone NOT NULL DEFAULT now()
 field_defs.id integer NOT NULL IDENTITY a
 field_defs.name text NOT NULL
 field_defs.ftype text NOT NULL
@@ -570,6 +581,32 @@ github_repos.updated_at timestamp with time zone NOT NULL DEFAULT now()
 github_repos.default_branch text
 group_members.group_id uuid NOT NULL
 group_members.user_id uuid NOT NULL
+import_rows.import_id uuid NOT NULL
+import_rows.row_no integer NOT NULL
+import_rows.state text NOT NULL
+import_rows.error_code text
+import_rows.error_field text
+import_rows.issue_id uuid
+import_rows.time_entry_id uuid
+import_rows.execution_id uuid
+imports.id uuid NOT NULL DEFAULT uuidv7()
+imports.project_id uuid NOT NULL
+imports.kind text NOT NULL
+imports.owner_id uuid NOT NULL
+imports.state text NOT NULL
+imports.file bytea
+imports.file_sha256 bytea NOT NULL
+imports.encoding text NOT NULL
+imports.encoding_guessed boolean NOT NULL
+imports.delimiter text NOT NULL
+imports.row_count integer NOT NULL
+imports.settings jsonb NOT NULL DEFAULT '{}'::jsonb
+imports.lock_version bigint NOT NULL DEFAULT 0
+imports.operation_request_id uuid
+imports.created_at timestamp with time zone NOT NULL DEFAULT now()
+imports.started_at timestamp with time zone
+imports.finished_at timestamp with time zone
+imports.purged_at timestamp with time zone
 issue_agent_chains.issue_id uuid NOT NULL
 issue_agent_chains.started_at timestamp with time zone NOT NULL
 issue_agent_chains.started_by_execution_id uuid NOT NULL

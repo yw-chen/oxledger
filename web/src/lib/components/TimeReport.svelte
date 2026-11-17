@@ -6,6 +6,8 @@
 	import { page } from '$app/state';
 	import type { Summary, SummaryRow, TimeEntryView } from '$api/types';
 	import { api, ApiError } from '#lib/api.js';
+	import { exportProblem, fetchExport, saveBlob } from '#lib/exports.js';
+	import { toast } from '#lib/toast.svelte.js';
 	import { addDays, period, showHours, todayLocal, weekMonday } from '#lib/hours.js';
 	import ErrorBox from './ErrorBox.svelte';
 	import Actor from './Actor.svelte';
@@ -20,6 +22,19 @@
 	let from = $state(fromIssue ? addDays(today, -365) : period('this_week', today).from);
 	let to = $state(fromIssue ? today : period('this_week', today).to);
 	let groupBy = $state('user');
+	let exporting = $state(false);
+	/** 匯出 CSV (design 06 §6.11): the entries the report's filters match. */
+	async function exportCsv() {
+		exporting = true;
+		try {
+			const f = await fetchExport('/exports/time-entries', { project: projectKey, from, to, user: user || undefined, issue: issue || undefined });
+			saveBlob(f.blob, f.filename);
+		} catch (e) {
+			toast(exportProblem(e) ?? '匯出失敗，請稍後再試', 'w');
+		} finally {
+			exporting = false;
+		}
+	}
 	let user = $state('');
 	let issue = $state(page.url.searchParams.get('issue') ?? '');
 	let issueInput = $state(page.url.searchParams.get('issue') ?? '');
@@ -129,6 +144,7 @@
 	{:else if access === 'denied'}
 		<div class="empty" data-testid="time-denied">你沒有權限查看這個專案的工時。</div>
 	{:else}
+		<div class="row" style="justify-content:flex-end"><button class="btn sm" onclick={exportCsv} disabled={exporting} data-testid="tr-export">{exporting ? '匯出中…' : '匯出 CSV'}</button></div>
 		<div class="row" style="gap:10px;flex-wrap:wrap">
 			<label>期間
 				<select bind:value={per} data-testid="tr-period">
