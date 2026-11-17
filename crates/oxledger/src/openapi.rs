@@ -938,6 +938,102 @@ pub fn session_routes() -> Vec<RouteDoc> {
             s::<String>,
         ),
         r(
+            "POST",
+            "/projects/{id}/imports",
+            "Design 06 §3.10: upload a CSV file to import into the project (query kind = issues or time_entries; the body is the raw file, application/octet-stream). Needs import_issues or import_time_entries here (forbidden_op). At most 10 MB (payload_too_large), 5,000 data rows, 64 columns, 64 KiB a cell; UTF-8, UTF-16 (BOM) or Big5 (guessed: encoding_guessed, confirm it with PUT settings); the delimiter is detected among , ; and tab. A file that cannot be read is import_invalid_file (details.kind: encoding, too_many_rows, too_many_columns, cell_too_large, no_header, empty, parse). Answers the import with its header, the first 10 rows, the fields you may fill and a suggested mapping. People only.",
+            Session,
+            None,
+            s::<crate::imports::ImportDetail>,
+        ),
+        r(
+            "GET",
+            "/projects/{id}/imports",
+            "Your imports into the project of the last 30 days, newest first (never anyone else's).",
+            Session,
+            None,
+            s::<crate::imports::ImportList>,
+        ),
+        r(
+            "GET",
+            "/imports/{id}",
+            "An import's state and progress (poll it while it is validating or running): state uploaded, ready, validating, validated, running, done, canceled, failed or expired; done / ok / errors / skipped count rows. Someone else's import is not_found, exactly like one that does not exist.",
+            Session,
+            None,
+            s::<crate::imports::ImportStatus>,
+        ),
+        r(
+            "GET",
+            "/imports/{id}/preview",
+            "The import with what the mapping steps need: header, the first 10 rows, fields (only those you may fill), suggested mapping, and per mapped list or user field the choices and the different values of the file (at most 200) with what each resolves to (target, or problem unknown_value / ambiguous_value). Only while the file is kept (import_state_invalid afterwards).",
+            Session,
+            None,
+            s::<crate::imports::ImportDetail>,
+        ),
+        r(
+            "PUT",
+            "/imports/{id}/settings",
+            "Design 06 R-I5-R-I7: the encoding, delimiter, date format (ymd, mdy, dmy), mapping (per column a field key or null), value_map (per field: a value of the file to an id or a name, or \"\" for empty) and options (strip_formula_quote, skip_triage, notify, default_tracker_id), with the lock_version you read (conflict). The state returns to ready: a dry run made before no longer counts. A field that does not exist or that you may not fill, or one mapped twice, is import_mapping_invalid (details.field, details.reason).",
+            Session,
+            Some(s::<crate::imports::ImportSettingsInput>),
+            s::<crate::imports::ImportDetail>,
+        ),
+        r(
+            "POST",
+            "/imports/{id}/validate",
+            "Design 06 R-I8: start the dry run. Every row is checked as you, with the rules of POST /commands/validate, and nothing is written; results per row are in GET /imports/{id}/rows. The required field (subject, or hours) must be mapped (import_mapping_invalid, reason required).",
+            Session,
+            Some(s::<crate::api::Empty>),
+            s::<crate::imports::ImportStatus>,
+        ),
+        r(
+            "POST",
+            "/imports/{id}/run",
+            "Design 06 R-I10: run a validated import (Idempotency-Key; lock_version as the dry run saw it, else import_settings_changed). Each row is one command as you, in its own transaction: a row that fails does not stop the others. The same key again starts nothing twice.",
+            Session,
+            Some(s::<crate::imports::ImportRunInput>),
+            s::<crate::imports::ImportStatus>,
+        ),
+        r(
+            "POST",
+            "/imports/{id}/cancel",
+            "Stop a running import after the row being written (the rest become skipped; what was written stays), or drop a dry run. Any other state: import_state_invalid.",
+            Session,
+            Some(s::<crate::api::Empty>),
+            s::<crate::imports::ImportStatus>,
+        ),
+        r(
+            "POST",
+            "/imports/{id}/close-created",
+            "Design 06 R-I12 (within 30 days of the import's end): move every issue the import created that nothing else has written to since to status_id (a closed status; as you, by the workflow), or delete the time entries it logged. Answers closed, already and failed (row_no, issue_key, reason: changed_since or an error code). Safe to send again.",
+            Session,
+            Some(s::<crate::imports::ImportCloseInput>),
+            s::<crate::imports::ImportCloseResult>,
+        ),
+        r(
+            "GET",
+            "/imports/{id}/rows",
+            "Row results, 100 a page by row number (query state = pending, ok, error or skipped; cursor): row_no, state, error_code, error_field (a field key), issue_key, time_entry_id. Never a cell of the file. error_code is a command error code or unknown_value, ambiguous_value, bad_date, bad_number, bad_boolean, unknown_field, required_field_missing.",
+            Session,
+            None,
+            s::<crate::imports::ImportRows>,
+        ),
+        r(
+            "GET",
+            "/imports/{id}/report.csv",
+            "The row results as a CSV file (not JSON): row, status, key, error_code, field.",
+            Session,
+            None,
+            s::<String>,
+        ),
+        r(
+            "DELETE",
+            "/imports/{id}",
+            "Design 06 R-I13: delete the import's file and settings (not while validating or running). What it created stays.",
+            Session,
+            None,
+            s::<Done>,
+        ),
+        r(
             "GET",
             "/admin/export-events",
             "Design 06 R-E8 (system administrators): who exported what range, newest first, 50 a page (cursor). kind issues, time_entries or wiki_page; column keys, row count, bytes, truncated. Neither the content nor the conditions are kept (only an HMAC of them, not shown).",
@@ -1751,6 +1847,7 @@ fn path_params(path: &str) -> Vec<Value> {
 /// Routes answering 201 Created instead of 200 (design 05 §3.3).
 pub const CREATED_ROUTES: &[(&str, &str)] = &[
     ("POST", "/projects/{id}/uploads"),
+    ("POST", "/projects/{id}/imports"),
     ("POST", "/views"),
     ("POST", "/views/{id}/copy"),
     ("POST", "/admin/custom-fields"),
@@ -1761,7 +1858,10 @@ pub const CREATED_ROUTES: &[(&str, &str)] = &[
 ];
 
 /// Routes whose body is the raw bytes (R-A1 uploads), not JSON.
-pub const RAW_BODY_ROUTES: &[(&str, &str)] = &[("POST", "/projects/{id}/uploads")];
+pub const RAW_BODY_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/projects/{id}/uploads"),
+    ("POST", "/projects/{id}/imports"),
+];
 
 /// Routes whose answer is a file, not the `{data, meta}` envelope (R-A6).
 pub const FILE_ROUTES: &[(&str, &str)] = &[
@@ -1769,6 +1869,7 @@ pub const FILE_ROUTES: &[(&str, &str)] = &[
     ("POST", "/exports/issues"),
     ("POST", "/exports/time-entries"),
     ("GET", "/projects/{id}/wiki/pages/{title}/export.md"),
+    ("GET", "/imports/{id}/report.csv"),
 ];
 
 /// The OpenAPI 3.1 document.

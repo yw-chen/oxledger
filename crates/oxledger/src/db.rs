@@ -183,7 +183,7 @@ pub async fn effective(conn: &mut PgConnection, ctx: AuthContext) -> Result<Effe
             is_admin: false,
             agent: None,
         }),
-        AuthMethod::Recipient | AuthMethod::RuleSponsor => user(
+        AuthMethod::Recipient | AuthMethod::RuleSponsor | AuthMethod::ImportOwner => user(
             sqlx::query_scalar(
                 "SELECT is_admin FROM principals WHERE id = $1 AND kind = 'user' AND status = 'active'",
             )

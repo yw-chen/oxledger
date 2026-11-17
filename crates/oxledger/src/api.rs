@@ -449,6 +449,22 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/exports/time-entries", post(export_time_entries))
         .route("/admin/export-events", get(admin_export_events))
         .route(
+            "/projects/{id}/imports",
+            get(imports_list).post(imports_upload),
+        )
+        .route("/imports/{id}", get(imports_get).delete(imports_delete))
+        .route("/imports/{id}/preview", get(imports_preview))
+        .route(
+            "/imports/{id}/settings",
+            axum::routing::put(imports_settings),
+        )
+        .route("/imports/{id}/validate", post(imports_validate))
+        .route("/imports/{id}/run", post(imports_run))
+        .route("/imports/{id}/cancel", post(imports_cancel))
+        .route("/imports/{id}/close-created", post(imports_close_created))
+        .route("/imports/{id}/rows", get(imports_rows))
+        .route("/imports/{id}/report.csv", get(imports_report))
+        .route(
             "/projects/{id}/wiki/pages/{title}/export.md",
             get(wiki_export_md),
         )
@@ -936,7 +952,8 @@ async fn api_guard(State(st): State<Arc<ApiState>>, mut req: Request, next: Next
 fn is_upload(path: &str) -> bool {
     // `/projects/{id}/uploads`, with or without the `/api/v1` prefix.
     let parts: Vec<&str> = path.split('/').filter(|x| !x.is_empty()).collect();
-    matches!(parts.as_slice(), [.., "projects", _, "uploads"])
+    // Design 06 R-I1: an import's file is uploaded the same way.
+    matches!(parts.as_slice(), [.., "projects", _, "uploads" | "imports"])
 }
 
 async fn guard(st: &ApiState, req: &mut Request) -> Result<(), ApiFailure> {
@@ -3047,6 +3064,186 @@ async fn export_time_entries(
     Ok(export_response(
         crate::exports::time_entries(st.app.clone(), ctx, &body).await?,
     ))
+}
+
+/// Design 06 R-I1, R-I2: the raw file, at most 10 MB.
+async fn imports_upload(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+    req: Request,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let too_large = || {
+        ApiFailure(
+            ApiError::new(
+                ErrorCode::PayloadTooLarge,
+                "an import file is at most 10 MB",
+            )
+            .with_details(json!({"limit": crate::imports::MAX_FILE, "kind": "import"}))
+            .into(),
+        )
+    };
+    let declared = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<usize>().ok());
+    if declared.is_some_and(|n| n > crate::imports::MAX_FILE) {
+        return Err(too_large());
+    }
+    let bytes = axum::body::to_bytes(req.into_body(), crate::imports::MAX_FILE)
+        .await
+        .map_err(|_| too_large())?;
+    Ok(created(
+        crate::imports::upload(
+            &st.app,
+            ctx,
+            &id,
+            q.get("kind").map(String::as_str).unwrap_or(""),
+            &bytes,
+        )
+        .await?,
+    ))
+}
+
+async fn imports_list(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::imports::list(&st.app, ctx, &id).await?))
+}
+
+async fn imports_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::imports::get(&st.app, ctx, &id).await?))
+}
+
+async fn imports_preview(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::imports::preview(&st.app, ctx, &id).await?))
+}
+
+async fn imports_settings(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::imports::ImportSettingsInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::imports::put_settings(&st.app, ctx, &id, &body).await?
+    ))
+}
+
+async fn imports_validate(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::imports::validate(&st.app, ctx, &id).await?))
+}
+
+async fn imports_run(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::imports::ImportRunInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(crate::imports::run(&st.app, ctx, &id, key, &body).await?))
+}
+
+async fn imports_cancel(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(_): ApiJson<Empty>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::imports::cancel(&st.app, ctx, &id).await?))
+}
+
+async fn imports_close_created(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<crate::imports::ImportCloseInput>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(
+        crate::imports::close_created(&st.app, ctx, &id, &body).await?
+    ))
+}
+
+async fn imports_rows(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    Query(q): Params,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::imports::rows(
+        &st.app,
+        ctx,
+        &id,
+        q.get("state").map(String::as_str),
+        q.get("cursor").map(String::as_str),
+    )
+    .await?))
+}
+
+/// The result report as a CSV file (codes and field keys, no content).
+async fn imports_report(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let (name, bytes) = crate::imports::report_csv(&st.app, ctx, &id).await?;
+    let mut resp = bytes.into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(resp)
+}
+
+async fn imports_delete(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    crate::imports::delete(&st.app, ctx, &id).await?;
+    Ok(ok(Done::default()))
 }
 
 async fn admin_export_events(

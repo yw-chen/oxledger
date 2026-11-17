@@ -3704,6 +3704,26 @@
             "const": "export_too_large",
             "description": "Design 06 R-E6: more rows than one export holds (`details.limit`).",
             "type": "string"
+          },
+          {
+            "const": "import_invalid_file",
+            "description": "Design 06 R-I2, R-I3: the uploaded file cannot be imported;\n`details.kind`: `encoding` (`row`), `too_many_rows`,\n`too_many_columns`, `cell_too_large` (`row`, `column`), `no_header`,\n`empty`, `parse` (`row`).",
+            "type": "string"
+          },
+          {
+            "const": "import_state_invalid",
+            "description": "Design 06 §5: the action does not fit the import's state\n(`details.state`).",
+            "type": "string"
+          },
+          {
+            "const": "import_settings_changed",
+            "description": "Design 06 R-I10: the settings changed after the dry run.",
+            "type": "string"
+          },
+          {
+            "const": "import_mapping_invalid",
+            "description": "Design 06 R-I5: the mapping is not valid (`details.field`,\n`details.reason`).",
+            "type": "string"
           }
         ]
       },
@@ -5419,6 +5439,665 @@
         ],
         "type": "object"
       },
+      "ImportChoice": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "ImportCloseInput": {
+        "additionalProperties": false,
+        "description": "`POST /imports/{id}/close-created`.",
+        "properties": {
+          "status_id": {
+            "default": null,
+            "description": "Issues: the closed status the created issues move to.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ImportCloseResult": {
+        "properties": {
+          "already": {
+            "description": "Already closed or deleted before.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "closed": {
+            "description": "Issues closed, or time entries deleted, by this call.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/NotUndone"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "closed",
+          "already",
+          "failed"
+        ],
+        "type": "object"
+      },
+      "ImportDetail": {
+        "description": "An import with what the wizard needs to map it (§6.12 steps 2–4).",
+        "properties": {
+          "can_skip_triage": {
+            "description": "The project uses Triage and you may decide there (`skip_triage`).",
+            "type": "boolean"
+          },
+          "choices": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/ImportChoice"
+              },
+              "type": "array"
+            },
+            "description": "Per mapped list or user field: the choices.",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "delimiter": {
+            "description": "`,`, `;` or a tab.",
+            "type": "string"
+          },
+          "done": {
+            "description": "Rows the dry run or the run has finished.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "encoding_guessed": {
+            "description": "The encoding was guessed (Big5 without a BOM): ask the person.",
+            "type": "boolean"
+          },
+          "errors": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ImportField"
+            },
+            "type": "array"
+          },
+          "file_available": {
+            "description": "The file is still kept (R-I13).",
+            "type": "boolean"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "header": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`issues` or `time_entries`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ok": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "preview": {
+            "description": "The first rows of the file.",
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "project": {
+            "description": "The project's key.",
+            "type": "string"
+          },
+          "row_count": {
+            "description": "Data rows of the file.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ImportSettings"
+          },
+          "skipped": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`uploaded`, `ready`, `validating`, `validated`, `running`, `done`,\n`canceled`, `failed` or `expired`.",
+            "type": "string"
+          },
+          "suggested": {
+            "description": "Per column: the field its header names, or null.",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": "array"
+          },
+          "trackers": {
+            "description": "The project's trackers (the default tracker of issue rows).",
+            "items": {
+              "$ref": "#/components/schemas/ImportChoice"
+            },
+            "type": "array"
+          },
+          "undo_statuses": {
+            "description": "Issues, once the import ended: the closed statuses `close-created`\ntakes.",
+            "items": {
+              "$ref": "#/components/schemas/ImportChoice"
+            },
+            "type": "array"
+          },
+          "values": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/ValueGuess"
+              },
+              "type": "array"
+            },
+            "description": "Per mapped list or user field: the different values of the file\n(at most 200) and what each resolves to.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "project",
+          "kind",
+          "state",
+          "encoding",
+          "encoding_guessed",
+          "delimiter",
+          "row_count",
+          "lock_version",
+          "settings",
+          "file_available",
+          "undo_statuses",
+          "done",
+          "ok",
+          "errors",
+          "skipped",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "header",
+          "preview",
+          "fields",
+          "suggested",
+          "choices",
+          "values",
+          "trackers",
+          "can_skip_triage"
+        ],
+        "type": "object"
+      },
+      "ImportField": {
+        "description": "A field a column can fill (§6.12 step 3).",
+        "properties": {
+          "key": {
+            "description": "`subject`, `tracker`, … or `cf:<id>`.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`text`, `list`, `user`, `date`, `number` or `bool`.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "required"
+        ],
+        "type": "object"
+      },
+      "ImportList": {
+        "properties": {
+          "can_import": {
+            "description": "What you may import here now: `issues`, `time_entries` (the web\napp shows its entry points by this).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "can_import"
+        ],
+        "type": "object"
+      },
+      "ImportOptions": {
+        "additionalProperties": false,
+        "properties": {
+          "default_tracker_id": {
+            "description": "Issues: the tracker of rows without a tracker column or value.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notify": {
+            "default": false,
+            "description": "R-I11: notify as for an ordinary write. Off: no notification, no\nmention, no automatic watching.",
+            "type": "boolean"
+          },
+          "skip_triage": {
+            "default": false,
+            "description": "R-I9: accept the new issues at once instead of leaving them in the\nTriage inbox (only with `triage_issues`).",
+            "type": "boolean"
+          },
+          "strip_formula_quote": {
+            "default": true,
+            "description": "R-I7: a cell that is `'` and then `= + - @`, a tab or CR (or their\nfull-width forms) loses the apostrophe (what the export added).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "strip_formula_quote",
+          "skip_triage",
+          "notify"
+        ],
+        "type": "object"
+      },
+      "ImportOptionsInput": {
+        "additionalProperties": false,
+        "description": "The options as sent with `PUT /imports/{id}/settings` (each may be left out).",
+        "properties": {
+          "default_tracker_id": {
+            "default": null,
+            "description": "Issues: the tracker of rows without a tracker column or value.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notify": {
+            "default": false,
+            "description": "Notify as for an ordinary write (default: nobody is notified).",
+            "type": "boolean"
+          },
+          "skip_triage": {
+            "default": false,
+            "description": "Accept the new issues at once instead of leaving them in the Triage\ninbox (ignored without `triage_issues`).",
+            "type": "boolean"
+          },
+          "strip_formula_quote": {
+            "default": true,
+            "description": "Default true: a cell that is `'` and then `= + - @`, a tab or CR\nloses the apostrophe (what the export added).",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ImportRow": {
+        "description": "One row's result. Never a cell of the file.",
+        "properties": {
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_field": {
+            "description": "The field's key (`subject`, `cf:<id>`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issue_key": {
+            "description": "The issue the row created.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "row_no": {
+            "description": "The data row in the file (the header is not counted).",
+            "format": "int32",
+            "type": "integer"
+          },
+          "state": {
+            "description": "`pending`, `ok`, `error` or `skipped`.",
+            "type": "string"
+          },
+          "time_entry_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "row_no",
+          "state",
+          "error_code",
+          "error_field",
+          "issue_key",
+          "time_entry_id"
+        ],
+        "type": "object"
+      },
+      "ImportRows": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRow"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
+      "ImportRunInput": {
+        "additionalProperties": false,
+        "description": "`POST /imports/{id}/run`.",
+        "properties": {
+          "lock_version": {
+            "description": "The import's `lock_version` as the dry run saw it.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "ImportSettings": {
+        "additionalProperties": false,
+        "description": "What `imports.settings` holds: never a cell of the file, except the\nvalues the person mapped by hand (`value_map` keys).",
+        "properties": {
+          "date_format": {
+            "default": "ymd",
+            "description": "`ymd` (`YYYY-MM-DD`, `YYYY/MM/DD`), `mdy` or `dmy`.",
+            "type": "string"
+          },
+          "mapping": {
+            "default": [],
+            "description": "Per column of the file: the field it fills, or null (not imported).",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": "array"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ImportOptions",
+            "default": {
+              "notify": false,
+              "skip_triage": false,
+              "strip_formula_quote": true
+            }
+          },
+          "value_map": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "default": {},
+            "description": "Per field: a value of the file → the id or name to use, or \"\" to\nleave the field empty.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "date_format",
+          "mapping",
+          "value_map",
+          "options"
+        ],
+        "type": "object"
+      },
+      "ImportSettingsInput": {
+        "additionalProperties": false,
+        "description": "`PUT /imports/{id}/settings`.",
+        "properties": {
+          "date_format": {
+            "default": "ymd",
+            "type": "string"
+          },
+          "delimiter": {
+            "default": null,
+            "description": "`,`, `;` or a tab.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "encoding": {
+            "default": null,
+            "description": "Decode the file again as this (`utf-8`, `utf-16le`, `utf-16be`, `big5`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "mapping": {
+            "default": [],
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": "array"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ImportOptionsInput"
+          },
+          "value_map": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "default": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "lock_version"
+        ],
+        "type": "object"
+      },
+      "ImportStatus": {
+        "description": "An import's state and progress (`GET /imports/{id}`).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "delimiter": {
+            "description": "`,`, `;` or a tab.",
+            "type": "string"
+          },
+          "done": {
+            "description": "Rows the dry run or the run has finished.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "encoding_guessed": {
+            "description": "The encoding was guessed (Big5 without a BOM): ask the person.",
+            "type": "boolean"
+          },
+          "errors": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "file_available": {
+            "description": "The file is still kept (R-I13).",
+            "type": "boolean"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`issues` or `time_entries`.",
+            "type": "string"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ok": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "project": {
+            "description": "The project's key.",
+            "type": "string"
+          },
+          "row_count": {
+            "description": "Data rows of the file.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ImportSettings"
+          },
+          "skipped": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`uploaded`, `ready`, `validating`, `validated`, `running`, `done`,\n`canceled`, `failed` or `expired`.",
+            "type": "string"
+          },
+          "undo_statuses": {
+            "description": "Issues, once the import ended: the closed statuses `close-created`\ntakes.",
+            "items": {
+              "$ref": "#/components/schemas/ImportChoice"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "project",
+          "kind",
+          "state",
+          "encoding",
+          "encoding_guessed",
+          "delimiter",
+          "row_count",
+          "lock_version",
+          "settings",
+          "file_available",
+          "undo_statuses",
+          "done",
+          "ok",
+          "errors",
+          "skipped",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "type": "object"
+      },
       "InboxSettings": {
         "description": "The project's settings as the inbox shows them.",
         "properties": {
@@ -7045,6 +7724,30 @@
         },
         "required": [
           "outcome"
+        ],
+        "type": "object"
+      },
+      "NotUndone": {
+        "properties": {
+          "issue_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "`changed_since` (someone wrote to it after the import), or the\nerror code of the refused transition or deletion.",
+            "type": "string"
+          },
+          "row_no": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row_no",
+          "issue_key",
+          "reason"
         ],
         "type": "object"
       },
@@ -14940,6 +15643,34 @@
           "warnings",
           "effects",
           "error"
+        ],
+        "type": "object"
+      },
+      "ValueGuess": {
+        "description": "A value of the file for a list or user field, and what it resolves to.",
+        "properties": {
+          "problem": {
+            "description": "`unknown_value` or `ambiguous_value` when there is no target.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "description": "The id it resolves to; null when nothing or several things match.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "target"
         ],
         "type": "object"
       },
@@ -23592,6 +24323,639 @@
         "x-access": "session"
       }
     },
+    "/imports/{id}": {
+      "delete": {
+        "operationId": "delete_imports_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Done"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-I13: delete the import's file and settings (not while validating or running). What it created stays.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "get": {
+        "operationId": "get_imports_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "An import's state and progress (poll it while it is validating or running): state uploaded, ready, validating, validated, running, done, canceled, failed or expired; done / ok / errors / skipped count rows. Someone else's import is not_found, exactly like one that does not exist.",
+        "x-access": "session"
+      }
+    },
+    "/imports/{id}/cancel": {
+      "post": {
+        "operationId": "post_imports_id_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Stop a running import after the row being written (the rest become skipped; what was written stays), or drop a dry run. Any other state: import_state_invalid.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/imports/{id}/close-created": {
+      "post": {
+        "operationId": "post_imports_id_close_created",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportCloseInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportCloseResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-I12 (within 30 days of the import's end): move every issue the import created that nothing else has written to since to status_id (a closed status; as you, by the workflow), or delete the time entries it logged. Answers closed, already and failed (row_no, issue_key, reason: changed_since or an error code). Safe to send again.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/imports/{id}/preview": {
+      "get": {
+        "operationId": "get_imports_id_preview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The import with what the mapping steps need: header, the first 10 rows, fields (only those you may fill), suggested mapping, and per mapped list or user field the choices and the different values of the file (at most 200) with what each resolves to (target, or problem unknown_value / ambiguous_value). Only while the file is kept (import_state_invalid afterwards).",
+        "x-access": "session"
+      }
+    },
+    "/imports/{id}/report.csv": {
+      "get": {
+        "operationId": "get_imports_id_report_csv",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The row results as a CSV file (not JSON): row, status, key, error_code, field.",
+        "x-access": "session"
+      }
+    },
+    "/imports/{id}/rows": {
+      "get": {
+        "operationId": "get_imports_id_rows",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportRows"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Row results, 100 a page by row number (query state = pending, ok, error or skipped; cursor): row_no, state, error_code, error_field (a field key), issue_key, time_entry_id. Never a cell of the file. error_code is a command error code or unknown_value, ambiguous_value, bad_date, bad_number, bad_boolean, unknown_field, required_field_missing.",
+        "x-access": "session"
+      }
+    },
+    "/imports/{id}/run": {
+      "post": {
+        "operationId": "post_imports_id_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-I10: run a validated import (Idempotency-Key; lock_version as the dry run saw it, else import_settings_changed). Each row is one command as you, in its own transaction: a row that fails does not stop the others. The same key again starts nothing twice.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/imports/{id}/settings": {
+      "put": {
+        "operationId": "put_imports_id_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-I5-R-I7: the encoding, delimiter, date format (ymd, mdy, dmy), mapping (per column a field key or null), value_map (per field: a value of the file to an id or a name, or \"\" for empty) and options (strip_formula_quote, skip_triage, notify, default_tracker_id), with the lock_version you read (conflict). The state returns to ready: a dry run made before no longer counts. A field that does not exist or that you may not fill, or one mapped twice, is import_mapping_invalid (details.field, details.reason).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/imports/{id}/validate": {
+      "post": {
+        "operationId": "post_imports_id_validate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportStatus"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 R-I8: start the dry run. Every row is checked as you, with the rules of POST /commands/validate, and nothing is written; results per row are in GET /imports/{id}/rows. The required field (subject, or hours) must be mapped (import_mapping_invalid, reason required).",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/issues/search": {
       "post": {
         "operationId": "post_issues_search",
@@ -26282,6 +27646,134 @@
           }
         },
         "summary": "Replace the project's fix rules (manage_project, active project). Header Idempotency-Key. lock_version from GET (conflict when stale). At most 5 rules, 1–10 keywords each (lower-cased; no keyword twice in a project). You become the sponsor of every rule you change or turn on: it runs with your permissions and stops by itself when you can no longer manage the project. fix_rule_invalid: details.reason, details.index.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/imports": {
+      "get": {
+        "operationId": "get_projects_id_imports",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportList"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Your imports into the project of the last 30 days, newest first (never anyone else's).",
+        "x-access": "session"
+      },
+      "post": {
+        "operationId": "post_projects_id_imports",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ImportDetail"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 §3.10: upload a CSV file to import into the project (query kind = issues or time_entries; the body is the raw file, application/octet-stream). Needs import_issues or import_time_entries here (forbidden_op). At most 10 MB (payload_too_large), 5,000 data rows, 64 columns, 64 KiB a cell; UTF-8, UTF-16 (BOM) or Big5 (guessed: encoding_guessed, confirm it with PUT settings); the delimiter is detected among , ; and tab. A file that cannot be read is import_invalid_file (details.kind: encoding, too_many_rows, too_many_columns, cell_too_large, no_header, empty, parse). Answers the import with its header, the first 10 rows, the fields you may fill and a suggested mapping. People only.",
         "x-access": "session",
         "x-csrf": true
       }

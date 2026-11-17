@@ -3007,6 +3007,102 @@ pub(crate) async fn record_human_execution(
     Ok(execution_id)
 }
 
+/// One row of a CSV import (design 06 R-I9): the document runs as its
+/// owner, a `human_direct` execution that names the import. The caller
+/// owns the transaction (one per row) and has locked the import. The
+/// idempotency key is derived from the import and the row, so a row that
+/// was written before a crash is replayed, not written twice.
+pub(crate) async fn run_for_import(
+    conn: &mut PgConnection,
+    owner: AuthContext,
+    operation_id: Uuid,
+    doc: &Json,
+    import_id: Uuid,
+    quiet: bool,
+) -> Result<CommandResult> {
+    let user_id = owner
+        .user_id()
+        .ok_or_else(|| api(ErrorCode::Unauthenticated, "the import has no owner"))?;
+    let parsed = parse_for(&mut *conn, doc, MAX_OPS as usize, owner).await?;
+    if parsed.version_cmd().is_some() {
+        return Err(api(
+            ErrorCode::UnsupportedOperation,
+            "an import writes issues and time entries only",
+        ));
+    }
+    let fp = fingerprint(ACTION_COMMAND, &parsed.hash);
+    let Some(request_id) =
+        open_request(&mut *conn, user_id, operation_id, ACTION_COMMAND, &fp).await?
+    else {
+        return replay(
+            &mut *conn,
+            owner,
+            user_id,
+            operation_id,
+            ACTION_COMMAND,
+            &fp,
+        )
+        .await;
+    };
+    // The owner must still be an active user (no session to check).
+    lock_executor(
+        &mut *conn,
+        &Executor {
+            user_id,
+            session_id: None,
+        },
+    )
+    .await?;
+    let ectx = EvalCtx {
+        mode: Mode::Direct,
+        caller: owner,
+        ceiling: None,
+        deadlines: Vec::new(),
+        author: None,
+    };
+    let sim = simulate(&mut *conn, &ectx, &parsed).await?;
+    let consistent_after = sim.token.clone().unwrap_or_default();
+    let execution_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO execution_refs (id, kind) VALUES ($1, 'command')")
+        .bind(execution_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "INSERT INTO command_executions (id, operation_request_id, actor_id, origin, command_hash,
+                                         consistent_after, import_id)
+         VALUES ($1, $2, $3, 'human_direct', $4, $5, $6)",
+    )
+    .bind(execution_id)
+    .bind(request_id)
+    .bind(user_id)
+    .bind(&parsed.hash[..])
+    .bind(&consistent_after)
+    .bind(import_id)
+    .execute(&mut *conn)
+    .await?;
+    let mut at = Attribution::human(user_id, request_id, execution_id);
+    at.quiet = quiet;
+    let effects = write_effects(&mut *conn, &parsed, &sim, &at).await?;
+    let result = CommandResult {
+        status: "succeeded".into(),
+        execution_id,
+        effects,
+        items: sim.items,
+        search: SearchReceipt { consistent_after },
+        time_entries: sim.time.as_ref().map(|t| t.effects()).unwrap_or_default(),
+        wiki: Vec::new(),
+    };
+    let result_ref = json!({
+        "execution_id": result.execution_id,
+        "consistent_after": result.search.consistent_after,
+        "effects": result.effects.iter().map(stored_effect).collect::<Vec<_>>(),
+        "items": result.items,
+        "time_entries": result.time_entries,
+    });
+    complete_request(&mut *conn, request_id, &result_ref).await?;
+    Ok(result)
+}
+
 /// An undo (§16.7): a `human_direct` execution that names what it reverts.
 pub(crate) async fn record_undo_execution(
     conn: &mut PgConnection,
@@ -3270,6 +3366,9 @@ pub(crate) struct Attribution {
     /// Merged into the payload of every `status_changed` event of this
     /// write (the integration's `fix: {repo, pr_number | sha7, keyword}`).
     pub event_extra: Option<(&'static str, Json)>,
+    /// Design 06 R-I11: a CSV import without `notify` records no mentions
+    /// (its events are also skipped by the notification dispatcher).
+    pub quiet: bool,
 }
 
 impl Attribution {
@@ -3293,6 +3392,7 @@ impl Attribution {
             record_changes: false,
             system_operation: None,
             event_extra: None,
+            quiet: false,
         }
     }
 }
@@ -4993,6 +5093,7 @@ pub(crate) async fn write_effects(
                 // Design 06 R-MN3, R-MN4: who a person's text mentions (an
                 // agent's mentions render but are never recorded).
                 if at.actor_kind != "agent"
+                    && !at.quiet
                     && let Some((new, old)) = event_texts(w, ev)
                 {
                     let new = crate::mentions::candidates(&new.0, new.1);

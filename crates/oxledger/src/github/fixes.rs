@@ -1356,6 +1356,7 @@ async fn transition(
             "fix",
             json!({"repo": repo, "pr_number": number, "keyword": p.keyword}),
         )),
+        quiet: false,
     };
     let effects = commands::write_effects(&mut *conn, &parsed, &sim, &at).await?;
     commands::complete_request(

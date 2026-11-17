@@ -727,10 +727,12 @@ pub enum Worker {
     /// The attachment store's clean-up (design 06 R-A8; only with a files
     /// directory).
     Files,
+    /// CSV imports: dry runs, runs and retention (design 06 §3.10).
+    Imports,
 }
 
 impl Worker {
-    pub const ALL: [Worker; 8] = [
+    pub const ALL: [Worker; 9] = [
         Worker::Search,
         Worker::Notify,
         Worker::FieldIndex,
@@ -739,6 +741,7 @@ impl Worker {
         Worker::AiJobs,
         Worker::AiRun,
         Worker::Files,
+        Worker::Imports,
     ];
 
     pub fn name(self) -> &'static str {
@@ -751,6 +754,7 @@ impl Worker {
             Worker::AiJobs => "ai_jobs",
             Worker::AiRun => "ai_run",
             Worker::Files => "files",
+            Worker::Imports => "imports",
         }
     }
 

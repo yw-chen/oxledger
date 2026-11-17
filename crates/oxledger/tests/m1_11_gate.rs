@@ -1711,7 +1711,8 @@ enum Cred<'a> {
 
 async fn call(r: &Router, method: &str, path: &str, body: Option<Value>, who: Cred<'_>) -> Resp {
     // Uploads take the raw file (design 06 R-A1); everything else JSON.
-    let media = if method == "POST" && path.ends_with("/uploads") {
+    let file = path.split('?').next().unwrap_or(path);
+    let media = if method == "POST" && (file.ends_with("/uploads") || file.ends_with("/imports")) {
         "application/octet-stream"
     } else {
         "application/json"
@@ -2051,6 +2052,18 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
     .await;
     let reason = json!({"reason_code": "other", "reason": "x"});
     let missing_uuid = Uuid::now_v7().to_string();
+    // M2.8: an import alice owns (T-M2-90: to anyone else it does not exist).
+    let import: Uuid = sqlx::query_scalar(
+        "INSERT INTO imports (project_id, kind, owner_id, state, file, file_sha256, encoding,
+                              encoding_guessed, delimiter, row_count, settings)
+         VALUES ($1, 'issues', $2, 'validated', 'subject\nx\n', sha256('subject\nx\n'), 'utf-8',
+                 false, ',', 1, '{\"mapping\": [\"subject\"]}') RETURNING id",
+    )
+    .bind(w.web)
+    .bind(w.alice)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     // (method, real path, missing path, body, expected status)
     let nf = StatusCode::NOT_FOUND;
     let fb = StatusCode::FORBIDDEN;
@@ -2104,6 +2117,91 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
             format!("/time-entries/{entry}/redact"),
             format!("/time-entries/{missing_uuid}/redact"),
             reason.clone(),
+            nf,
+        ),
+        // M2.8: imports. A project frank cannot see, and alice's import.
+        (
+            "POST",
+            format!("/projects/{}/imports?kind=issues", w.auth_p),
+            format!("/projects/{missing_uuid}/imports?kind=issues"),
+            json!({}),
+            nf,
+        ),
+        (
+            "GET",
+            format!("/projects/{}/imports", w.auth_p),
+            format!("/projects/{missing_uuid}/imports"),
+            json!({}),
+            nf,
+        ),
+        (
+            "GET",
+            format!("/imports/{import}"),
+            format!("/imports/{missing_uuid}"),
+            json!({}),
+            nf,
+        ),
+        (
+            "DELETE",
+            format!("/imports/{import}"),
+            format!("/imports/{missing_uuid}"),
+            json!({}),
+            nf,
+        ),
+        (
+            "GET",
+            format!("/imports/{import}/preview"),
+            format!("/imports/{missing_uuid}/preview"),
+            json!({}),
+            nf,
+        ),
+        (
+            "PUT",
+            format!("/imports/{import}/settings"),
+            format!("/imports/{missing_uuid}/settings"),
+            json!({"lock_version": 0}),
+            nf,
+        ),
+        (
+            "POST",
+            format!("/imports/{import}/validate"),
+            format!("/imports/{missing_uuid}/validate"),
+            json!({}),
+            nf,
+        ),
+        (
+            "POST",
+            format!("/imports/{import}/run"),
+            format!("/imports/{missing_uuid}/run"),
+            json!({"lock_version": 0}),
+            nf,
+        ),
+        (
+            "POST",
+            format!("/imports/{import}/cancel"),
+            format!("/imports/{missing_uuid}/cancel"),
+            json!({}),
+            nf,
+        ),
+        (
+            "POST",
+            format!("/imports/{import}/close-created"),
+            format!("/imports/{missing_uuid}/close-created"),
+            json!({}),
+            nf,
+        ),
+        (
+            "GET",
+            format!("/imports/{import}/rows"),
+            format!("/imports/{missing_uuid}/rows"),
+            json!({}),
+            nf,
+        ),
+        (
+            "GET",
+            format!("/imports/{import}/report.csv"),
+            format!("/imports/{missing_uuid}/report.csv"),
+            json!({}),
             nf,
         ),
         // M2.7: a wiki page as Markdown, of a wiki frank cannot read.

@@ -361,3 +361,14 @@
 - 反向代理若設了回應逾時或緩衝，匯出最長 30 秒、最大 50 MB，請不要設得比這個短或小。超過上限時伺服器會直接中斷連線，讓瀏覽器不存檔；反向代理對上游必須用 HTTP/1.1 以上（`deploy/Caddyfile` 的 Caddy 已是如此；nginx 要設 `proxy_http_version 1.1`），用 HTTP/1.0 時中斷和正常結束分不出來，不完整的檔案會被當成完整。
 - **還沒有用真的 Excel 開過匯出的檔案**；目前只有用程式讀回比對。系統管理員的匯出稽核只有 API，還沒有畫面。
 - **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`。
+
+## M2.8（CSV 匯入，沒有新的 migration；表在 0041）
+
+- **新功能**：專案議題分頁「⋯ › 從 CSV 匯入／我的匯入」與專案工時報表「匯入」，只有有 `import_issues`／`import_time_entries` 的人看得到（0032 已授予有 `manage_project` 的角色）。
+- **每一列照匯入者當下的權限執行**：只有 `import_issues` 而沒有 `add_issues` 的人，每一列都會是 `forbidden_op`。要讓人能匯入，兩個權限都要給。
+- **上限**：檔案 10 MB、5,000 列、64 欄、每格 64 KiB；編碼 UTF-8、UTF-16（要有 BOM）、Big5。
+- **預設不通知**：匯入建立的議題不發通知、不記提及、不自動追蹤；試跑頁可以勾「通知被指派的人」。
+- **新的背景工作 `imports`**（`/metrics` 與健康檢查多一個 worker）：處理試跑與執行，每小時清一次：匯入結束 24 小時後刪檔案、7 天沒執行的匯入標成過期、30 天後刪列結果。專案做 D12 遮蔽時，該專案還留著的匯入檔案一併清掉。
+- **新錯誤碼**：`import_invalid_file`（422）、`import_mapping_invalid`（422）、`import_state_invalid`（409）、`import_settings_changed`（409）。
+- **新路由**（只給登入的人，agent 不能用）：`POST／GET /projects/{id}/imports`、`GET／DELETE /imports/{id}`、`GET /imports/{id}/preview`、`PUT /imports/{id}/settings`、`POST /imports/{id}/validate｜run｜cancel｜close-created`、`GET /imports/{id}/rows`、`GET /imports/{id}/report.csv`。別人的匯入和不存在的回同一個 `not_found`。
+- **反向代理**：`POST /projects/{id}/imports` 的 body 是原始檔案（`application/octet-stream`），代理的 body 上限要至少 10 MB。

@@ -205,6 +205,19 @@ pub enum ErrorCode {
     FixRuleInvalid,
     /// Design 06 R-E6: more rows than one export holds (`details.limit`).
     ExportTooLarge,
+    /// Design 06 R-I2, R-I3: the uploaded file cannot be imported;
+    /// `details.kind`: `encoding` (`row`), `too_many_rows`,
+    /// `too_many_columns`, `cell_too_large` (`row`, `column`), `no_header`,
+    /// `empty`, `parse` (`row`).
+    ImportInvalidFile,
+    /// Design 06 §5: the action does not fit the import's state
+    /// (`details.state`).
+    ImportStateInvalid,
+    /// Design 06 R-I10: the settings changed after the dry run.
+    ImportSettingsChanged,
+    /// Design 06 R-I5: the mapping is not valid (`details.field`,
+    /// `details.reason`).
+    ImportMappingInvalid,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -221,7 +234,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 79] = [
+    pub const ALL: [ErrorCode; 83] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -301,6 +314,10 @@ impl ErrorCode {
         Self::WikiTitleInvalid,
         Self::FixRuleInvalid,
         Self::ExportTooLarge,
+        Self::ImportInvalidFile,
+        Self::ImportStateInvalid,
+        Self::ImportSettingsChanged,
+        Self::ImportMappingInvalid,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -384,6 +401,10 @@ impl ErrorCode {
             Self::WikiTitleInvalid => "wiki_title_invalid",
             Self::FixRuleInvalid => "fix_rule_invalid",
             Self::ExportTooLarge => "export_too_large",
+            Self::ImportInvalidFile => "import_invalid_file",
+            Self::ImportStateInvalid => "import_state_invalid",
+            Self::ImportSettingsChanged => "import_settings_changed",
+            Self::ImportMappingInvalid => "import_mapping_invalid",
         }
     }
 
@@ -457,6 +478,8 @@ impl ErrorCode {
             Self::InsufficientStorage => 507,
             Self::WikiPageExists | Self::WikiHasChildren => 409,
             Self::WikiTitleInvalid | Self::FixRuleInvalid | Self::ExportTooLarge => 422,
+            Self::ImportInvalidFile | Self::ImportMappingInvalid => 422,
+            Self::ImportStateInvalid | Self::ImportSettingsChanged => 409,
         }
     }
 
@@ -551,7 +574,11 @@ impl ErrorCode {
             Self::WikiPageExists
             | Self::WikiTitleInvalid
             | Self::FixRuleInvalid
-            | Self::ExportTooLarge => &[FixInput],
+            | Self::ExportTooLarge
+            | Self::ImportInvalidFile
+            | Self::ImportMappingInvalid => &[FixInput],
+            // Design 06 §5: "(SPA)": the wizard shows what to do next.
+            Self::ImportStateInvalid | Self::ImportSettingsChanged => &[AskHuman],
             // Design 06 §5: "(SPA)": the person decides in the dialog.
             Self::WikiHasChildren => &[AskHuman],
         }

@@ -1795,3 +1795,37 @@ test('匯出 CSV：視圖的資料下載成檔案，內容是看得到的議題'
 	expect(text).toMatch(/\n[A-Z]+-\d+,/);
 	await expect(dialog).toHaveCount(0);
 });
+
+test('CSV 匯入：上傳、對應、試跑、執行，壞掉的列不擋其他列', async ({ browser }) => {
+	// Design 06 §6.12: the entry is in the project's issues menu; the import
+	// itself runs on the server and the page follows it.
+	const page = await alice(browser, '/project/AUTH/issues');
+	await page.getByTestId('view-menu').click();
+	await page.getByTestId('view-import').click();
+	const wiz = page.getByTestId('import-wizard');
+	await expect(wiz).toContainText('最大 10 MB、5,000 列');
+	const csv = '標題,說明\nE2E 匯入的第一張,從 CSV 來\n,這一列沒有標題\n';
+	await wiz.getByTestId('import-file').setInputFiles({ name: 'issues.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8') });
+	// ② the file as it was read.
+	await expect(wiz.getByTestId('import-preview')).toContainText('E2E 匯入的第一張');
+	await expect(wiz.getByTestId('import-encoding')).toHaveValue('utf-8');
+	await wiz.getByTestId('import-next').click();
+	// ③ both columns were recognised by their names.
+	await expect(wiz.getByTestId('import-map').first()).toHaveValue('subject');
+	const tracker = wiz.getByTestId('import-default-tracker');
+	if (await tracker.count()) await tracker.selectOption({ index: 1 });
+	await wiz.getByTestId('import-next').click();
+	// ④ nothing to map by value.
+	await wiz.getByTestId('import-next').click();
+	// ⑤ the dry run writes nothing and names the bad row.
+	await wiz.getByTestId('import-validate').click();
+	await expect(wiz.getByTestId('import-dry-result')).toContainText('可以建立 1 張，有 1 列有問題', { timeout: 20000 });
+	await expect(wiz.getByTestId('import-errors')).toContainText('必填欄位沒有填');
+	// ⑥ run it.
+	await wiz.getByTestId('import-run').click();
+	await wiz.getByTestId('import-confirm-run').click();
+	await expect(wiz.getByTestId('import-result')).toContainText('成功 1、失敗 1、略過 0', { timeout: 20000 });
+	await expect(wiz.getByTestId('import-created')).toContainText('AUTH-');
+	await wiz.getByTestId('import-created').locator('a').first().click();
+	await expect(page.locator('body')).toContainText('E2E 匯入的第一張');
+});

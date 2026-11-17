@@ -2052,6 +2052,7 @@ async fn agent_direct(
         record_changes: true,
         system_operation: None,
         event_extra: None,
+        quiet: false,
     };
     let effects = commands::write_effects(&mut *conn, parsed, &sim, &at).await?;
     let written: Vec<Uuid> = effects.iter().map(|e| e.issue_id).collect();
@@ -5264,6 +5265,7 @@ async fn apply_tx(
         record_changes: true,
         system_operation: None,
         event_extra: None,
+        quiet: false,
     };
     let effects = commands::write_effects(&mut *conn, &parsed, &sim, &at).await?;
     let token = sim.token.clone().unwrap_or_default();

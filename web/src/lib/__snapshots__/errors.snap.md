@@ -158,6 +158,24 @@ changed: 沒有改到任何資料。
 next:    重新整理
 action:  refresh
 
+## import_invalid_file
+title:   這個檔案無法匯入
+changed: 沒有改到任何資料。
+
+## import_mapping_invalid
+title:   欄位對應有問題，請檢查後再試
+changed: 沒有改到任何資料。
+
+## import_settings_changed
+title:   設定在試跑後改過，請重新試跑。
+changed: 沒有改到任何資料。
+
+## import_state_invalid
+title:   這個匯入目前不能做這件事
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
 ## insufficient_storage
 title:   伺服器的儲存空間不足，暫時不能上傳
 changed: 沒有改到任何資料。
@@ -737,6 +755,104 @@ changed: 沒有改到任何資料。
 
 ## export_too_large: limit=10000
 title:   超過 10,000 列，請縮小篩選範圍。
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=encoding, row=7
+title:   無法判斷檔案的編碼（第 7 列附近），請用 UTF-8 或 Big5 另存後再上傳
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=too_many_rows, row=7
+title:   超過 5,000 列，請分成幾個檔案再匯入
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=too_many_columns, row=7
+title:   超過 64 個欄位，請刪掉不需要的欄位
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=cell_too_large, row=7
+title:   有一格的內容太長（第 7 列附近），一格最多 64 KB
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=no_header, row=7
+title:   第一列必須是欄位名稱
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=empty, row=7
+title:   檔案裡沒有資料列
+changed: 沒有改到任何資料。
+
+## import_invalid_file: kind=parse, row=7
+title:   檔案格式有問題（第 7 列附近），請確認引號是否成對
+changed: 沒有改到任何資料。
+
+## import_state_invalid: state=validating
+title:   匯入正在試跑，請等它完成
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=running
+title:   匯入正在執行，請等它完成或先停止
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=done
+title:   這個匯入已經完成
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=canceled
+title:   這個匯入已經停止
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=failed
+title:   這個匯入已經失敗
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=expired
+title:   這個匯入已過期（7 天沒有動作），請重新上傳
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=purged
+title:   這個匯入的檔案已經清除，請重新上傳
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=uploaded
+title:   請先完成設定並試跑
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_state_invalid: state=ready
+title:   請先試跑，再執行匯入
+changed: 沒有改到任何資料。
+next:    重新載入
+action:  refresh
+
+## import_mapping_invalid: reason=mapped_twice, field=subject
+title:   有一個欄位被對應了兩次
+changed: 沒有改到任何資料。
+
+## import_mapping_invalid: reason=required, field=subject
+title:   必填欄位還沒有對應
+changed: 沒有改到任何資料。
+
+## import_mapping_invalid: reason=unknown_field, field=subject
+title:   有一個欄位不存在，或你不能填寫
+changed: 沒有改到任何資料。
+
+## import_mapping_invalid: reason=unknown_value, field=subject
+title:   預設的追蹤類型不在這個專案裡
 changed: 沒有改到任何資料。
 
 ## fix_rule_invalid: reason=keywords_empty, index=0

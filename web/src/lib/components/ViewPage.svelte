@@ -201,6 +201,23 @@
 	// API has no permission list; a tracker schema's `creation.allowed` says it
 	// (per project). Without a project the new-issue page decides.
 	let canCreate = $state(true);
+	// §6.12: 「從 CSV 匯入」 only for people who may import here (the page is
+	// a whole feature, not one action: without the right there is no entry).
+	let canImport = $state(false);
+	$effect(() => {
+		const k = projectKey;
+		canImport = false;
+		if (!k) return;
+		let live = true;
+		api('GET /projects/{id}/imports', { path: { id: k } })
+			.then((l) => {
+				if (live) canImport = l.can_import.includes('issues');
+			})
+			.catch(() => {});
+		return () => {
+			live = false;
+		};
+	});
 	const createProject = $derived(pid ?? (projectKey ? session.projects.find((p) => p.key === projectKey)?.id : null) ?? null);
 	const isBoard = $derived(def?.kind === 'board');
 	$effect(() => {
@@ -421,6 +438,7 @@
 					<button role="menuitem" onclick={() => openSaveAs('copy', 'personal')} data-testid="copy-personal">複製成個人視圖</button>
 					{#if pkey}<button role="menuitem" onclick={() => openSaveAs('copy', 'project')} disabled={denied.project} title={denied.project ? FORBIDDEN : ''} data-testid="copy-project">複製成專案視圖</button>{/if}
 					<button role="menuitem" disabled={dirty} title={dirty ? '先儲存或捨棄修改，再匯出' : ''} onclick={() => ((menu = false), (exporting = true))} data-testid="view-export">匯出 CSV</button>
+					{#if canImport && projectKey}<button role="menuitem" onclick={() => goto(`/project/${projectKey}/imports/new?kind=issues`)} data-testid="view-import">從 CSV 匯入／我的匯入</button>{/if}
 					<button role="menuitem" disabled={view.scope === 'builtin'} onclick={openHistory}>歷史</button>
 					<button role="menuitem" disabled={!view.editable || denied.delete} title={denied.delete ? FORBIDDEN : view.editable ? '' : '你不能刪除這個視圖'} onclick={remove} data-testid="view-delete">刪除</button>
 				</div>

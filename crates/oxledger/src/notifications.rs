@@ -714,7 +714,31 @@ async fn dispatch_issue(
     if let Some(issue) = issue_row(&mut tx, issue_id).await?
         && !issue.archived
     {
-        delivered = deliver_events(&mut tx, rcs, &issue, &events).await?;
+        // Design 06 R-I11: what a CSV import wrote without `notify` gives
+        // nobody a notification and makes nobody a watcher.
+        let ids: Vec<Uuid> = events.iter().map(|e| e.id).collect();
+        let quiet: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT e.id FROM issue_events e
+             JOIN command_executions ce ON ce.id = e.command_execution_id
+             JOIN imports im ON im.id = ce.import_id
+             WHERE e.id = ANY($1)
+               AND NOT COALESCE((im.settings->'options'->>'notify')::boolean, false)",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        if quiet.is_empty() {
+            delivered = deliver_events(&mut tx, rcs, &issue, &events).await?;
+        } else {
+            let loud: Vec<DispatchEvent> = events
+                .iter()
+                .filter(|e| !quiet.contains(&e.id))
+                .cloned()
+                .collect();
+            if !loud.is_empty() {
+                delivered = deliver_events(&mut tx, rcs, &issue, &loud).await?;
+            }
+        }
     }
     sqlx::query("UPDATE notification_issue_progress SET last_event_seq = $2 WHERE issue_id = $1")
         .bind(issue_id)

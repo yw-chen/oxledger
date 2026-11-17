@@ -939,7 +939,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid" | "fix_rule_invalid" | "export_too_large";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid" | "fix_rule_invalid" | "export_too_large" | "import_invalid_file" | "import_state_invalid" | "import_settings_changed" | "import_mapping_invalid";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -1385,6 +1385,191 @@ export type Impact = {
 export type ImpactResult = {
   impact: Impact;
   today: string;
+};
+
+export type ImportChoice = {
+  id: string;
+  label: string;
+};
+
+/** `POST /imports/{id}/close-created`. */
+export type ImportCloseInput = {
+  /** Issues: the closed status the created issues move to. */
+  status_id?: string | null;
+};
+
+export type ImportCloseResult = {
+  /** Already closed or deleted before. */
+  already: number;
+  /** Issues closed, or time entries deleted, by this call. */
+  closed: number;
+  failed: Array<NotUndone>;
+};
+
+/** An import with what the wizard needs to map it (§6.12 steps 2–4). */
+export type ImportDetail = {
+  /** The project uses Triage and you may decide there (`skip_triage`). */
+  can_skip_triage: boolean;
+  /** Per mapped list or user field: the choices. */
+  choices: Record<string, Array<ImportChoice>>;
+  created_at: string;
+  /** `,`, `;` or a tab. */
+  delimiter: string;
+  /** Rows the dry run or the run has finished. */
+  done: number;
+  encoding: string;
+  /** The encoding was guessed (Big5 without a BOM): ask the person. */
+  encoding_guessed: boolean;
+  errors: number;
+  fields: Array<ImportField>;
+  /** The file is still kept (R-I13). */
+  file_available: boolean;
+  finished_at: string | null;
+  header: Array<string>;
+  id: string;
+  /** `issues` or `time_entries`. */
+  kind: string;
+  lock_version: number;
+  ok: number;
+  /** The first rows of the file. */
+  preview: Array<Array<string>>;
+  /** The project's key. */
+  project: string;
+  /** Data rows of the file. */
+  row_count: number;
+  settings: ImportSettings;
+  skipped: number;
+  started_at: string | null;
+  /** `uploaded`, `ready`, `validating`, `validated`, `running`, `done`, `canceled`, `failed` or `expired`. */
+  state: string;
+  /** Per column: the field its header names, or null. */
+  suggested: Array<string | null>;
+  /** The project's trackers (the default tracker of issue rows). */
+  trackers: Array<ImportChoice>;
+  /** Issues, once the import ended: the closed statuses `close-created` takes. */
+  undo_statuses: Array<ImportChoice>;
+  /** Per mapped list or user field: the different values of the file (at most 200) and what each resolves to. */
+  values: Record<string, Array<ValueGuess>>;
+};
+
+/** A field a column can fill (§6.12 step 3). */
+export type ImportField = {
+  /** `subject`, `tracker`, … or `cf:<id>`. */
+  key: string;
+  /** `text`, `list`, `user`, `date`, `number` or `bool`. */
+  kind: string;
+  label: string;
+  required: boolean;
+};
+
+export type ImportList = {
+  /** What you may import here now: `issues`, `time_entries` (the web app shows its entry points by this). */
+  can_import: Array<string>;
+  items: Array<ImportStatus>;
+};
+
+export type ImportOptions = {
+  /** Issues: the tracker of rows without a tracker column or value. */
+  default_tracker_id?: string | null;
+  /** R-I11: notify as for an ordinary write. Off: no notification, no mention, no automatic watching. */
+  notify: boolean;
+  /** R-I9: accept the new issues at once instead of leaving them in the Triage inbox (only with `triage_issues`). */
+  skip_triage: boolean;
+  /** R-I7: a cell that is `'` and then `= + - @`, a tab or CR (or their full-width forms) loses the apostrophe (what the export added). */
+  strip_formula_quote: boolean;
+};
+
+/** The options as sent with `PUT /imports/{id}/settings` (each may be left out). */
+export type ImportOptionsInput = {
+  /** Issues: the tracker of rows without a tracker column or value. */
+  default_tracker_id?: string | null;
+  /** Notify as for an ordinary write (default: nobody is notified). */
+  notify?: boolean;
+  /** Accept the new issues at once instead of leaving them in the Triage inbox (ignored without `triage_issues`). */
+  skip_triage?: boolean;
+  /** Default true: a cell that is `'` and then `= + - @`, a tab or CR loses the apostrophe (what the export added). */
+  strip_formula_quote?: boolean;
+};
+
+/** One row's result. Never a cell of the file. */
+export type ImportRow = {
+  error_code: string | null;
+  /** The field's key (`subject`, `cf:<id>`, …). */
+  error_field: string | null;
+  /** The issue the row created. */
+  issue_key: string | null;
+  /** The data row in the file (the header is not counted). */
+  row_no: number;
+  /** `pending`, `ok`, `error` or `skipped`. */
+  state: string;
+  time_entry_id: string | null;
+};
+
+export type ImportRows = {
+  items: Array<ImportRow>;
+  next_cursor: string | null;
+};
+
+/** `POST /imports/{id}/run`. */
+export type ImportRunInput = {
+  /** The import's `lock_version` as the dry run saw it. */
+  lock_version: number;
+};
+
+/** What `imports.settings` holds: never a cell of the file, except the values the person mapped by hand (`value_map` keys). */
+export type ImportSettings = {
+  /** `ymd` (`YYYY-MM-DD`, `YYYY/MM/DD`), `mdy` or `dmy`. */
+  date_format: string;
+  /** Per column of the file: the field it fills, or null (not imported). */
+  mapping: Array<string | null>;
+  options: ImportOptions;
+  /** Per field: a value of the file → the id or name to use, or "" to leave the field empty. */
+  value_map: Record<string, Record<string, string>>;
+};
+
+/** `PUT /imports/{id}/settings`. */
+export type ImportSettingsInput = {
+  date_format?: string;
+  /** `,`, `;` or a tab. */
+  delimiter?: string | null;
+  /** Decode the file again as this (`utf-8`, `utf-16le`, `utf-16be`, `big5`). */
+  encoding?: string | null;
+  lock_version: number;
+  mapping?: Array<string | null>;
+  options?: ImportOptionsInput;
+  value_map?: Record<string, Record<string, string>>;
+};
+
+/** An import's state and progress (`GET /imports/{id}`). */
+export type ImportStatus = {
+  created_at: string;
+  /** `,`, `;` or a tab. */
+  delimiter: string;
+  /** Rows the dry run or the run has finished. */
+  done: number;
+  encoding: string;
+  /** The encoding was guessed (Big5 without a BOM): ask the person. */
+  encoding_guessed: boolean;
+  errors: number;
+  /** The file is still kept (R-I13). */
+  file_available: boolean;
+  finished_at: string | null;
+  id: string;
+  /** `issues` or `time_entries`. */
+  kind: string;
+  lock_version: number;
+  ok: number;
+  /** The project's key. */
+  project: string;
+  /** Data rows of the file. */
+  row_count: number;
+  settings: ImportSettings;
+  skipped: number;
+  started_at: string | null;
+  /** `uploaded`, `ready`, `validating`, `validated`, `running`, `done`, `canceled`, `failed` or `expired`. */
+  state: string;
+  /** Issues, once the import ended: the closed statuses `close-created` takes. */
+  undo_statuses: Array<ImportChoice>;
 };
 
 /** The project's settings as the inbox shows them. */
@@ -1842,6 +2027,13 @@ export type NextVersion = {
   reason?: string | null;
   undated?: Array<VersionBrief2> | null;
   version?: VersionBrief2 | null;
+};
+
+export type NotUndone = {
+  issue_key: string | null;
+  /** `changed_since` (someone wrote to it after the import), or the error code of the refused transition or deletion. */
+  reason: string;
+  row_no: number;
 };
 
 export type NoteActions = {
@@ -3959,6 +4151,15 @@ export type Validation = {
   warnings: Array<string>;
 };
 
+/** A value of the file for a list or user field, and what it resolves to. */
+export type ValueGuess = {
+  /** `unknown_value` or `ambiguous_value` when there is no target. */
+  problem?: string | null;
+  /** The id it resolves to; null when nothing or several things match. */
+  target: string | null;
+  value: string;
+};
+
 /** A milestone as `get` names it. */
 export type VersionBrief = {
   /** Soft-deleted (D-11): the issue keeps pointing at it until changed. */
@@ -4729,6 +4930,16 @@ export interface Endpoints {
   "GET /forms/{id}/versions": { body: never; data: Array<FormVersionView> };
   "GET /home/agent-summary": { body: never; data: AgentSummary };
   "GET /home/templates": { body: never; data: Template };
+  "DELETE /imports/{id}": { body: never; data: Done };
+  "GET /imports/{id}": { body: never; data: ImportStatus };
+  "POST /imports/{id}/cancel": { body: Empty; data: ImportStatus };
+  "POST /imports/{id}/close-created": { body: ImportCloseInput; data: ImportCloseResult };
+  "GET /imports/{id}/preview": { body: never; data: ImportDetail };
+  "GET /imports/{id}/report.csv": { body: never; data: unknown };
+  "GET /imports/{id}/rows": { body: never; data: ImportRows };
+  "POST /imports/{id}/run": { body: ImportRunInput; data: ImportStatus };
+  "PUT /imports/{id}/settings": { body: ImportSettingsInput; data: ImportDetail };
+  "POST /imports/{id}/validate": { body: Empty; data: ImportStatus };
   "POST /issues/search": { body: SearchParams; data: SearchResult };
   "GET /issues/{key}": { body: never; data: IssueDetail };
   "GET /issues/{key}/actions": { body: never; data: IssueActions };
@@ -4773,6 +4984,8 @@ export interface Endpoints {
   "POST /projects/{id}/dev/revoke": { body: RevokeInput; data: Revoked };
   "GET /projects/{id}/fix-rules": { body: never; data: FixRules };
   "PUT /projects/{id}/fix-rules": { body: FixRulesPut; data: FixRules };
+  "GET /projects/{id}/imports": { body: never; data: ImportList };
+  "POST /projects/{id}/imports": { body: never; data: ImportDetail };
   "GET /projects/{id}/repos": { body: never; data: RepoLinks };
   "POST /projects/{id}/repos": { body: LinkInput; data: RepoLink };
   "GET /projects/{id}/repos/linkable": { body: never; data: LinkableRepos };

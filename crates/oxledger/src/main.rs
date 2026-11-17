@@ -305,6 +305,40 @@ fn spawn_files_gc(app: Arc<App>) {
     });
 }
 
+/// Design 06 §3.10: CSV imports. Dry runs and runs as they are asked for;
+/// retention (R-I13) once an hour.
+fn spawn_imports(app: Arc<App>) {
+    worker_expected(Worker::Imports);
+    tokio::spawn(async move {
+        worker_started(Worker::Imports);
+        let mut last_purge: Option<std::time::Instant> = None;
+        loop {
+            let round = timed_round(Worker::Imports, async {
+                // Retention first: it does not wait on the imports at work.
+                if last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                    match oxledger::imports::purge(&app.pool).await {
+                        Ok(p) => {
+                            last_purge = Some(std::time::Instant::now());
+                            if p != oxledger::imports::Purged::default() {
+                                tracing::info!(?p, "import retention");
+                            }
+                        }
+                        Err(e) => tracing::warn!("import retention failed: {e:#}"),
+                    }
+                }
+                oxledger::imports::work_all(&app).await
+            })
+            .await;
+            match round {
+                Ok(n) if n > 0 => continue,
+                Ok(_) => {}
+                Err(e) => tracing::warn!("import worker failed: {e:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+}
+
 /// Deletes expired login challenges.
 fn spawn_sweeper(app: Arc<App>) {
     worker_expected(Worker::LoginSweeper);
@@ -333,6 +367,7 @@ async fn serve() -> Result<()> {
     spawn_wiki_indexer(app.clone());
     spawn_field_indexer(app.clone());
     spawn_sweeper(app.clone());
+    spawn_imports(app.clone());
     spawn_notifier(app.clone());
     // The built-in AI (design 05 §3.13.2 Q1): endpoints and keys from the
     // environment only; a name that does not qualify is not registered and

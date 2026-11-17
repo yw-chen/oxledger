@@ -1070,6 +1070,8 @@ pub async fn derived(conn: &mut PgConnection, project: Uuid, actor: Uuid) -> Res
     // Design 05 §3.13.7: built-in AI messages drawn from the project lose
     // their content in the same transaction (by project, erring wide).
     crate::ai::chat::redact_project(&mut *conn, project).await?;
+    // Design 06 §3.13: and the import files still kept for it.
+    crate::imports::redact_project(&mut *conn, project).await?;
     let changesets ="SELECT id FROM changesets WHERE context_project_id = $1
                       UNION SELECT changeset_id FROM changeset_version_source_projects WHERE project_id = $1";
     let contents = sqlx::query(sqlx::AssertSqlSafe(format!(

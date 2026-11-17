@@ -23,6 +23,21 @@
 	let to = $state(fromIssue ? today : period('this_week', today).to);
 	let groupBy = $state('user');
 	let exporting = $state(false);
+	// §6.12: 「匯入」 only for people who may import time entries here.
+	let canImport = $state(false);
+	$effect(() => {
+		const k = projectKey;
+		canImport = false;
+		let live = true;
+		api('GET /projects/{id}/imports', { path: { id: k } })
+			.then((l) => {
+				if (live) canImport = l.can_import.includes('time_entries');
+			})
+			.catch(() => {});
+		return () => {
+			live = false;
+		};
+	});
 	/** 匯出 CSV (design 06 §6.11): the entries the report's filters match. */
 	async function exportCsv() {
 		exporting = true;
@@ -144,7 +159,7 @@
 	{:else if access === 'denied'}
 		<div class="empty" data-testid="time-denied">你沒有權限查看這個專案的工時。</div>
 	{:else}
-		<div class="row" style="justify-content:flex-end"><button class="btn sm" onclick={exportCsv} disabled={exporting} data-testid="tr-export">{exporting ? '匯出中…' : '匯出 CSV'}</button></div>
+		<div class="row" style="justify-content:flex-end">{#if canImport}<a class="btn sm" href="/project/{projectKey}/imports/new?kind=time_entries" data-testid="tr-import">匯入</a>{/if}<button class="btn sm" onclick={exportCsv} disabled={exporting} data-testid="tr-export">{exporting ? '匯出中…' : '匯出 CSV'}</button></div>
 		<div class="row" style="gap:10px;flex-wrap:wrap">
 			<label>期間
 				<select bind:value={per} data-testid="tr-period">

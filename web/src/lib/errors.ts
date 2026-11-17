@@ -394,6 +394,45 @@ export function describeError(e: unknown): Shown {
 			const n = Number(d.limit);
 			return { title: `超過 ${Number.isFinite(n) && n > 0 ? n.toLocaleString('en-US') : '10,000'} 列，請縮小篩選範圍。`, changed: NOTHING };
 		}
+		case 'import_invalid_file': {
+			const row = Number(d.row);
+			const at = Number.isFinite(row) && row > 0 ? `（第 ${row} 列附近）` : '';
+			const what: Record<string, string> = {
+				encoding: `無法判斷檔案的編碼${at}，請用 UTF-8 或 Big5 另存後再上傳`,
+				too_many_rows: '超過 5,000 列，請分成幾個檔案再匯入',
+				too_many_columns: '超過 64 個欄位，請刪掉不需要的欄位',
+				cell_too_large: `有一格的內容太長${at}，一格最多 64 KB`,
+				no_header: '第一列必須是欄位名稱',
+				empty: '檔案裡沒有資料列',
+				parse: `檔案格式有問題${at}，請確認引號是否成對`
+			};
+			return { title: what[String(d.kind)] ?? '這個檔案無法匯入', changed: NOTHING };
+		}
+		case 'import_state_invalid': {
+			const now: Record<string, string> = {
+				validating: '匯入正在試跑，請等它完成',
+				running: '匯入正在執行，請等它完成或先停止',
+				done: '這個匯入已經完成',
+				canceled: '這個匯入已經停止',
+				failed: '這個匯入已經失敗',
+				expired: '這個匯入已過期（7 天沒有動作），請重新上傳',
+				purged: '這個匯入的檔案已經清除，請重新上傳',
+				uploaded: '請先完成設定並試跑',
+				ready: '請先試跑，再執行匯入'
+			};
+			return { title: now[String(d.state)] ?? '這個匯入目前不能做這件事', changed: NOTHING, next: '重新載入', action: 'refresh' };
+		}
+		case 'import_settings_changed':
+			return { title: '設定在試跑後改過，請重新試跑。', changed: NOTHING };
+		case 'import_mapping_invalid': {
+			const why: Record<string, string> = {
+				mapped_twice: '有一個欄位被對應了兩次',
+				required: '必填欄位還沒有對應',
+				unknown_field: '有一個欄位不存在，或你不能填寫',
+				unknown_value: '預設的追蹤類型不在這個專案裡'
+			};
+			return { title: why[String(d.reason)] ?? '欄位對應有問題，請檢查後再試', changed: NOTHING };
+		}
 		case 'ai_run_in_progress':
 			return { title: '你還有一個 AI 回覆在進行中；等它完成或取消後再送', changed: NOTHING, action: 'wait' };
 		default:

@@ -53,6 +53,13 @@ pub enum AuthMethod {
     /// worker loaded; never from a request. `db::effective` accepts it only
     /// for an active user; no service that needs a session accepts it.
     RuleSponsor,
+    /// The import worker writing one row of a CSV import as the person who
+    /// started it (design 06 R-I8, R-I10). Built only by
+    /// [`AuthContext::import_owner`], from an `imports` row the worker
+    /// loaded; never from a request. `db::effective` accepts it only for an
+    /// active user, so the person's permissions of the moment apply to
+    /// every row; no service that needs a session accepts it.
+    ImportOwner,
     /// A tool call of the built-in AI during one run (design 05 §3.13.1,
     /// appendix D V13). Built only by [`AuthContext::builtin_run`], which
     /// the run executor calls with a run it loaded from the database; never
@@ -155,6 +162,17 @@ impl AuthContext {
             principal_id: Some(user_id),
             kind: PrincipalKind::User,
             method: AuthMethod::RuleSponsor,
+            ..Self::anonymous()
+        }
+    }
+
+    /// The owner of a CSV import, for the worker's rows (see
+    /// [`AuthMethod::ImportOwner`]).
+    pub(crate) fn import_owner(user_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(user_id),
+            kind: PrincipalKind::User,
+            method: AuthMethod::ImportOwner,
             ..Self::anonymous()
         }
     }

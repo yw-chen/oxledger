@@ -33,6 +33,10 @@ form_publish_blocked          409     no         ask_human
 form_rules_changed            409     no         fix_input
 human_session_required        403     no         ask_human,stop
 idempotency_key_reused        409     no         fix_input
+import_invalid_file           422     no         fix_input
+import_mapping_invalid        422     no         fix_input
+import_settings_changed       409     no         ask_human
+import_state_invalid          409     no         ask_human
 insufficient_storage          507     yes        wait_and_retry
 invalid_argument              400     no         fix_input
 invalid_citation              400     no         fix_input
