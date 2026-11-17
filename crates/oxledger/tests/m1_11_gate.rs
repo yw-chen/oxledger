@@ -17,6 +17,15 @@
 //! * Canaries on the notification path (M1.8).
 //! * T-M1-127: reserved `oxledger-ai@…` handles.
 //!
+//! Design 06 M2.9 (§7.9) adds, on the same world and identities:
+//!
+//! * E4w: the ops M2 added (`wiki_put`, `wiki_move`, `wiki_delete`,
+//!   `wiki_restore`, `wiki_protect`, `attach`, `delete_attachment`, and a
+//!   `wiki_put` carrying files) × the 13 identities of T-M1-66.
+//! * Canaries over HTTP on every reading route M2 added or changed
+//!   (Markdown, preview, notifications, wiki, search, exports, imports,
+//!   attachments). The dev card's are in `m2_5_git.rs`.
+//!
 //! Needs PostgreSQL 18; see `common::test_pool`.
 
 mod common;
@@ -24,7 +33,7 @@ mod common;
 mod world;
 
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode, header};
 use common::test_pool;
 use http_body_util::BodyExt;
@@ -33,6 +42,7 @@ use oxledger::ai_team::{
     self, CreateRoleInput, CreatedRole, NewRuntime, PauseInput, RoleDelegation, RuntimeChoice,
 };
 use oxledger::api::{self, ApiConfig, LOGIN_COOKIE, SESSION_COOKIE};
+use oxledger::attachments::{self, FilesConfig};
 use oxledger::auth::{self, AuthContext, SessionPolicy};
 use oxledger::changesets::{self, SubmitResult};
 use oxledger::commands;
@@ -42,6 +52,7 @@ use oxledger::policy::PolicyMode::{self, Direct, Off, Review};
 use oxledger::triage::{self, TriageSettingsPut};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use tower::ServiceExt;
 use uuid::Uuid;
 use world::*;
@@ -187,11 +198,40 @@ fn role(
     projects: &[Uuid],
     mode: PolicyMode,
 ) -> CreateRoleInput {
+    role_as(runtime, client, key, projects, "personal", all(mode))
+}
+
+/// Design 06 §4.4: the wiki ops are delegated by the template `docs` only.
+fn wiki_role(
+    runtime: RuntimeChoice,
+    client: Uuid,
+    key: &str,
+    projects: &[Uuid],
+    mode: PolicyMode,
+) -> CreateRoleInput {
+    let policies = PolicyInput {
+        commands: agents::WIKI_PROPOSAL_OPS
+            .iter()
+            .map(|k| (k.to_string(), mode))
+            .collect(),
+        fields: BTreeMap::new(),
+    };
+    role_as(runtime, client, key, projects, "docs", policies)
+}
+
+fn role_as(
+    runtime: RuntimeChoice,
+    client: Uuid,
+    key: &str,
+    projects: &[Uuid],
+    template: &str,
+    policies: PolicyInput,
+) -> CreateRoleInput {
     CreateRoleInput {
         runtime,
         client_id: client,
         role_key: Some(key.into()),
-        template: "personal".into(),
+        template: template.into(),
         duties: format!("duties of {key}"),
         delegations: projects
             .iter()
@@ -199,7 +239,7 @@ fn role(
                 project_id: *p,
                 expires_in_days: Some(30),
                 max_ops: None,
-                policies: Some(all(mode)),
+                policies: Some(policies.clone()),
             })
             .collect(),
         read_own_time: false,
@@ -485,17 +525,20 @@ struct Who {
 }
 
 async fn submit(w: &World, via: Via, d: &Value) -> String {
+    submit_keyed(w, via, Uuid::now_v7(), d).await
+}
+
+/// `key`: the request's idempotency key.
+async fn submit_keyed(w: &World, via: Via, key: Uuid, d: &Value) -> String {
     match via {
-        Via::Person(ctx) => match commands::submit(&w.app, ctx, Uuid::now_v7(), d).await {
+        Via::Person(ctx) => match commands::submit(&w.app, ctx, key, d).await {
             Ok(_) => "applied".into(),
             Err(e) => err_str(&e),
         },
         Via::Agent(ctx) => {
             // The per-agent write rates are not what this gate tests.
             exec(&w.pool, "DELETE FROM agent_write_log").await;
-            agent_out(
-                &changesets::command_submit(&w.app, ctx, Uuid::now_v7(), d, false, ORIGIN).await,
-            )
+            agent_out(&changesets::command_submit(&w.app, ctx, key, d, false, ORIGIN).await)
         }
     }
 }
@@ -516,14 +559,20 @@ async fn submit_raw(w: &World, via: Via, d: &Value) -> Option<Value> {
     }
 }
 
-/// T-M1-66: every new write command × every identity. Unauthorized writes,
-/// policy bypasses and effects of refused documents must all be 0.
-#[tokio::test]
-async fn t_m1_66_command_identity_matrix() {
-    let pool = test_pool().await;
-    let g = gate_world(&pool).await;
+/// The 13 identities of the matrix besides alice, erin and frank: the two
+/// time readers (by `all` / `own`) and the agents by name (`direct`,
+/// `review`, `off`, `stale`, `ppause`, `jpause`, `wide`, `bot_same`,
+/// `bot_apart`). `wiki`: the M2 matrix, whose agents hold the wiki ops
+/// (template `docs`) instead of the issue and time ops.
+async fn identities(
+    g: &G,
+    wiki: bool,
+) -> (
+    BTreeMap<&'static str, AuthContext>,
+    BTreeMap<&'static str, AuthContext>,
+) {
     let w = &g.w;
-
+    let pool = w.pool.clone();
     // People who may log and edit only their own time in WEB, and read
     // everyone's time (`all`) or only their own (`own`).
     let mut timers: BTreeMap<&str, AuthContext> = BTreeMap::new();
@@ -565,6 +614,11 @@ async fn t_m1_66_command_identity_matrix() {
         timers.insert(vis, sign_in(&pool, &w.policy, &login_name).await);
     }
 
+    if wiki {
+        wiki_setup(g).await;
+    }
+    let role: fn(RuntimeChoice, Uuid, &str, &[Uuid], PolicyMode) -> CreateRoleInput =
+        if wiki { wiki_role } else { role };
     // Agents (one client and runtime each, all delegated by alice).
     let mut agents_by: BTreeMap<&str, AuthContext> = BTreeMap::new();
     for (name, projects, mode) in [
@@ -620,6 +674,17 @@ async fn t_m1_66_command_identity_matrix() {
     agents_by.insert("bot_apart", bearer(w, &y2).await);
     // The stale agent: STL's audience changes after the delegation.
     member(&pool, g.stl, g.frank, w.dev).await;
+    (timers, agents_by)
+}
+
+/// T-M1-66: every new write command × every identity. Unauthorized writes,
+/// policy bypasses and effects of refused documents must all be 0.
+#[tokio::test]
+async fn t_m1_66_command_identity_matrix() {
+    let pool = test_pool().await;
+    let g = gate_world(&pool).await;
+    let w = &g.w;
+    let (timers, agents_by) = identities(&g, false).await;
 
     let a = |n: &str| Via::Agent(agents_by[n]);
     // Agents never delete time (not a proposal op): the shape check answers
@@ -862,6 +927,1035 @@ async fn t_m1_66_command_identity_matrix() {
     assert_eq!(refused_effects, 0, "a refused document had an effect");
     assert!(wrong.is_empty(), "{wrong:#?}");
     assert_eq!(table.len(), 13 * 6);
+}
+
+// ---------------------------------------------------------------- M2 E4w
+
+/// The wiki half of the gate world (design 06 §7.9): the wiki is on
+/// everywhere; whoever reads issues reads the wiki and its history (what
+/// 0032 grants), so W(P) = H(P) = A(P); Dev also writes, renames, deletes,
+/// protects and restores. Before any delegation: a permission change moves
+/// the epochs.
+async fn wiki_setup(g: &G) {
+    let w = &g.w;
+    exec(
+        &w.pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects
+         ON CONFLICT DO NOTHING",
+    )
+    .await;
+    exec(
+        &w.pool,
+        "INSERT INTO role_permissions (role_id, permission)
+         SELECT r.role_id, p FROM role_permissions r,
+                unnest(ARRAY['view_wiki_pages', 'view_wiki_edits']) p
+         WHERE r.permission = 'view_issues' ON CONFLICT DO NOTHING",
+    )
+    .await;
+    grant(
+        &w.pool,
+        w.dev,
+        &[
+            "edit_wiki_pages",
+            "rename_wiki_pages",
+            "delete_wiki_pages",
+            "protect_wiki_pages",
+            "manage_wiki",
+        ],
+    )
+    .await;
+}
+
+/// Design 06 §3.11: the ops M2 adds, and `wiki_put` carrying files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WOp {
+    Put,
+    Move,
+    Delete,
+    Restore,
+    Protect,
+    Attach,
+    DeleteAttachment,
+    PutFiles,
+}
+
+const WOPS: [WOp; 8] = [
+    WOp::Put,
+    WOp::Move,
+    WOp::Delete,
+    WOp::Restore,
+    WOp::Protect,
+    WOp::Attach,
+    WOp::DeleteAttachment,
+    WOp::PutFiles,
+];
+
+/// One case's targets: a live page and a deleted one, an issue with one of
+/// alice's files on it, and an upload nobody used yet.
+#[derive(Clone)]
+struct Tw {
+    project: &'static str,
+    page: Uuid,
+    lv: i64,
+    gone: Uuid,
+    key: String,
+    upload: Uuid,
+    attachment: Uuid,
+}
+
+fn wop_doc(which: WOp, t: &Tw) -> Value {
+    let page = json!({"project": t.project, "page_id": t.page});
+    let pre = json!([{"wiki_page": t.page, "lock_version": t.lv}]);
+    let one = |o: Value, pre: Value| json!({"command_schema_version": 1, "ops": [o], "preconditions": pre});
+    match which {
+        WOp::Put => one(
+            json!({"op_id": op(), "kind": "wiki_put", "target": page, "body": "gate body"}),
+            pre,
+        ),
+        WOp::Move => one(
+            json!({"op_id": op(), "kind": "wiki_move", "target": page,
+                   "title": format!("Moved {}", t.page.simple())}),
+            pre,
+        ),
+        WOp::Delete => one(
+            json!({"op_id": op(), "kind": "wiki_delete", "target": page}),
+            pre,
+        ),
+        WOp::Restore => one(
+            json!({"op_id": op(), "kind": "wiki_restore",
+                   "target": {"project": t.project, "page_id": t.gone}}),
+            json!([]),
+        ),
+        WOp::Protect => one(
+            json!({"op_id": op(), "kind": "wiki_protect", "target": page, "protected": true}),
+            pre,
+        ),
+        WOp::Attach => json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "attach", "target": {"issue": t.key},
+             "attachments": [{"upload_id": t.upload}]}]}),
+        WOp::DeleteAttachment => json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "delete_attachment", "target": {"attachment": t.attachment}}]}),
+        WOp::PutFiles => json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "wiki_put",
+             "target": {"project": t.project, "page": format!("Files {}", t.page.simple())},
+             "body": "with a file", "attachments": [{"upload_id": t.upload}]}]}),
+    }
+}
+
+const GATE_PNG: &[u8] = &[
+    0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 1, 2, 3,
+];
+
+async fn upload_as(w: &World, who: AuthContext) -> Option<Uuid> {
+    attachments::upload(
+        &w.app,
+        who,
+        "WEB",
+        Some("gate.png"),
+        Some(GATE_PNG.len() as u64),
+        futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from_static(GATE_PNG))]),
+    )
+    .await
+    .ok()
+    .map(|u| u.upload_id)
+}
+
+async fn alice_runs(w: &World, d: Value) -> Value {
+    let r = commands::submit(&w.app, w.alice_ctx, Uuid::now_v7(), &d)
+        .await
+        .unwrap_or_else(|e| panic!("{d}: {e:#}"));
+    serde_json::to_value(r).unwrap()
+}
+
+/// Fresh targets in WEB, all alice's. The unused upload is the caller's own
+/// when the caller may upload at all (an upload is only its uploader's), and
+/// alice's otherwise.
+async fn wiki_targets(g: &G, via: Via) -> Tw {
+    let w = &g.w;
+    let one = |o: Value| json!({"command_schema_version": 1, "ops": [o]});
+    let new_page = |title: String| {
+        one(json!({"op_id": op(), "kind": "wiki_put",
+                    "target": {"project": "WEB", "page": title}, "body": "gate"}))
+    };
+    let n = Uuid::now_v7().simple().to_string();
+    let page: Uuid = serde_json::from_value(
+        alice_runs(w, new_page(format!("Gate {n}"))).await["wiki"][0]["page_id"].clone(),
+    )
+    .unwrap();
+    let gone: Uuid = serde_json::from_value(
+        alice_runs(w, new_page(format!("Gone {n}"))).await["wiki"][0]["page_id"].clone(),
+    )
+    .unwrap();
+    alice_runs(
+        w,
+        one(json!({"op_id": op(), "kind": "wiki_delete",
+                    "target": {"project": "WEB", "page_id": gone}})),
+    )
+    .await;
+    let lv = count(
+        &w.pool,
+        &format!("SELECT lock_version FROM wiki_pages WHERE id = '{page}'"),
+    )
+    .await;
+    let issue = w.issue(w.web, "gate file").await;
+    let key: String =
+        sqlx::query_scalar("SELECT key FROM issue_keys WHERE issue_id = $1 AND is_current")
+            .bind(issue)
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let first = upload_as(w, w.alice_ctx).await.unwrap();
+    let r = alice_runs(
+        w,
+        one(
+            json!({"op_id": op(), "kind": "attach", "target": {"issue": key},
+                    "attachments": [{"upload_id": first}]}),
+        ),
+    )
+    .await;
+    let attachment: Uuid =
+        serde_json::from_value(r["items"][0]["attachment_ids"][0].clone()).unwrap();
+    let own = match via {
+        Via::Person(ctx) => upload_as(w, ctx).await,
+        Via::Agent(_) => None,
+    };
+    let upload = match own {
+        Some(u) => u,
+        None => upload_as(w, w.alice_ctx).await.unwrap(),
+    };
+    Tw {
+        project: "WEB",
+        page,
+        lv,
+        gone,
+        key,
+        upload,
+        attachment,
+    }
+}
+
+/// Everything an M2 op can change, plus executions and proposals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fw {
+    domain: [i64; 9],
+    changesets: i64,
+}
+
+async fn fw(w: &World) -> Fw {
+    let r: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM wiki_events),
+                (SELECT count(*) FROM wiki_page_versions),
+                (SELECT COALESCE(sum(lock_version), 0) FROM wiki_pages)::bigint,
+                (SELECT count(*) FROM wiki_pages WHERE deleted_at IS NULL),
+                (SELECT count(*) FROM wiki_pages WHERE protected),
+                (SELECT count(*) FROM attachments WHERE deleted_at IS NULL),
+                (SELECT count(*) FROM uploads WHERE consumed_at IS NOT NULL),
+                (SELECT count(*) FROM issue_events),
+                (SELECT count(*) FROM command_executions),
+                (SELECT count(*) FROM changesets)",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    Fw {
+        domain: [r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8],
+        changesets: r.9,
+    }
+}
+
+/// Design 06 §7.9 (E4w): every op M2 adds × the 13 identities of T-M1-66.
+/// Writes beyond the identity's rights, policy bypasses and effects of
+/// refused documents must all be 0; what is unseen answers like what is
+/// missing.
+#[tokio::test]
+async fn t_m2_e4w_new_ops_identity_matrix() {
+    let pool = test_pool().await;
+    let g = gate_world(&pool).await;
+    let w = &g.w;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(FilesConfig {
+        free_space_override: Some(u64::MAX / 4),
+        ..FilesConfig::at(dir.path())
+    });
+    let (timers, agents_by) = identities(&g, true).await;
+
+    let a = |n: &str| Via::Agent(agents_by[n]);
+    // Agents hold wiki_put and wiki_move only (R-AG5): the other wiki ops
+    // and the attachment ops are not theirs to send (`invalid_request`), and
+    // a document carrying files is refused before it is read (R-A9).
+    const FILES: &str = "forbidden_op/attachments_people_only";
+    let agent = |put: &'static str| -> [&'static str; 8] {
+        [
+            put,
+            put,
+            "invalid_request",
+            "invalid_request",
+            "invalid_request",
+            "invalid_request",
+            "invalid_request",
+            FILES,
+        ]
+    };
+    // Reads the wiki and the issue, writes neither. A deleted page is read
+    // by `manage_wiki` only: for anyone else it is not there.
+    const READER: [&str; 8] = [
+        "forbidden_op/permission",
+        "forbidden_op/permission",
+        "forbidden_op/permission",
+        "not_found",
+        "forbidden_op/permission",
+        "forbidden_op/permission",
+        "forbidden_op/permission",
+        "forbidden_op/permission",
+    ];
+    let who = vec![
+        (
+            "person_allowed",
+            Via::Person(w.alice_ctx),
+            ["applied"; 8],
+            None,
+        ),
+        ("person_not_allowed", Via::Person(g.erin_ctx), READER, None),
+        (
+            "person_reads_all_time",
+            Via::Person(timers["all"]),
+            READER,
+            None,
+        ),
+        (
+            "person_reads_own_time",
+            Via::Person(timers["own"]),
+            READER,
+            None,
+        ),
+        (
+            "person_cannot_see",
+            Via::Person(g.frank_ctx),
+            ["not_found"; 8],
+            None,
+        ),
+        ("agent_direct", a("direct"), agent("applied"), None),
+        ("agent_review", a("review"), agent("review:policy"), None),
+        ("agent_off", a("off"), agent("forbidden_op/policy"), None),
+        (
+            "agent_stale_context",
+            a("stale"),
+            ["context_unavailable"; 8],
+            None,
+        ),
+        (
+            "agent_principal_paused",
+            a("ppause"),
+            agent("forbidden_op/agent_paused"),
+            None,
+        ),
+        (
+            "agent_project_paused",
+            a("jpause"),
+            agent("forbidden_op/agent_paused"),
+            None,
+        ),
+        (
+            "bot_same_runtime",
+            a("bot_same"),
+            agent("audience_expansion_forbidden"),
+            Some("wide"),
+        ),
+        (
+            "bot_other_runtime",
+            a("bot_apart"),
+            agent("applied"),
+            Some("direct"),
+        ),
+    ];
+
+    let mut table: Vec<(String, WOp, String, String)> = Vec::new();
+    let mut overreach = 0;
+    let mut refused_effects = 0;
+    for (name, via, expect, oracle) in &who {
+        for (n, wop) in WOPS.iter().enumerate() {
+            let expected = match oracle {
+                None => expect[n].to_string(),
+                Some(o) => {
+                    let t = wiki_targets(&g, a(o)).await;
+                    let r = submit(w, a(o), &wop_doc(*wop, &t)).await;
+                    assert!(
+                        matches(&r, expect[n]),
+                        "oracle {o} {wop:?}: {r}, listed {}",
+                        expect[n]
+                    );
+                    r
+                }
+            };
+            let t = wiki_targets(&g, *via).await;
+            let d = wop_doc(*wop, &t);
+            let before = fw(w).await;
+            let rows_before = table_fp(&w.pool).await;
+            let got = submit(w, *via, &d).await;
+            let after = fw(w).await;
+            let rows_after = table_fp(&w.pool).await;
+            if got == "applied" && !matches("applied", &expected) {
+                overreach += 1;
+            }
+            match got.as_str() {
+                // What the op itself changes (the execution row apart).
+                "applied" => assert_ne!(before.domain[..8], after.domain[..8], "{name} {wop:?}"),
+                g2 if g2.starts_with("review:") => {
+                    if before.domain != after.domain {
+                        refused_effects += 1;
+                    }
+                    assert_eq!(after.changesets, before.changesets + 1);
+                }
+                _ => {
+                    // No row of any table (request bookkeeping apart).
+                    let changed = fp_diff(&rows_before, &rows_after);
+                    if before != after || !changed.is_empty() {
+                        eprintln!("{name} {wop:?} ({got}) changed {changed:?}");
+                        refused_effects += 1;
+                    }
+                }
+            }
+            // 看不到＝不存在: against a project that is not there, and
+            // against ids that are not there in the project itself.
+            let nowhere = |project: &'static str| Tw {
+                project,
+                page: Uuid::now_v7(),
+                lv: t.lv,
+                gone: Uuid::now_v7(),
+                key: format!("{project}-99999999"),
+                upload: t.upload,
+                attachment: Uuid::now_v7(),
+            };
+            for missing in [nowhere("ZZZ"), nowhere("WEB")] {
+                if !got.starts_with("not_found") {
+                    break;
+                }
+                let (x, y) = (
+                    submit_raw(w, *via, &wop_doc(*wop, &t)).await.unwrap(),
+                    submit_raw(w, *via, &wop_doc(*wop, &missing)).await.unwrap(),
+                );
+                let scrub = |v: &Value, t: &Tw| -> Value {
+                    let mut s = v.to_string();
+                    for (from, to) in [
+                        (t.key.clone(), "<issue>"),
+                        (t.page.to_string(), "<page>"),
+                        (t.page.simple().to_string(), "<page>"),
+                        (t.gone.to_string(), "<page>"),
+                        (t.attachment.to_string(), "<file>"),
+                        (t.project.to_string(), "<project>"),
+                    ] {
+                        s = s.replace(&from, to);
+                    }
+                    let mut v: Value = serde_json::from_str(&s).unwrap();
+                    if let Some(o) = v["details"].as_object_mut() {
+                        o.remove("op_id");
+                    }
+                    v
+                };
+                assert_eq!(
+                    scrub(&x, &t),
+                    scrub(&y, &missing),
+                    "{name} {wop:?}: unseen differs from missing"
+                );
+            }
+            table.push((name.to_string(), *wop, expected, got));
+        }
+    }
+    let mut report = String::new();
+    let mut wrong = Vec::new();
+    for (name, wop, exp, got) in &table {
+        report += &format!("{name:24} {wop:17?} expected {exp:38} got {got}\n");
+        if !matches(got, exp) {
+            wrong.push(format!("{name} {wop:?}: expected {exp}, got {got}"));
+        }
+    }
+    eprintln!("M2 E4w matrix:\n{report}");
+    assert_eq!(overreach, 0, "writes beyond the identity's rights");
+    assert_eq!(refused_effects, 0, "a refused document had an effect");
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert_eq!(table.len(), 13 * 8);
+
+    // Duplicate effects: a document sent again under its key answers the
+    // same and writes nothing more, applied or refused.
+    let mut duplicates = Vec::new();
+    for (name, via) in [
+        ("person_allowed", Via::Person(w.alice_ctx)),
+        ("agent_direct", a("direct")),
+        ("agent_review", a("review")),
+    ] {
+        for wop in WOPS {
+            let t = wiki_targets(&g, via).await;
+            let d = wop_doc(wop, &t);
+            let key = Uuid::now_v7();
+            let first = submit_keyed(w, via, key, &d).await;
+            let once = fw(w).await;
+            let second = submit_keyed(w, via, key, &d).await;
+            if first != second || fw(w).await != once {
+                duplicates.push(format!("{name} {wop:?}: {first}, then {second}"));
+            }
+        }
+    }
+    assert!(duplicates.is_empty(), "{duplicates:#?}");
+}
+
+// ---------------------------------------------------------------- M2 canaries
+
+async fn upload_named(w: &World, who: AuthContext, project: &str, name: &str) -> Uuid {
+    attachments::upload(
+        &w.app,
+        who,
+        project,
+        Some(name),
+        Some(GATE_PNG.len() as u64),
+        futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from_static(GATE_PNG))]),
+    )
+    .await
+    .unwrap()
+    .upload_id
+}
+
+/// Design 06 §7.9, canary leaks = 0, as a browser gets them. Canaries sit
+/// where erin (reads WEB's issues and wiki, nothing private, nothing of
+/// AUTH) must not read: a private issue, another project's issue, wiki page
+/// and file, a private note and its file, a deleted page, someone else's
+/// import. Texts erin does read name all of them (keys, `[[…]]` links,
+/// attachment images). Every reading route M2 added or changed answers erin
+/// without a canary and without a link into AUTH's wiki; alice's answers to
+/// the same requests hold every canary (so each one was there to leak).
+/// The dev card's commits have their canaries in `m2_5_git.rs`, the agent
+/// and built-in AI wiki tools in `m2_3_agent_wiki.rs` (T-M2-41, 42).
+#[tokio::test]
+async fn canary_m2_over_http() {
+    let pool = test_pool().await;
+    let g = gate_world(&pool).await;
+    let w = &g.w;
+    wiki_setup(&g).await;
+    grant(&pool, w.dev, &["import_issues"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(FilesConfig {
+        free_space_override: Some(u64::MAX / 4),
+        ..FilesConfig::at(dir.path())
+    });
+    let router = api::router(
+        w.app.clone(),
+        ApiConfig {
+            spa_origin: ORIGIN.into(),
+            session: SessionPolicy::default(),
+        },
+    );
+    let one = |o: Value| json!({"command_schema_version": 1, "ops": [o]});
+    let created = |r: &Value| -> (Uuid, String) {
+        (
+            serde_json::from_value(r["effects"][0]["issue_id"].clone()).unwrap(),
+            r["effects"][0]["key"].as_str().unwrap().to_string(),
+        )
+    };
+    let new_issue = |project: Uuid, fields: Value| {
+        one(
+            json!({"op_id": op(), "kind": "create_issue", "project_id": project,
+                    "tracker_id": w.bug, "fields": fields}),
+        )
+    };
+    let new_page = |project: &str, title: &str, body: &str| {
+        one(json!({"op_id": op(), "kind": "wiki_put",
+                    "target": {"project": project, "page": title}, "body": body}))
+    };
+    let page_id =
+        |r: &Value| -> Uuid { serde_json::from_value(r["wiki"][0]["page_id"].clone()).unwrap() };
+
+    // ---- what erin must not read
+    let (_, private_key) = created(
+        &alice_runs(
+            w,
+            new_issue(
+                w.web,
+                json!({"subject": "CANARY-PRIVSUBJ", "description": "CANARY-PRIVDESC", "is_private": true}),
+            ),
+        )
+        .await,
+    );
+    let (_, auth_key) = created(
+        &alice_runs(
+            w,
+            new_issue(w.auth_p, json!({"subject": "CANARY-AUTHSUBJ"})),
+        )
+        .await,
+    );
+    let auth_file_upload = upload_named(w, w.alice_ctx, "AUTH", "CANARY-AUTHFILE.png").await;
+    let r = alice_runs(
+        w,
+        one(json!({"op_id": op(), "kind": "wiki_put",
+                    "target": {"project": "AUTH", "page": "Plan"}, "body": "CANARY-AUTHBODY",
+                    "attachments": [{"upload_id": auth_file_upload}]})),
+    )
+    .await;
+    let auth_file: Uuid =
+        serde_json::from_value(r["items"][0]["attachment_ids"][0].clone()).unwrap();
+    let gone = page_id(&alice_runs(w, new_page("WEB", "Old plan", "CANARY-GONEBODY")).await);
+    alice_runs(
+        w,
+        one(json!({"op_id": op(), "kind": "wiki_delete",
+                    "target": {"project": "WEB", "page_id": gone}})),
+    )
+    .await;
+    let import = oxledger::imports::upload(
+        &w.app,
+        w.alice_ctx,
+        "WEB",
+        "issues",
+        "subject,description\nCANARY-IMPORT,x\n".as_bytes(),
+    )
+    .await
+    .unwrap();
+    let import_id = serde_json::to_value(&import).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // ---- what erin reads, naming all of it
+    let (visible, visible_key) =
+        created(&alice_runs(w, new_issue(w.web, json!({"subject": "open to all"}))).await);
+    let erin = login(&router, "erin").await;
+    let alice = login(&router, "alice").await;
+    let watch = call(
+        &router,
+        "PUT",
+        &format!("/issues/{visible_key}/watch"),
+        None,
+        Cred::Session(&erin),
+    )
+    .await;
+    assert_eq!(watch.status, StatusCode::OK, "{:?}", watch.body);
+    let private_note = alice_runs(
+        w,
+        json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "add_note", "target": tgt(visible),
+             "body": "CANARY-PNOTE", "is_private": true}],
+            "preconditions": [{"target": tgt(visible), "lock_version": 0}]}),
+    )
+    .await;
+    let private_note = private_note["execution_id"].as_str().unwrap().to_string();
+    let note: Uuid = sqlx::query_scalar("SELECT id FROM issue_notes WHERE issue_id = $1")
+        .bind(visible)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let note_upload = upload_named(w, w.alice_ctx, "WEB", "CANARY-NOTEFILE.png").await;
+    let r = alice_runs(
+        w,
+        one(
+            json!({"op_id": op(), "kind": "attach", "target": {"note": note},
+                    "attachments": [{"upload_id": note_upload}]}),
+        ),
+    )
+    .await;
+    let note_file: Uuid =
+        serde_json::from_value(r["items"][0]["attachment_ids"][0].clone()).unwrap();
+    let text = format!(
+        "see {private_key} and {auth_key}, [[AUTH:Plan]], [[AUTH:Plan|the plan]], [[Old plan]], \
+         @alice ![a](/attachments/{auth_file}/content) ![b](/attachments/{note_file}/content)"
+    );
+    let lv: i32 = sqlx::query_scalar("SELECT lock_version FROM issues WHERE id = $1")
+        .bind(visible)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    alice_runs(
+        w,
+        json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "update_fields", "target": tgt(visible),
+             "set": {"description": text}},
+            {"op_id": op(), "kind": "add_note", "target": tgt(visible), "body": text}],
+            "preconditions": [{"target": tgt(visible), "lock_version": lv}]}),
+    )
+    .await;
+    let index = page_id(&alice_runs(w, new_page("WEB", "Index", "first")).await);
+    alice_runs(
+        w,
+        json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "wiki_put",
+             "target": {"project": "WEB", "page_id": index}, "body": text}],
+            "preconditions": [{"wiki_page": index, "lock_version": count(
+                &pool, &format!("SELECT lock_version FROM wiki_pages WHERE id = '{index}'")).await}]}),
+    )
+    .await;
+    notifications::dispatch_all(&pool).await.unwrap();
+    w.app.index.sync_all(&pool).await.unwrap();
+    w.app.wiki.sync_all(&pool).await.unwrap();
+
+    let preview = |context: Value| json!({"context": context, "text": text});
+    // Method, path, body; erin's status; what alice's answer must hold (the
+    // control of that surface: a reference's title, a link, a hit, a row).
+    type Req = (
+        &'static str,
+        String,
+        Option<Value>,
+        u16,
+        &'static [&'static str],
+    );
+    const RENDERED: &[&str] = &["CANARY-PRIVSUBJ", "CANARY-AUTHSUBJ", "AUTH/wiki"];
+    let requests: Vec<Req> = vec![
+        ("GET", format!("/issues/{visible_key}"), None, 200, RENDERED),
+        (
+            "GET",
+            format!("/issues/{visible_key}/view?include=recent_notes"),
+            None,
+            200,
+            &[
+                "CANARY-PRIVSUBJ",
+                "CANARY-AUTHSUBJ",
+                "AUTH/wiki",
+                "CANARY-PNOTE",
+                "CANARY-NOTEFILE",
+            ],
+        ),
+        (
+            "GET",
+            format!("/issues/{visible_key}/view?include=recent_events"),
+            None,
+            200,
+            &["CANARY-NOTEFILE"],
+        ),
+        ("GET", format!("/issues/{visible_key}/dev"), None, 200, &[]),
+        (
+            "GET",
+            format!("/issues/{private_key}"),
+            None,
+            404,
+            &["CANARY-PRIVSUBJ", "CANARY-PRIVDESC"],
+        ),
+        (
+            "GET",
+            format!("/issues/{private_key}/view"),
+            None,
+            404,
+            &["CANARY-PRIVSUBJ"],
+        ),
+        (
+            "GET",
+            format!("/issues/{auth_key}"),
+            None,
+            404,
+            &["CANARY-AUTHSUBJ"],
+        ),
+        (
+            "POST",
+            "/issues/search".into(),
+            Some(json!({"q": "CANARY"})),
+            200,
+            &["CANARY-PRIVSUBJ", "CANARY-AUTHSUBJ"],
+        ),
+        (
+            "POST",
+            "/issues/search".into(),
+            Some(json!({})),
+            200,
+            &["CANARY-PRIVSUBJ"],
+        ),
+        ("GET", "/notifications".into(), None, 200, &[]),
+        ("GET", "/me/home".into(), None, 200, &[]),
+        ("GET", "/projects/WEB/timeline".into(), None, 200, &[]),
+        ("GET", "/projects/WEB/dev".into(), None, 200, &[]),
+        ("GET", "/projects/WEB/fix-rules".into(), None, 403, &[]),
+        (
+            "GET",
+            "/wiki/search?q=CANARY".into(),
+            None,
+            200,
+            &["AUTHBODY"],
+        ),
+        (
+            "GET",
+            "/wiki/search?q=CANARY&project=AUTH".into(),
+            None,
+            200,
+            &["AUTHBODY"],
+        ),
+        ("GET", "/wiki/agent-changes".into(), None, 200, &[]),
+        ("GET", "/projects/WEB/wiki".into(), None, 200, &["Index"]),
+        ("GET", "/projects/WEB/wiki/settings".into(), None, 200, &[]),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Index".into(),
+            None,
+            200,
+            RENDERED,
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Index/versions".into(),
+            None,
+            200,
+            &[],
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Index/versions/2".into(),
+            None,
+            200,
+            RENDERED,
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Index/diff?from=1&to=2".into(),
+            None,
+            200,
+            &[],
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Index/events".into(),
+            None,
+            200,
+            &[],
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Index/export.md".into(),
+            None,
+            200,
+            &[],
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/pages/Old_plan".into(),
+            None,
+            404,
+            &[],
+        ),
+        (
+            "GET",
+            "/projects/WEB/wiki/deleted".into(),
+            None,
+            403,
+            &["Old plan"],
+        ),
+        (
+            "GET",
+            format!("/projects/WEB/wiki/deleted/{gone}"),
+            None,
+            403,
+            &["CANARY-GONEBODY"],
+        ),
+        ("GET", "/projects/AUTH/wiki".into(), None, 404, &["Plan"]),
+        (
+            "GET",
+            "/projects/AUTH/wiki/pages/Plan".into(),
+            None,
+            404,
+            &["CANARY-AUTHBODY", "CANARY-AUTHFILE"],
+        ),
+        (
+            "GET",
+            "/projects/AUTH/wiki/pages/Plan/export.md".into(),
+            None,
+            404,
+            &["CANARY-AUTHBODY"],
+        ),
+        (
+            "GET",
+            format!("/attachments/{auth_file}"),
+            None,
+            404,
+            &["CANARY-AUTHFILE"],
+        ),
+        (
+            "GET",
+            format!("/attachments/{auth_file}/content"),
+            None,
+            404,
+            &[],
+        ),
+        (
+            "GET",
+            format!("/attachments/{note_file}"),
+            None,
+            404,
+            &["CANARY-NOTEFILE"],
+        ),
+        (
+            "GET",
+            format!("/attachments/{note_file}/content"),
+            None,
+            404,
+            &[],
+        ),
+        ("GET", format!("/executions/{private_note}"), None, 404, &[]),
+        (
+            "GET",
+            format!("/executions/{private_note}/undo-preview"),
+            None,
+            404,
+            &[],
+        ),
+        (
+            "POST",
+            "/exports/issues".into(),
+            Some(json!({"project_id": "WEB", "include_description": true})),
+            200,
+            &["CANARY-PRIVSUBJ", "CANARY-PRIVDESC"],
+        ),
+        (
+            "POST",
+            "/exports/issues".into(),
+            Some(json!({})),
+            200,
+            &["CANARY-PRIVSUBJ", "CANARY-AUTHSUBJ"],
+        ),
+        (
+            "POST",
+            "/exports/time-entries".into(),
+            Some(json!({})),
+            200,
+            &[],
+        ),
+        ("GET", "/projects/WEB/imports".into(), None, 200, &[]),
+        ("GET", format!("/imports/{import_id}"), None, 404, &[]),
+        (
+            "GET",
+            format!("/imports/{import_id}/preview"),
+            None,
+            404,
+            &["CANARY-IMPORT"],
+        ),
+        ("GET", format!("/imports/{import_id}/rows"), None, 404, &[]),
+        (
+            "GET",
+            format!("/imports/{import_id}/report.csv"),
+            None,
+            404,
+            &[],
+        ),
+        (
+            "POST",
+            "/markdown/preview".into(),
+            Some(preview(json!({"issue": visible_key}))),
+            200,
+            RENDERED,
+        ),
+        (
+            "POST",
+            "/markdown/preview".into(),
+            Some(preview(json!({"project": "WEB"}))),
+            200,
+            RENDERED,
+        ),
+        (
+            "POST",
+            "/markdown/preview".into(),
+            Some(preview(
+                json!({"wiki_project": "WEB", "wiki_page": "Index"}),
+            )),
+            200,
+            RENDERED,
+        ),
+        (
+            "POST",
+            "/markdown/preview".into(),
+            Some(preview(json!({"wiki_project": "AUTH"}))),
+            404,
+            RENDERED,
+        ),
+    ];
+    let sweep = |who: &Browser| {
+        let (router, requests, who) = (router.clone(), requests.clone(), who.clone());
+        async move {
+            let mut out: Vec<(String, StatusCode, String)> = Vec::new();
+            for (m, p, body, _, _) in requests {
+                let (status, _, bytes) = raw(&router, m, &p, body, Cred::Session(&who)).await;
+                let text = String::from_utf8_lossy(&bytes.unwrap_or_default()).into_owned();
+                out.push((format!("{m} {p}"), status, text));
+            }
+            out
+        }
+    };
+    let seen = sweep(&erin).await;
+    let mut ok = 0;
+    for ((what, status, body), (_, _, _, expected, _)) in seen.iter().zip(&requests) {
+        assert!(
+            status.as_u16() == *expected,
+            "{what}: erin got {status}, listed {expected}"
+        );
+        // A page that is not there is no link for someone who cannot write.
+        assert!(
+            !body.contains("wiki/pages/Old"),
+            "{what} ({status}): {body}"
+        );
+        assert!(!body.contains("CANARY-"), "{what} ({status}): {body}");
+        // (A search snippet splits a hit from the rest of its word.)
+        for part in [
+            "PRIVSUBJ", "PRIVDESC", "AUTHSUBJ", "AUTHBODY", "AUTHFILE", "PNOTE", "NOTEFILE",
+            "GONEBODY",
+        ] {
+            assert!(!body.contains(part), "{what} ({status}): {part} in {body}");
+        }
+        assert!(
+            !body.contains("AUTH/wiki"),
+            "{what} ({status}) links into AUTH's wiki: {body}"
+        );
+        // Neither file is in the scope of a text erin reads (R-M4).
+        assert!(
+            !body.contains("<img"),
+            "{what} ({status}) shows a file as an image: {body}"
+        );
+        assert!(status.as_u16() < 500, "{what}: {status}");
+        if status.is_success() {
+            ok += 1;
+        }
+    }
+    eprintln!(
+        "erin: {}",
+        seen.iter()
+            .map(|(w, s, _)| format!("{} {w}", s.as_u16()))
+            .collect::<Vec<_>>()
+            .join("\n      ")
+    );
+    // Erin was answered where she reads (the visible issue, the wiki, her
+    // notification of the public note, the previews, the exports).
+    assert!(ok >= 20, "only {ok} requests answered erin");
+    let notified = seen
+        .iter()
+        .find(|(w, _, _)| w == "GET /notifications")
+        .unwrap();
+    assert!(notified.2.contains(&visible_key), "{}", notified.2);
+
+    // The control: all of it is there for alice, by the same requests,
+    // each surface holding what it would have leaked.
+    let hers = sweep(&alice).await;
+    for ((what, status, body), (_, _, _, _, holds)) in hers.iter().zip(&requests) {
+        for h in *holds {
+            assert!(
+                body.contains(h),
+                "alice, {what} ({status}): no {h} in {body}"
+            );
+        }
+    }
+    eprintln!(
+        "alice: {}",
+        hers.iter()
+            .map(|(w, s, _)| format!("{} {w}", s.as_u16()))
+            .collect::<Vec<_>>()
+            .join("\n       ")
+    );
+    let all: String = hers
+        .into_iter()
+        .map(|(_, _, b)| b)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for canary in [
+        "CANARY-PRIVSUBJ",
+        "CANARY-PRIVDESC",
+        "CANARY-AUTHSUBJ",
+        "CANARY-AUTHBODY",
+        "CANARY-AUTHFILE",
+        "CANARY-PNOTE",
+        "CANARY-NOTEFILE",
+        "CANARY-GONEBODY",
+        "CANARY-IMPORT",
+        "AUTH/wiki",
+    ] {
+        assert!(all.contains(canary), "{canary} is nowhere for alice");
+    }
 }
 
 // ---------------------------------------------------------------- T-M1-67

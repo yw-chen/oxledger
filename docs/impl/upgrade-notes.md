@@ -187,7 +187,7 @@
   - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
   - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 
-## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0041）
+## 0032_m2_prereq（M2.0）
 
 - **不會讓 agent 工作脈絡失效**：授予新權限時暫停了 `role_permissions_epoch` trigger（契約 06 B-37），每個專案的 `security_epoch` 不變。理由：新權限不改既有議題內容的讀者集合，升級前也沒有任何 wiki 內容。
 - **新權限與自動授予**（之後管理者可以自己調整；調整會照常讓 epoch 加一）：
@@ -195,7 +195,7 @@
   - `edit_wiki_pages`：有 `edit_issues` 的角色。
   - `rename_wiki_pages`、`delete_wiki_pages`、`protect_wiki_pages`、`manage_wiki`、`import_issues`、`import_time_entries`：有 `manage_project` 的角色。
   - 沒有匯出權限（契約 06 A4 選 (a)：匯出跟著 `view_issues`，在 M2.7）。
-  - wiki 模組本身要到 M2.2 才有；既有專案預設不開。
+  - wiki 模組既有專案預設不開；之後用 `oxledger project add` 新建的專案預設開（`--modules` 可改）。
 - **既有內容保留純文字**：議題說明（`issues.description_format`）與留言（`issue_notes.body_format`）既有的列都是 `plain`，顯示方式不變；之後新建的說明與留言預設是 `markdown`。
 - **命令的 `format`**（`create_issue`、`update_fields`、`add_note` 的 op 層欄位，值 `plain`／`markdown`）：
   - **建立**（`create_issue`、`add_note`）省略＝`markdown`。舊用戶端新建的內容會從純文字變成 Markdown 顯示（M2.1 起才有渲染）。
@@ -220,9 +220,9 @@
     | `POST /agent-contexts/{id}/close` | 沒有直接對應：new-context（換新脈絡）或 `POST /me/agent-runtimes/{id}/retire`（永久） |
 
   - `ContextView.changed_projects`（來源專案的權限已變更、脈絡已不能用）改由 `RuntimeView.changed_projects` 提供：目前脈絡中 epoch 已變的來源專案 id，沒有目前脈絡時是空陣列。前端的「需要注意」徽章可以用它；以角色為單位的狀態仍可用 `/ai-team` 的 `state = quarantined`。
-  - **這個分支上的 `web/` 與 `scripts/e2e_s1.py` 暫時不能用**：它們還呼叫 `/agent-contexts*`（`web/src/lib/counts.svelte.ts`、`web/src/routes/agents/` 三個頁面、`e2e_s1.py` 第 68–79 行），要等前端 F12 改成上表的新路由；M2.0 後端沒有改它們，以免和前端 session 衝突。
-- **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）已建好，**派送從 M2.1 開始**；升級前的內容不回溯。
-- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0041）。目前不會寫出這些值。
+  - 網頁已改用上表的新路由。`scripts/e2e_s1.py`（第 68–79 行）還呼叫 `/agent-contexts*`，這支舊腳本不能用了，尚未改寫。
+- **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）；升級前的內容不回溯（派送見 M2.1）。
+- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0041）。
 
 ## M2.1（Markdown，沒有 migration）
 
@@ -252,15 +252,14 @@
 - **誰讀得到 wiki**：專案沒有封存、開了 `wiki` 模組、而且有 `view_wiki_pages`（或站台管理員）。讀不到的人對 wiki 的任何讀取與寫入都回 `not_found`，和不存在的頁一樣；**只有 `edit_wiki_pages` 沒有 `view_wiki_pages` 的人也不能寫**（使用者決定 2026-11-15）。0032 自動授予時，議題可見範圍是「自己的」的角色有 `edit_wiki_pages` 卻沒有 `view_wiki_pages`，這些角色要管理者補 `view_wiki_pages` 才能用 wiki。
 - **每個專案一列 `wiki_settings`**：升級時替既有專案補上，之後新專案由 trigger 建。
 - **專案分頁多了 `wiki`**（排在最後，不隱藏）：已存過分頁設定的專案，升級時把 `wiki` 加在最後並讓 `lock_version` 加一，所以升級前讀到的分頁設定拿去 PUT 會得到 `conflict`（回應帶新的清單）。重設分頁回到 8 個內建分頁。分頁上限從 7＋10 變成 8＋10。網頁在讀不到 wiki 時不顯示這個分頁。
-- **`POST /commands` 多了 wiki 文件**（契約 06 §3.11）：一份文件恰好一個 op，`wiki_put`、`wiki_move`、`wiki_delete`、`wiki_restore`、`wiki_protect`；回應多了 `wiki[]` 與 `items[].wiki_page_id`。議題文件不受影響。agent 送 wiki op 一律 `invalid_request`（agent 的 wiki 路徑在 M2.3）。`wiki_put` 帶 `attachments` 回 `invalid_argument`（附件在 M2.4）。
+- **`POST /commands` 多了 wiki 文件**（契約 06 §3.11）：一份文件恰好一個 op，`wiki_put`、`wiki_move`、`wiki_delete`、`wiki_restore`、`wiki_protect`；回應多了 `wiki[]` 與 `items[].wiki_page_id`。議題文件不受影響。agent 只能送 `wiki_put`、`wiki_move`（見 0035），其他 wiki op 回 `invalid_request`。`wiki_put` 可以帶 `attachments`（見 0036；agent 帶了回 `forbidden_op`，`reason = attachments_people_only`）。
 - **標題比對**：大小寫、全形半形、ß／ss 不分，空白與 `_` 的連續串視為同一個 `_`（`a b`、`a_b`、`a__b` 是同一頁，建第二個回 `wiki_page_exists`）。網址把空白寫成 `_`。
 - **受保護頁**：編輯、改名、搬移、刪除都要 `protect_wiki_pages`；刪除時帶 `children: "reparent"` 而子頁中有受保護頁，也要 `protect_wiki_pages`。
 - **新錯誤碼**：`wiki_page_exists`（409）、`wiki_has_children`（409）、`wiki_title_invalid`（422）。`invalid_value` 多了 kind `wiki_cycle`、`wiki_depth`、`wiki_version_limit`、`wiki_page_limit`、`wiki_comment`、`start_page_invalid`；`forbidden_op` 多了 reason `wiki_protected`。
 - **undo**：人自己的 wiki 寫入可以 undo（`GET /executions/{id}/undo-preview` 多了 `wiki[]`，`POST /executions/{id}/undo` 多了輸入 `skip_wiki_pages` 與結果 `wiki_pages_restored`）。undo 建立頁＝軟刪除（30 天內可還原）。會超過 5000 頁、10000 版的 undo 回 `invalid_value`（`wiki_page_limit`／`wiki_version_limit`），會超過 10 層的搬回列為不能 undo（`wiki_depth`）；刪除時被移上層的子頁，只有在被刪的頁也一起還原時才搬回。
 - **D12 遮蔽多了三個 wiki 目標**（版本、標題、事件），規則和既有遮蔽相同（`manage_project`、step-up、epoch 加一）。
 - **Markdown 的 `[[頁名]]` 參照開始解析**：讀得到 wiki 的人看到連結（頁不存在時，有 `edit_wiki_pages` 的人看到「新頁」連結，其他人只看到連結文字），讀不到的人只看到連結文字。`POST /markdown/preview` 的 `wiki_project` context 從一律 `not_found` 改成照 wiki 讀取權限。
-- **outbox 多了 topic `wiki_page`**：M2.2 沒有消費者，既有的搜尋與通知只讀 `issue`；搜尋的 outbox 清理會刪掉一小時前的這些列，M2.3 的 wiki 索引第一次啟動時要全量建立。
-- 還沒有的（之後的階段）：wiki 搜尋與 `consistent_after` 的 wiki 前沿（M2.3）、agent 的 `wiki_get` 與提案（M2.3）、附件（M2.4）、`export.md` 匯出（M2.7）。
+- **outbox 多了 topic `wiki_page`**：由 wiki 搜尋索引消費（M2.3）；索引第一次啟動時全量建立。
 
 ## T2 可觀測性（沒有 migration）
 
@@ -302,13 +301,16 @@
 - 人與 agent 的 changeset validations 現在在可寫的交易裡試跑後回滾，回應不變。
 - **新端點 `GET /wiki/agent-changes`**（`project` 可選）：agent 最近 7 天寫的 wiki 版本，只列你有 `view_wiki_edits` 的 wiki；wiki 版本歷史的項目多 `on_behalf_of` 與 `approver`（舊版本為 `null`）。前端首頁與 wiki 首頁有這份清單，審閱頁顯示 wiki 提案差異，委派精靈多「文件維護」範本。
 
-## 0036_attachments（M2.4，附件；草稿，M2.4 完成時補完）
+## 0036_attachments（M2.4，附件）
 
 規格見設計 06 §2.4、§3.6 R-A1–R-A12（A2 (a)）。原設計編號 0035，因 M2.3b 用掉 0035 而改為 0036。
 
 - **migration 0036**：新表 `attachment_blobs`、`uploads`、`upload_daily_usage`、`attachments`；`issue_events_kind_check` 加 `attachment_added`、`attachment_removed`。不動角色、權限、成員或專案，security epoch 不變。
 - **預設關閉**：沒設 `OXLEDGER_FILES_DIR` 時附件功能關閉（上傳回 `forbidden_op`，`reason = attachments_disabled`）。要開就設一個伺服器可寫的目錄，**並和 PostgreSQL 同一時間點備份**。
 - **其他設定**：`OXLEDGER_ATTACHMENT_MAX_BYTES`（單檔，預設 20 MB，最大 100 MB）、`OXLEDGER_UPLOAD_DAILY_BYTES`（每人每日，預設 1 GB，組織時區換日）、`OXLEDGER_FILES_MIN_FREE_BYTES`（磁碟剩餘低於此值拒收，預設 5 GB）、`OXLEDGER_FILES_ORIGIN`（可選的下載網域）。
+- **固定的上限**（還不能設定）：每人還沒用掉的上傳合計 200 MB；每人同時 3 個上傳（超過回 `rate_limited`；以伺服器行程計，多行程部署時各自計算）；一份命令文件最多 10 個附件。上傳後沒被用掉的檔案到期會清掉（見 0038 的背景清理）。
+- **誰能用**：只有登入的人；agent 不能上傳、不能附加或刪除附件，也讀不到附件（`forbidden_op`，`reason = attachments_people_only`，或 `invalid_request`）。附加到議題要 `edit_issues`（自己的議題可用 `edit_own_issues`），附加到留言要能編輯該議題，或是留言作者且有 `add_issue_notes`，附加到 wiki 頁要 `edit_wiki_pages`（受保護頁要 `protect_wiki_pages`）。讀取跟著所在的議題、留言（私人留言照私人留言的規則）或 wiki 頁。
+- **下載**一律 `Content-Disposition: attachment`、`X-Content-Type-Options: nosniff`；型別只看檔案開頭的位元組，只有 PNG、JPEG、GIF、WebP 會當圖片，其餘是 `application/octet-stream`。
 - **新端點** `POST /projects/{id}/uploads?filename=`：body 是原始檔案（`Content-Type: application/octet-stream`），仍要 Origin 與 CSRF token。新錯誤碼 `insufficient_storage`（507）。
 - 反向代理若限制 request body 大小，要放寬到單檔上限以上。
 
@@ -372,3 +374,23 @@
 - **新錯誤碼**：`import_invalid_file`（422）、`import_mapping_invalid`（422）、`import_state_invalid`（409）、`import_settings_changed`（409）。
 - **新路由**（只給登入的人，agent 不能用）：`POST／GET /projects/{id}/imports`、`GET／DELETE /imports/{id}`、`GET /imports/{id}/preview`、`PUT /imports/{id}/settings`、`POST /imports/{id}/validate｜run｜cancel｜close-created`、`GET /imports/{id}/rows`、`GET /imports/{id}/report.csv`。別人的匯入和不存在的回同一個 `not_found`。
 - **反向代理**：`POST /projects/{id}/imports` 的 body 是原始檔案（`application/octet-stream`），代理的 body 上限要至少 10 MB。
+
+## M2.9（M2 發布門檻，沒有 migration）
+
+從 M1 發布版（migration 0030）升到 M2（0041）的整體說明；各階段的細節在上面 0031–0041 與 M2.x 各節。
+
+- **升級順序**：停服務 → 備份 PostgreSQL（有附件目錄時同一時間點一起備份）→ 換新版 → 啟動（migration 0031–0041 自動依序執行）。中間版本不用逐一安裝。
+- **不用重新設定 agent**：0031–0041 沒有一個會改專案的 `security_epoch`；既有的 agent token、委派與工作脈絡照常可用，不會出現 `context_unavailable`。升級後管理者自己調整角色權限或開啟模組，才會照常讓相關專案的脈絡失效。
+- **既有內容不變**：升級前的議題說明與留言是 `plain`，照原樣顯示，不會被當成 Markdown；之後新寫的預設是 Markdown。
+- **搜尋不中斷**：升級後第一次啟動，舊的搜尋索引繼續服務，背景重建完才切換（見 M2.1）。wiki 索引第一次啟動時全量建立。
+- **升級後要手動做的事**：
+  1. 要用 wiki 的既有專案：到專案設定開 `wiki` 模組（升級後新建的專案預設開）。議題可見範圍是「自己的」的角色沒有自動拿到 `view_wiki_pages`，需要的話自己加。
+  2. 要用附件：設 `OXLEDGER_FILES_DIR`，把那個目錄納入備份，反向代理的 body 上限放寬到單檔上限以上（見 0036）。
+  3. 要用 commit 連結與修正關鍵字：在 GitHub 上為 GitHub App 加訂 `push` 事件（見 0039），再到各專案設定修正規則（見 0040）。
+  4. 要讓人匯入 CSV：`import_issues`／`import_time_entries` 已給有 `manage_project` 的角色；匯入者還要有每一列實際動作需要的權限（例如 `add_issues`、`log_time`）。反向代理的 body 上限至少 10 MB（見 M2.8）。
+  5. 還在用 `/agent-contexts*` 的自訂腳本要改用新路由（見 0032 的對照表）。
+- **發布門檻的自動檢查**（都在測試裡，沒有對真實環境跑）：
+  - M2 新增的寫入 op（`wiki_put`、`wiki_move`、`wiki_delete`、`wiki_restore`、`wiki_protect`、`attach`、`delete_attachment`，以及帶附件的 `wiki_put`）× 13 種身分共 104 格：越權寫入、繞過政策、被拒絕仍有效果，都是 0；同一份文件用同一把冪等鍵重送不會有第二次效果（`tests/m1_11_gate.rs` 的 `t_m2_e4w_new_ops_identity_matrix`）。附加到留言與 wiki 頁、刪除它們的附件、`wiki_delete` 的 `children` 等變化不在矩陣裡，由各階段的測試涵蓋。
+  - canary：在看不到的地方放記號（私人議題、別的專案的議題／wiki／附件、私人留言與它的附件、已刪除的頁、別人的匯入、只提到看不到的單的 commit），再用沒有權限的人去讀 M2 新增或改過的主要讀取路由（約 50 個請求），記號出現 0 次；有權限的人用同一批請求在每個面都讀得到對應的記號（`canary_m2_over_http`、`tests/m2_5_git.rs` 的 `canary_commits_of_issues_out_of_sight`、`tests/m2_6_fixed_by.rs` 的修正連結、`tests/m1_11_gate_ai.rs` 的內建 AI wiki 工具）。沒有掃到的路由：提案與審閱（`/changesets*`）、`/ai-team*` 與 agent 活動、`/admin/export-events`、`/files/{id}`；匯入報表的內容由 `tests/m2_8_import.rs` 檢查。
+  - 從 0030 的資料庫升到 0041 的升級測試（`tests/m2_9_upgrade.rs`）。
+- **還沒有在真實環境確認的**：真實 GitHub App 加訂 `push` 後的事件與修正關鍵字（只用假的 GitHub API 測過）；用 Windows 繁體中文的 Excel 開匯出檔、存成 Big5 再匯入；瀏覽器實際的 CSP 與附件下載標頭；5,000 列匯入的耗時。

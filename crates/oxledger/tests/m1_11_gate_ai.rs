@@ -854,7 +854,8 @@ async fn t_m1_69_prompt_injection_builtin_ai() {
 
 // ---------------------------------------------------------------- canaries
 
-const CANARIES: [&str; 6] = [
+const CANARIES: [&str; 7] = [
+    "CANARY-AUTHWIKI",
     "CANARY-PNOTE",
     "CANARY-RFIELD",
     "CANARY-BOBTIME",
@@ -976,6 +977,27 @@ async fn canary_ai_everywhere() {
     member(&pool, hid, w.bob, w.dev).await;
     let h = w.issue(hid, "CANARY-HIDDEN").await;
     let hkey = key_of(w, h).await;
+    // Design 06 §7.9: a wiki page of AUTH (not delegated), for the wiki tools.
+    exec(
+        &pool,
+        &format!(
+            "INSERT INTO enabled_modules (project_id, module) VALUES ('{}', 'wiki')",
+            w.auth_p
+        ),
+    )
+    .await;
+    grant(&pool, w.dev, &["view_wiki_pages", "edit_wiki_pages"]).await;
+    commands::submit(
+        &w.app,
+        w.alice_ctx,
+        Uuid::now_v7(),
+        &json!({"command_schema_version": 1, "ops": [
+            {"op_id": op(), "kind": "wiki_put", "target": {"project": "AUTH", "page": "Plan"},
+             "body": "CANARY-AUTHWIKI"}]}),
+    )
+    .await
+    .unwrap();
+    w.app.wiki.sync_all(&pool).await.unwrap();
     w.app.index.sync_all(&pool).await.unwrap();
     // The control: each canary is readable, as a person, by someone
     // entitled to it (so the 0 below is not because nothing was written).
@@ -999,6 +1021,12 @@ async fn canary_ai_everywhere() {
     control += &view(w.alice_ctx, pkey.clone(), None).await;
     control += &view(w.alice_ctx, ukey.clone(), None).await;
     control += &view(bob_ctx, hkey.clone(), None).await;
+    control += &serde_json::to_string(
+        &oxledger::wiki::page(&w.app, w.alice_ctx, "AUTH", "Plan")
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     control += &serde_json::to_string(
         &oxledger::time_reports::get(&w.app, bob_ctx, &bob_entry.to_string())
             .await
@@ -1037,6 +1065,17 @@ async fn canary_ai_everywhere() {
                 json!({"from": "2026-11-01", "to": "2026-11-30"}),
             ),
             call("c10", "view_run", json!({"view_id": "builtin:open"})),
+            call(
+                "c11",
+                "wiki_get",
+                json!({"project": "AUTH", "page": "Plan"}),
+            ),
+            // (Twelve calls a run at most.)
+            call(
+                "c12",
+                "wiki_get",
+                json!({"project": "AUTH", "page": "No such page"}),
+            ),
         ],
         Some((10, 5)),
     ));
@@ -1117,6 +1156,13 @@ async fn canary_ai_everywhere() {
         )
         .unwrap()
     };
+    // The wiki page out of reach answers like one that is not there.
+    let wiki_refusal = |n: usize| {
+        serde_json::from_str::<Value>(&content(n).to_string().replace("No such page", "Plan"))
+            .unwrap()
+    };
+    assert!(wiki_refusal(11)["error"].is_object(), "{}", content(11));
+    assert_eq!(wiki_refusal(11), wiki_refusal(12));
     // c3 private issue, c4 AUTH (not delegated), c5 HID; c6 is HID-99999.
     assert!(content(6)["error"].is_object(), "{}", content(6));
     for n in [3, 4, 5] {

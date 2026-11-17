@@ -507,6 +507,91 @@ async fn push_stores_commits_and_refs() {
     assert!(!dev.can_manage);
 }
 
+// ---------------------------------------------------------------- M2.9 canary
+
+/// Design 06 §7.9 (canary leaks = 0, the dev card): a commit that names
+/// only an issue the reader cannot see is on no card and no list the reader
+/// gets. carol manages AUTH without seeing its private issues; zed is a
+/// member of WEB only. The control: alice reads every message.
+#[tokio::test]
+async fn canary_commits_of_issues_out_of_sight() {
+    let pool = test_pool().await;
+    let e = setup(&pool).await;
+    let api = Fake::default();
+    link_to(&e, "AUTH").await;
+    link_to(&e, "WEB").await;
+    let zed = auth::create_user(&pool, "zed", "zed", PW, false)
+        .await
+        .unwrap();
+    member(&pool, e.w.web, zed, e.w.dev).await;
+    let zed = sign_in(&pool, &e.w.policy, "zed").await;
+    let (_, open) = issue(&e, e.w.auth_p, false).await;
+    let (_, secret) = issue(&e, e.w.auth_p, true).await;
+    let (_, web) = issue(&e, e.w.web, false).await;
+    deliver(
+        &e,
+        &api,
+        &push_to(
+            "feat/canary",
+            vec![
+                commit(1, &format!("CANARY-PRIVATE {secret}"), true),
+                commit(2, &format!("CANARY-AUTHONLY {open}"), true),
+                commit(3, &format!("fine {web}"), true),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(commits_total(&e).await, 3);
+
+    let app = &e.w.app;
+    let card = |who, key: String| async move {
+        read::issue_dev(app, who, &key)
+            .await
+            .map(|d| serde_json::to_string(&d).unwrap())
+    };
+    let list = |who, project: &'static str| async move {
+        read::project_dev(app, who, project, "all", false, None)
+            .await
+            .map(|d| serde_json::to_string(&d).unwrap())
+    };
+    // carol: the private issue is not there, and nothing else shows it.
+    assert_eq!(
+        code(&card(e.carol, secret.clone()).await.unwrap_err()),
+        ErrorCode::NotFound
+    );
+    let seen = [
+        card(e.carol, open.clone()).await.unwrap(),
+        card(e.carol, web.clone()).await.unwrap(),
+        list(e.carol, "AUTH").await.unwrap(),
+        list(e.carol, "WEB").await.unwrap(),
+    ];
+    assert!(seen[0].contains("CANARY-AUTHONLY"), "{}", seen[0]);
+    for s in &seen {
+        assert!(!s.contains("CANARY-PRIVATE") && !s.contains(sha(1)), "{s}");
+    }
+    // zed: nothing of AUTH at all.
+    for key in [&secret, &open] {
+        assert_eq!(
+            code(&card(zed, key.clone()).await.unwrap_err()),
+            ErrorCode::NotFound
+        );
+    }
+    assert_eq!(
+        code(&list(zed, "AUTH").await.unwrap_err()),
+        ErrorCode::NotFound
+    );
+    for s in [
+        card(zed, web.clone()).await.unwrap(),
+        list(zed, "WEB").await.unwrap(),
+    ] {
+        assert!(!s.contains("CANARY-"), "{s}");
+        assert!(!s.contains(sha(1)) && !s.contains(sha(2)), "{s}");
+    }
+    // The control.
+    let all = card(e.alice, secret.clone()).await.unwrap() + &card(e.alice, open).await.unwrap();
+    assert!(all.contains("CANARY-PRIVATE") && all.contains("CANARY-AUTHONLY"));
+}
+
 // ---------------------------------------------------------------- T-M2-63
 
 #[tokio::test]

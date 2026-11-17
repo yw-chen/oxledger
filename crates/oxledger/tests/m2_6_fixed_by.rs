@@ -1345,6 +1345,27 @@ async fn limits_and_states_that_only_hint() {
     // carol manages AUTH but does not see the private issue.
     let hers = listed(e.carol).await;
     assert!(!hers.contains(&k4) && hers.len() == 2, "{hers:?}");
+    // Design 06 §7.9 (canary, the fix link): the private issue's link is on
+    // no card and in no list carol gets; alice reads it.
+    assert_eq!(dev_fixes(&e, e.alice, &k4).await.len(), 1);
+    let err = read::issue_dev(&e.w.app, e.carol, &k4).await.unwrap_err();
+    assert_eq!(code(&err), ErrorCode::NotFound);
+    let everything = read::project_dev(&e.w.app, e.carol, "AUTH", "all", false, None)
+        .await
+        .unwrap();
+    assert!(everything.items.iter().all(|i| i.key != k4));
+    let private_links: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM issue_fix_links WHERE issue_id = $1")
+            .bind(private)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(private_links, 1);
+    for key in [&k1, &k2, &k3] {
+        let card =
+            serde_json::to_string(&read::issue_dev(&e.w.app, e.carol, key).await.unwrap()).unwrap();
+        assert!(!card.contains(&private.to_string()), "{key}: {card}");
+    }
     let err = read::project_dev(&e.w.app, e.bob, "AUTH", "nope", false, None)
         .await
         .unwrap_err();
