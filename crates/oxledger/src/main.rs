@@ -5,7 +5,11 @@
 //!                         bearer agent token or legacy API key), /healthz
 //!   oxledger stdio        MCP over stdio with the token in OXLEDGER_API_KEY (agent token or
 //!                         legacy key); every tool call re-checks it
-//!   oxledger user add <login> <name> [--admin]   password from stdin
+//!   oxledger user add <login> <name> [--admin] [--email <address>] [--no-password]
+//!                         password from stdin; --email is the Google address that signs in
+//!                         as this user; --no-password (needs --email) reads no password
+//!   oxledger user set-email <login> <address>|--clear   ends the user's sessions and the
+//!                         link to a Google account
 //!   oxledger user set-password <login>           password from stdin; ends all sessions
 //!   oxledger user lock|unlock <login>
 //!   oxledger user revoke-sessions <login>        end all of the user's browser sessions
@@ -33,6 +37,11 @@
 //! up at the same point in time as PostgreSQL), OXLEDGER_ATTACHMENT_MAX_BYTES (default 20 MB,
 //! at most 100 MB), OXLEDGER_UPLOAD_DAILY_BYTES (per person, default 1 GB),
 //! OXLEDGER_FILES_MIN_FREE_BYTES (default 5 GB), OXLEDGER_FILES_ORIGIN (optional download origin).
+//! Google sign-in (feature `google`): OXLEDGER_GOOGLE_CLIENT_ID and
+//! OXLEDGER_GOOGLE_CLIENT_SECRET (both, or it is off; the client's redirect URI is
+//! <OXLEDGER_SPA_ORIGIN>/api/v1/auth/google/callback), OXLEDGER_GOOGLE_ALLOWED_DOMAINS
+//! (optional: only addresses in these domains sign in), OXLEDGER_SETUP_EMAILS (optional: only
+//! these addresses may open a site that has no user yet).
 //! `serve` also answers GET /readyz (database, migrations, workers started).
 
 use anyhow::{Context, Result, bail};
@@ -348,8 +357,8 @@ fn spawn_sweeper(app: Arc<App>) {
             let swept = timed_round(Worker::LoginSweeper, async {
                 sqlx::query("DELETE FROM login_challenges WHERE expires_at < now()")
                     .execute(&app.pool)
-                    .await
-                    .map_err(anyhow::Error::from)
+                    .await?;
+                oxledger::google::sweep(&app.pool).await
             })
             .await;
             if let Err(e) = swept {
@@ -401,6 +410,30 @@ async fn serve() -> Result<()> {
         oxledger::attachments::install(files);
         // After the install: it reads the files directory.
         spawn_files_gc(app.clone());
+    }
+    // Google sign-in: off without both client values or without the feature.
+    match oxledger::google::from_vars(|k| std::env::var(k).ok())? {
+        Some(vars) => match oxledger::google::client()? {
+            Some(api) => {
+                if vars.setup_emails.is_empty() {
+                    tracing::warn!(
+                        "Google sign-in on without OXLEDGER_SETUP_EMAILS: while the site has no \
+                         user, the first Google account to sign in becomes its administrator"
+                    );
+                }
+                tracing::info!(
+                    domains = ?vars.allowed_domains,
+                    "Google sign-in on (callback at {})",
+                    oxledger::google::CALLBACK_PATH
+                );
+                oxledger::google::install(Some(vars.with(api)));
+            }
+            None => tracing::warn!(
+                "OXLEDGER_GOOGLE_CLIENT_ID is set but this build has no `google` feature; \
+                 Google sign-in is off"
+            ),
+        },
+        None => tracing::info!("Google sign-in off (OXLEDGER_GOOGLE_CLIENT_ID is not set)"),
     }
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let cfg = ApiConfig {
@@ -467,12 +500,43 @@ async fn admin(args: &[String]) -> Result<()> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
         ["user", "add", login, name, rest @ ..] => {
-            let is_admin = rest == ["--admin"];
-            if !rest.is_empty() && !is_admin {
-                bail!("usage: oxledger user add <login> <name> [--admin]");
+            let usage = "usage: oxledger user add <login> <name> [--admin] [--email <address>] [--no-password]";
+            let (mut is_admin, mut no_password, mut email) = (false, false, None);
+            let mut it = rest.iter();
+            while let Some(flag) = it.next() {
+                match *flag {
+                    "--admin" => is_admin = true,
+                    "--no-password" => no_password = true,
+                    "--email" => email = Some(*it.next().context(usage)?),
+                    _ => bail!(usage),
+                }
             }
-            let id = auth::create_user(&pool, login, name, &read_password()?, is_admin).await?;
+            if no_password && email.is_none() {
+                bail!("--no-password needs --email: the user signs in with Google only");
+            }
+            let password = if no_password {
+                None
+            } else {
+                Some(read_password()?)
+            };
+            let id = auth::create_user_with(
+                &pool,
+                auth::NewUser {
+                    login,
+                    name,
+                    password: password.as_deref(),
+                    is_admin,
+                    email,
+                },
+            )
+            .await?;
             println!("{id}");
+        }
+        ["user", "set-email", login, email] => {
+            let id = auth::user_id_by_login(&pool, login).await?;
+            let email = (*email != "--clear").then_some(*email);
+            auth::set_email(&pool, id, email).await?;
+            eprintln!("e-mail of {login} set; their sessions ended");
         }
         ["user", "set-password", login] => {
             let id = auth::user_id_by_login(&pool, login).await?;

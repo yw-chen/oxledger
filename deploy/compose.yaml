@@ -33,6 +33,11 @@ services:
       DATABASE_URL: postgres://oxledger:${OX_DB_PASSWORD}@db:5432/oxledger
       OXLEDGER_SPA_ORIGIN: http://localhost:${OX_PORT:-8088}
       OXLEDGER_LOG_FORMAT: text
+      # Google sign-in (deploy/README.md): off while the client id is empty.
+      OXLEDGER_GOOGLE_CLIENT_ID: ${OX_GOOGLE_CLIENT_ID:-}
+      OXLEDGER_GOOGLE_CLIENT_SECRET: ${OX_GOOGLE_CLIENT_SECRET:-}
+      OXLEDGER_GOOGLE_ALLOWED_DOMAINS: ${OX_GOOGLE_ALLOWED_DOMAINS:-}
+      OXLEDGER_SETUP_EMAILS: ${OX_SETUP_EMAILS:-}
       # Optional AI endpoints and keys (docs: OXLEDGER_AI_*) go in deploy/.env
       # and are listed here when used.
     volumes:

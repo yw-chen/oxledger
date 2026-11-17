@@ -23,7 +23,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY migrations migrations
-RUN cargo build --release --locked -p oxledger --features github,ai \
+RUN cargo build --release --locked -p oxledger --features github,ai,google \
  && cp target/release/oxledger /usr/local/bin/oxledger
 
 FROM debian:trixie-slim AS server

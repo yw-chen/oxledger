@@ -7023,11 +7023,26 @@
           "expires_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "google": {
+            "description": "Google sign-in is on: the page may link to `GET /auth/google/start`.",
+            "type": "boolean"
+          },
+          "needs_setup": {
+            "description": "Google sign-in is on and the site has no user yet: the first Google\nsign-in opens it (`POST /setup`).",
+            "type": "boolean"
+          },
+          "org_name": {
+            "description": "The organization's name; empty until set.",
+            "type": "string"
           }
         },
         "required": [
           "csrf_token",
-          "expires_at"
+          "expires_at",
+          "google",
+          "needs_setup",
+          "org_name"
         ],
         "type": "object"
       },
@@ -11701,6 +11716,14 @@
             "format": "date-time",
             "type": "string"
           },
+          "google": {
+            "description": "Linked to a Google account, and Google sign-in is on: step-up may go\nthrough `GET /auth/google/start?reauth=1`.",
+            "type": "boolean"
+          },
+          "has_password": {
+            "description": "Step-up with `POST /auth/reauthenticate` works.",
+            "type": "boolean"
+          },
           "is_admin": {
             "type": "boolean"
           },
@@ -11732,6 +11755,8 @@
           "csrf_token",
           "reauthenticated_at",
           "expires_at",
+          "has_password",
+          "google",
           "capabilities"
         ],
         "type": "object"
@@ -11946,6 +11971,64 @@
           "updated_at",
           "enable_blockers",
           "month"
+        ],
+        "type": "object"
+      },
+      "SetupBody": {
+        "additionalProperties": false,
+        "properties": {
+          "load_defaults": {
+            "default": true,
+            "description": "Load the default roles, trackers, statuses and workflow when the site\nhas none (default true).",
+            "type": "boolean"
+          },
+          "login": {
+            "description": "Your login, 1 to 64 characters without spaces.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "org_name": {
+            "description": "The organization's name, 1 to 100 characters.",
+            "type": "string"
+          },
+          "timezone": {
+            "description": "IANA name, e.g. `Asia/Taipei`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "org_name",
+          "timezone",
+          "login",
+          "name"
+        ],
+        "type": "object"
+      },
+      "SetupContextData": {
+        "description": "What the setup form starts with (from the Google account).",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "login": {
+            "description": "A suggestion: the part of the address before `@`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "timezone": {
+            "description": "The current time zone setting (IANA name).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "name",
+          "login",
+          "timezone"
         ],
         "type": "object"
       },
@@ -21865,6 +21948,82 @@
         "x-csrf": true
       }
     },
+    "/auth/google/callback": {
+      "get": {
+        "operationId": "get_auth_google_callback",
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Where Google sends the browser back (register <SPA origin>/api/v1/auth/google/callback in the Google client): not JSON, answers 302. Signed in: sets __Host-ox_session and goes to next. A Google account signs in only as the user whose e-mail address an administrator set to the same verified address (the first sign-in links the account, later ones go by it). On a site with no user: sets __Host-ox_setup and goes to /setup. Anything else: /login?google_error=<code> (cancelled, state, exchange, unverified, domain, no_account, locked, other_account, setup_not_allowed, signed_out).",
+        "x-access": "anonymous"
+      }
+    },
+    "/auth/google/start": {
+      "get": {
+        "operationId": "get_auth_google_start",
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file (R-A6 headers)"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Google sign-in: a page navigation, not JSON. Answers 302 to Google and sets the __Host-ox_oidc cookie. Query: next (a path on the SPA origin to return to), reauth=1 (step-up of the current session instead of a sign-in). Without Google sign-in configured: 302 to /login?google_error=not_configured.",
+        "x-access": "anonymous"
+      }
+    },
     "/auth/login": {
       "post": {
         "operationId": "post_auth_login",
@@ -30348,6 +30507,115 @@
         "summary": "Name, login, key or alias to ids the caller can see.",
         "x-access": "session",
         "x-csrf": true
+      }
+    },
+    "/setup": {
+      "post": {
+        "operationId": "post_setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LoginData"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Open a new site: names the organization, sets its time zone, makes the ticket's Google account the first user (an administrator) and signs them in (sets __Host-ox_session). Works once; not_found afterwards.",
+        "x-access": "anonymous",
+        "x-csrf": true
+      }
+    },
+    "/setup/context": {
+      "get": {
+        "operationId": "get_setup_context",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SetupContextData"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The Google account that may open this new site (the __Host-ox_setup cookie); not_found without a valid ticket or once the site has a user.",
+        "x-access": "anonymous"
       }
     },
     "/time-activities": {

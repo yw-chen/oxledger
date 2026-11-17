@@ -11,7 +11,7 @@
 use crate::agents::{AgentClientView, ContextView, DelegationView, IssuedCredential};
 use crate::api::{
     DelegationBody, Done, Empty, LoginBody, LoginContextData, LoginData, PasswordBody, SessionData,
-    SessionItem,
+    SessionItem, SetupBody, SetupContextData,
 };
 use crate::error::ErrorBody;
 use crate::registry;
@@ -295,6 +295,38 @@ pub fn session_routes() -> Vec<RouteDoc> {
             "Sign in; sets the __Host-ox_session cookie.",
             Anonymous,
             Some(s::<LoginBody>),
+            s::<LoginData>,
+        ),
+        r(
+            "GET",
+            "/auth/google/start",
+            "Google sign-in: a page navigation, not JSON. Answers 302 to Google and sets the __Host-ox_oidc cookie. Query: next (a path on the SPA origin to return to), reauth=1 (step-up of the current session instead of a sign-in). Without Google sign-in configured: 302 to /login?google_error=not_configured.",
+            Anonymous,
+            None,
+            s::<String>,
+        ),
+        r(
+            "GET",
+            "/auth/google/callback",
+            "Where Google sends the browser back (register <SPA origin>/api/v1/auth/google/callback in the Google client): not JSON, answers 302. Signed in: sets __Host-ox_session and goes to next. A Google account signs in only as the user whose e-mail address an administrator set to the same verified address (the first sign-in links the account, later ones go by it). On a site with no user: sets __Host-ox_setup and goes to /setup. Anything else: /login?google_error=<code> (cancelled, state, exchange, unverified, domain, no_account, locked, other_account, setup_not_allowed, signed_out).",
+            Anonymous,
+            None,
+            s::<String>,
+        ),
+        r(
+            "GET",
+            "/setup/context",
+            "The Google account that may open this new site (the __Host-ox_setup cookie); not_found without a valid ticket or once the site has a user.",
+            Anonymous,
+            None,
+            s::<SetupContextData>,
+        ),
+        r(
+            "POST",
+            "/setup",
+            "Open a new site: names the organization, sets its time zone, makes the ticket's Google account the first user (an administrator) and signs them in (sets __Host-ox_session). Works once; not_found afterwards.",
+            Anonymous,
+            Some(s::<SetupBody>),
             s::<LoginData>,
         ),
         r(
@@ -1866,6 +1898,8 @@ pub const RAW_BODY_ROUTES: &[(&str, &str)] = &[
 /// Routes whose answer is a file, not the `{data, meta}` envelope (R-A6).
 pub const FILE_ROUTES: &[(&str, &str)] = &[
     ("GET", "/attachments/{id}/content"),
+    ("GET", "/auth/google/start"),
+    ("GET", "/auth/google/callback"),
     ("POST", "/exports/issues"),
     ("POST", "/exports/time-entries"),
     ("GET", "/projects/{id}/wiki/pages/{title}/export.md"),

@@ -297,6 +297,11 @@ pub fn token_matches(presented: &str, secret: &[u8]) -> bool {
 }
 
 /// Prefix of agent tokens; anything else on the MCP bearer is a legacy key.
+/// Equal, compared in constant time.
+pub(crate) fn bytes_match(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && bool::from(a.ct_eq(b))
+}
+
 pub const AGENT_TOKEN_PREFIX: &str = "oxa_";
 
 // ---------------------------------------------------------------- passwords
@@ -520,7 +525,7 @@ pub async fn login(
     }
 
     let login = input.login.trim();
-    let row: Option<(Uuid, String, String, i64)> = sqlx::query_as(
+    let row: Option<(Uuid, String, Option<String>, i64)> = sqlx::query_as(
         "SELECT p.id, p.status, up.password_phc, up.credential_version
          FROM principals p JOIN user_passwords up ON up.user_id = p.id
          WHERE p.kind = 'user' AND p.login = $1",
@@ -533,8 +538,16 @@ pub async fn login(
         verify_password(dummy_phc(), input.password);
         return Err(bad());
     };
-    // Verify first so a locked account costs the same as an active one.
-    if !verify_password(&phc, input.password) || status != "active" {
+    // Verify first so a locked account costs the same as an active one; a
+    // user without a password (Google only) costs the same too.
+    let verified = match &phc {
+        Some(p) => verify_password(p, input.password),
+        None => {
+            verify_password(dummy_phc(), input.password);
+            false
+        }
+    };
+    if !verified || status != "active" {
         return Err(bad());
     }
     let mut tx = pool.begin().await?;
@@ -584,6 +597,40 @@ async fn create_session(
         csrf_token: encode(&csrf),
         absolute_expires_at: absolute,
     })
+}
+
+/// A session for `user`, who just proved who they are through `via`
+/// (`"google"`): the caller has checked that and that the user is active.
+pub(crate) async fn session_for(
+    conn: &mut PgConnection,
+    policy: &SessionPolicy,
+    user: Uuid,
+    via: &str,
+) -> Result<NewSession> {
+    // Every user has this row (it carries credential_version); one made
+    // before a password existed gets it now.
+    sqlx::query(
+        "INSERT INTO user_passwords (user_id, password_phc) VALUES ($1, NULL)
+         ON CONFLICT (user_id) DO NOTHING",
+    )
+    .bind(user)
+    .execute(&mut *conn)
+    .await?;
+    let version: i64 =
+        sqlx::query_scalar("SELECT credential_version FROM user_passwords WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&mut *conn)
+            .await?;
+    let session = create_session(&mut *conn, policy, user, version).await?;
+    audit(
+        &mut *conn,
+        "login",
+        Some(user),
+        Some(session.session_id),
+        serde_json::json!({"via": via}),
+    )
+    .await?;
+    Ok(session)
 }
 
 /// A valid session found from its cookie.
@@ -725,11 +772,13 @@ pub async fn admin_revoke_sessions(pool: &PgPool, user_id: Uuid) -> Result<u64> 
 /// `reauthenticated_at` becomes now. Grants no permission by itself.
 pub async fn reauthenticate(pool: &PgPool, ctx: &AuthContext, password: &str) -> Result<()> {
     let (user, session) = ctx.require_human_session()?;
-    let phc: Option<String> =
-        sqlx::query_scalar("SELECT password_phc FROM user_passwords WHERE user_id = $1")
-            .bind(user)
-            .fetch_optional(pool)
-            .await?;
+    let phc: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT password_phc FROM user_passwords WHERE user_id = $1",
+    )
+    .bind(user)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
     let ok = match &phc {
         Some(p) => verify_password(p, password),
         None => {
@@ -791,18 +840,72 @@ pub async fn create_user(
     password: &str,
     is_admin: bool,
 ) -> Result<Uuid> {
-    check_password_policy(password)?;
-    let phc = hash_password(password)?;
+    create_user_with(
+        pool,
+        NewUser {
+            login,
+            name,
+            password: Some(password),
+            is_admin,
+            email: None,
+        },
+    )
+    .await
+}
+
+pub struct NewUser<'a> {
+    pub login: &'a str,
+    pub name: &'a str,
+    /// `None`: the user signs in with Google only (needs `email`).
+    pub password: Option<&'a str>,
+    pub is_admin: bool,
+    /// The Google address that signs in as this user.
+    pub email: Option<&'a str>,
+}
+
+fn email_value(email: Option<&str>) -> Result<Option<String>> {
+    match email {
+        Some(e) => Ok(Some(crate::google::normalize_email(e).ok_or_else(
+            || {
+                api(
+                    ErrorCode::InvalidValue,
+                    format!("{e:?} is not an e-mail address"),
+                )
+            },
+        )?)),
+        None => Ok(None),
+    }
+}
+
+/// Creates a user with a password, an e-mail address for Google sign-in, or
+/// both.
+pub async fn create_user_with(pool: &PgPool, u: NewUser<'_>) -> Result<Uuid> {
+    let phc = match u.password {
+        Some(p) => {
+            check_password_policy(p)?;
+            Some(hash_password(p)?)
+        }
+        None => None,
+    };
+    let email = email_value(u.email)?;
+    if phc.is_none() && email.is_none() {
+        return Err(api(
+            ErrorCode::InvalidValue,
+            "a user needs a password or an e-mail address for Google sign-in",
+        ));
+    }
     let mut tx = pool.begin().await?;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO principals (kind, login, name, is_admin) VALUES ('user', $1, $2, $3) RETURNING id",
+        "INSERT INTO principals (kind, login, name, is_admin, email)
+         VALUES ('user', $1, $2, $3, $4) RETURNING id",
     )
-    .bind(login.trim())
-    .bind(name)
-    .bind(is_admin)
+    .bind(u.login.trim())
+    .bind(u.name)
+    .bind(u.is_admin)
+    .bind(&email)
     .fetch_one(&mut *tx)
     .await
-    .context("create user")?;
+    .context("create user (is the login or the e-mail address taken?)")?;
     sqlx::query("INSERT INTO user_passwords (user_id, password_phc) VALUES ($1, $2)")
         .bind(id)
         .bind(&phc)
@@ -813,11 +916,49 @@ pub async fn create_user(
         "user_created",
         None,
         Some(id),
-        serde_json::json!({"login": login.trim(), "is_admin": is_admin}),
+        serde_json::json!({"login": u.login.trim(), "is_admin": u.is_admin, "email": email,
+                           "password": phc.is_some()}),
     )
     .await?;
     tx.commit().await?;
     Ok(id)
+}
+
+/// Sets or clears (`None`) the address that signs in as this user with
+/// Google. The link to a Google account made by an earlier sign-in goes
+/// too, and the user's sessions end: the next Google sign-in is matched by
+/// the new address.
+pub async fn set_email(pool: &PgPool, user_id: Uuid, email: Option<&str>) -> Result<()> {
+    let email = email_value(email)?;
+    let mut tx = pool.begin().await?;
+    lock_user_row(&mut tx, user_id).await?;
+    sqlx::query("UPDATE principals SET email = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(&email)
+        .execute(&mut *tx)
+        .await
+        .context("set e-mail (is the address taken?)")?;
+    sqlx::query("DELETE FROM user_identities WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE browser_sessions SET revoked_at = now(), revoked_reason = 'email_changed'
+         WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    audit(
+        &mut tx,
+        "email_set",
+        None,
+        Some(user_id),
+        serde_json::json!({"email": email}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Sets a password from the admin CLI: bumps `credential_version` (all

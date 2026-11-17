@@ -102,6 +102,7 @@ CREATE TRIGGER time_entries_outbox AFTER INSERT OR UPDATE ON public.time_entries
 CREATE TRIGGER time_entries_user_guard BEFORE INSERT OR UPDATE OF user_id ON public.time_entries FOR EACH ROW EXECUTE FUNCTION user_only_guard()
 CREATE TRIGGER trackers_schema_version AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.trackers FOR EACH STATEMENT EXECUTE FUNCTION bump_schema_version()
 CREATE TRIGGER uploads_uploader_guard BEFORE INSERT OR UPDATE OF uploader_id ON public.uploads FOR EACH ROW EXECUTE FUNCTION user_column_guard('uploader_id')
+CREATE TRIGGER user_identities_user_guard BEFORE INSERT OR UPDATE OF user_id ON public.user_identities FOR EACH ROW EXECUTE FUNCTION user_only_guard()
 CREATE TRIGGER user_passwords_user_guard BEFORE INSERT OR UPDATE OF user_id ON public.user_passwords FOR EACH ROW EXECUTE FUNCTION user_only_guard()
 CREATE TRIGGER user_preferences_user BEFORE INSERT OR UPDATE OF user_id ON public.user_preferences FOR EACH ROW EXECUTE FUNCTION user_preferences_user_check()
 CREATE TRIGGER versions_on_behalf_of BEFORE INSERT OR UPDATE OF created_by, created_on_behalf_of_id ON public.versions FOR EACH ROW EXECUTE FUNCTION versions_on_behalf_of_guard()

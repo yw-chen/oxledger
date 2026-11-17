@@ -1823,6 +1823,12 @@ export type LoginContextData = {
   /** Send back as `X-CSRF-Token` with `POST /auth/login`. */
   csrf_token: string;
   expires_at: string;
+  /** Google sign-in is on: the page may link to `GET /auth/google/start`. */
+  google: boolean;
+  /** Google sign-in is on and the site has no user yet: the first Google sign-in opens it (`POST /setup`). */
+  needs_setup: boolean;
+  /** The organization's name; empty until set. */
+  org_name: string;
 };
 
 export type LoginData = {
@@ -3093,6 +3099,10 @@ export type SessionData = {
   capabilities: Capabilities;
   csrf_token: string | null;
   expires_at: string;
+  /** Linked to a Google account, and Google sign-in is on: step-up may go through `GET /auth/google/start?reauth=1`. */
+  google: boolean;
+  /** Step-up with `POST /auth/reauthenticate` works. */
+  has_password: boolean;
   is_admin: boolean;
   login: string;
   name: string;
@@ -3157,6 +3167,28 @@ export type SettingsView = {
   updated_at: string;
   user_daily_budget_usd: string;
   user_runs_per_hour: number;
+};
+
+export type SetupBody = {
+  /** Load the default roles, trackers, statuses and workflow when the site has none (default true). */
+  load_defaults?: boolean;
+  /** Your login, 1 to 64 characters without spaces. */
+  login: string;
+  name: string;
+  /** The organization's name, 1 to 100 characters. */
+  org_name: string;
+  /** IANA name, e.g. `Asia/Taipei`. */
+  timezone: string;
+};
+
+/** What the setup form starts with (from the Google account). */
+export type SetupContextData = {
+  email: string;
+  /** A suggestion: the part of the address before `@`. */
+  login: string;
+  name: string;
+  /** The current time zone setting (IANA name). */
+  timezone: string;
 };
 
 export type SharedRuntimeWarning = {
@@ -4890,6 +4922,8 @@ export interface Endpoints {
   "GET /attachments/{id}": { body: never; data: AttachmentView };
   "GET /attachments/{id}/content": { body: never; data: unknown };
   "POST /attachments/{id}/redact": { body: RedactInput; data: Redacted };
+  "GET /auth/google/callback": { body: never; data: unknown };
+  "GET /auth/google/start": { body: never; data: unknown };
   "POST /auth/login": { body: LoginBody; data: LoginData };
   "GET /auth/login-context": { body: never; data: LoginContextData };
   "POST /auth/logout": { body: never; data: Done };
@@ -5025,6 +5059,8 @@ export interface Endpoints {
   "GET /projects/{id}/wiki/settings": { body: never; data: WikiSettings };
   "PUT /projects/{id}/wiki/settings": { body: WikiSettingsPut; data: WikiSettings };
   "POST /resolve": { body: ResolveParams; data: ResolveResult };
+  "POST /setup": { body: SetupBody; data: LoginData };
+  "GET /setup/context": { body: never; data: SetupContextData };
   "GET /time-activities": { body: never; data: ProjectActivities };
   "GET /time-entries": { body: never; data: TimeEntryPage };
   "GET /time-entries/summary": { body: never; data: Summary };

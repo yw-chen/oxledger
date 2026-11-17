@@ -1835,3 +1835,69 @@ test('CSV 匯入：上傳、對應、試跑、執行，壞掉的列不擋其他�
 	await wiz.getByTestId('import-created').locator('a').first().click();
 	await expect(page.locator('body')).toContainText('E2E 匯入的第一張');
 });
+
+test('Google 登入與建立機構的畫面（Google 沒開時不出現；開啟後的畫面用改寫過的後端回應）', async ({ browser }) => {
+	const ctx = await browser.newContext();
+	const page = await ctx.newPage();
+	// The backend of this run has no Google client: nothing about it shows.
+	await page.goto('/login');
+	await expect(page.getByTestId('login-form')).toBeVisible();
+	await page.waitForLoadState('networkidle');
+	await expect(page.getByTestId('google-login')).toHaveCount(0);
+	// The setup page without a ticket (and on a site that has users).
+	await page.goto('/setup');
+	await expect(page.getByTestId('setup-gone')).toBeVisible();
+	await expect(page.getByTestId('setup-form')).toHaveCount(0);
+
+	// Google on: the real login-context with the three fields changed.
+	let needsSetup = false;
+	await page.route('**/api/v1/auth/login-context', async (route) => {
+		const res = await route.fetch();
+		const json = await res.json();
+		json.data = { ...json.data, google: true, needs_setup: needsSetup, org_name: '奧克斯軟體' };
+		await route.fulfill({ response: res, json });
+	});
+	await page.goto('/login?next=' + encodeURIComponent('/project/AUTH/issues'));
+	const g = page.getByTestId('google-login');
+	await expect(g).toHaveText('使用 Google 登入');
+	await expect(g).toHaveAttribute('href', '/api/v1/auth/google/start?next=%2Fproject%2FAUTH%2Fissues');
+	await expect(page.getByTestId('login-org')).toHaveText('奧克斯軟體');
+	await expect(page.getByTestId('login-form')).toBeVisible();
+	// Why a round trip came back without a session.
+	await page.goto('/login?google_error=no_account');
+	await expect(page.getByTestId('google-error')).toContainText('請聯絡管理員先建立帳號');
+	// A new site: only the way to open it.
+	needsSetup = true;
+	await page.goto('/login');
+	await expect(page.getByTestId('google-login')).toHaveText('用 Google 登入並建立機構');
+	await expect(page.getByTestId('login-needs-setup')).toBeVisible();
+	await expect(page.getByTestId('login-form')).toHaveCount(0);
+
+	// The setup form, as the Google account the ticket names.
+	await page.route('**/api/v1/setup/context', (route) =>
+		route.fulfill({ json: { data: { email: 'owner@example.com', name: 'Owner Chen', login: 'owner', timezone: 'Asia/Taipei' }, meta: {} } })
+	);
+	let sent: any = null;
+	await page.route('**/api/v1/setup', async (route) => {
+		sent = route.request().postDataJSON();
+		// The site was opened by someone else in the meantime.
+		await route.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'this site is already set up', retryable: false, retry_after_ms: null, next_actions: [], request_id: '00000000-0000-7000-8000-000000000000' } } });
+	});
+	await page.goto('/setup');
+	const form = page.getByTestId('setup-form');
+	await expect(form).toBeVisible();
+	await expect(page.getByTestId('setup')).toContainText('owner@example.com');
+	await expect(page.getByTestId('setup-login')).toHaveValue('owner');
+	await expect(page.getByTestId('setup-name')).toHaveValue('Owner Chen');
+	await expect(page.getByTestId('setup-timezone')).not.toHaveValue('');
+	// Nothing is sent without a name for the organization.
+	await page.getByTestId('setup-submit').click();
+	await expect(form).toContainText('請填機構名稱。');
+	expect(sent).toBeNull();
+	await page.getByTestId('setup-org').fill('奧克斯軟體');
+	await page.getByTestId('setup-timezone').fill('Asia/Tokyo');
+	await page.getByTestId('setup-submit').click();
+	await expect(page.getByTestId('setup-gone')).toBeVisible();
+	expect(sent).toEqual({ org_name: '奧克斯軟體', login: 'owner', name: 'Owner Chen', timezone: 'Asia/Tokyo', load_defaults: true });
+	await ctx.close();
+});

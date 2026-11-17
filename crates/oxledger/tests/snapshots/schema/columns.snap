@@ -791,6 +791,14 @@ notifications.payload jsonb
 notifications.first_at timestamp with time zone NOT NULL
 notifications.last_at timestamp with time zone NOT NULL
 notifications.read_at timestamp with time zone
+oidc_states.state_sha256 bytea NOT NULL
+oidc_states.cookie_sha256 bytea NOT NULL
+oidc_states.nonce text NOT NULL
+oidc_states.pkce_verifier text NOT NULL
+oidc_states.purpose text NOT NULL
+oidc_states.session_id uuid
+oidc_states.next_path text NOT NULL DEFAULT '/'::text
+oidc_states.expires_at timestamp with time zone NOT NULL
 operation_requests.id uuid NOT NULL DEFAULT uuidv7()
 operation_requests.caller_id uuid NOT NULL
 operation_requests.operation_id uuid NOT NULL
@@ -818,6 +826,7 @@ org_settings.timelog_require_issue boolean NOT NULL DEFAULT false
 org_settings.timelog_require_comments boolean NOT NULL DEFAULT false
 org_settings.timelog_lock_version integer NOT NULL DEFAULT 0
 org_settings.form_l0_version bigint NOT NULL DEFAULT 1
+org_settings.name text NOT NULL DEFAULT ''::text
 outbox.id bigint NOT NULL DEFAULT nextval('outbox_id_seq'::regclass)
 outbox.xid xid8 NOT NULL DEFAULT pg_current_xact_id()
 outbox.topic text NOT NULL
@@ -842,6 +851,7 @@ principals.name text NOT NULL
 principals.is_admin boolean NOT NULL DEFAULT false
 principals.status text NOT NULL DEFAULT 'active'::text
 principals.created_at timestamp with time zone NOT NULL DEFAULT now()
+principals.email text
 project_catalog.id boolean NOT NULL DEFAULT true
 project_commit_hidden.project_id uuid NOT NULL
 project_commit_hidden.repo_id uuid NOT NULL
@@ -962,6 +972,11 @@ search_settings.rebuild_requested_at timestamp with time zone
 server_secrets.name text NOT NULL
 server_secrets.secret bytea NOT NULL
 server_secrets.created_at timestamp with time zone NOT NULL DEFAULT now()
+setup_tickets.token_sha256 bytea NOT NULL
+setup_tickets.subject text NOT NULL
+setup_tickets.email text NOT NULL
+setup_tickets.name text NOT NULL
+setup_tickets.expires_at timestamp with time zone NOT NULL
 time_daily_totals.user_id uuid NOT NULL
 time_daily_totals.spent_on date NOT NULL
 time_daily_totals.hours numeric(7,2) NOT NULL DEFAULT 0
@@ -1030,8 +1045,13 @@ uploads.size bigint NOT NULL
 uploads.created_at timestamp with time zone NOT NULL DEFAULT now()
 uploads.expires_at timestamp with time zone NOT NULL
 uploads.consumed_at timestamp with time zone
+user_identities.provider text NOT NULL
+user_identities.subject text NOT NULL
+user_identities.user_id uuid NOT NULL
+user_identities.email text NOT NULL
+user_identities.linked_at timestamp with time zone NOT NULL DEFAULT now()
 user_passwords.user_id uuid NOT NULL
-user_passwords.password_phc text NOT NULL
+user_passwords.password_phc text
 user_passwords.credential_version bigint NOT NULL DEFAULT 1
 user_passwords.changed_at timestamp with time zone NOT NULL DEFAULT now()
 user_preferences.user_id uuid NOT NULL

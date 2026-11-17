@@ -40,6 +40,10 @@ use uuid::Uuid;
 
 pub const SESSION_COOKIE: &str = "__Host-ox_session";
 pub const LOGIN_COOKIE: &str = "__Host-ox_login";
+/// Ties a round trip to Google to the browser that started it.
+pub const OIDC_COOKIE: &str = "__Host-ox_oidc";
+/// The ticket of the person opening a new site (`crate::google::setup`).
+pub const SETUP_COOKIE: &str = "__Host-ox_setup";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
 #[derive(Debug, Clone)]
@@ -331,6 +335,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
     let v1 = Router::new()
         .route("/auth/login-context", get(login_context))
         .route("/auth/login", post(login))
+        .route("/auth/google/start", get(google_start))
+        .route("/auth/google/callback", get(google_callback))
+        .route("/setup/context", get(setup_context))
+        .route("/setup", post(setup_site))
         .route("/auth/reauthenticate", post(reauthenticate))
         .route("/auth/session", get(session))
         .route("/auth/logout", post(logout))
@@ -1154,9 +1162,18 @@ impl LoginLimiter {
 
 async fn login_context(State(st): State<Arc<ApiState>>) -> ApiResult {
     let c = auth::new_login_challenge(&st.app.pool, &st.cfg.session).await?;
+    let (org_name, any_user): (String, bool) = sqlx::query_as(
+        "SELECT name, EXISTS (SELECT 1 FROM principals WHERE kind = 'user') FROM org_settings",
+    )
+    .fetch_one(&st.app.pool)
+    .await?;
+    let google = crate::google::enabled();
     let mut resp = ok(LoginContextData {
         csrf_token: c.csrf_token,
         expires_at: c.expires_at,
+        google,
+        needs_setup: google && !any_user,
+        org_name,
     });
     set_cookie(
         &mut resp,
@@ -1239,6 +1256,186 @@ async fn login(
     Ok(resp)
 }
 
+// ---------------------------------------------------------------- Google sign-in
+
+/// 302 to `to`; to the SPA's start page when `to` cannot be a header.
+fn redirect(st: &ApiState, to: &str) -> Response {
+    let mut r = StatusCode::FOUND.into_response();
+    let v = HeaderValue::from_str(to)
+        .or_else(|_| HeaderValue::from_str(&spa(st, "/")))
+        .unwrap_or(HeaderValue::from_static("/"));
+    r.headers_mut().insert(header::LOCATION, v);
+    r
+}
+
+fn spa(st: &ApiState, path: &str) -> String {
+    format!("{}{path}", st.cfg.spa_origin.trim_end_matches('/'))
+}
+
+/// Back to the sign-in page, which has a text for each code.
+fn google_refused(st: &ApiState, r: crate::google::Refusal) -> Response {
+    redirect(st, &spa(st, &format!("/login?google_error={}", r.code())))
+}
+
+#[derive(Deserialize)]
+struct GoogleStartQuery {
+    /// Where to go afterwards: a path on the SPA origin.
+    next: Option<String>,
+    /// `1`: step-up of the current session instead of a sign-in.
+    reauth: Option<String>,
+}
+
+/// A page navigation, not an API call: answers 302 to Google.
+async fn google_start(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Query(q): Query<GoogleStartQuery>,
+) -> ApiResult {
+    use crate::google::{Purpose, Refusal};
+    let purpose = if q.reauth.as_deref() == Some("1") {
+        match ra.ctx.require_human_session() {
+            Ok((_, session)) => Purpose::Reauth(session),
+            Err(_) => return Ok(google_refused(&st, Refusal::SignedOut)),
+        }
+    } else {
+        Purpose::Login
+    };
+    let started =
+        crate::google::start(&st.app.pool, &st.cfg.spa_origin, purpose, q.next.as_deref()).await?;
+    Ok(match started {
+        Ok(s) => {
+            let mut resp = redirect(&st, &s.url);
+            // Lax: the cookie must come back with Google's redirect.
+            set_cookie(&mut resp, OIDC_COOKIE, &s.cookie, s.max_age_secs, "Lax");
+            resp
+        }
+        Err(r) => google_refused(&st, r),
+    })
+}
+
+#[derive(Deserialize)]
+struct GoogleCallbackQuery {
+    state: Option<String>,
+    code: Option<String>,
+    error: Option<String>,
+}
+
+/// Where Google sends the browser back: answers 302 into the SPA.
+async fn google_callback(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    headers: HeaderMap,
+    Query(q): Query<GoogleCallbackQuery>,
+) -> ApiResult {
+    use crate::google::{Callback, Outcome};
+    let oidc = cookie(&headers, OIDC_COOKIE);
+    let before = ra.ctx.session_id();
+    let out = crate::google::finish(
+        &st.app.pool,
+        &st.cfg.session,
+        &st.cfg.spa_origin,
+        Callback {
+            state: q.state.as_deref(),
+            code: q.code.as_deref(),
+            error: q.error.as_deref(),
+            cookie: oidc.as_deref(),
+            session: before,
+        },
+    )
+    .await?;
+    let mut resp = match out {
+        Ok(Outcome::SignedIn { session: s, next }) => {
+            // Session fixation: whatever session the browser had before is ended.
+            if let Some(old) = before {
+                sqlx::query("UPDATE browser_sessions SET revoked_at = now(), revoked_reason = 'replaced_by_login' WHERE id = $1 AND revoked_at IS NULL")
+                    .bind(old)
+                    .execute(&st.app.pool)
+                    .await?;
+            }
+            let max_age = (s.absolute_expires_at - Utc::now()).num_seconds().max(0);
+            let mut r = redirect(&st, &spa(&st, &next));
+            set_cookie(&mut r, SESSION_COOKIE, &s.token, max_age, "Lax");
+            r
+        }
+        Ok(Outcome::Reauthed { next }) => redirect(&st, &spa(&st, &next)),
+        Ok(Outcome::Setup {
+            ticket,
+            max_age_secs,
+        }) => {
+            let mut r = redirect(&st, &spa(&st, "/setup"));
+            set_cookie(&mut r, SETUP_COOKIE, &ticket, max_age_secs, "Strict");
+            r
+        }
+        Err(r) => google_refused(&st, r),
+    };
+    set_cookie(&mut resp, OIDC_COOKIE, "", 0, "Lax");
+    Ok(resp)
+}
+
+async fn setup_context(State(st): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
+    let ticket = cookie(&headers, SETUP_COOKIE);
+    match crate::google::setup_context(&st.app.pool, ticket.as_deref()).await? {
+        Some(c) => Ok(ok(SetupContextData {
+            email: c.email,
+            name: c.name,
+            login: c.login,
+            timezone: c.timezone,
+        })),
+        None => Err(ApiFailure(api(ErrorCode::NotFound, "nothing to set up"))),
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetupBody {
+    /// The organization's name, 1 to 100 characters.
+    pub org_name: String,
+    /// IANA name, e.g. `Asia/Taipei`.
+    pub timezone: String,
+    /// Your login, 1 to 64 characters without spaces.
+    pub login: String,
+    pub name: String,
+    /// Load the default roles, trackers, statuses and workflow when the site
+    /// has none (default true).
+    #[serde(default = "yes")]
+    pub load_defaults: bool,
+}
+
+async fn setup_site(
+    State(st): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<SetupBody>,
+) -> ApiResult {
+    let ticket = cookie(&headers, SETUP_COOKIE);
+    let s = crate::google::setup(
+        &st.app.pool,
+        &st.cfg.session,
+        ticket.as_deref(),
+        crate::google::SetupInput {
+            org_name: &body.org_name,
+            timezone: &body.timezone,
+            login: &body.login,
+            name: &body.name,
+            load_defaults: body.load_defaults,
+        },
+    )
+    .await?;
+    let max_age = (s.absolute_expires_at - Utc::now()).num_seconds().max(0);
+    let mut resp = ok(LoginData {
+        user_id: s.user_id,
+        session_id: s.session_id,
+        csrf_token: s.csrf_token,
+        expires_at: s.absolute_expires_at,
+    });
+    set_cookie(&mut resp, SESSION_COOKIE, &s.token, max_age, "Lax");
+    set_cookie(&mut resp, SETUP_COOKIE, "", 0, "Strict");
+    Ok(resp)
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PasswordBody {
@@ -1285,8 +1482,14 @@ async fn session(
         bool,
         chrono::DateTime<Utc>,
         chrono::DateTime<Utc>,
+        bool,
+        bool,
     ) = sqlx::query_as(
-        "SELECT p.login, p.name, p.is_admin, s.reauthenticated_at, s.absolute_expires_at
+        "SELECT p.login, p.name, p.is_admin, s.reauthenticated_at, s.absolute_expires_at,
+                EXISTS (SELECT 1 FROM user_passwords up
+                         WHERE up.user_id = p.id AND up.password_phc IS NOT NULL),
+                EXISTS (SELECT 1 FROM user_identities i
+                         WHERE i.user_id = p.id AND i.provider = 'google')
          FROM browser_sessions s JOIN principals p ON p.id = s.user_id WHERE s.id = $1",
     )
     .bind(session)
@@ -1302,6 +1505,8 @@ async fn session(
         csrf_token: csrf,
         reauthenticated_at: row.3,
         expires_at: row.4,
+        has_password: row.5,
+        google: row.6 && crate::google::enabled(),
         capabilities: Capabilities {
             command_schema_versions: vec![1],
             command_features: COMMAND_FEATURES.iter().map(|f| f.to_string()).collect(),
@@ -1447,6 +1652,24 @@ pub struct LoginContextData {
     /// Send back as `X-CSRF-Token` with `POST /auth/login`.
     pub csrf_token: String,
     pub expires_at: chrono::DateTime<Utc>,
+    /// Google sign-in is on: the page may link to `GET /auth/google/start`.
+    pub google: bool,
+    /// Google sign-in is on and the site has no user yet: the first Google
+    /// sign-in opens it (`POST /setup`).
+    pub needs_setup: bool,
+    /// The organization's name; empty until set.
+    pub org_name: String,
+}
+
+/// What the setup form starts with (from the Google account).
+#[derive(Serialize, JsonSchema)]
+pub struct SetupContextData {
+    pub email: String,
+    pub name: String,
+    /// A suggestion: the part of the address before `@`.
+    pub login: String,
+    /// The current time zone setting (IANA name).
+    pub timezone: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -1481,6 +1704,11 @@ pub struct SessionData {
     pub csrf_token: Option<String>,
     pub reauthenticated_at: chrono::DateTime<Utc>,
     pub expires_at: chrono::DateTime<Utc>,
+    /// Step-up with `POST /auth/reauthenticate` works.
+    pub has_password: bool,
+    /// Linked to a Google account, and Google sign-in is on: step-up may go
+    /// through `GET /auth/google/start?reauth=1`.
+    pub google: bool,
     pub capabilities: Capabilities,
 }
 

@@ -85,7 +85,8 @@
 | `project list` | 列出專案 |
 | `role list` | 列出角色 |
 | `member add <KEY> <帳號> <角色>[,<角色>…]` | 把人加進專案；已經是成員就補上角色；多個角色用逗號或空白分開 |
-| `user add <帳號> <名稱> [--admin]` | 建帳號，密碼從 stdin 讀（用 `add-user.ps1`） |
+| `user add <帳號> <名稱> [--admin] [--email <email>] [--no-password]` | 建帳號，密碼從 stdin 讀（用 `add-user.ps1`）；`--email` 是這個人登入用的 Google 帳號；`--no-password`（要搭配 `--email`）不讀密碼，這個人只能用 Google 登入 |
+| `user set-email <帳號> <email>`／`--clear` | 改或清掉登入用的 Google email；這個人的 session 與原本連結的 Google 帳號都會失效 |
 | `user set-password <帳號>` | 改密碼並登出所有 session，密碼從 stdin 讀 |
 | `user lock` / `user unlock <帳號>` | 鎖住、解鎖帳號 |
 | `reindex` | 請執行中的伺服器重建搜尋索引（議題與 wiki） |
@@ -140,6 +141,36 @@ docker compose -f deploy/compose.yaml up -d --build
 ```powershell
 docker compose -f deploy/compose.yaml down -v   # -v 會刪掉資料庫與索引，無法復原
 ```
+
+## Google 登入（選用）
+
+設定之後，登入頁多一個「使用 Google 登入」；密碼登入照舊。規則：
+
+- **不開放自行註冊**。Google 帳號只能登入「管理員先建好、email 相同」的帳號；沒有對應帳號的人會被擋下。第一次登入時把那個 Google 帳號和帳號連結起來，之後認 Google 帳號本身，對方改 email 也不受影響。
+- **全新的站可以用 Google 開站**。站上一個帳號都沒有時，第一個用 Google 登入的人會看到「建立機構」表單（機構名稱、時區、自己的帳號與姓名、要不要載入預設設定），送出後成為第一位系統管理員。這取代「第一次啟動」的步驟 3、4。
+
+步驟：
+
+1. 在 [Google Cloud Console](https://console.cloud.google.com/apis/credentials) 建一個 OAuth 用戶端（類型：網頁應用程式），「已授權的重新導向 URI」填 `http://localhost:8088/api/v1/auth/google/callback`（port 跟 `OX_PORT` 一樣）。
+2. 把用戶端 ID 與密鑰寫進 `deploy/.env`：
+
+   ```
+   OX_GOOGLE_CLIENT_ID=….apps.googleusercontent.com
+   OX_GOOGLE_CLIENT_SECRET=…
+   OX_SETUP_EMAILS=you@example.com
+   ```
+
+   `OX_SETUP_EMAILS`（選用，建議設）限制誰可以開站；不設的話，站上沒有帳號的期間，第一個登入的 Google 帳號就會成為管理員。`OX_GOOGLE_ALLOWED_DOMAINS`（選用）限制只有這些網域的 email 可以登入。
+3. 重啟：`docker compose -f deploy/compose.yaml up -d`。伺服器記錄會有 `Google sign-in on`。
+4. 之後幫同事建帳號時帶上 email（不需要密碼）：
+
+   ```powershell
+   docker compose -f deploy/compose.yaml exec app oxledger user add alice "Alice" --email alice@example.com --no-password
+   ```
+
+   既有帳號用 `user set-email` 補上 email，就可以改用 Google 登入，密碼仍然有效。
+
+需要再確認身分的動作（委派 agent、發 token）：有密碼的人輸入密碼；只用 Google 登入的人會被帶去 Google 再回來。Google 不保證會要求重新輸入密碼，所以這一步只確認「瀏覽器裡登入的還是同一個 Google 帳號」。
 
 ## 選用設定
 

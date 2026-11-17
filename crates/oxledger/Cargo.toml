@@ -17,6 +17,10 @@ github = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:
 # HTTPS stack as `github`, no new crate. Off by default; without it a run
 # ends with `ai_unavailable` (`not_configured`).
 ai = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:webpki-roots", "dep:http-body-util"]
+# Google sign-in's token endpoint client (src/google/http.rs): the same HTTPS
+# stack again, no new crate. Off by default; without it Google sign-in is off
+# whatever the environment says.
+google = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:webpki-roots", "dep:http-body-util"]
 
 [dependencies]
 ammonia = "=4.2.4"

@@ -22,7 +22,9 @@
 	let { children } = $props();
 	let loadError = $state<unknown>(null);
 	let palette = $state(false);
-	const onLogin = $derived(page.url.pathname === '/login');
+	// Pages for people who are not signed in: the sign-in page and the page
+	// that opens a new site (reached from Google, before any user exists).
+	const onLogin = $derived(page.url.pathname === '/login' || page.url.pathname === '/setup');
 
 	onMount(async () => {
 		try {
