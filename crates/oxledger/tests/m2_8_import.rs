@@ -366,7 +366,7 @@ async fn t_m2_91_rows_fail_alone() {
     assert_eq!((s.done, s.ok, s.errors, s.skipped), (7, 3, 4, 0));
     let r = rows(&w, w.alice_ctx, id).await;
     assert_eq!(outcome(&r[0]), ("ok", None, None));
-    assert_eq!(r[1].error_code.as_deref(), Some("invalid_transition"));
+    assert_eq!(r[1].error_code.as_deref(), Some("workflow_disallowed"));
     assert_eq!(
         outcome(&r[2]),
         (
@@ -955,4 +955,95 @@ async fn t_m2_98_time_entries() {
     .unwrap();
     assert_eq!((r.closed, r.already), (0, 3));
     let _ = json!({});
+}
+
+/// Design 06 §6.12 step 6: the filter field `import_id` lists what one
+/// import created, to its owner only. Anyone else gets what a missing
+/// import gives (nothing), agents cannot ask, and filter-fields offers the
+/// owner's own imports.
+#[tokio::test]
+async fn import_id_filter_is_the_owners() {
+    let pool = test_pool().await;
+    let w = world(&pool).await;
+    let before = w.issue(w.web, "was here").await;
+    let d = upload(&w, w.alice_ctx, "issues", b"subject\nfirst\nsecond\n").await;
+    let id = d.status.id;
+    dry(&w, w.alice_ctx, id).await;
+    // Validated only: nothing to list yet.
+    let search = |who, v: serde_json::Value| {
+        oxledger::service::search(
+            &w.app,
+            who,
+            oxledger::service::SearchParams {
+                where_: Some(v),
+                limit: Some(100),
+                ..Default::default()
+            },
+        )
+    };
+    let by = |x: Uuid| json!({"field": "import_id", "op": "eq", "value": x});
+    assert!(search(w.alice_ctx, by(id)).await.unwrap().items.is_empty());
+    go(&w, w.alice_ctx, id).await;
+    let other = upload(&w, w.alice_ctx, "issues", b"subject\nthird\n").await;
+    dry(&w, w.alice_ctx, other.status.id).await;
+    go(&w, w.alice_ctx, other.status.id).await;
+
+    let mut made: Vec<Uuid> =
+        sqlx::query_scalar("SELECT issue_id FROM import_rows WHERE import_id = $1")
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    made.sort();
+    assert_eq!(made.len(), 2);
+    let ids = |r: oxledger::service::SearchResult| -> Vec<Uuid> {
+        let mut v: Vec<Uuid> = r.items.iter().map(|x| x.id).collect();
+        v.sort();
+        v
+    };
+    let mine = ids(search(w.alice_ctx, by(id)).await.unwrap());
+    assert_eq!(mine, made);
+    assert!(!mine.contains(&before));
+    // bob sees the same issues, but the import is not his: the same answer
+    // as an import that does not exist.
+    let bob = sign_in(&pool, &w.policy, "bob").await;
+    let seen = search(bob, json!({"field": "project", "op": "eq", "value": "WEB"}))
+        .await
+        .unwrap();
+    assert!(made.iter().all(|m| seen.items.iter().any(|x| x.id == *m)));
+    let theirs = serde_json::to_value(search(bob, by(id)).await.unwrap()).unwrap();
+    let missing = serde_json::to_value(search(bob, by(Uuid::now_v7())).await.unwrap()).unwrap();
+    assert_eq!(theirs["items"], json!([]));
+    assert_eq!(theirs, missing);
+    // Only `eq`, only an id.
+    for bad in [
+        json!({"field": "import_id", "op": "ne", "value": id}),
+        json!({"field": "import_id", "op": "eq", "value": "latest"}),
+    ] {
+        let e = search(w.alice_ctx, bad).await.unwrap_err();
+        assert!(classify(&e).is_some(), "{e:#}");
+    }
+    // Agents: no such field.
+    let ctx = w.delegate(w.web).await.unwrap().context_id;
+    let (_, agent) = w.token(ctx).await;
+    let e = search(agent, by(id)).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidArgument);
+    let field = |f: oxledger::filter::v2::FilterFields| {
+        f.fields.into_iter().find(|x| x.field == "import_id")
+    };
+    let ff = |who| oxledger::filter::v2::filter_fields(&w.app, who, None);
+    assert!(field(ff(agent).await.unwrap()).is_none());
+    let opts = |who| async move {
+        let f = field(ff(who).await.unwrap()).expect("people have the field");
+        f.options
+            .unwrap_or_default()
+            .into_iter()
+            .map(|o| o.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        opts(w.alice_ctx).await,
+        vec![other.status.id.to_string(), id.to_string()]
+    );
+    assert!(opts(bob).await.is_empty());
 }

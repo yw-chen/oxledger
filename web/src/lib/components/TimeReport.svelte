@@ -159,7 +159,7 @@
 	{:else if access === 'denied'}
 		<div class="empty" data-testid="time-denied">你沒有權限查看這個專案的工時。</div>
 	{:else}
-		<div class="row" style="justify-content:flex-end">{#if canImport}<a class="btn sm" href="/project/{projectKey}/imports/new?kind=time_entries" data-testid="tr-import">匯入</a>{/if}<button class="btn sm" onclick={exportCsv} disabled={exporting} data-testid="tr-export">{exporting ? '匯出中…' : '匯出 CSV'}</button></div>
+		<div class="row" style="justify-content:flex-end">{#if canImport}<a class="btn sm" href="/projects/{projectKey}/imports/new?kind=time_entries" data-testid="tr-import">匯入</a>{/if}<button class="btn sm" onclick={exportCsv} disabled={exporting} data-testid="tr-export">{exporting ? '匯出中…' : '匯出 CSV'}</button></div>
 		<div class="row" style="gap:10px;flex-wrap:wrap">
 			<label>期間
 				<select bind:value={per} data-testid="tr-period">

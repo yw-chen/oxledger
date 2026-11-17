@@ -1826,6 +1826,12 @@ test('CSV 匯入：上傳、對應、試跑、執行，壞掉的列不擋其他�
 	await wiz.getByTestId('import-confirm-run').click();
 	await expect(wiz.getByTestId('import-result')).toContainText('成功 1、失敗 1、略過 0', { timeout: 20000 });
 	await expect(wiz.getByTestId('import-created')).toContainText('AUTH-');
+	// 「查看建立的議題」: the search page with the condition import_id.
+	await expect(page).toHaveURL(/\/projects\/AUTH\/imports\/new/);
+	await wiz.getByTestId('import-view-created').click();
+	await expect(page.getByTestId('search-chips')).toContainText('CSV 匯入：AUTH ', { timeout: 20000 });
+	await expect(page.locator('#main')).toContainText('E2E 匯入的第一張', { timeout: 20000 });
+	await page.goBack();
 	await wiz.getByTestId('import-created').locator('a').first().click();
 	await expect(page.locator('body')).toContainText('E2E 匯入的第一張');
 });

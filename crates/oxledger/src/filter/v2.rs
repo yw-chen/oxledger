@@ -19,7 +19,7 @@ use super::{
     ASSIGNEE_FIELD, AUTHOR_FIELD, CATEGORY_FIELD, CREATED_FIELD, DUE_FIELD, ESTIMATED_FIELD,
     ON_BEHALF_FIELD, PRIORITY_FIELD, PRIVATE_FIELD, PROJECT_FIELD, START_FIELD, STATUS_FIELD,
     TRACKER_FIELD, TRIAGE_FIELD, TRIAGE_SELF_FIELD, UPDATED_FIELD, VERSION_FIELD, builtin_cond,
-    operators, readable_fields, spent_cond,
+    import_cond, operators, readable_fields, spent_cond,
 };
 use crate::auth::AuthContext;
 use crate::commands::canonical_number;
@@ -457,6 +457,8 @@ enum Fk {
     Estimated,
     /// Contract 05 §3.5.4: the time the caller can see (people only).
     Spent,
+    /// Design 06 §6.12: created by one of the caller's CSV imports (people only).
+    Import,
     Overdue,
     /// Contract 05 §3.4: the triage state.
     Triage,
@@ -557,6 +559,7 @@ pub const BUILTIN_FIELDS: &[(&str, &str, &[WhereOp])] = &[
         "number",
         &[O::Eq, O::Ne, O::Lt, O::Le, O::Gt, O::Ge, O::Between],
     ),
+    ("import_id", "ref", &[O::Eq]),
     ("overdue", "bool", &[O::Eq]),
     ("triage", "enum", &[O::Eq, O::In]),
     ("triage_self_decided", "bool", &[O::Eq]),
@@ -589,6 +592,7 @@ fn builtin_kind(name: &str) -> Option<Fk> {
         "updated_at" => Fk::Day(UPDATED_FIELD),
         "estimated_hours" => Fk::Estimated,
         "spent_hours" => Fk::Spent,
+        "import_id" => Fk::Import,
         "overdue" => Fk::Overdue,
         "triage" => Fk::Triage,
         "triage_self_decided" => Fk::TriageSelf,
@@ -924,11 +928,12 @@ async fn resolve_cond(
             (b.0.to_string(), b.2.iter().map(|o| o.as_str()).collect())
         }
     };
-    // Contract 05 §4 / R-VD7: agents get no spent_hours.
-    if kind == Fk::Spent && cx.caller.user_id().is_none() {
+    // Contract 05 §4 / R-VD7: agents get no spent_hours. Design 06 §6.12:
+    // import_id is the import owner's, and an import is owned by a person.
+    if matches!(kind, Fk::Spent | Fk::Import) && cx.caller.user_id().is_none() {
         return Err(ApiError::new(
             ErrorCode::InvalidArgument,
-            format!("{fpath}: spent_hours is not available to agents"),
+            format!("{fpath}: {canonical} is not available to agents"),
         )
         .with_details(json!({"path": fpath, "reason": "unavailable_to_agent"}))
         .into());
@@ -1141,6 +1146,23 @@ async fn resolve_cond(
                 _ => builtin_cond(ESTIMATED_FIELD, test),
             };
             Ok((built(path, f)?, cond_json(&canonical, op, Some(norm))))
+        }
+        Fk::Import => {
+            let v = single(path, op, value)?;
+            let vpath = format!("{path}.value");
+            let id = v
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s.trim()).ok())
+                .ok_or_else(|| {
+                    bad_value(&vpath, format!("{vpath}: expected an import id, got {v}"))
+                })?;
+            let Some(me) = cx.caller.user_id() else {
+                unreachable!("agents are refused above")
+            };
+            Ok((
+                built(path, import_cond(me, id))?,
+                cond_json(&canonical, op, Some(json!(id.to_string()))),
+            ))
         }
         Fk::Cf(i) => resolve_cf(cx, path, &canonical, i, op, value).await,
     }
@@ -1988,6 +2010,7 @@ pub(crate) fn label(field: &str) -> &'static str {
         "updated_at" => "更新時間",
         "estimated_hours" => "預估工時",
         "spent_hours" => "已記工時",
+        "import_id" => "CSV 匯入",
         "overdue" => "逾期",
         "triage" => "Triage",
         "triage_self_decided" => "自建自分流",
@@ -2048,8 +2071,9 @@ pub async fn filter_fields_in(
     let visible: Vec<Uuid> = scope.project_ids().collect();
     let mut fields = Vec::new();
     for (name, ty, ops) in BUILTIN_FIELDS {
-        // Contract 05 §4: agents get no spent_hours.
-        if *name == "spent_hours" && caller.user_id().is_none() {
+        // Contract 05 §4: agents get no spent_hours; design 06 §6.12: nor
+        // import_id.
+        if matches!(*name, "spent_hours" | "import_id") && caller.user_id().is_none() {
             continue;
         }
         let mut info = FilterFieldInfo {
@@ -2172,6 +2196,26 @@ pub async fn filter_fields_in(
             }
             "start_date" | "due_date" | "created_at" | "updated_at" => {
                 info.dynamic = vec!["rel", "range"];
+            }
+            // The caller's own imports that ran, in projects still in sight.
+            "import_id" => {
+                let me = caller.user_id();
+                let rows: Vec<FilterOption> = sqlx::query_as(
+                    "SELECT im.id::text AS id,
+                            p.key || ' ' || to_char(COALESCE(im.started_at, im.created_at)
+                                AT TIME ZONE (SELECT timezone FROM org_settings), 'YYYY-MM-DD HH24:MI') AS label,
+                            NULL::text AS key, NULL::text AS category, NULL::boolean AS active
+                       FROM imports im JOIN projects p ON p.id = im.project_id
+                      WHERE im.owner_id = $1 AND im.kind = 'issues' AND im.started_at IS NOT NULL
+                        AND im.project_id = ANY($2) AND ($3::uuid IS NULL OR im.project_id = $3)
+                      ORDER BY im.created_at DESC LIMIT 50",
+                )
+                .bind(me)
+                .bind(visible.clone())
+                .bind(project)
+                .fetch_all(&mut *conn)
+                .await?;
+                info.options = Some(rows);
             }
             _ => {}
         }

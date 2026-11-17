@@ -119,7 +119,7 @@ const ROW_ERROR: Record<string, string> = {
 	required_field_missing: '必填欄位沒有填',
 	forbidden_op: '你沒有做這件事的權限',
 	forbidden_field: '你不能填寫這個欄位',
-	invalid_transition: '不能直接建立成這個狀態（工作流程不允許）',
+	workflow_disallowed: '不能直接建立成這個狀態（工作流程不允許）',
 	invalid_value: '值不符合規則',
 	invalid_argument: '值不符合規則',
 	not_found: '找不到對應的對象',

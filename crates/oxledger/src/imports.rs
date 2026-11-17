@@ -1125,6 +1125,12 @@ fn engine_error(kind: Kind, e: &ApiError) -> RowError {
     if kind == Kind::TimeEntries && e.code == ErrorCode::NotFound {
         return row_err("unknown_value", "issue");
     }
+    // Design 06 §3.1 (row error codes): a transition the workflow does not
+    // allow is `workflow_disallowed` on a row, the same word fix rules use.
+    let code = match e.code {
+        ErrorCode::InvalidTransition => "workflow_disallowed",
+        _ => code,
+    };
     RowError {
         code: code.into(),
         field: named,

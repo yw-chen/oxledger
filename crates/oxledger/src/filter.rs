@@ -85,6 +85,11 @@ pub const TRIAGE_SELF_FIELD: i32 = -18;
 /// the viewer in `Filter::Cond::viewer` (see [`spent_cond`]); `applies`
 /// stays `True` like every built-in field. People only.
 pub const SPENT_FIELD: i32 = -19;
+/// Design 06 §6.12: the issue was created by this CSV import. It only ever
+/// matches for the import's owner, so its condition carries the viewer like
+/// [`SPENT_FIELD`] (see [`import_cond`]); to anyone else an import matches
+/// nothing, like one that does not exist. Takes `eq` only. People only.
+pub const IMPORT_FIELD: i32 = -20;
 
 /// v1 names of the built-in fields (contract 02 §17.15).
 const BUILTINS: &[(&str, i32, FieldType)] = &[
@@ -110,6 +115,8 @@ enum Col {
     TriageSelf,
     /// [`SPENT_FIELD`].
     Spent,
+    /// [`IMPORT_FIELD`].
+    Import,
 }
 
 fn builtin_col(id: i32) -> Option<Col> {
@@ -133,6 +140,7 @@ fn builtin_col(id: i32) -> Option<Col> {
         TRIAGE_FIELD => Col::Triage,
         TRIAGE_SELF_FIELD => Col::TriageSelf,
         SPENT_FIELD => Col::Spent,
+        IMPORT_FIELD => Col::Import,
         _ => return None,
     })
 }
@@ -183,6 +191,21 @@ pub fn spent_cond(viewer: Uuid, test: Test) -> Result<Filter> {
             ty,
         },
         test,
+        viewer,
+    )?)
+}
+
+/// "Created by import `import`", as `viewer` may know it ([`IMPORT_FIELD`]).
+pub fn import_cond(viewer: Uuid, import: Uuid) -> Result<Filter> {
+    let Some(ty) = builtin_type(IMPORT_FIELD) else {
+        anyhow::bail!("no import field");
+    };
+    Ok(Filter::cond_as(
+        Field {
+            id: IMPORT_FIELD,
+            ty,
+        },
+        Test::Cmp(Cmp::Eq, Value::Ref(import)),
         viewer,
     )?)
 }
@@ -1069,6 +1092,20 @@ fn push_builtin(
                                        AND te.user_id = '{u}'::uuid)
                   END)"
             )
+        }
+        // Uuids inline, as above. The rows of one import are read by its
+        // primary key; the owner is part of the test, not a separate check.
+        Col::Import => {
+            let (Some(u), Test::Cmp(Cmp::Eq, Value::Ref(import))) = (viewer, test) else {
+                unreachable!("IMPORT_FIELD carries its viewer and takes eq only (import_cond)")
+            };
+            qb.push(format!(
+                "({a}.id IN (SELECT ir.issue_id FROM import_rows ir
+                              JOIN imports im ON im.id = ir.import_id
+                             WHERE ir.import_id = '{import}'::uuid AND im.kind = 'issues'
+                               AND im.owner_id = '{u}'::uuid AND ir.issue_id IS NOT NULL))"
+            ));
+            return;
         }
         Col::Issue(c) => format!("{a}.{c}"),
         Col::Category => {

@@ -202,7 +202,7 @@
 			const d = await uploadImport(key, kind, file, (p) => (sending = p));
 			adopt(d);
 			step = 1;
-			await goto(`/project/${key}/imports/new?kind=${kind}&id=${d.id}`, { replaceState: true });
+			await goto(`/projects/${key}/imports/new?kind=${kind}&id=${d.id}`, { replaceState: true });
 		} catch (e) {
 			fileProblem = importFileProblem(e);
 			if (!fileProblem) error = e;
@@ -355,9 +355,9 @@
 		</ol>
 		<ErrorBox {error} />
 		{#if status?.state === 'expired'}
-			<div class="banner w" data-testid="import-expired">這個匯入已過期（7 天沒有動作），請重新上傳。<span class="sp"></span><a class="btn sm" href="/project/{key}/imports/new?kind={kind}">重新上傳</a></div>
+			<div class="banner w" data-testid="import-expired">這個匯入已過期（7 天沒有動作），請重新上傳。<span class="sp"></span><a class="btn sm" href="/projects/{key}/imports/new?kind={kind}">重新上傳</a></div>
 		{:else if status && !detail && step >= 1 && step <= 4 && !working(status)}
-			<div class="banner w" data-testid="import-no-file">這個匯入的檔案已經清除，請重新上傳。<span class="sp"></span><a class="btn sm" href="/project/{key}/imports/new?kind={kind}">重新上傳</a></div>
+			<div class="banner w" data-testid="import-no-file">這個匯入的檔案已經清除，請重新上傳。<span class="sp"></span><a class="btn sm" href="/projects/{key}/imports/new?kind={kind}">重新上傳</a></div>
 		{:else if step === 0}
 			<div
 				class="drop"
@@ -397,7 +397,7 @@
 								<td>{STATE_LABEL[m.state] ?? m.state}{#if m.state === 'done' || m.state === 'canceled'}（成功 {m.ok}、失敗 {m.errors}）{/if}</td>
 								<td>{m.row_count}</td>
 								<td>
-									<a href="/project/{key}/imports/new?kind={m.kind}&id={m.id}">開啟</a>
+									<a href="/projects/{key}/imports/new?kind={m.kind}&id={m.id}">開啟</a>
 									{#if !working(m) && m.file_available}<button type="button" class="lnk" onclick={() => discard(m.id)}>刪除檔案</button>{/if}
 								</td>
 							</tr>
@@ -539,7 +539,7 @@
 				<div class="row">
 					<button class="btn" onclick={report} data-testid="import-report">下載結果</button>
 					{#if status.ok > 0 && !undone}<button class="btn" onclick={() => (undoing = true)} data-testid="import-undo">撤銷這次匯入</button>{/if}
-					<a class="btn" href="/project/{key}/imports/new?kind={kind}">再匯入一個檔案</a>
+					<a class="btn" href="/projects/{key}/imports/new?kind={kind}">再匯入一個檔案</a>
 				</div>
 				{#if undoing}
 					<div class="card" data-testid="import-undo-dialog">
@@ -575,6 +575,7 @@
 				{/if}
 				{#if okRows.some((r) => r.issue_key)}
 					<h3>建立的議題</h3>
+					<p><a class="btn sm" href={`/search?where=${encodeURIComponent(JSON.stringify({ field: 'import_id', op: 'eq', value: id }))}`} data-testid="import-view-created">查看建立的議題</a></p>
 					<p class="keys" data-testid="import-created">
 						{#each okRows.filter((r) => r.issue_key) as r (r.row_no)}<a href="/issue/{r.issue_key}">{r.issue_key}</a>{' '}{/each}
 						{#if status.ok > okRows.length}<span class="hint">…只列出前 {okRows.length} 張；全部請下載結果。</span>{/if}
