@@ -322,3 +322,4 @@
 - **migration 0038**：新表 `attachment_redactions`；`attachments.redaction_id` 加 FK（`NOT VALID`，只檢查之後寫入的列）。不動角色、權限、成員或專案。
 - **新端點** `POST /attachments/{id}/redact`（要 `manage_project`）：檔名換成 `[已遮蔽]`、內容立刻清除，同一內容在該專案的其他附件一起標為遮蔽；遮蔽會讓專案的 security epoch 加一。遮蔽留言時，留言的附件一起遮蔽；遮蔽議題事件時，可用 `attachments` 指定一起遮蔽的議題附件。
 - **背景清理**：設了 `OXLEDGER_FILES_DIR` 時每小時清掉過期的上傳與沒人用、刪除超過 30 天的內容，每日掃描並刪除孤兒檔與 24 小時以上的暫存檔。新 worker 指標 `files`。
+- **Markdown 圖片**（R-M4）：`![說明](attachment:檔名)` 或 `![說明](/api/v1/attachments/{id}/content)` 會內嵌同一容器的圖片附件（說明：議題層附件；留言：自己的＋議題層；wiki：該頁），其他圖片仍是「外部圖片」文字。`format_version` 升為 2。`POST /markdown/preview` 的 context 可帶 `wiki_page`。若設了 `OXLEDGER_FILES_ORIGIN` 又在反向代理加了 CSP，`img-src` 要包含那個下載網域，否則內嵌圖片會被擋。

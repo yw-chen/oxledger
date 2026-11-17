@@ -25,9 +25,16 @@
 //! use (R-M11).
 //!
 //! A `[[…]]` link (R-RF4) links to a page of a wiki the reader can read
-//! (or, missing and editable, to its creation); otherwise its text. Until
-//! M2.4 there are no attachments: no image is ever loaded (R-M4 "A2 不做附件
-//! 時"), and `img` is not on the allow list at all.
+//! (or, missing and editable, to its creation); otherwise its text.
+//!
+//! Images (R-M4): `![alt](attachment:name)` and
+//! `![alt](/attachments/{id}/content)` become an `img` placeholder in stage
+//! 1; stage 2 makes it an `<img>` only when it names an image attachment in
+//! the text's own scope ([`ImageScope`]: a description its issue-level
+//! attachments, a note its own and those, a wiki page its own), not deleted
+//! or redacted; otherwise, like every other image, the text 「外部圖片：alt」.
+//! So a delete or a redaction shows at once, cache or not. `img` is never
+//! on stage 1's allow list: only stage 2's template writes one.
 
 use crate::auth::AuthContext;
 use crate::commands::TextFormat;
@@ -51,7 +58,7 @@ use uuid::Uuid;
 
 /// R-M1: bumped when the dialect or the rules change (a cache key part;
 /// also returned to the SPA).
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// R-M7: the most a render takes; longer text is shown as plain text.
 pub const MAX_INPUT_BYTES: usize = 512 * 1024;
 /// R-M7: references (issue keys, mentions, wiki links) one text resolves;
@@ -495,6 +502,32 @@ fn image_host(raw: &str) -> Option<String> {
     }
 }
 
+/// R-M4: `attachment:name` (percent-decoded, NFC and trimmed like a
+/// stored name) → `n:name`; exactly `/api/v1/attachments/{id}/content` (the
+/// download address) or `/attachments/{id}/content` → `i:id`; anything else
+/// is not an attachment.
+fn image_ref(raw: &str) -> Option<String> {
+    use unicode_normalization::UnicodeNormalization;
+    let t = raw.trim();
+    if let Some(name) = t.strip_prefix("attachment:") {
+        let name = percent_encoding::percent_decode_str(name)
+            .decode_utf8()
+            .ok()?;
+        let name: String = name.nfc().collect::<String>().trim().to_string();
+        let ok = !name.is_empty()
+            && name.chars().count() <= 255
+            && !name.chars().any(|c| c.is_control());
+        return ok.then(|| format!("n:{name}"));
+    }
+    let path = t.strip_prefix("/api/v1").unwrap_or(t);
+    let id = path
+        .strip_prefix("/attachments/")?
+        .strip_suffix("/content")?;
+    let u = Uuid::parse_str(id).ok()?;
+    (id.len() == 36 && u.hyphenated().to_string() == id.to_ascii_lowercase())
+        .then(|| format!("i:{u}"))
+}
+
 #[derive(Default)]
 struct FmtCtx {
     agent: bool,
@@ -516,6 +549,13 @@ create_formatter!(Fmt<FmtCtx>, {
     NodeValue::Image(ref nl) => |context, node, entering| {
         if entering {
             let alt = node.collect_text();
+            // R-M4: an attachment of this site, resolved per text in stage 2.
+            if let Some(v) = image_ref(&nl.url) {
+                context.write_str(&open_ref("img", &v))?;
+                context.write_str(&esc(&format!("外部圖片：{alt}")))?;
+                context.write_str("</span>")?;
+                return Ok(ChildRendering::Skip);
+            }
             let label = match image_host(&nl.url) {
                 Some(h) if !h.is_empty() => format!("外部圖片：{alt}（{h}）"),
                 _ => format!("外部圖片：{alt}"),
@@ -940,7 +980,7 @@ fn filter_attr<'u>(short: &str, el: &str, attr: &str, value: &'u str) -> Option<
         ("a", "rel") => (value == REL_EXTERNAL || value == REL_MAILTO).then_some(value.into()),
         ("a", "data-ox-agent") => Some("".into()),
         ("span", "data-ox-ref") => {
-            matches!(value, "issue" | "user" | "wiki").then_some(value.into())
+            matches!(value, "issue" | "user" | "wiki" | "img").then_some(value.into())
         }
         ("input", "type") => (value == "checkbox").then_some(value.into()),
         ("input", "checked") => Some("".into()),
@@ -1016,11 +1056,30 @@ pub struct Resolver {
     /// Wiki link value (as escaped in the placeholder) → (href, class), for
     /// pages the reader may open or create (R-RF4).
     wiki: HashMap<String, (String, &'static str)>,
+    /// R-M4: (scope, image value as escaped in the placeholder) → the
+    /// attachment shown.
+    images: HashMap<(ImageScope, String), Uuid>,
+}
+
+/// R-M4: the attachments a text's images may show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ImageScope {
+    /// None (a preview without a container).
+    #[default]
+    None,
+    /// An issue's description: its issue-level attachments.
+    Description { issue: Uuid },
+    /// A note: its own attachments and the issue-level ones (not another
+    /// note's: a private note's would show through).
+    Note { issue: Uuid, note: Uuid },
+    /// A wiki page: its own.
+    Wiki { page: Uuid },
 }
 
 /// `&amp;` and friends back to text (the placeholder value is escaped).
 fn unesc(s: &str) -> String {
-    s.replace("&quot;", "\"")
+    s.replace("&nbsp;", "\u{a0}")
+        .replace("&quot;", "\"")
         .replace("&#x27;", "'")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -1029,11 +1088,16 @@ fn unesc(s: &str) -> String {
 
 /// The wiki link values of a stage 1 HTML, as escaped there.
 fn wiki_values(html: &str) -> Vec<String> {
-    const OPEN: &str = "<span data-ox-ref=\"wiki\" data-ox-v=\"";
+    ref_values(html, "wiki")
+}
+
+/// The values of one kind of placeholder of a stage 1 HTML, as escaped.
+fn ref_values(html: &str, kind: &str) -> Vec<String> {
+    let open = format!("<span data-ox-ref=\"{kind}\" data-ox-v=\"");
     let mut out = Vec::new();
     let mut rest = html;
-    while let Some(at) = rest.find(OPEN) {
-        let after = &rest[at + OPEN.len()..];
+    while let Some(at) = rest.find(&open) {
+        let after = &rest[at + open.len()..];
         match after.find('"') {
             Some(end) => {
                 out.push(after[..end].to_string());
@@ -1120,8 +1184,102 @@ impl Resolver {
         Ok(r)
     }
 
+    /// R-M4: the attachments the images of `docs` show, each text in its
+    /// own scope. The reader sees the texts' containers already.
+    pub async fn load_images(
+        &mut self,
+        conn: &mut PgConnection,
+        docs: &[(&Stage1, ImageScope)],
+    ) -> Result<()> {
+        // One query per issue or page (a description and its notes together).
+        #[derive(PartialEq, Eq, Hash, Clone, Copy)]
+        enum Holder {
+            Issue(Uuid),
+            Page(Uuid),
+        }
+        let mut wanted: HashMap<Holder, Vec<(ImageScope, Vec<String>)>> = HashMap::new();
+        for (d, scope) in docs {
+            let holder = match *scope {
+                ImageScope::None => continue,
+                ImageScope::Description { issue } | ImageScope::Note { issue, .. } => {
+                    Holder::Issue(issue)
+                }
+                ImageScope::Wiki { page } => Holder::Page(page),
+            };
+            let v = ref_values(&d.html, "img");
+            if !v.is_empty() {
+                wanted.entry(holder).or_default().push((*scope, v));
+            }
+        }
+        for (holder, texts) in wanted {
+            let mut names = BTreeSet::new();
+            let mut ids = BTreeSet::new();
+            for v in texts.iter().flat_map(|(_, v)| v) {
+                let plain = unesc(v);
+                if let Some(n) = plain.strip_prefix("n:") {
+                    names.insert(n.to_string());
+                } else if let Some(id) = plain
+                    .strip_prefix("i:")
+                    .and_then(|i| Uuid::parse_str(i).ok())
+                {
+                    ids.insert(id);
+                }
+            }
+            let names: Vec<String> = names.into_iter().collect();
+            let ids: Vec<Uuid> = ids.into_iter().collect();
+            let (cond, h) = match holder {
+                Holder::Issue(i) => ("a.issue_id = $1", i),
+                Holder::Page(p) => ("a.wiki_page_id = $1", p),
+            };
+            // Newest first: of several with one name, the newest is shown.
+            let rows: Vec<(Uuid, String, Option<Uuid>, String)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "SELECT a.id, a.filename, a.note_id, b.sniffed_type FROM attachments a
+                     JOIN attachment_blobs b ON b.id = a.blob_id
+                     WHERE {cond}
+                       AND a.deleted_at IS NULL AND a.redacted_at IS NULL AND b.state = 'present'
+                       AND (a.filename = ANY($2) OR a.id = ANY($3))
+                     ORDER BY a.created_at DESC, a.id DESC"
+                )))
+                .bind(h)
+                .bind(&names)
+                .bind(&ids)
+                .fetch_all(&mut *conn)
+                .await?;
+            for (scope, values) in texts {
+                // A description: issue-level ones only; a note: its own too
+                // (not another note's); a page: its own.
+                let own = match scope {
+                    ImageScope::Note { note, .. } => Some(note),
+                    _ => None,
+                };
+                let mut found: HashMap<String, Uuid> = HashMap::new();
+                for (id, filename, note, ty) in &rows {
+                    // R-A3: shown only when its content is an image.
+                    if (note.is_some() && *note != own) || !crate::attachments::is_image(ty) {
+                        continue;
+                    }
+                    found.entry(format!("i:{id}")).or_insert(*id);
+                    found.entry(format!("n:{filename}")).or_insert(*id);
+                }
+                // Keyed by the value as the placeholder holds it.
+                for v in values {
+                    if let Some(id) = found.get(&unesc(&v)) {
+                        self.images.insert((scope, v), *id);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Stage 2 of one text: every placeholder as this reader sees it.
     pub fn finish(&self, s: &Stage1) -> String {
+        self.finish_in(s, ImageScope::None)
+    }
+
+    /// [`Resolver::finish`] for a text whose images resolve in `scope`.
+    pub fn finish_in(&self, s: &Stage1, scope: ImageScope) -> String {
         const OPEN: &str = "<span data-ox-ref=\"";
         let html = &s.html;
         let mut out = String::with_capacity(html.len());
@@ -1164,6 +1322,22 @@ impl Resolver {
                     }
                     None => out.push_str(inner),
                 },
+                // R-M4: an image attachment of the text's scope; otherwise
+                // the 「外部圖片」 text.
+                "img" => match self.images.get(&(scope, value.to_string())) {
+                    Some(id) => {
+                        let alt = unesc(inner);
+                        let alt = alt.strip_prefix("外部圖片：").unwrap_or(&alt);
+                        let _ = write!(
+                            out,
+                            r#"<img src="/api/v1/attachments/{id}/content" alt="{}" loading="lazy">"#,
+                            esc(alt)
+                        );
+                    }
+                    None => {
+                        let _ = write!(out, r#"<span class="ox-img-ext">{inner}</span>"#);
+                    }
+                },
                 // R-RF4: a page the reader may open (or create); otherwise
                 // the link's text, the same for a wiki they cannot read.
                 _ => match self.wiki.get(value) {
@@ -1191,6 +1365,7 @@ fn parse_placeholder(s: &str) -> Option<(&'static str, &str, &str, usize)> {
         "issue" => "issue",
         "user" => "user",
         "wiki" => "wiki",
+        "img" => "img",
         _ => return None,
     };
     let s2 = s[q..].strip_prefix("\" data-ox-v=\"")?;
@@ -1230,6 +1405,8 @@ pub async fn description_by_agent(conn: &mut PgConnection, issue: Uuid) -> Resul
 pub struct Text<'a> {
     pub text: &'a str,
     pub src: Source,
+    /// R-M4: the attachments its images may show.
+    pub images: ImageScope,
 }
 
 /// Both stages of `texts` (one lookup for all of them), for `caller`.
@@ -1241,8 +1418,18 @@ pub async fn render_for(
 ) -> Result<Vec<String>> {
     let s1: Vec<Arc<Stage1>> = texts.iter().map(|t| stage1(t.text, t.src)).collect();
     let refs: Vec<&Stage1> = s1.iter().map(|s| s.as_ref()).collect();
-    let r = Resolver::load(&mut *conn, caller, project, &refs).await?;
-    Ok(s1.iter().map(|s| r.finish(s)).collect())
+    let mut r = Resolver::load(&mut *conn, caller, project, &refs).await?;
+    let scoped: Vec<(&Stage1, ImageScope)> = s1
+        .iter()
+        .zip(texts)
+        .map(|(s, t)| (s.as_ref(), t.images))
+        .collect();
+    r.load_images(&mut *conn, &scoped).await?;
+    Ok(s1
+        .iter()
+        .zip(texts)
+        .map(|(s, t)| r.finish_in(s, t.images))
+        .collect())
 }
 
 // ---------------------------------------------------------------- preview
@@ -1270,6 +1457,10 @@ pub struct MarkdownPreviewContext {
     pub project: Option<String>,
     /// A project id or key whose wiki the page is in.
     pub wiki_project: Option<String>,
+    /// With `wiki_project`: the page's title when it exists already, so its
+    /// attachments show as images like once saved (R-M4).
+    #[serde(default)]
+    pub wiki_page: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1329,6 +1520,7 @@ pub async fn preview(
     let c = &input.context;
     let mut tx = read_tx(app).await?;
     // Visibility first (02 §6.7), then the size.
+    let mut images = ImageScope::None;
     let (project, container) = match (&c.issue, &c.project, &c.wiki_project) {
         (Some(key), None, None) => {
             let (id, _) = crate::service::get_in(&mut tx, caller, key).await?;
@@ -1336,6 +1528,7 @@ pub async fn preview(
                 .bind(id)
                 .fetch_one(&mut *tx)
                 .await?;
+            images = ImageScope::Description { issue: id };
             (p, id)
         }
         (None, Some(p), None) => {
@@ -1347,6 +1540,11 @@ pub async fn preview(
             // missing one. The container is the project (a page has its id
             // only once saved).
             let a = crate::wiki::access(&mut tx, caller, p).await?;
+            if let Some(t) = &c.wiki_page
+                && let Some(page) = crate::wiki::live_page_id(&mut tx, &a, t).await?
+            {
+                images = ImageScope::Wiki { page };
+            }
             (a.project, a.project)
         }
         _ => {
@@ -1372,8 +1570,9 @@ pub async fn preview(
         container,
     };
     let s1 = stage1(&input.text, src);
-    let r = Resolver::load(&mut tx, caller, project, &[s1.as_ref()]).await?;
-    let html = r.finish(&s1);
+    let mut r = Resolver::load(&mut tx, caller, project, &[s1.as_ref()]).await?;
+    r.load_images(&mut tx, &[(s1.as_ref(), images)]).await?;
+    let html = r.finish_in(&s1, images);
     tx.commit().await?;
     Ok(MarkdownPreviewResult {
         html,

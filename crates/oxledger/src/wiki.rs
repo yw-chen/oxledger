@@ -1351,6 +1351,17 @@ pub(crate) async fn page_for_attachments(
     })
 }
 
+/// R-M4 preview: the live page `title` of `a`'s wiki, if there is one.
+pub(crate) async fn live_page_id(
+    conn: &mut PgConnection,
+    a: &Access,
+    title: &str,
+) -> Result<Option<Uuid>> {
+    Ok(resolve(&mut *conn, a.project, Some(title), None)
+        .await?
+        .map(|p| p.id))
+}
+
 /// `attachment_added` / `attachment_removed` on a page (R-A7).
 pub(crate) async fn attachment_event(
     conn: &mut PgConnection,
@@ -2540,6 +2551,7 @@ async fn render(
                 agent,
                 container,
             },
+            images: markdown::ImageScope::Wiki { page: container },
         }],
     )
     .await?

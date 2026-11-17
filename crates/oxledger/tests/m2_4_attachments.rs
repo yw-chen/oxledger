@@ -2511,3 +2511,302 @@ async fn attachment_redaction_more() {
     .await;
     assert!(n >= 1);
 }
+
+/// R-M4, T-M2-07, T-M2-07a: images resolve in the text's own scope only.
+#[tokio::test]
+async fn markdown_images() {
+    use oxledger::markdown::{ImageScope, Source, Text, render_for};
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    grant(&pool, w.dev, &["manage_project"]).await;
+    let a = w.alice_ctx;
+    let one = w.issue(w.web, "one").await;
+    let two = w.issue(w.web, "two").await;
+    let key = key_of(&pool, one).await;
+    let png = |tag: &str| -> Vec<u8> { [PNG, tag.as_bytes()].concat() };
+    let issue_level = |issue: Uuid, name: &'static str, bytes: Vec<u8>| {
+        let w = &w;
+        let pool = pool.clone();
+        async move {
+            let u = up(w, a, "WEB", name, &bytes).await.unwrap();
+            attach_upload(w, a, &key_of(&pool, issue).await, u.upload_id).await
+        }
+    };
+    let note_with = |body: &'static str, private: bool, name: &'static str, bytes: Vec<u8>| {
+        let w = &w;
+        let pool = pool.clone();
+        async move {
+            let u = up(w, a, "WEB", name, &bytes).await.unwrap();
+            run(
+                w,
+                a,
+                json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                        "target": {"type": "issue", "id": one}, "body": body,
+                        "is_private": private,
+                        "attachments": [{"upload_id": u.upload_id}]}]),
+            )
+            .await
+            .unwrap();
+            let note: Uuid = sqlx::query_scalar(
+                "SELECT id FROM issue_notes WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(one)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let att: Uuid = sqlx::query_scalar("SELECT id FROM attachments WHERE note_id = $1")
+                .bind(note)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            (note, att)
+        }
+    };
+    let x = issue_level(one, "x.png", png("x")).await;
+    let doc = issue_level(one, "doc.txt", b"just text".to_vec()).await;
+    let other = issue_level(two, "other.png", png("other")).await;
+    let (private_note, p) = note_with("secret", true, "p.png", png("p")).await;
+    let (open_note, own) = note_with("see", false, "own.png", png("own")).await;
+    let render = |text: String, container: Uuid, images: ImageScope| {
+        let w = &w;
+        async move {
+            let mut conn = w.app.pool.acquire().await.unwrap();
+            render_for(
+                &mut conn,
+                a,
+                w.web,
+                &[Text {
+                    text: &text,
+                    src: Source {
+                        format: oxledger::commands::TextFormat::Markdown,
+                        agent: false,
+                        container,
+                    },
+                    images,
+                }],
+            )
+            .await
+            .unwrap()
+            .remove(0)
+        }
+    };
+    let img = |id: Uuid| format!(r#"<img src="/api/v1/attachments/{id}/content""#);
+
+    // T-M2-07: the same scope's attachment only; another issue's, an
+    // external address, data:, a text file: the 「外部圖片」 text.
+    let text = format!(
+        "![a](attachment:x.png) ![c](/attachments/{other}/content) \
+         ![d](https://evil.example/i.png) ![e](data:image/png;base64,AAAA) \
+         ![f](attachment:doc.txt) ![g](/attachments/{x}/content) \
+         ![h](/api/v1/attachments/{x}/content) ![i](/api/v1/attachments/{x}/content/../x)"
+    );
+    let desc = ImageScope::Description { issue: one };
+    let h = render(text, one, desc).await;
+    assert!(h.contains(&format!(r#"{} alt="a""#, img(x))), "{h}");
+    assert!(h.contains(&format!(r#"{} alt="g""#, img(x))), "{h}");
+    assert!(h.contains(&format!(r#"{} alt="h""#, img(x))), "{h}");
+    assert_eq!(h.matches("<img").count(), 3, "{h}");
+    assert!(h.contains("外部圖片：c"), "{h}");
+    assert!(h.contains("外部圖片：d（evil.example）"), "{h}");
+    assert!(h.contains("外部圖片：e"), "{h}");
+    assert!(h.contains("外部圖片：f"), "{h}");
+    assert!(!h.contains(&other.to_string()), "{h}");
+    let _ = doc;
+
+    // T-M2-07a: a description does not show a note's attachment; a note
+    // shows its own and the issue-level ones, not another note's.
+    let h = render("![](attachment:p.png)".into(), one, desc).await;
+    assert!(!h.contains("<img"), "{h}");
+    let note_scope = ImageScope::Note {
+        issue: one,
+        note: open_note,
+    };
+    let h = render(
+        "![](attachment:x.png) ![](attachment:own.png) ![](attachment:p.png)".into(),
+        open_note,
+        note_scope,
+    )
+    .await;
+    assert!(h.contains(&img(x)) && h.contains(&img(own)), "{h}");
+    assert!(!h.contains(&img(p)), "{h}");
+    let h = render(
+        "![](attachment:p.png)".into(),
+        private_note,
+        ImageScope::Note {
+            issue: one,
+            note: private_note,
+        },
+    )
+    .await;
+    assert!(h.contains(&img(p)), "{h}");
+    // The alt text stays text.
+    let h = render(
+        "![\"><script>x</script>&amp;](attachment:x.png)".into(),
+        one,
+        desc,
+    )
+    .await;
+    assert!(h.contains(r#"alt="&quot;&gt;x&amp;""#), "{h}");
+    assert!(!h.contains("<script"), "{h}");
+    // A name typed decomposed (NFD) finds the stored (NFC) one.
+    let cafe = issue_level(one, "caf\u{e9}.png", png("cafe")).await;
+    let h = render("![](attachment:cafe%CC%81.png)".into(), one, desc).await;
+    assert!(h.contains(&img(cafe)), "{h}");
+    // No scope (a project preview): nothing loads.
+    let h = render("![](attachment:x.png)".into(), w.web, ImageScope::None).await;
+    assert!(!h.contains("<img"), "{h}");
+
+    // The newest of one name; a deleted one gives way; a redacted one goes.
+    let x2 = issue_level(one, "x.png", png("x2")).await;
+    let h = render("![](attachment:x.png)".into(), one, desc).await;
+    assert!(h.contains(&img(x2)), "{h}");
+    run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": x2}}]),
+    )
+    .await
+    .unwrap();
+    let h = render("![](attachment:x.png)".into(), one, desc).await;
+    assert!(h.contains(&img(x)), "{h}");
+    // A name needing escapes, percent-encoded in the link.
+    let odd = issue_level(one, "a b'<c>.png", png("odd")).await;
+    let h = render("![q](attachment:a%20b'%3Cc%3E.png)".into(), one, desc).await;
+    assert!(h.contains(&img(odd)), "{h}");
+    oxledger::redaction::redact(
+        &w.app,
+        a,
+        &w.policy,
+        Uuid::now_v7(),
+        &oxledger::redaction::Target::Attachment { id: x },
+        &oxledger::redaction::RedactInput {
+            reason_code: "confidential".into(),
+            reason: "r".into(),
+            attachments: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let h = render("![](attachment:x.png)".into(), one, desc).await;
+    assert!(!h.contains("<img"), "{h}");
+
+    // Through the issue view: the description's HTML.
+    exec(
+        &pool,
+        &format!(
+            "UPDATE issues SET description =
+                    '![d](attachment:own.png) ![o](attachment:a%20b%27%3Cc%3E.png)',
+                    description_format = 'markdown' WHERE id = '{one}'"
+        ),
+    )
+    .await;
+    let v = oxledger::service::get(&w.app, a, &key).await.unwrap();
+    let h = v.description_html.unwrap();
+    assert!(h.contains(&img(odd)), "{h}");
+    assert!(!h.contains(&img(own)), "{h}");
+}
+
+/// R-M4: a wiki page shows its own attachments only; the preview of an
+/// existing page does the same.
+#[tokio::test]
+async fn markdown_images_wiki() {
+    use oxledger::markdown::{
+        ImageScope, MarkdownPreviewContext, MarkdownPreviewInput, Source, Text, preview, render_for,
+    };
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(
+        &pool,
+        w.dev,
+        &["view_wiki_pages", "view_wiki_edits", "edit_wiki_pages"],
+    )
+    .await;
+    let a = w.alice_ctx;
+    let put = |page: &'static str, body: &'static str, name: &'static str, tag: &'static str| {
+        let w = &w;
+        async move {
+            let u = up(w, a, "WEB", name, &[PNG, tag.as_bytes()].concat())
+                .await
+                .unwrap();
+            let r = run(
+                w,
+                a,
+                json!([{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                        "target": {"project": "WEB", "page": page},
+                        "body": body, "attachments": [{"upload_id": u.upload_id}]}]),
+            )
+            .await
+            .unwrap();
+            let page: Uuid = serde_json::from_value(r["items"][0]["wiki_page_id"].clone()).unwrap();
+            (page, ids_of(&r)[0])
+        }
+    };
+    let text = "![m](attachment:mine.png) ![t](attachment:theirs.png)";
+    let (plan, mine) = put("Plan", text, "mine.png", "mine").await;
+    let (_, theirs) = put("Other", "# x", "theirs.png", "theirs").await;
+    let mut conn = w.app.pool.acquire().await.unwrap();
+    let h = render_for(
+        &mut conn,
+        a,
+        w.web,
+        &[Text {
+            text,
+            src: Source {
+                format: oxledger::commands::TextFormat::Markdown,
+                agent: false,
+                container: plan,
+            },
+            images: ImageScope::Wiki { page: plan },
+        }],
+    )
+    .await
+    .unwrap()
+    .remove(0);
+    drop(conn);
+    assert!(
+        h.contains(&format!("/api/v1/attachments/{mine}/content")),
+        "{h}"
+    );
+    assert!(!h.contains(&theirs.to_string()), "{h}");
+    assert!(h.contains("外部圖片：t"), "{h}");
+    // The page as served.
+    let p = oxledger::wiki::page(&w.app, a, "WEB", "Plan")
+        .await
+        .unwrap();
+    let served = serde_json::to_string(&p).unwrap();
+    assert!(
+        served.contains(&format!("/api/v1/attachments/{mine}/content")),
+        "{served}"
+    );
+    // The preview of the existing page; a new page's preview loads nothing.
+    let pv = |page: Option<&str>| MarkdownPreviewInput {
+        text: text.into(),
+        format: None,
+        context: MarkdownPreviewContext {
+            issue: None,
+            project: None,
+            wiki_project: Some("WEB".into()),
+            wiki_page: page.map(String::from),
+        },
+    };
+    let r = preview(&w.app, a, &pv(Some("Plan"))).await.unwrap();
+    assert!(
+        r.html
+            .contains(&format!("/api/v1/attachments/{mine}/content")),
+        "{}",
+        r.html
+    );
+    assert_eq!(r.html.matches("<img").count(), 1, "{}", r.html);
+    let r = preview(&w.app, a, &pv(Some("New page"))).await.unwrap();
+    assert!(!r.html.contains("<img"), "{}", r.html);
+}

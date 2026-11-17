@@ -1108,10 +1108,19 @@ async fn prefs_put(w: &World, who: AuthContext, patch: Value) {
 
 async fn render(w: &World, who: AuthContext, project: Uuid, text: &str, s: Source) -> String {
     let mut c = w.pool.acquire().await.unwrap();
-    markdown::render_for(&mut c, who, project, &[Text { text, src: s }])
-        .await
-        .unwrap()
-        .remove(0)
+    markdown::render_for(
+        &mut c,
+        who,
+        project,
+        &[Text {
+            text,
+            src: s,
+            images: markdown::ImageScope::None,
+        }],
+    )
+    .await
+    .unwrap()
+    .remove(0)
 }
 
 fn mdsrc(container: Uuid) -> Source {
@@ -1494,11 +1503,13 @@ async fn t_m2_09_preview() {
         issue: Some(k.into()),
         project: None,
         wiki_project: None,
+        wiki_page: None,
     };
     let project = |k: &str| PreviewContext {
         issue: None,
         project: Some(k.into()),
         wiki_project: None,
+        wiki_page: None,
     };
     let text = format!("**b** {k1} {k2}");
     let r = markdown::preview(&w.app, f.dave_ctx, &pv(issue(&k1), &text))
@@ -1556,6 +1567,7 @@ async fn t_m2_09_preview() {
                 issue: None,
                 project: None,
                 wiki_project: Some("AUTH".into()),
+                wiki_page: None,
             },
             "x",
         ),
@@ -1571,6 +1583,7 @@ async fn t_m2_09_preview() {
                 issue: Some(k1.clone()),
                 project: Some("AUTH".into()),
                 wiki_project: None,
+                wiki_page: None,
             },
             "x",
         ),
@@ -1618,6 +1631,7 @@ async fn missing_issue(w: &World, who: AuthContext) -> anyhow::Error {
                 issue: Some("AUTH-9999".into()),
                 project: None,
                 wiki_project: None,
+                wiki_page: None,
             },
             text: "x".into(),
             format: None,
@@ -2101,7 +2115,7 @@ async fn m2_1_http() {
             .contains("ox-mention"),
         "{body}"
     );
-    assert_eq!(body["data"]["format_version"], 1);
+    assert_eq!(body["data"]["format_version"], markdown::FORMAT_VERSION);
     let (s1, b1) = call(
         &r,
         &dave,

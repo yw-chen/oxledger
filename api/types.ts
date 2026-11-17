@@ -1503,6 +1503,8 @@ export type MarkdownPreviewContext = {
   issue?: string | null;
   /** A project id or key. */
   project?: string | null;
+  /** With `wiki_project`: the page's title when it exists already, so its attachments show as images like once saved (R-M4). */
+  wiki_page?: string | null;
   /** A project id or key whose wiki the page is in. */
   wiki_project?: string | null;
 };

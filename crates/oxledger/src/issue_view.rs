@@ -651,6 +651,7 @@ async fn render_html(
             agent: by_agent,
             container: issue,
         },
+        images: crate::markdown::ImageScope::Description { issue },
     }];
     if let Some(notes) = &v.recent_notes {
         for n in &notes.items {
@@ -660,6 +661,10 @@ async fn render_html(
                     format: TextFormat::from_db(&n.body_format),
                     agent: n.by_agent,
                     container: n.note_id,
+                },
+                images: crate::markdown::ImageScope::Note {
+                    issue,
+                    note: n.note_id,
                 },
             });
         }

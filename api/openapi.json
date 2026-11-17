@@ -5853,6 +5853,14 @@
               "null"
             ]
           },
+          "wiki_page": {
+            "default": null,
+            "description": "With `wiki_project`: the page's title when it exists already, so its\nattachments show as images like once saved (R-M4).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "wiki_project": {
             "description": "A project id or key whose wiki the page is in.",
             "type": [

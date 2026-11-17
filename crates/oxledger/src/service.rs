@@ -2309,6 +2309,7 @@ pub async fn get(app: &App, caller: AuthContext, key: &str) -> Result<IssueDetai
                 agent: by_agent,
                 container: id,
             },
+            images: crate::markdown::ImageScope::Description { issue: id },
         }],
     )
     .await?;
