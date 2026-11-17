@@ -177,6 +177,7 @@ fn why() -> RedactInput {
     RedactInput {
         reason_code: "confidential".into(),
         reason: "customer data pasted by mistake".into(),
+        attachments: Vec::new(),
     }
 }
 
@@ -296,6 +297,7 @@ async fn note_redaction_and_proposals() {
     let bad = RedactInput {
         reason_code: "because".into(),
         reason: "x".into(),
+        attachments: Vec::new(),
     };
     let err = redaction::redact(
         &w.app,
@@ -544,6 +546,7 @@ async fn events_versions_and_settings() {
     let long = RedactInput {
         reason_code: "other".into(),
         reason: "x".repeat(501),
+        attachments: Vec::new(),
     };
     let err = redaction::redact(&w.app, w.alice_ctx, &w.policy, Uuid::now_v7(), &t, &long)
         .await

@@ -424,6 +424,7 @@ async fn m1_0_field_changes() {
                 &RedactInput {
                     reason_code: "confidential".into(),
                     reason: "wrong status history".into(),
+                    attachments: Vec::new(),
                 },
             )
             .await

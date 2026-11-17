@@ -571,6 +571,7 @@ async fn t_m2_mentions() {
         &RedactInput {
             reason_code: "personal_data".into(),
             reason: "test".into(),
+            attachments: Vec::new(),
         },
     )
     .await
@@ -599,6 +600,7 @@ async fn t_m2_mentions() {
         &RedactInput {
             reason_code: "personal_data".into(),
             reason: "test".into(),
+            attachments: Vec::new(),
         },
     )
     .await

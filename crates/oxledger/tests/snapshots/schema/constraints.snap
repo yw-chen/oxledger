@@ -139,6 +139,9 @@ attachment_blobs attachment_blobs_sha256_check CHECK ((octet_length(sha256) = 32
 attachment_blobs attachment_blobs_size_check CHECK (((size >= 1) AND (size <= 104857600)))
 attachment_blobs attachment_blobs_sniffed_type_check CHECK ((sniffed_type = ANY (ARRAY['image/png'::text, 'image/jpeg'::text, 'image/gif'::text, 'image/webp'::text, 'application/octet-stream'::text])))
 attachment_blobs attachment_blobs_state_check CHECK ((state = ANY (ARRAY['present'::text, 'purged'::text])))
+attachment_redactions attachment_redactions_attachment_id_fkey FOREIGN KEY (attachment_id) REFERENCES attachments(id)
+attachment_redactions attachment_redactions_pkey PRIMARY KEY (id)
+attachment_redactions attachment_redactions_redacted_by_fkey FOREIGN KEY (redacted_by) REFERENCES principals(id)
 attachments attachments_author_id_fkey FOREIGN KEY (author_id) REFERENCES principals(id)
 attachments attachments_check CHECK ((num_nonnulls(issue_id, wiki_page_id) = 1))
 attachments attachments_check1 CHECK (((note_id IS NULL) OR (issue_id IS NOT NULL)))
@@ -153,6 +156,7 @@ attachments attachments_issue_id_note_id_fkey FOREIGN KEY (issue_id, note_id) RE
 attachments attachments_pkey PRIMARY KEY (id)
 attachments attachments_project_id_blob_id_fkey FOREIGN KEY (project_id, blob_id) REFERENCES attachment_blobs(project_id, id)
 attachments attachments_project_id_fkey FOREIGN KEY (project_id) REFERENCES projects(id)
+attachments attachments_redaction_id_fkey FOREIGN KEY (redaction_id) REFERENCES attachment_redactions(id) NOT VALID
 attachments attachments_size_check CHECK ((size >= 1))
 attachments attachments_wiki_page_id_fkey FOREIGN KEY (wiki_page_id) REFERENCES wiki_pages(id)
 auth_events auth_events_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES principals(id)

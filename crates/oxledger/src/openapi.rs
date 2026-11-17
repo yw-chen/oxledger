@@ -835,6 +835,14 @@ pub fn session_routes() -> Vec<RouteDoc> {
         ),
         r(
             "POST",
+            "/attachments/{id}/redact",
+            "Design 06 §3.13, R-A12: redact an attachment (D12; same rules as the other redactions: manage_project of the project or a system administrator; human session; step-up within 15 minutes; an attachment whose issue, note or wiki you cannot read is not_found; deleted attachments too). One transaction: the project's security_epoch + 1; the name becomes [已遮蔽] (also in the attachment events); the content is purged at once, and every attachment of the project with the same content (including ones you cannot see) is redacted with it, content not downloadable (not_found); a redaction record without the original. The same content uploaded again later is a new, normal upload. Redacting a note redacts its attachments too; an issue event's redaction takes attachments: issue-level attachment ids of that issue to redact with it. Already redacted → changed=false. Header Idempotency-Key.",
+            Session,
+            Some(s::<crate::redaction::RedactInput>),
+            s::<crate::redaction::Redacted>,
+        ),
+        r(
+            "POST",
             "/time-entries/{id}/redact",
             "Redact a time entry's comments (design 05 §2.5 D12). Same rules as the other redactions: manage_project of the project or a system administrator; human session; step-up within 15 minutes; an entry you cannot read is not_found. One transaction: the project's security_epoch + 1, the comments and every event that holds them replaced by [已遮蔽] (time_entry.redacted = true), one redaction record per such event, and the derived copies (as for notes, plus execution_time_entry_changes). Already redacted → changed=false. Header Idempotency-Key.",
             Session,

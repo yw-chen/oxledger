@@ -38,3 +38,4 @@ source: crates/oxledger/tests/golden_schema.rs
 35 agent wiki writes
 36 attachments
 37 attachment undo
+38 attachment redaction

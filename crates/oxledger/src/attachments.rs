@@ -34,8 +34,10 @@ use tokio::io::AsyncWriteExt;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
+pub mod gc;
 pub mod ops;
 pub mod read;
+pub mod redact;
 pub mod undo;
 
 const MB: u64 = 1024 * 1024;
@@ -630,6 +632,13 @@ async fn store(
     let content_type = sniff(head);
     for _ in 0..3 {
         let mut tx = app.pool.begin().await?;
+        // The project first, FOR SHARE: a redaction holds it FOR UPDATE and
+        // then updates the generation this may hold FOR SHARE below (the
+        // inserts' FK checks on projects would wait the other way).
+        sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
+            .bind(project)
+            .execute(&mut *tx)
+            .await?;
         let used: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "INSERT INTO upload_daily_usage (user_id, day, bytes) VALUES ($1, {ORG_DAY}, $2)
              ON CONFLICT (user_id, day) DO UPDATE SET bytes = upload_daily_usage.bytes + EXCLUDED.bytes

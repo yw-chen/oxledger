@@ -199,6 +199,12 @@ attachment_blobs.state text NOT NULL DEFAULT 'present'::text
 attachment_blobs.created_at timestamp with time zone NOT NULL DEFAULT now()
 attachment_blobs.purged_at timestamp with time zone
 attachment_blobs.purge_reason text
+attachment_redactions.id uuid NOT NULL DEFAULT uuidv7()
+attachment_redactions.attachment_id uuid NOT NULL
+attachment_redactions.redacted_by uuid NOT NULL
+attachment_redactions.redacted_at timestamp with time zone NOT NULL DEFAULT now()
+attachment_redactions.reason_code text NOT NULL
+attachment_redactions.reason text NOT NULL
 attachments.id uuid NOT NULL DEFAULT uuidv7()
 attachments.project_id uuid NOT NULL
 attachments.issue_id uuid

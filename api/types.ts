@@ -2326,6 +2326,8 @@ export type RecentNotes = {
 };
 
 export type RedactInput = {
+  /** Design 06 §3.13 (B-45), an issue event only (the description's change): issue-level attachments of that issue to redact with it (none by default). */
+  attachments?: Array<string>;
   /** Why (1–500 characters). Never paste the original text here. */
   reason: string;
   /** One of `personal_data`, `confidential`, `legal`, `other`. */
@@ -4507,6 +4509,7 @@ export interface Endpoints {
   "GET /ai/status": { body: never; data: AiStatus };
   "GET /attachments/{id}": { body: never; data: AttachmentView };
   "GET /attachments/{id}/content": { body: never; data: unknown };
+  "POST /attachments/{id}/redact": { body: RedactInput; data: Redacted };
   "POST /auth/login": { body: LoginBody; data: LoginData };
   "GET /auth/login-context": { body: never; data: LoginContextData };
   "POST /auth/logout": { body: never; data: Done };

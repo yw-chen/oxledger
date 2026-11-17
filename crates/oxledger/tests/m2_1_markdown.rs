@@ -1753,6 +1753,7 @@ async fn t_m2_15_21_mention_delivery() {
         &RedactInput {
             reason_code: "personal_data".into(),
             reason: "test".into(),
+            attachments: Vec::new(),
         },
     )
     .await

@@ -187,7 +187,7 @@
   - 同一個 Idempotency-Key 重送同一份請求仍然 replay（結果依現在的可見性過濾），不會變成 `not_found`。
   - `PATCH /admin/ai/providers/{id}` 與 `PUT /admin/ai/settings` 先檢查站台管理員：非管理員一律 403，不論 id 存不存在、body 合不合法。之前可能拿到 404 或 422。
 
-## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0039）
+## 0032_m2_prereq（M2.0，草稿；M2.9 前補完 0034–0041）
 
 - **不會讓 agent 工作脈絡失效**：授予新權限時暫停了 `role_permissions_epoch` trigger（契約 06 B-37），每個專案的 `security_epoch` 不變。理由：新權限不改既有議題內容的讀者集合，升級前也沒有任何 wiki 內容。
 - **新權限與自動授予**（之後管理者可以自己調整；調整會照常讓 epoch 加一）：
@@ -222,7 +222,7 @@
   - `ContextView.changed_projects`（來源專案的權限已變更、脈絡已不能用）改由 `RuntimeView.changed_projects` 提供：目前脈絡中 epoch 已變的來源專案 id，沒有目前脈絡時是空陣列。前端的「需要注意」徽章可以用它；以角色為單位的狀態仍可用 `/ai-team` 的 `state = quarantined`。
   - **這個分支上的 `web/` 與 `scripts/e2e_s1.py` 暫時不能用**：它們還呼叫 `/agent-contexts*`（`web/src/lib/counts.svelte.ts`、`web/src/routes/agents/` 三個頁面、`e2e_s1.py` 第 68–79 行），要等前端 F12 改成上表的新路由；M2.0 後端沒有改它們，以免和前端 session 衝突。
 - **@提及**：人寫的說明與留言中的 `@login`（該專案可指派的 active user）會記下來（`issue_event_mentions`），agent 寫的不記。通知原因 `mentioned` 與偏好 `on_mentioned`（預設開）已建好，**派送從 M2.1 開始**；升級前的內容不回溯。
-- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0038）。目前不會寫出這些值。
+- `issue_events`、`command_executions` 的 origin 多了 `integration`（M2.6 的 `fixed_by` 用），`command_executions` 多了 `import_id`（M2.8 用，FK 在 0041）。目前不會寫出這些值。
 
 ## M2.1（Markdown，沒有 migration）
 
@@ -311,3 +311,14 @@
 - **其他設定**：`OXLEDGER_ATTACHMENT_MAX_BYTES`（單檔，預設 20 MB，最大 100 MB）、`OXLEDGER_UPLOAD_DAILY_BYTES`（每人每日，預設 1 GB，組織時區換日）、`OXLEDGER_FILES_MIN_FREE_BYTES`（磁碟剩餘低於此值拒收，預設 5 GB）、`OXLEDGER_FILES_ORIGIN`（可選的下載網域）。
 - **新端點** `POST /projects/{id}/uploads?filename=`：body 是原始檔案（`Content-Type: application/octet-stream`），仍要 Origin 與 CSRF token。新錯誤碼 `insufficient_storage`（507）。
 - 反向代理若限制 request body 大小，要放寬到單檔上限以上。
+
+## 0037_attachment_undo（M2.4，附件刪除的 undo）
+
+- **migration 0037**：新表 `execution_attachment_changes`（每次附件刪除或放回記一列）。不動角色、權限、成員或專案，security epoch 不變。
+- `delete_attachment` 30 天內可 undo（`skip_attachments` 可略過個別附件）；被遮蔽或已被清理的內容不能放回。
+
+## 0038_attachment_redaction（M2.4，附件遮蔽與清理）
+
+- **migration 0038**：新表 `attachment_redactions`；`attachments.redaction_id` 加 FK（`NOT VALID`，只檢查之後寫入的列）。不動角色、權限、成員或專案。
+- **新端點** `POST /attachments/{id}/redact`（要 `manage_project`）：檔名換成 `[已遮蔽]`、內容立刻清除，同一內容在該專案的其他附件一起標為遮蔽；遮蔽會讓專案的 security epoch 加一。遮蔽留言時，留言的附件一起遮蔽；遮蔽議題事件時，可用 `attachments` 指定一起遮蔽的議題附件。
+- **背景清理**：設了 `OXLEDGER_FILES_DIR` 時每小時清掉過期的上傳與沒人用、刪除超過 30 天的內容，每日掃描並刪除孤兒檔與 24 小時以上的暫存檔。新 worker 指標 `files`。

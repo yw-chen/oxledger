@@ -304,6 +304,15 @@ pub(crate) async fn apply(
             let back = w.change == "deleted";
             match removal_check(&mut *conn, caller, who.user_id, w.attachment_id, back).await {
                 Ok((holder, filename)) => {
+                    // The file stays while it comes back (the GC purges
+                    // a generation under FOR UPDATE).
+                    sqlx::query(
+                        "SELECT 1 FROM attachment_blobs WHERE id =
+                           (SELECT blob_id FROM attachments WHERE id = $1) FOR SHARE",
+                    )
+                    .bind(w.attachment_id)
+                    .execute(&mut *conn)
+                    .await?;
                     // Under the locks: the row as the preview saw it.
                     let row = changes_of(&mut *conn, id)
                         .await?

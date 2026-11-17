@@ -224,6 +224,7 @@ async fn redact(e: &Env, target: Target) {
         &RedactInput {
             reason_code: "confidential".into(),
             reason: "test".into(),
+            attachments: Vec::new(),
         },
     )
     .await

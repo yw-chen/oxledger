@@ -441,6 +441,7 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
         .route("/wiki/agent-changes", get(wiki_agent_changes))
         .route("/projects/{id}/uploads", post(upload_file))
         .route("/attachments/{id}", get(attachment_get))
+        .route("/attachments/{id}/redact", post(redact_attachment))
         .route("/attachments/{id}/content", get(attachment_content))
         .route("/projects/{id}/wiki", get(wiki_index))
         .route("/projects/{id}/wiki/pages/{title}", get(wiki_page))
@@ -2772,6 +2773,25 @@ async fn redact_setting_event(
     .await
 }
 
+async fn redact_attachment(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::redaction::RedactInput>,
+) -> ApiResult {
+    let id =
+        id_param(&id).map_err(|_| ApiFailure(api(ErrorCode::NotFound, "no such attachment")))?;
+    redact(
+        &st,
+        &ra,
+        &headers,
+        crate::redaction::Target::Attachment { id },
+        &body,
+    )
+    .await
+}
+
 async fn redact_time_entry(
     State(st): State<Arc<ApiState>>,
     Extension(ra): Extension<RequestAuth>,
@@ -3074,6 +3094,7 @@ async fn redact_wiki_title(
     let input = crate::redaction::RedactInput {
         reason_code: body.reason_code,
         reason: body.reason,
+        attachments: Vec::new(),
     };
     redact(
         &st,

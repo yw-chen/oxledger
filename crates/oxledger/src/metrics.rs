@@ -724,10 +724,13 @@ pub enum Worker {
     AiJobs,
     /// One built-in AI run (one round per run).
     AiRun,
+    /// The attachment store's clean-up (design 06 R-A8; only with a files
+    /// directory).
+    Files,
 }
 
 impl Worker {
-    pub const ALL: [Worker; 7] = [
+    pub const ALL: [Worker; 8] = [
         Worker::Search,
         Worker::Notify,
         Worker::FieldIndex,
@@ -735,6 +738,7 @@ impl Worker {
         Worker::Github,
         Worker::AiJobs,
         Worker::AiRun,
+        Worker::Files,
     ];
 
     pub fn name(self) -> &'static str {
@@ -746,6 +750,7 @@ impl Worker {
             Worker::Github => "github",
             Worker::AiJobs => "ai_jobs",
             Worker::AiRun => "ai_run",
+            Worker::Files => "files",
         }
     }
 

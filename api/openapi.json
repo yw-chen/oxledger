@@ -8929,6 +8929,14 @@
       },
       "RedactInput": {
         "properties": {
+          "attachments": {
+            "description": "Design 06 §3.13 (B-45), an issue event only (the description's\nchange): issue-level attachments of that issue to redact with it\n(none by default).",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "reason": {
             "description": "Why (1–500 characters). Never paste the original text here.",
             "type": "string"
@@ -20348,6 +20356,76 @@
         },
         "summary": "Design 06 R-A6: the file itself (not JSON), under the read rule of GET /attachments/{id}; redacted content is not_found too. Headers: X-Content-Type-Options nosniff, Content-Security-Policy sandbox; default-src 'none', Cache-Control private, no-store, Content-Type from the first bytes (R-A3), Content-Disposition inline for png, jpeg, gif and webp, attachment otherwise, with filename*. With OXLEDGER_FILES_ORIGIN set: 302 to a link on that origin signed for you and this attachment (5 minutes). Without OXLEDGER_FILES_DIR: forbidden_op (reason attachments_disabled).",
         "x-access": "session"
+      }
+    },
+    "/attachments/{id}/redact": {
+      "post": {
+        "operationId": "post_attachments_id_redact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Redacted"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Design 06 §3.13, R-A12: redact an attachment (D12; same rules as the other redactions: manage_project of the project or a system administrator; human session; step-up within 15 minutes; an attachment whose issue, note or wiki you cannot read is not_found; deleted attachments too). One transaction: the project's security_epoch + 1; the name becomes [已遮蔽] (also in the attachment events); the content is purged at once, and every attachment of the project with the same content (including ones you cannot see) is redacted with it, content not downloadable (not_found); a redaction record without the original. The same content uploaded again later is a new, normal upload. Redacting a note redacts its attachments too; an issue event's redaction takes attachments: issue-level attachment ids of that issue to redact with it. Already redacted → changed=false. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
       }
     },
     "/auth/login": {

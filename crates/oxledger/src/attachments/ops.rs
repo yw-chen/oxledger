@@ -405,18 +405,52 @@ async fn issue_for_write(
     {
         return Ok(None);
     }
-    let row: Option<Row> = sqlx::query_as(
-        "SELECT i.id, ck.key, i.project_id, i.tracker_id, i.is_private, i.author_id,
-                i.assigned_to_id, i.created_on_behalf_of_id, i.lock_version
-         FROM issues i JOIN issue_keys ck ON ck.issue_id = i.id AND ck.is_current
-         WHERE i.archived_at IS NULL
-           AND (i.id = $1 OR i.id = (SELECT issue_id FROM issue_keys WHERE key = $2))
-         FOR UPDATE OF i",
-    )
-    .bind(id)
-    .bind(key)
-    .fetch_optional(&mut *conn)
-    .await?;
+    // The project FOR SHARE before the issue (the order of commands, delete
+    // and undo): a redaction holds the project FOR UPDATE and then locks the
+    // issue; taking the issue first would wait for each other (the insert's
+    // FK check on projects). A move in between: look again.
+    let mut tries = 0;
+    let row: Option<Row> = loop {
+        let project: Option<Uuid> = sqlx::query_scalar(
+            "SELECT i.project_id FROM issues i
+             WHERE i.archived_at IS NULL
+               AND (i.id = $1 OR i.id = (SELECT issue_id FROM issue_keys WHERE key = $2))",
+        )
+        .bind(id)
+        .bind(key.as_deref())
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(project) = project else {
+            return Ok(None);
+        };
+        sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
+            .bind(project)
+            .execute(&mut *conn)
+            .await?;
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT i.id, ck.key, i.project_id, i.tracker_id, i.is_private, i.author_id,
+                    i.assigned_to_id, i.created_on_behalf_of_id, i.lock_version
+             FROM issues i JOIN issue_keys ck ON ck.issue_id = i.id AND ck.is_current
+             WHERE i.archived_at IS NULL
+               AND (i.id = $1 OR i.id = (SELECT issue_id FROM issue_keys WHERE key = $2))
+             FOR UPDATE OF i",
+        )
+        .bind(id)
+        .bind(key.as_deref())
+        .fetch_optional(&mut *conn)
+        .await?;
+        tries += 1;
+        match row {
+            Some(r) if r.2 != project && tries < 3 => continue,
+            Some(r) if r.2 != project => {
+                return Err(api(
+                    ErrorCode::Conflict,
+                    "the issue moved meanwhile; try again",
+                ));
+            }
+            r => break r,
+        }
+    };
     let Some((id, key, project, tracker, private, author, assignee, obo, lv)) = row else {
         return Ok(None);
     };
@@ -487,7 +521,7 @@ async fn note_for_write(
 ) -> Result<Option<(IssueRow, bool)>> {
     let row: Option<(Uuid, bool, Uuid, Option<Uuid>)> = sqlx::query_as(
         "SELECT issue_id, is_private, author_id, created_on_behalf_of_id FROM issue_notes
-         WHERE id = $1 AND retracted_at IS NULL",
+         WHERE id = $1 AND retracted_at IS NULL AND redacted_at IS NULL",
     )
     .bind(note)
     .fetch_optional(&mut *conn)
@@ -502,7 +536,7 @@ async fn note_for_write(
     // the issue too) may have committed in between.
     let row: Option<(bool, Uuid, Option<Uuid>)> = sqlx::query_as(
         "SELECT is_private, author_id, created_on_behalf_of_id FROM issue_notes
-         WHERE id = $1 AND issue_id = $2 AND retracted_at IS NULL",
+         WHERE id = $1 AND issue_id = $2 AND retracted_at IS NULL AND redacted_at IS NULL",
     )
     .bind(note)
     .bind(issue)

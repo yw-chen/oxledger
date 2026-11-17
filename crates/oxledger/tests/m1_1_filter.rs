@@ -713,6 +713,7 @@ async fn t_m1_03_ever_in_after_redaction() {
                 &RedactInput {
                     reason_code: "confidential".into(),
                     reason: "wrong status history".into(),
+                    attachments: Vec::new(),
                 },
             )
             .await

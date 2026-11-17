@@ -1489,7 +1489,12 @@ async fn undo_delete() {
     exec(
         &pool,
         &format!(
-            "UPDATE attachments SET redacted_at = now(), redaction_id = uuidv7() WHERE id = '{red}'"
+            "WITH r AS (INSERT INTO attachment_redactions (attachment_id, redacted_by, reason_code, reason)
+                        SELECT id, author_id, 'confidential', 'test' FROM attachments
+                        WHERE id = '{red}'
+                        RETURNING id)
+             UPDATE attachments SET redacted_at = now(), redaction_id = (SELECT id FROM r)
+             WHERE id = '{red}'"
         ),
     )
     .await;
@@ -1786,4 +1791,723 @@ async fn undo_delete_more() {
     );
     assert_eq!(ev[1].1, Some(d));
     assert_eq!(ev[2].1, Some(back));
+}
+
+async fn blob_of(pool: &sqlx::PgPool, attachment: Uuid) -> (Uuid, String) {
+    sqlx::query_as(
+        "SELECT b.id, b.state FROM attachments a JOIN attachment_blobs b ON b.id = a.blob_id
+         WHERE a.id = $1",
+    )
+    .bind(attachment)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn attach_upload(w: &World, who: AuthContext, key: &str, upload: Uuid) -> Uuid {
+    let r = run(
+        w,
+        who,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                "attachments": [{"upload_id": upload}]}]),
+    )
+    .await
+    .unwrap();
+    ids_of(&r)[0]
+}
+
+/// R-A8, T-M2-56, T-M2-57: the hourly clean-up and the daily orphan scan.
+#[tokio::test]
+async fn files_gc() {
+    use attachments::gc;
+    use std::time::Duration;
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    let a = w.alice_ctx;
+    let issue = w.issue(w.web, "gc").await;
+    let key = key_of(&pool, issue).await;
+    let attach = |name: &'static str| {
+        let w = &w;
+        let key = key.clone();
+        async move {
+            let u = up(w, a, "WEB", name, name.as_bytes()).await.unwrap();
+            let r = run(
+                w,
+                a,
+                json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"issue": key},
+                        "attachments": [{"upload_id": u.upload_id}]}]),
+            )
+            .await
+            .unwrap();
+            ids_of(&r)[0]
+        }
+    };
+    let live = attach("live.txt").await;
+    let gone = attach("gone.txt").await;
+    let d = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": gone}}]),
+    )
+    .await
+    .unwrap();
+    let delete_exec = exec_of(&d);
+    let path = |blob: Uuid| attachments::blob_path(dir.path(), w.web, blob);
+    let (live_blob, _) = blob_of(&pool, live).await;
+    let (gone_blob, _) = blob_of(&pool, gone).await;
+    assert!(path(gone_blob).exists());
+
+    // 29 days after the delete: kept (an undo may still put it back).
+    let age = |days: i32| {
+        let pool = pool.clone();
+        async move {
+            exec(
+                &pool,
+                &format!(
+                    "UPDATE attachments SET deleted_at = now() - make_interval(days => {days})
+                     WHERE id = '{gone}'"
+                ),
+            )
+            .await;
+        }
+    };
+    age(29).await;
+    // An unused upload, expired.
+    let stale = up(&w, a, "WEB", "stale.txt", b"stale").await.unwrap();
+    exec(
+        &pool,
+        &format!(
+            "UPDATE uploads SET expires_at = now() - interval '1 second' WHERE id = '{}'",
+            stale.upload_id
+        ),
+    )
+    .await;
+    let stale_blob: Uuid = sqlx::query_scalar("SELECT blob_id FROM uploads WHERE id = $1")
+        .bind(stale.upload_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    // An upload not used yet, not expired: kept.
+    let pending = up(&w, a, "WEB", "pending.txt", b"pending").await.unwrap();
+    let r = gc::hourly(&pool, dir.path()).await.unwrap();
+    assert_eq!(r.uploads_removed, 1, "{r:?}");
+    assert_eq!(r.blobs_purged, 1, "{r:?}");
+    assert_eq!(r.files_failed, 0);
+    assert!(!path(stale_blob).exists());
+    assert_eq!(blob_of(&pool, gone).await.1, "present");
+    assert!(path(gone_blob).exists());
+    assert_eq!(blob_of(&pool, live).await.1, "present");
+    let n = count(
+        &pool,
+        &format!(
+            "SELECT count(*) FROM uploads WHERE id = '{}'",
+            pending.upload_id
+        ),
+    )
+    .await;
+    assert_eq!(n, 1);
+
+    // 31 days: purged, the file removed; the undo then has nothing to put
+    // back.
+    age(31).await;
+    let r = gc::hourly(&pool, dir.path()).await.unwrap();
+    assert_eq!(r.blobs_purged, 1, "{r:?}");
+    assert_eq!(blob_of(&pool, gone).await.1, "purged");
+    assert!(!path(gone_blob).exists());
+    assert!(path(live_blob).exists());
+    let purge_reason: String =
+        sqlx::query_scalar("SELECT purge_reason FROM attachment_blobs WHERE id = $1")
+            .bind(gone_blob)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(purge_reason, "gc");
+    // (The execution itself is recent: only the content is gone.)
+    let pv = undo_preview(&w, a, delete_exec).await;
+    assert_eq!(pv["attachments"][0]["reason"], "content_gone", "{pv}");
+    let e = undo(&w, a, delete_exec).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::UndoNotApplicable, "{e:#}");
+    assert!(attachments::read::get(&w.app, a, gone).await.is_err());
+
+    // An old delete does not purge a generation another row still holds:
+    // an unused upload of it, or a delete within the window.
+    let held = attach("held.txt").await;
+    let (held_blob, _) = blob_of(&pool, held).await;
+    run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": held}}]),
+    )
+    .await
+    .unwrap();
+    exec(
+        &pool,
+        &format!(
+            "UPDATE attachments SET deleted_at = now() - interval '31 days' WHERE id = '{held}'"
+        ),
+    )
+    .await;
+    let reup = up(&w, a, "WEB", "held2.txt", b"held.txt").await.unwrap();
+    let reup_blob: Uuid = sqlx::query_scalar("SELECT blob_id FROM uploads WHERE id = $1")
+        .bind(reup.upload_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(reup_blob, held_blob);
+    let r = gc::hourly(&pool, dir.path()).await.unwrap();
+    assert_eq!(r.blobs_purged, 0, "{r:?}");
+    assert_eq!(blob_of(&pool, held).await.1, "present");
+    let twin = attach_upload(&w, a, &key, reup.upload_id).await;
+    run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "delete_attachment",
+                "target": {"attachment": twin}}]),
+    )
+    .await
+    .unwrap();
+    exec(
+        &pool,
+        &format!(
+            "UPDATE attachments SET deleted_at = now() - interval '5 days' WHERE id = '{twin}'"
+        ),
+    )
+    .await;
+    let r = gc::hourly(&pool, dir.path()).await.unwrap();
+    assert_eq!(r.blobs_purged, 0, "{r:?}");
+    assert!(path(held_blob).exists());
+    // The same content again: a new generation (R-A12's rule for any
+    // purge).
+    let again = attach("gone.txt").await;
+    let (again_blob, state) = blob_of(&pool, again).await;
+    assert_ne!(again_blob, gone_blob);
+    assert_eq!(state, "present");
+    // Nothing more to do.
+    let r = gc::hourly(&pool, dir.path()).await.unwrap();
+    assert_eq!(r.blobs_purged, 0, "{r:?}");
+
+    // T-M2-57: a file whose transaction never committed, a dead temporary
+    // file and a stray name; young files are left alone.
+    let orphan = path(Uuid::now_v7());
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, b"orphan").unwrap();
+    let tmp = dir.path().join(".tmp").join("dead.part");
+    std::fs::create_dir_all(tmp.parent().unwrap()).unwrap();
+    std::fs::write(&tmp, b"dead").unwrap();
+    std::fs::write(dir.path().join("README"), b"x").unwrap();
+    let hour = Duration::from_secs(3600);
+    let s = gc::orphan_scan(&pool, dir.path(), hour, hour)
+        .await
+        .unwrap();
+    assert_eq!((s.orphans_removed, s.temp_removed), (0, 0), "{s:?}");
+    assert!(orphan.exists() && tmp.exists());
+    let s = gc::orphan_scan(&pool, dir.path(), Duration::ZERO, Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(s.orphans_removed, 1, "{s:?}");
+    assert_eq!(s.temp_removed, 1, "{s:?}");
+    assert_eq!(s.unknown, 1, "{s:?}");
+    assert!(!orphan.exists() && !tmp.exists());
+    // Present generations stay.
+    assert!(path(live_blob).exists());
+    assert!(path(again_blob).exists());
+    let pending_blob: Uuid = sqlx::query_scalar("SELECT blob_id FROM uploads WHERE id = $1")
+        .bind(pending.upload_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(path(pending_blob).exists());
+}
+
+fn why() -> oxledger::redaction::RedactInput {
+    oxledger::redaction::RedactInput {
+        reason_code: "confidential".into(),
+        reason: "pasted by mistake".into(),
+        attachments: Vec::new(),
+    }
+}
+
+async fn redact(
+    w: &World,
+    who: AuthContext,
+    target: oxledger::redaction::Target,
+    input: &oxledger::redaction::RedactInput,
+) -> anyhow::Result<oxledger::redaction::Redacted> {
+    oxledger::redaction::redact(&w.app, who, &w.policy, Uuid::now_v7(), &target, input).await
+}
+
+async fn downloadable(w: &World, who: AuthContext, id: Uuid) -> bool {
+    match attachments::read::content(&w.app, who, id).await {
+        Ok(_) => true,
+        Err(e) => {
+            assert_eq!(code(&e), ErrorCode::NotFound, "{e:#}");
+            false
+        }
+    }
+}
+
+/// §3.13, R-A12: T-M2-55 (one content, every attachment of it), T-M2-58
+/// (uploaded again: a new generation), T-M2-21a (a note's attachments),
+/// T-M2-21b (the description's: only the ticked ones).
+#[tokio::test]
+async fn attachment_redaction() {
+    use oxledger::redaction::Target;
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    grant(&pool, w.dev, &["manage_project"]).await;
+    let a = w.alice_ctx;
+    let bob = sign_in(&pool, &w.policy, "bob").await;
+    let one = w.issue(w.web, "one").await;
+    let secret = w.issue(w.web, "secret").await;
+    exec(
+        &pool,
+        &format!("UPDATE issues SET is_private = true WHERE id = '{secret}'"),
+    )
+    .await;
+    let attach = |who: AuthContext, issue: Uuid, name: &'static str, bytes: &'static [u8]| {
+        let w = &w;
+        let pool = pool.clone();
+        async move {
+            let u = up(w, who, "WEB", name, bytes).await.unwrap();
+            let r = run(
+                w,
+                who,
+                json!([{"op_id": Uuid::now_v7(), "kind": "attach",
+                        "target": {"issue": key_of(&pool, issue).await},
+                        "attachments": [{"upload_id": u.upload_id}]}]),
+            )
+            .await
+            .unwrap();
+            (ids_of(&r)[0], u)
+        }
+    };
+    let blob = |id: Uuid| {
+        let pool = pool.clone();
+        async move { blob_of(&pool, id).await }
+    };
+
+    // T-M2-55: the same content on another, private issue goes too.
+    let (leak, _) = attach(a, one, "token.txt", b"api key 123").await;
+    let (twin, _) = attach(a, secret, "copy.txt", b"api key 123").await;
+    let (gen1, _) = blob(leak).await;
+    assert_eq!(blob(twin).await.0, gen1);
+    let file1 = attachments::blob_path(dir.path(), w.web, gen1);
+    assert!(file1.exists());
+    let epoch = |pool: sqlx::PgPool| async move {
+        count(
+            &pool,
+            "SELECT security_epoch FROM projects WHERE key = 'WEB'",
+        )
+        .await
+    };
+    let before = epoch(pool.clone()).await;
+    let r = redact(&w, a, Target::Attachment { id: leak }, &why())
+        .await
+        .unwrap();
+    assert!(r.changed);
+    assert_eq!(r.security_epoch, before + 1);
+    assert_eq!(epoch(pool.clone()).await, before + 1);
+    assert!(!downloadable(&w, a, leak).await);
+    assert!(!downloadable(&w, a, twin).await);
+    assert_eq!(blob(leak).await.1, "purged");
+    assert!(!file1.exists());
+    let m = attachments::read::get(&w.app, a, leak).await.unwrap();
+    assert_eq!(m.meta.filename, "[已遮蔽]");
+    assert!(m.meta.redacted);
+    let m = attachments::read::get(&w.app, a, twin).await.unwrap();
+    assert_eq!(m.meta.filename, "copy.txt");
+    assert!(m.meta.redacted);
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT payload->>'filename' FROM issue_events
+         WHERE kind LIKE 'attachment%' AND payload->>'attachment_id' = $1::text",
+    )
+    .bind(leak)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(names, ["[已遮蔽]"]);
+    // Again: nothing new.
+    let r = redact(&w, a, Target::Attachment { id: leak }, &why())
+        .await
+        .unwrap();
+    assert!(!r.changed);
+    // Someone who cannot see it gets not_found; without manage_project a
+    // refusal.
+    let z = oxledger::auth::create_user(&pool, "zed", "zed", PW, false)
+        .await
+        .unwrap();
+    let viewer = id(
+        &pool,
+        "INSERT INTO roles (name, issues_visibility) VALUES ('Viewer','default') RETURNING id",
+    )
+    .await;
+    grant(&pool, viewer, &["view_issues"]).await;
+    member(&pool, w.web, z, viewer).await;
+    let zed = sign_in(&pool, &w.policy, "zed").await;
+    let e = redact(&w, zed, Target::Attachment { id: twin }, &why())
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+    let (plain, _) = attach(a, one, "plain.txt", b"plain").await;
+    let e = redact(&w, zed, Target::Attachment { id: plain }, &why())
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::ForbiddenOp);
+
+    // T-M2-58: the same content again, by alice and by bob: ordinary
+    // uploads, a new generation, downloadable; the old ones stay redacted.
+    let (again, ua) = attach(a, one, "again.txt", b"api key 123").await;
+    let (again_b, ub) = attach(bob, one, "again-b.txt", b"api key 123").await;
+    assert_eq!(ua.content_type, "application/octet-stream");
+    assert_eq!(ub.size, ua.size);
+    let (gen2, state) = blob(again).await;
+    assert_ne!(gen2, gen1);
+    assert_eq!(state, "present");
+    assert_eq!(blob(again_b).await.0, gen2);
+    assert!(downloadable(&w, a, again).await);
+    assert!(!downloadable(&w, a, leak).await);
+
+    // T-M2-21a: a note's attachments go with the note.
+    let u = up(&w, a, "WEB", "note.png", PNG).await.unwrap();
+    run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": one}, "body": "see",
+                "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let note: Uuid = sqlx::query_scalar(
+        "SELECT id FROM issue_notes WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(one)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let on_note: Uuid = sqlx::query_scalar("SELECT id FROM attachments WHERE note_id = $1")
+        .bind(note)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(downloadable(&w, a, on_note).await);
+    let key = key_of(&pool, one).await;
+    redact(
+        &w,
+        a,
+        Target::Note {
+            key: key.clone(),
+            note,
+        },
+        &why(),
+    )
+    .await
+    .unwrap();
+    assert!(!downloadable(&w, a, on_note).await);
+    assert_eq!(blob(on_note).await.1, "purged");
+
+    // T-M2-21b: an issue event's redaction takes the ticked issue-level
+    // attachments only.
+    let (x, _) = attach(a, one, "x.txt", b"xx").await;
+    let (y, _) = attach(a, one, "y.txt", b"yy").await;
+    let event: Uuid = sqlx::query_scalar(
+        "SELECT id FROM issue_events WHERE issue_id = $1 AND note_id IS NULL ORDER BY seq LIMIT 1",
+    )
+    .bind(one)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // Only this issue's issue-level attachments.
+    let mut bad = why();
+    bad.attachments = vec![on_note];
+    let e = redact(
+        &w,
+        a,
+        Target::IssueEvent {
+            key: key.clone(),
+            event,
+        },
+        &bad,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidValue, "{e:#}");
+    bad.attachments = vec![twin];
+    let e = redact(
+        &w,
+        a,
+        Target::IssueEvent {
+            key: key.clone(),
+            event,
+        },
+        &bad,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidValue, "{e:#}");
+    // Not with other targets.
+    let e = redact(&w, a, Target::Attachment { id: x }, &bad)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidValue, "{e:#}");
+    let mut tick = why();
+    tick.attachments = vec![x];
+    redact(&w, a, Target::IssueEvent { key, event }, &tick)
+        .await
+        .unwrap();
+    assert!(!downloadable(&w, a, x).await);
+    assert!(downloadable(&w, a, y).await);
+}
+
+/// Review fixes: an attachment marked only through shared content is still
+/// redacted by name later; a redacted note takes no new attachments; an
+/// issue event redacted before still takes ticked attachments; a wiki
+/// attachment; the tick limit.
+#[tokio::test]
+async fn attachment_redaction_more() {
+    use oxledger::redaction::Target;
+    let pool = test_pool().await;
+    let w = World::build(&pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    attachments::install(files(dir.path()));
+    exec(
+        &pool,
+        "INSERT INTO enabled_modules (project_id, module) SELECT id, 'wiki' FROM projects",
+    )
+    .await;
+    grant(
+        &pool,
+        w.dev,
+        &[
+            "manage_project",
+            "view_wiki_pages",
+            "view_wiki_edits",
+            "edit_wiki_pages",
+        ],
+    )
+    .await;
+    let a = w.alice_ctx;
+    let one = w.issue(w.web, "one").await;
+    let two = w.issue(w.web, "two").await;
+    let key = key_of(&pool, one).await;
+    let attach = |issue: Uuid, name: &'static str, bytes: &'static [u8]| {
+        let w = &w;
+        let pool = pool.clone();
+        async move {
+            let u = up(w, a, "WEB", name, bytes).await.unwrap();
+            attach_upload(w, a, &key_of(&pool, issue).await, u.upload_id).await
+        }
+    };
+    let epoch = || {
+        let pool = pool.clone();
+        async move {
+            count(
+                &pool,
+                "SELECT security_epoch FROM projects WHERE key = 'WEB'",
+            )
+            .await
+        }
+    };
+    let name_of = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT filename FROM attachments WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // Shared content: the twin is marked, keeps its name, and can still be
+    // redacted by name (its name and events then go).
+    let leak = attach(one, "leak.txt", b"same secret").await;
+    let twin = attach(two, "twin-secret-name.txt", b"same secret").await;
+    redact(&w, a, Target::Attachment { id: leak }, &why())
+        .await
+        .unwrap();
+    assert_eq!(name_of(twin).await, "twin-secret-name.txt");
+    let before = epoch().await;
+    let r = redact(&w, a, Target::Attachment { id: twin }, &why())
+        .await
+        .unwrap();
+    assert!(r.changed);
+    assert_eq!(r.security_epoch, before + 1);
+    assert_eq!(name_of(twin).await, "[已遮蔽]");
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT payload->>'filename' FROM issue_events
+         WHERE issue_id = $1 AND payload->>'attachment_id' = $2::text",
+    )
+    .bind(two)
+    .bind(twin)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(names, ["[已遮蔽]"]);
+    let used: i64 = count(
+        &pool,
+        &format!(
+            "SELECT count(*) FROM uploads WHERE blob_id = (SELECT blob_id FROM attachments
+             WHERE id = '{twin}') AND filename <> '[已遮蔽]'"
+        ),
+    )
+    .await;
+    assert_eq!(used, 0);
+    let r = redact(&w, a, Target::Attachment { id: twin }, &why())
+        .await
+        .unwrap();
+    assert!(!r.changed);
+
+    // A redacted note takes no new attachments; again: nothing new.
+    let u = up(&w, a, "WEB", "n.txt", b"note file").await.unwrap();
+    run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "add_note",
+                "target": {"type": "issue", "id": one}, "body": "see",
+                "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let note: Uuid = sqlx::query_scalar(
+        "SELECT id FROM issue_notes WHERE issue_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(one)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    redact(
+        &w,
+        a,
+        Target::Note {
+            key: key.clone(),
+            note,
+        },
+        &why(),
+    )
+    .await
+    .unwrap();
+    let late = up(&w, a, "WEB", "late.txt", b"late").await.unwrap();
+    let e = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "attach", "target": {"note": note},
+                "attachments": [{"upload_id": late.upload_id}]}]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound, "{e:#}");
+    let r = redact(
+        &w,
+        a,
+        Target::Note {
+            key: key.clone(),
+            note,
+        },
+        &why(),
+    )
+    .await
+    .unwrap();
+    assert!(!r.changed);
+
+    // An issue event redacted first, attachments ticked later.
+    let x = attach(one, "x.txt", b"x content").await;
+    let event: Uuid = sqlx::query_scalar(
+        "SELECT id FROM issue_events WHERE issue_id = $1 AND note_id IS NULL ORDER BY seq LIMIT 1",
+    )
+    .bind(one)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let r = redact(
+        &w,
+        a,
+        Target::IssueEvent {
+            key: key.clone(),
+            event,
+        },
+        &why(),
+    )
+    .await
+    .unwrap();
+    assert!(r.changed);
+    assert!(downloadable(&w, a, x).await);
+    let mut tick = why();
+    tick.attachments = vec![x];
+    let before = epoch().await;
+    let r = redact(
+        &w,
+        a,
+        Target::IssueEvent {
+            key: key.clone(),
+            event,
+        },
+        &tick,
+    )
+    .await
+    .unwrap();
+    assert!(r.changed);
+    assert_eq!(r.security_epoch, before + 1);
+    assert!(!downloadable(&w, a, x).await);
+    let r = redact(
+        &w,
+        a,
+        Target::IssueEvent {
+            key: key.clone(),
+            event,
+        },
+        &tick,
+    )
+    .await
+    .unwrap();
+    assert!(!r.changed);
+    let mut many = why();
+    many.attachments = (0..=oxledger::redaction::MAX_TICKED)
+        .map(|_| Uuid::now_v7())
+        .collect();
+    let e = redact(&w, a, Target::IssueEvent { key, event }, &many)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidValue, "{e:#}");
+
+    // A wiki attachment: its page's events carry the marker.
+    let u = up(&w, a, "WEB", "wiki-secret.png", PNG).await.unwrap();
+    let r = run(
+        &w,
+        a,
+        json!([{"op_id": Uuid::now_v7(), "kind": "wiki_put",
+                "target": {"project": "WEB", "page": "Plan"},
+                "body": "# Plan", "attachments": [{"upload_id": u.upload_id}]}]),
+    )
+    .await
+    .unwrap();
+    let page: Uuid = serde_json::from_value(r["items"][0]["wiki_page_id"].clone()).unwrap();
+    let wa = ids_of(&r)[0];
+    assert!(downloadable(&w, a, wa).await);
+    let r = redact(&w, a, Target::Attachment { id: wa }, &why())
+        .await
+        .unwrap();
+    assert!(r.changed);
+    assert!(!downloadable(&w, a, wa).await);
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT payload->>'filename' FROM wiki_events
+         WHERE page_id = $1 AND kind LIKE 'attachment%'",
+    )
+    .bind(page)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(names, ["[已遮蔽]"]);
+    let n = count(
+        &pool,
+        &format!("SELECT count(*) FROM outbox WHERE topic = 'wiki_page' AND entity_id = '{page}'"),
+    )
+    .await;
+    assert!(n >= 1);
 }

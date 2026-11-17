@@ -2362,6 +2362,7 @@ fn why() -> RedactInput {
     RedactInput {
         reason_code: "confidential".into(),
         reason: "customer data pasted by mistake".into(),
+        attachments: Vec::new(),
     }
 }
 

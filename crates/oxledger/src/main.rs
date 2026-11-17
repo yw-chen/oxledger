@@ -269,6 +269,42 @@ fn spawn_notifier(app: Arc<App>) {
     });
 }
 
+/// Design 06 R-A8: the attachment store's clean-up, hourly; the orphan
+/// scan once a day. Not run without a files directory.
+fn spawn_files_gc(app: Arc<App>) {
+    let Some(dir) = oxledger::attachments::current().dir.clone() else {
+        return;
+    };
+    worker_expected(Worker::Files);
+    tokio::spawn(async move {
+        worker_started(Worker::Files);
+        use oxledger::attachments::gc;
+        let mut last_scan: Option<std::time::Instant> = None;
+        loop {
+            let round = timed_round(Worker::Files, async {
+                let r = gc::hourly(&app.pool, &dir).await?;
+                if r.blobs_purged > 0 || r.uploads_removed > 0 || r.files_failed > 0 {
+                    tracing::info!(?r, "attachment clean-up");
+                }
+                if last_scan.is_none_or(|t| t.elapsed() >= Duration::from_secs(24 * 3600)) {
+                    let s =
+                        gc::orphan_scan(&app.pool, &dir, gc::ORPHAN_GRACE, gc::TEMP_GRACE).await?;
+                    last_scan = Some(std::time::Instant::now());
+                    if s != gc::ScanReport::default() {
+                        tracing::info!(?s, "attachment orphan scan");
+                    }
+                }
+                anyhow::Ok(())
+            })
+            .await;
+            if let Err(e) = round {
+                tracing::warn!("attachment clean-up failed: {e:#}");
+            }
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 /// Deletes expired login challenges.
 fn spawn_sweeper(app: Arc<App>) {
     worker_expected(Worker::LoginSweeper);
@@ -328,6 +364,8 @@ async fn serve() -> Result<()> {
             None => tracing::info!("attachments off (OXLEDGER_FILES_DIR is not set)"),
         }
         oxledger::attachments::install(files);
+        // After the install: it reads the files directory.
+        spawn_files_gc(app.clone());
     }
     let bind = env("OXLEDGER_BIND", Some("127.0.0.1:8080"))?;
     let cfg = ApiConfig {

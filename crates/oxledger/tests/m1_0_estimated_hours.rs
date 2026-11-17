@@ -558,6 +558,7 @@ async fn m1_0_estimated_hours() {
         &RedactInput {
             reason_code: "confidential".into(),
             reason: "pasted by mistake".into(),
+            attachments: Vec::new(),
         },
     )
     .await

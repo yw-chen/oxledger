@@ -1142,6 +1142,7 @@ async fn t_m2_31_existence_is_not_leaked() {
             &RedactInput {
                 reason_code: "confidential".into(),
                 reason: "test".into(),
+                attachments: Vec::new(),
             },
         )
         .await));
@@ -1381,6 +1382,7 @@ async fn t_m2_34_undo_content() {
         &RedactInput {
             reason_code: "confidential".into(),
             reason: "a token".into(),
+            attachments: Vec::new(),
         },
     )
     .await
@@ -1609,6 +1611,7 @@ async fn t_m2_35_create_and_redaction_serialize() {
                 &RedactInput {
                     reason_code: "confidential".into(),
                     reason: "test".into(),
+                    attachments: Vec::new(),
                 },
             )
             .await
@@ -1727,6 +1730,7 @@ async fn redact_title(e: &Env, page: &str, new_title: &str) {
         &RedactInput {
             reason_code: "confidential".into(),
             reason: "test".into(),
+            attachments: Vec::new(),
         },
     )
     .await
@@ -2089,6 +2093,7 @@ async fn v_redaction_resolves_the_page_under_the_lock() {
                 &RedactInput {
                     reason_code: "confidential".into(),
                     reason: "test".into(),
+                    attachments: Vec::new(),
                 },
             )
             .await
@@ -2211,6 +2216,7 @@ async fn v_revert_from_is_checked_by_the_server() {
         &RedactInput {
             reason_code: "confidential".into(),
             reason: "a token".into(),
+            attachments: Vec::new(),
         },
     )
     .await
@@ -2271,6 +2277,7 @@ fn spawn_redact(
             &RedactInput {
                 reason_code: "confidential".into(),
                 reason: "probe".into(),
+                attachments: Vec::new(),
             },
         )
         .await

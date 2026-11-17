@@ -33,6 +33,8 @@ pub const REDACTED: &str = "[已遮蔽]";
 /// The reason codes (C3).
 pub const REASON_CODES: &[&str] = &["personal_data", "confidential", "legal", "other"];
 pub const MAX_REASON_CHARS: usize = 500;
+/// B-45: issue-level attachments ticked on one issue event's redaction.
+pub const MAX_TICKED: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct RedactInput {
@@ -40,6 +42,11 @@ pub struct RedactInput {
     pub reason_code: String,
     /// Why (1–500 characters). Never paste the original text here.
     pub reason: String,
+    /// Design 06 §3.13 (B-45), an issue event only (the description's
+    /// change): issue-level attachments of that issue to redact with it
+    /// (none by default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -97,6 +104,11 @@ pub enum Target {
         page: String,
         event: Uuid,
     },
+    /// Design 06 §3.13, R-A12: an attachment (its name, its content, and
+    /// every attachment of the project with the same content).
+    Attachment {
+        id: Uuid,
+    },
 }
 
 impl Target {
@@ -110,6 +122,7 @@ impl Target {
             Target::WikiVersion { .. } => "redact_wiki_version",
             Target::WikiTitle { .. } => "redact_wiki_title",
             Target::WikiEvent { .. } => "redact_wiki_event",
+            Target::Attachment { .. } => "redact_attachment",
         }
     }
 }
@@ -422,6 +435,7 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
                 wiki_page: None,
             })
         }
+        Target::Attachment { id } => locate_attachment(&mut *conn, caller, admin, *id).await,
         Target::WikiVersion { project, page, .. }
         | Target::WikiTitle { project, page, .. }
         | Target::WikiEvent { project, page, .. } => {
@@ -469,6 +483,66 @@ async fn locate(conn: &mut PgConnection, caller: AuthContext, t: &Target) -> Res
     }
 }
 
+/// An attachment the caller sees the container of (its issue and, on a
+/// note, the note; or its wiki); deleted ones too (their content is kept
+/// for 30 days).
+async fn locate_attachment(
+    conn: &mut PgConnection,
+    caller: AuthContext,
+    admin: bool,
+    id: Uuid,
+) -> Result<Located> {
+    type Where = (Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>);
+    let row: Option<Where> = sqlx::query_as(
+        "SELECT project_id, issue_id, note_id, wiki_page_id FROM attachments WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((project, issue, note, page)) = row else {
+        return Err(not_found("attachment"));
+    };
+    if let Some(page) = page {
+        crate::wiki::access_of(&mut *conn, caller, project)
+            .await?
+            .ok_or_else(|| not_found("attachment"))?;
+        return Ok(Located {
+            project,
+            issue: None,
+            version: None,
+            row: id,
+            admin_only: false,
+            wiki_page: Some(page),
+        });
+    }
+    let issue = issue.ok_or_else(|| not_found("attachment"))?;
+    let key: Option<String> =
+        sqlx::query_scalar("SELECT key FROM issue_keys WHERE issue_id = $1 AND is_current")
+            .bind(issue)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let key = key.ok_or_else(|| not_found("attachment"))?;
+    let (_, _, tracker) = find_issue(&mut *conn, caller, &key, admin)
+        .await
+        .map_err(|e| match crate::error::as_api_error(&e) {
+            Some(a) if a.code == ErrorCode::NotFound => not_found("attachment"),
+            _ => e,
+        })?;
+    if let Some(note) = note
+        && note_hidden(&mut *conn, caller, admin, project, tracker, note).await?
+    {
+        return Err(not_found("attachment"));
+    }
+    Ok(Located {
+        project,
+        issue: Some(issue),
+        version: None,
+        row: id,
+        admin_only: false,
+        wiki_page: None,
+    })
+}
+
 fn request_hash(t: &Target, input: &RedactInput) -> [u8; 32] {
     let target = match t {
         Target::Note { key, note } => json!({"key": key.trim().to_uppercase(), "note": note}),
@@ -499,9 +573,13 @@ fn request_hash(t: &Target, input: &RedactInput) -> [u8; 32] {
             page,
             event,
         } => json!({"wiki_project": project.trim().to_uppercase(), "page": page, "event": event}),
+        Target::Attachment { id } => json!({"attachment": id}),
     };
-    let body =
+    let mut body =
         json!({"target": target, "reason_code": input.reason_code, "reason": input.reason.trim()});
+    if !input.attachments.is_empty() {
+        body["attachments"] = json!(input.attachments);
+    }
     Sha256::digest(
         [
             b"oxledger/redact/v1\n".as_slice(),
@@ -535,9 +613,12 @@ pub async fn redact(
         tx.commit().await?;
         return Ok(serde_json::from_value(first["redacted"].clone())?);
     };
-    let out = redact_locked(&mut tx, caller, policy, &who, target, input).await?;
+    let mut files = Vec::new();
+    let out = redact_locked(&mut tx, caller, policy, &who, target, input, &mut files).await?;
     commands::complete_request(&mut tx, request, &json!({"redacted": out})).await?;
     tx.commit().await?;
+    // R-A12: the purged generations' files, once the purge is committed.
+    crate::attachments::redact::remove_files(&files).await;
     Ok(out)
 }
 
@@ -548,7 +629,20 @@ async fn redact_locked(
     who: &Executor,
     target: &Target,
     input: &RedactInput,
+    files: &mut Vec<crate::attachments::redact::PurgedFile>,
 ) -> Result<Redacted> {
+    if !input.attachments.is_empty() && !matches!(target, Target::IssueEvent { .. }) {
+        return Err(invalid(
+            "attachments",
+            "attachments go with an issue event's redaction only",
+        ));
+    }
+    if input.attachments.len() > MAX_TICKED {
+        return Err(invalid(
+            "attachments",
+            &format!("at most {MAX_TICKED} attachments at once"),
+        ));
+    }
     let at = locate(&mut *tx, caller, target).await?;
     commands::lock_executor(&mut *tx, who).await?;
     auth::require_step_up(&mut *tx, policy, &caller).await?;
@@ -574,6 +668,23 @@ async fn redact_locked(
     match at.wiki_page {
         Some(_) => may_redact_wiki(&mut *tx, caller, at.project).await?,
         None => may_redact(&mut *tx, caller, at.project).await?,
+    }
+    // B-45: the issue-level attachments named must be this issue's.
+    for (i, a) in input.attachments.iter().enumerate() {
+        let ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM attachments
+                            WHERE id = $1 AND issue_id = $2 AND note_id IS NULL)",
+        )
+        .bind(a)
+        .bind(at.issue)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !ok {
+            return Err(invalid(
+                &format!("attachments[{i}]"),
+                "not an issue-level attachment of this issue",
+            ));
+        }
     }
     if let Some(page) = at.wiki_page {
         sqlx::query("SELECT 1 FROM wiki_pages WHERE id = $1 FOR UPDATE")
@@ -617,9 +728,18 @@ async fn redact_locked(
             crate::wiki::check_redaction_title(&mut *tx, at.project, at.row, new_title).await?;
             false
         }
+        Target::Attachment { .. } => false,
         _ => generic_done(&mut *tx, target, at.row).await?,
     };
-    if done {
+    // The attachments that go with this target and are not redacted by name
+    // yet: a redacted note or event may still have some (attached after, or
+    // ticked later, B-45).
+    let cascade = cascade(&mut *tx, target, &at, input).await?;
+    let done = match target {
+        Target::Attachment { .. } => cascade.is_empty(),
+        _ => done,
+    };
+    if done && cascade.is_empty() {
         // C4: already redacted; nothing new, epoch unchanged.
         return Ok(Redacted {
             changed: false,
@@ -646,7 +766,11 @@ async fn redact_locked(
             )
             .await?
         }
-        _ => redact_row(&mut *tx, target, &at, who, input, reason).await?,
+        // The row was redacted before: only the attachments now.
+        _ if done => redact_attachments(&mut *tx, &cascade, who, input, reason, files)
+            .await?
+            .ok_or_else(|| not_found("attachment"))?,
+        _ => redact_row(&mut *tx, target, &at, who, input, reason, &cascade, files).await?,
     };
     fault("redact.before_derived").await?;
     derived(&mut *tx, at.project, who.user_id).await?;
@@ -696,7 +820,64 @@ async fn generic_done(tx: &mut PgConnection, target: &Target, row: Uuid) -> Resu
     .await?)
 }
 
-/// The redaction of a note, an event or a time entry.
+/// R-A12 for each of `ids` (already redacted ones are left as they are).
+async fn redact_attachments(
+    tx: &mut PgConnection,
+    ids: &[Uuid],
+    who: &Executor,
+    input: &RedactInput,
+    reason: &str,
+    files: &mut Vec<crate::attachments::redact::PurgedFile>,
+) -> Result<Option<Uuid>> {
+    let mut first = None;
+    for a in ids {
+        if let Some((rid, f)) = crate::attachments::redact::redact(
+            &mut *tx,
+            *a,
+            who.user_id,
+            &input.reason_code,
+            reason,
+        )
+        .await?
+        {
+            first.get_or_insert(rid);
+            files.push(f);
+        }
+    }
+    Ok(first)
+}
+
+/// The attachments a target takes with it (§3.13, B-45) that are not
+/// redacted by name yet, in id order: the attachment itself; a note's
+/// (deleted ones too: their content is kept for the undo window); the
+/// issue-level ones ticked on an issue event.
+async fn cascade(
+    tx: &mut PgConnection,
+    target: &Target,
+    at: &Located,
+    input: &RedactInput,
+) -> Result<Vec<Uuid>> {
+    let ids: Vec<Uuid> = match target {
+        Target::Attachment { .. } => vec![at.row],
+        Target::Note { .. } => {
+            sqlx::query_scalar("SELECT id FROM attachments WHERE issue_id = $1 AND note_id = $2")
+                .bind(at.issue)
+                .bind(at.row)
+                .fetch_all(&mut *tx)
+                .await?
+        }
+        Target::IssueEvent { .. } => input.attachments.clone(),
+        _ => return Ok(Vec::new()),
+    };
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    crate::attachments::redact::not_named(&mut *tx, &ids).await
+}
+
+/// The redaction of a note, an event, a time entry or an attachment;
+/// `cascade` the attachments that go with it.
+#[allow(clippy::too_many_arguments)]
 async fn redact_row(
     tx: &mut PgConnection,
     target: &Target,
@@ -704,8 +885,15 @@ async fn redact_row(
     who: &Executor,
     input: &RedactInput,
     reason: &str,
+    cascade: &[Uuid],
+    files: &mut Vec<crate::attachments::redact::PurgedFile>,
 ) -> Result<Uuid> {
     Ok(match target {
+        Target::Attachment { .. } => {
+            redact_attachments(&mut *tx, cascade, who, input, reason, files)
+                .await?
+                .ok_or_else(|| not_found("attachment"))?
+        }
         Target::Note { .. } => {
             sqlx::query("UPDATE issue_notes SET body = $2, redacted_at = now() WHERE id = $1")
                 .bind(at.row)
@@ -720,6 +908,8 @@ async fn redact_row(
             .bind(at.row)
             .execute(&mut *tx)
             .await?;
+            // Design 06 §3.13: the note's attachments go with it.
+            redact_attachments(&mut *tx, cascade, who, input, reason, files).await?;
             sqlx::query_scalar(
                 "INSERT INTO issue_event_redactions (note_id, redacted_by, reason_code, reason)
                  VALUES ($1, $2, $3, $4) RETURNING id",
@@ -758,6 +948,8 @@ async fn redact_row(
                 .bind(at.row)
                 .execute(&mut *tx)
                 .await?;
+            // B-45: the issue-level attachments the manager ticked.
+            redact_attachments(&mut *tx, cascade, who, input, reason, files).await?;
             id
         }
         Target::VersionEvent { .. } => {
