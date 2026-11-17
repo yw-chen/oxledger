@@ -500,6 +500,13 @@ WITH p AS (INSERT INTO github_pull_requests (repo_id, number, title, head_ref, h
 INSERT INTO pr_issue_refs (pr_id, issue_id, project_id, link_id, sources)
 SELECT p.id, k.issue_id, k.project_id, l.id, '{title}' FROM p, issue_keys k, project_repo_links l
 WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
+UPDATE github_repos SET default_branch='main' WHERE full_name='acme/auth-service';
+INSERT INTO github_commits (repo_id, sha, message, author_login, sender_login, committed_at, on_default_branch, first_ref)
+SELECT r.id, repeat('c', 40), E'AUTH-1 修正登入逾時\n\n細節不顯示', 'mallory', 'alice', now(), true, 'main'
+FROM github_repos r WHERE r.full_name='acme/auth-service';
+INSERT INTO commit_issue_refs (repo_id, sha, issue_id, project_id, link_id)
+SELECT l.repo_id, repeat('c', 40), k.issue_id, k.project_id, l.id FROM issue_keys k, project_repo_links l
+WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
 `);
 	const bob = await (await browser.newContext()).newPage();
 	contexts.push(bob.context());
@@ -515,6 +522,27 @@ WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
 	await expect(row.getByTestId('merged-transition')).toBeVisible();
 	await row.getByRole('button', { name: '隱藏' }).click();
 	await expect(page.getByTestId('dev-issue')).toHaveCount(0);
+	// M2.5 (design 06 §6.8): the issue's card lists the commit; only who
+	// manages the project can hide it there.
+	await bob.goto('/issue/AUTH-1');
+	const seen = bob.getByTestId('dev-commit');
+	await expect(seen).toHaveCount(1);
+	await expect(seen).toContainText('ccccccc');
+	await expect(seen).toContainText('AUTH-1 修正登入逾時');
+	await expect(seen).not.toContainText('細節不顯示');
+	await expect(seen.getByTestId('dev-commit-author')).toContainText('mallory（GitHub 未驗證）');
+	await expect(seen.getByTestId('dev-commit-default')).toContainText('已在 main');
+	await expect(seen.locator('a')).toHaveAttribute('href', `https://github.com/acme/auth-service/commit/${'c'.repeat(40)}`);
+	await expect(bob.getByTestId('dev-commit-hide')).toHaveCount(0);
+	await page.goto('/issue/AUTH-1');
+	await page.getByTestId('dev-commit-hide').click();
+	await expect(page.getByTestId('dev-commit')).toContainText('已隱藏');
+	await expect(page.getByTestId('dev-commit-hide')).toHaveText('取消隱藏');
+	await bob.reload();
+	await expect(bob.getByText(/組織時區|AUTH-1/).first()).toBeVisible();
+	await expect(bob.getByTestId('dev-commit')).toHaveCount(0);
+	await page.getByTestId('dev-commit-hide').click();
+	await expect(page.getByTestId('dev-commit')).not.toContainText('已隱藏');
 });
 
 test('登入的 next 只接受本站路徑', async ({ browser }) => {

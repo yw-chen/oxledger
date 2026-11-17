@@ -510,6 +510,31 @@ impl GithubApi for HttpGithub {
         })
     }
 
+    fn compare_commits<'a>(
+        &'a self,
+        inst: i64,
+        repo: &'a str,
+        before: &'a str,
+        after: &'a str,
+    ) -> Fut<'a, Vec<Json>> {
+        Box::pin(async move {
+            // Both ends are shas (40 hex): nothing from a payload reaches
+            // the path as free text.
+            if !super::commits::valid_sha(before) || !super::commits::valid_sha(after) {
+                bail!("GitHub compare: not a commit sha");
+            }
+            let path = format!("/repos/{repo}/compare/{before}...{after}?per_page={PER_PAGE}");
+            self.pages(
+                Some(inst),
+                &path,
+                Some("commits"),
+                super::commits::COMPARE_LIMIT + 1,
+                &never,
+            )
+            .await
+        })
+    }
+
     fn list_installations(&self) -> Fut<'_, Vec<(i64, String, bool)>> {
         Box::pin(async move {
             let path = format!("/app/installations?per_page={PER_PAGE}");

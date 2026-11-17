@@ -1046,7 +1046,15 @@ async fn attach_blocks(
         .bind(id)
         .fetch_one(&mut *conn)
         .await?;
-        v.dev = Some(crate::github::read::issue_block(&mut *conn, id, &v.key, closed).await?);
+        // The issue page's card: a human who may clean the project's
+        // development data sees hidden commits and the hide control
+        // (design 06 R-C7); agents never do.
+        let manager = caller.require_human_session().is_ok()
+            && crate::github::links::access_of(&mut *conn, caller, project)
+                .await
+                .is_ok_and(|a| a.can_clean);
+        v.dev =
+            Some(crate::github::read::issue_block(&mut *conn, id, &v.key, closed, manager).await?);
     }
     Ok(())
 }

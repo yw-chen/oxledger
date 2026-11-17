@@ -169,6 +169,7 @@ pub async fn process(
         "installation" => installation(conn, p).await,
         "installation_repositories" => installation_repositories(conn, p).await,
         "repository" => repository(conn, p).await,
+        "push" => super::commits::push(conn, api, p).await,
         "pull_request" | "pull_request_review" | "check_run" | "check_suite" | "status" => {
             content(conn, api, event, p).await
         }
@@ -208,11 +209,22 @@ pub async fn upsert_repo(
     let gh = repo["id"].as_i64().context("repository id missing")?;
     let name = repo["full_name"].as_str().context("full_name missing")?;
     let private = repo["private"].as_bool().unwrap_or(true);
+    // R-C2: installation payloads carry a short object without it.
+    let default_branch = repo["default_branch"]
+        .as_str()
+        .filter(|b| !b.is_empty())
+        .map(|b| {
+            b.chars()
+                .filter(|c| *c != '\0')
+                .take(super::commits::MAX_REF_CHARS)
+                .collect::<String>()
+        });
     Ok(sqlx::query_scalar(
-        "INSERT INTO github_repos (gh_repo_id, installation_id, full_name, is_private, state)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO github_repos (gh_repo_id, installation_id, full_name, is_private, state, default_branch)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (gh_repo_id) DO UPDATE SET installation_id = $2, full_name = $3,
-             is_private = $4, state = $5, updated_at = now()
+             is_private = $4, state = $5, updated_at = now(),
+             default_branch = coalesce($6, github_repos.default_branch)
          RETURNING id",
     )
     .bind(gh)
@@ -220,6 +232,7 @@ pub async fn upsert_repo(
     .bind(name)
     .bind(private)
     .bind(state)
+    .bind(default_branch)
     .fetch_one(&mut *conn)
     .await?)
 }
@@ -313,6 +326,7 @@ async fn repository(conn: &mut PgConnection, p: &Json) -> Result<Outcome> {
     let r = &p["repository"];
     let gh = r["id"].as_i64().context("repository id missing")?;
     let action = p["action"].as_str().unwrap_or("");
+    super::commits::note_default_branch(conn, r).await?;
     let n = sqlx::query(
         "UPDATE github_repos SET full_name = coalesce($2, full_name), is_private = coalesce($3, is_private),
                 state = CASE WHEN $4 THEN 'inaccessible' ELSE state END, updated_at = now()
@@ -427,6 +441,7 @@ async fn content(
     let gh_repo = p["repository"]["id"]
         .as_i64()
         .context("repository id missing")?;
+    super::commits::note_default_branch(conn, &p["repository"]).await?;
     let Some(t) = target(conn, gh_repo).await? else {
         return Ok(ignored());
     };

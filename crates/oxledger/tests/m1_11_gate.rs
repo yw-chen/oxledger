@@ -2646,6 +2646,11 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         // who cannot see it, forbidden_op without manage_project).
         "POST /projects/{id}/uploads",
         "POST /attachments/{id}/redact",
+        // M2.5: hiding a commit (m2_5_git hide_and_revoke, T-M2-66: a
+        // commit that only names an invisible issue answers like one that
+        // does not exist; without manage_project forbidden_op).
+        "POST /projects/{id}/dev/commits/{repo_id}/{sha}/hide",
+        "DELETE /projects/{id}/dev/commits/{repo_id}/{sha}/hide",
     ];
     let mut tested: BTreeSet<String> = rows
         .iter()

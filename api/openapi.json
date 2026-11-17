@@ -302,6 +302,14 @@
             "format": "uuid",
             "type": "string"
           },
+          "last_push_at": {
+            "description": "When this installation last sent a `push` event; null = never (the\nApp is not subscribed to push: no commits, no fix keywords).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "repos": {
             "items": {
               "$ref": "#/components/schemas/AdminRepo"
@@ -318,6 +326,7 @@
           "gh_installation_id",
           "account_login",
           "state",
+          "last_push_at",
           "repos"
         ],
         "type": "object"
@@ -1618,6 +1627,50 @@
         ],
         "type": "object"
       },
+      "CommitHideResult": {
+        "properties": {
+          "changed": {
+            "description": "false: it was in that state already (no event).",
+            "type": "boolean"
+          },
+          "hidden": {
+            "type": "boolean"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "sha",
+          "hidden",
+          "changed"
+        ],
+        "type": "object"
+      },
+      "CommitRef": {
+        "additionalProperties": false,
+        "description": "A commit of a repository.",
+        "properties": {
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sha": {
+            "description": "The full 40-character sha.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "sha"
+        ],
+        "type": "object"
+      },
       "CompactValidation": {
         "properties": {
           "blocking": {
@@ -2674,6 +2727,76 @@
           "paused_at",
           "paused_reason",
           "read_own_time_warning"
+        ],
+        "type": "object"
+      },
+      "DevCommit": {
+        "description": "A commit whose message names the issue (design 06 R-C6). Collected from\nGitHub's `push` notifications, so the list may be incomplete.",
+        "properties": {
+          "at": {
+            "description": "The commit's time; when GitHub sent none, when it was first seen.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "author_login": {
+            "description": "The author GitHub names for the commit: NOT verified (anyone can\nwrite any author into a commit).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_branch": {
+            "description": "The repository's default branch, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hidden": {
+            "description": "Only for managers (a person's session).",
+            "type": "boolean"
+          },
+          "on_default_branch": {
+            "type": "boolean"
+          },
+          "repo": {
+            "description": "`owner/name` as GitHub shows it now.",
+            "type": "string"
+          },
+          "repo_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sender_login": {
+            "description": "Who pushed it first (verified by GitHub).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha": {
+            "type": "string"
+          },
+          "title": {
+            "description": "The first line of the message, cut to 120 characters; `[已遮蔽]`\nafter a revoke.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Built from the repository's name and the sha (never a URL GitHub sent).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_id",
+          "repo",
+          "sha",
+          "url",
+          "title",
+          "author_login",
+          "sender_login",
+          "at",
+          "on_default_branch",
+          "default_branch"
         ],
         "type": "object"
       },
@@ -5361,6 +5484,21 @@
       },
       "IssueDev": {
         "properties": {
+          "can_manage": {
+            "description": "The caller may hide commits and PRs of this issue's project (and is\nshown hidden commits). Always false for agents.",
+            "type": "boolean"
+          },
+          "commits": {
+            "description": "Newest first, at most 20.",
+            "items": {
+              "$ref": "#/components/schemas/DevCommit"
+            },
+            "type": "array"
+          },
+          "commits_truncated": {
+            "description": "More than 20 commits name this issue.",
+            "type": "boolean"
+          },
           "key": {
             "type": "string"
           },
@@ -5390,6 +5528,9 @@
         "required": [
           "key",
           "prs",
+          "commits",
+          "commits_truncated",
+          "can_manage",
           "truncated",
           "merged_open",
           "synced_at"
@@ -9265,7 +9406,18 @@
       },
       "RevokeInput": {
         "additionalProperties": false,
+        "description": "Exactly one of `link_id`, `pr_ids`, `commits`.",
         "properties": {
+          "commits": {
+            "description": "Or these commits (same rule): their links to this project's issues\ngo and never come back, even when the same commit is pushed again;\na commit no project links any more loses its message.",
+            "items": {
+              "$ref": "#/components/schemas/CommitRef"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "link_id": {
             "description": "Revoke a whole link (also for PRs on issues you cannot see).",
             "format": "uuid",
@@ -9290,6 +9442,12 @@
       },
       "Revoked": {
         "properties": {
+          "commits": {
+            "items": {
+              "$ref": "#/components/schemas/CommitRef"
+            },
+            "type": "array"
+          },
           "link_id": {
             "format": "uuid",
             "type": [
@@ -9312,7 +9470,8 @@
         "required": [
           "security_epoch",
           "link_id",
-          "pr_ids"
+          "pr_ids",
+          "commits"
         ],
         "type": "object"
       },
@@ -25009,6 +25168,156 @@
         "x-access": "session"
       }
     },
+    "/projects/{id}/dev/commits/{repo_id}/{sha}/hide": {
+      "delete": {
+        "operationId": "delete_projects_id_dev_commits_repoid_sha_hide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sha",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CommitHideResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Show a hidden commit again (manage_project). Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      },
+      "post": {
+        "operationId": "post_projects_id_dev_commits_repoid_sha_hide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sha",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CommitHideResult"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Hide a commit in this project only (manage_project). Header Idempotency-Key. not_found unless the commit names an issue of this project you can see. Not a redaction.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
     "/projects/{id}/dev/prs/{pr_id}/hide": {
       "delete": {
         "operationId": "delete_projects_id_dev_prs_prid_hide",
@@ -25208,7 +25517,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "Revoke GitHub content (§19.9; manage_project or administrator; step-up): link_id unlinks a whole link, pr_ids hides PRs you can see. Bumps the project's security_epoch, so every agent context that read the project is quarantined. Header Idempotency-Key.",
+        "summary": "Revoke GitHub content (§19.9; manage_project or administrator; step-up): link_id unlinks a whole link, pr_ids hides PRs you can see, commits removes commits' links to this project for good (the same commit pushed again is not linked; a commit nothing links any more loses its message). Bumps the project's security_epoch, so every agent context that read the project is quarantined. Header Idempotency-Key.",
         "x-access": "session",
         "x-csrf": true
       }

@@ -143,6 +143,15 @@ impl GithubApi for Fake {
     ) -> Fut<'a, (Vec<Value>, Vec<Value>, Vec<Value>)> {
         Box::pin(async { Ok((vec![], vec![], vec![])) })
     }
+    fn compare_commits<'a>(
+        &'a self,
+        _: i64,
+        _: &'a str,
+        _: &'a str,
+        _: &'a str,
+    ) -> Fut<'a, Vec<Value>> {
+        Box::pin(async { Ok(vec![]) })
+    }
     fn list_installations(&self) -> Fut<'_, Vec<(i64, String, bool)>> {
         Box::pin(async { Ok(vec![]) })
     }

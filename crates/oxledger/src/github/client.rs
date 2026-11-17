@@ -67,6 +67,16 @@ pub trait GithubApi: Send + Sync {
         repo: &'a str,
         sha: &'a str,
     ) -> Fut<'a, (Vec<Json>, Vec<Json>, Vec<Json>)>;
+    /// `GET /repos/{repo}/compare/{before}...{after}`: the commit objects,
+    /// oldest first, at most `commits::COMPARE_LIMIT + 1` (one more than is
+    /// used tells that the range was longer).
+    fn compare_commits<'a>(
+        &'a self,
+        inst: i64,
+        repo: &'a str,
+        before: &'a str,
+        after: &'a str,
+    ) -> Fut<'a, Vec<Json>>;
     /// `GET /app/installations`: `(id, account login, suspended)`.
     fn list_installations(&self) -> Fut<'_, Vec<(i64, String, bool)>>;
     /// `GET /installation/repositories`: repository objects.
@@ -115,6 +125,15 @@ impl GithubApi for NoGithub {
         _: &'a str,
         _: &'a str,
     ) -> Fut<'a, (Vec<Json>, Vec<Json>, Vec<Json>)> {
+        off()
+    }
+    fn compare_commits<'a>(
+        &'a self,
+        _: i64,
+        _: &'a str,
+        _: &'a str,
+        _: &'a str,
+    ) -> Fut<'a, Vec<Json>> {
         off()
     }
     fn list_installations(&self) -> Fut<'_, Vec<(i64, String, bool)>> {

@@ -323,3 +323,15 @@
 - **新端點** `POST /attachments/{id}/redact`（要 `manage_project`）：檔名換成 `[已遮蔽]`、內容立刻清除，同一內容在該專案的其他附件一起標為遮蔽；遮蔽會讓專案的 security epoch 加一。遮蔽留言時，留言的附件一起遮蔽；遮蔽議題事件時，可用 `attachments` 指定一起遮蔽的議題附件。
 - **背景清理**：設了 `OXLEDGER_FILES_DIR` 時每小時清掉過期的上傳與沒人用、刪除超過 30 天的內容，每日掃描並刪除孤兒檔與 24 小時以上的暫存檔。新 worker 指標 `files`。
 - **Markdown 圖片**（R-M4）：`![說明](attachment:檔名)` 或 `![說明](/api/v1/attachments/{id}/content)` 會內嵌同一容器的圖片附件（說明：議題層附件；留言：自己的＋議題層；wiki：該頁），其他圖片仍是「外部圖片」文字。`format_version` 升為 2。`POST /markdown/preview` 的 context 可帶 `wiki_page`。若設了 `OXLEDGER_FILES_ORIGIN` 又在反向代理加了 CSP，`img-src` 要包含那個下載網域，否則內嵌圖片會被擋。
+
+## 0039_git_commits（M2.5，Git push 與 commit）
+
+- **要在 GitHub 上為 GitHub App 加訂 `push` 事件**（App 設定 › Permissions & events › Subscribe to events）。權限不變（`Contents: read` 已有）。沒訂之前 commit 連結不會運作；`/admin/github` 每個 installation 會顯示「push 事件：從未收到」和黃條，收到第一個 push 後消失。加訂事件是否需要安裝者重新同意，還沒有在真實 App 上確認。
+- commit 只從 push 通知收集，不回溯：升級前的 commit、以及下列情況的 commit 不會出現，要等之後的 push 帶進來。
+  - GitHub 的限制：一次推送超過 3 個 tag 或 5000 個分支時不送 push 事件。
+  - 一次 push 超過 2048 個 commit 時改用 compare API 補抓，最多 1,000 個；再多的略過（事件工作的結果記 `commits_truncated`）。新分支的第一次 push 超過 2048 個時無法補抓。
+- 只存專案目前連結的 repository 的 commit：訊息（最多 4096 字）、作者帳號（GitHub 未驗證）、推送者帳號、時間；不存 email、姓名、diff。沒有被任何議題提到、30 天沒再出現的 commit 由每小時的清理刪除；解除連結時該連結的 commit 參照一併刪除；之後重新連結不會恢復，既有 commit 要等它再次以新 commit 的身分被推送（通常不會），新的 commit 照常收集。
+- 新 API：`POST`／`DELETE /projects/{id}/dev/commits/{repo_id}/{sha}/hide`（`manage_project`）；`POST /projects/{id}/dev/revoke` 多了 `commits`（和 `link_id`、`pr_ids` 三選一）。撤除是永久的：之後同一個 commit 再被推送也不會回到這個專案；沒有任何專案還連著它時，訊息改成 `[已遮蔽]`（其他專案還提到它時原文保留給那些專案）。同一個 commit 從另一個 repository（例如 fork）推上來算另一筆，不受這次撤除影響。
+- webhook 端點同時最多處理 16 個請求，超過回 503（GitHub 會重送）。名額在驗簽前、讀取 body 時就佔用：請在反向代理對這個路徑設請求逾時，避免慢速連線佔滿名額。
+- 專案設定歷史裡，commit 的隱藏與撤除事件只有系統管理員看得到。
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`。

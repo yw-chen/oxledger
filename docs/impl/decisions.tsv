@@ -983,3 +983,13 @@ date	stage	decision	why	alternatives	source
 2026-11-17	M2.4	新建 wiki 頁的編輯器不提供上傳（頁面建立後在頁面卡片或編輯時附加）；縮圖點擊先開新分頁，§6.1 燈箱列為後續	上傳要附在既有頁，新頁還沒有 page_id	建立時一併 attach（需後端支援 create 帶附件）	設計 06 §6.1、§6.8
 2026-11-17	M2.4	e2e／開發後端 backend.mjs 設 OXLEDGER_FILES_DIR=.state/files-<db>，附件功能在 e2e 環境開啟	R-A11 沒有檔案目錄時附件關閉，否則無法在真實 app 驗證	只在個別 spec 開啟	設計 06 R-A11
 2026-11-17	M2.4	編輯器上傳的檔名只在同一編輯器內去重；和容器裡既有附件同名時，依 R-M4 同名取最新，舊內容的同名連結會改指向新檔	R-M4 的既有規則；要跨容器去重得先查容器附件清單	上傳前查同名並自動改名（列為後續）	設計 06 R-M4；a4 複查
+2026-11-17	M2.5	github_installations 加 last_push_at（收到任何 push 事件就更新），/admin/github 用它顯示「push 事件：最後收到／從未收到」	§6.10 要顯示最後收到 push 的時間，§2.5 的 DDL 沒有可存的欄位	從 github_event_jobs 查最新 push（工作列會被清理，查不到不等於沒收過）	設計 06 §6.10、§2.5
+2026-11-17	M2.5	議題的開發卡（GET /issues/{key}/dev 與 get 的 include=dev）對可清理專案資料的人（manage_project 或系統管理員，限人的 session）列出已隱藏的 commit 並帶 can_manage；agent 一律看不到	R-C7 的隱藏要有地方取消；沒有專案層級的 commit 清單，議題卡是唯一看得到 commit 的地方	另做專案層級的 commit 管理頁	設計 06 R-C6、R-C7、§6.8
+2026-11-17	M2.5	payload 滿 2048 筆時 compare 的結果和 payload 合併（同 sha 以 payload 為準）；只來自 compare 的 commit 當作 distinct=false（已存在就不重建 refs）；新分支（before 全 0）無法 compare，記 commits_truncated	compare 不提供 distinct；已知的 commit 不重掃可保住 R-C3 與撤除後不復活	全部當 distinct=true（撤除的 refs 仍被 tombstone 擋住，但會重掃已知 commit）	設計 06 R-C3、R-C4
+2026-11-17	M2.5	POST /projects/{id}/dev/revoke 的 link_id、pr_ids、commits 三選一；commits 一次最多 100 筆；沒有 commits 時 body 雜湊維持舊形狀（舊的 operation_id 重送仍相同）	一次請求只做一種撤除，事件與冪等的語意單純	允許混用	設計 06 R-C7
+2026-11-17	M2.5	撤除 commit 時對專案的 live link 取 FOR UPDATE，和 worker 的 FOR SHARE 互斥；tombstone（project_commit_revocations）永久保留，之後的 push 不再為這個（專案, repo, sha）建 ref	避免撤除和同一 commit 的 push 交錯後 ref 又出現（T-M2-65a）	只靠 tombstone 的 NOT EXISTS（交錯時 worker 可能先讀到沒有 tombstone）	設計 06 R-C7、契約 02 §19.5
+2026-11-17	M2.5	撤除 commit 沒有畫面（和撤除 PR 一樣只有 API）；開發卡只提供隱藏／取消隱藏	撤除不可逆，M2 的畫面規格（§6.8）只列隱藏	在開發卡加撤除按鈕	設計 06 §6.8
+2026-11-17	M2.5	修正關鍵字（R-F1）與 issue_fix_links 的清理留到 M2.6；commits::push 留了掛點註解	階段表 §8 把 fixed_by 排在 M2.6	M2.5 一併做	設計 06 §8
+2026-11-17	M2.5	webhook 路由的並行上限 16 用 tower 的 ConcurrencyLimit＋LoadShed 做，超過直接回 503（GitHub 會重送）	不排隊，避免驗簽前的請求堆積	自己用 Semaphore::try_acquire	設計 06 §3.7 webhook 安全、L16、T-M2-78
+2026-11-17	M2.5	commit 的隱藏／取消隱藏事件與帶 commits 的撤除事件，在專案設定歷史只有系統管理員看得到（和 PR 的同類事件相同）	事件本身透露「某 commit 提到本專案某張單」；看不到那張單的管理者不該知道（T-M2-66）。設計 06 沒寫，審查發現	依事件逐筆判斷讀者看不看得到那張單	契約 02 §18.5；M2.5 審查
+2026-11-17	M2.5	開發卡的 commit 依第一次收到的時間排序（同一次 push 內再依 commit 時間）；顯示的時間仍是 commit 時間	commit 時間可由作者任意填，填未來時間就能永遠排第一、把新 commit 擠出 20 筆	依 commit 時間排序	設計 06 R-C6；M2.5 審查

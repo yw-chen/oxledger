@@ -398,6 +398,7 @@ CREATE INDEX attachments_blob_idx ON attachments (blob_id);
 
 ```sql
 ALTER TABLE github_repos ADD COLUMN default_branch text;   -- 每個帶 repository 物件的事件都更新；NULL＝還不知道
+ALTER TABLE github_installations ADD COLUMN last_push_at timestamptz;   -- 實作補充（M2.5）：收到 push 事件就更新，§6.10 顯示用
 
 CREATE TABLE github_commits (
     repo_id      uuid NOT NULL REFERENCES github_repos(id),

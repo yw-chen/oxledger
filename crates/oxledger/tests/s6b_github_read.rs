@@ -65,6 +65,15 @@ impl GithubApi for Quiet {
     ) -> Fut<'a, (Vec<Value>, Vec<Value>, Vec<Value>)> {
         Box::pin(async { Ok((vec![], vec![], vec![])) })
     }
+    fn compare_commits<'a>(
+        &'a self,
+        _: i64,
+        _: &'a str,
+        _: &'a str,
+        _: &'a str,
+    ) -> Fut<'a, Vec<Value>> {
+        Box::pin(async { Ok(vec![]) })
+    }
     fn list_installations(&self) -> Fut<'_, Vec<(i64, String, bool)>> {
         Box::pin(async { Ok(vec![]) })
     }
@@ -517,6 +526,7 @@ async fn visibility_and_hiding() {
             &RevokeInput {
                 link_id: None,
                 pr_ids: Some(vec![pr]),
+                commits: None,
             },
         )
         .await
@@ -656,6 +666,7 @@ async fn visibility_and_hiding() {
         &RevokeInput {
             link_id: None,
             pr_ids: Some(vec![p1]),
+            commits: None,
         },
     )
     .await
@@ -695,6 +706,7 @@ async fn visibility_and_hiding() {
         &RevokeInput {
             link_id: Some(auth_link),
             pr_ids: None,
+            commits: None,
         },
     )
     .await
@@ -711,6 +723,7 @@ async fn visibility_and_hiding() {
         &RevokeInput {
             link_id: None,
             pr_ids: Some(vec![]),
+            commits: None,
         },
     )
     .await
@@ -910,6 +923,7 @@ async fn cleanup_rights_and_refs() {
         &RevokeInput {
             link_id: None,
             pr_ids: Some(vec![p1]),
+            commits: None,
         },
     )
     .await

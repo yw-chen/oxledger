@@ -341,6 +341,12 @@ command_executions.created_at timestamp with time zone NOT NULL DEFAULT now()
 command_executions.agent_chain_writes integer
 command_executions.agent_chain_depth integer
 command_executions.import_id uuid
+commit_issue_refs.repo_id uuid NOT NULL
+commit_issue_refs.sha text NOT NULL
+commit_issue_refs.issue_id uuid NOT NULL
+commit_issue_refs.project_id uuid NOT NULL
+commit_issue_refs.link_id uuid NOT NULL
+commit_issue_refs.first_seen timestamp with time zone NOT NULL DEFAULT now()
 concepts.id uuid NOT NULL DEFAULT uuidv7()
 concepts.pref_label text NOT NULL
 concepts.status text NOT NULL DEFAULT 'active'::text
@@ -514,6 +520,17 @@ github_commit_statuses.head_sha text NOT NULL
 github_commit_statuses.context text NOT NULL
 github_commit_statuses.gh_status_id bigint NOT NULL
 github_commit_statuses.state text NOT NULL
+github_commits.repo_id uuid NOT NULL
+github_commits.sha text NOT NULL
+github_commits.message text NOT NULL
+github_commits.author_login text
+github_commits.sender_login text
+github_commits.committed_at timestamp with time zone
+github_commits.on_default_branch boolean NOT NULL DEFAULT false
+github_commits.first_ref text
+github_commits.first_seen timestamp with time zone NOT NULL DEFAULT now()
+github_commits.last_seen timestamp with time zone NOT NULL DEFAULT now()
+github_commits.redacted_at timestamp with time zone
 github_deliveries.delivery_id uuid NOT NULL
 github_deliveries.event text NOT NULL
 github_deliveries.received_at timestamp with time zone NOT NULL DEFAULT now()
@@ -528,6 +545,7 @@ github_installations.gh_installation_id bigint NOT NULL
 github_installations.account_login text NOT NULL
 github_installations.state text NOT NULL
 github_installations.updated_at timestamp with time zone NOT NULL DEFAULT now()
+github_installations.last_push_at timestamp with time zone
 github_pull_requests.id uuid NOT NULL DEFAULT uuidv7()
 github_pull_requests.repo_id uuid NOT NULL
 github_pull_requests.number integer NOT NULL
@@ -549,6 +567,7 @@ github_repos.is_private boolean NOT NULL
 github_repos.linkable boolean NOT NULL DEFAULT false
 github_repos.state text NOT NULL
 github_repos.updated_at timestamp with time zone NOT NULL DEFAULT now()
+github_repos.default_branch text
 group_members.group_id uuid NOT NULL
 group_members.user_id uuid NOT NULL
 issue_agent_chains.issue_id uuid NOT NULL
@@ -770,6 +789,16 @@ principals.is_admin boolean NOT NULL DEFAULT false
 principals.status text NOT NULL DEFAULT 'active'::text
 principals.created_at timestamp with time zone NOT NULL DEFAULT now()
 project_catalog.id boolean NOT NULL DEFAULT true
+project_commit_hidden.project_id uuid NOT NULL
+project_commit_hidden.repo_id uuid NOT NULL
+project_commit_hidden.sha text NOT NULL
+project_commit_hidden.hidden_by uuid NOT NULL
+project_commit_hidden.hidden_at timestamp with time zone NOT NULL DEFAULT now()
+project_commit_revocations.project_id uuid NOT NULL
+project_commit_revocations.repo_id uuid NOT NULL
+project_commit_revocations.sha text NOT NULL
+project_commit_revocations.revoked_by uuid NOT NULL
+project_commit_revocations.revoked_at timestamp with time zone NOT NULL DEFAULT now()
 project_pr_hidden.project_id uuid NOT NULL
 project_pr_hidden.pr_id uuid NOT NULL
 project_pr_hidden.hidden_by uuid NOT NULL

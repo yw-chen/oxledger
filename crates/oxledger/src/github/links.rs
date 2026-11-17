@@ -37,6 +37,9 @@ pub const ACTION_UNLINK: &str = "github_repo_unlink";
 pub const ACTION_HIDE: &str = "github_pr_hide";
 pub const ACTION_UNHIDE: &str = "github_pr_unhide";
 pub const ACTION_REVOKE: &str = "github_content_revoke";
+pub const ACTION_COMMIT_HIDE: &str = "github_commit_hide";
+pub const ACTION_COMMIT_UNHIDE: &str = "github_commit_unhide";
+pub const MAX_REVOKE_COMMITS: usize = 100;
 
 // ---------------------------------------------------------------- types
 
@@ -96,6 +99,25 @@ pub struct HideResult {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CommitHideResult {
+    pub repo_id: Uuid,
+    pub sha: String,
+    pub hidden: bool,
+    /// false: it was in that state already (no event).
+    pub changed: bool,
+}
+
+/// A commit of a repository.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommitRef {
+    pub repo_id: Uuid,
+    /// The full 40-character sha.
+    pub sha: String,
+}
+
+/// Exactly one of `link_id`, `pr_ids`, `commits`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RevokeInput {
@@ -103,6 +125,10 @@ pub struct RevokeInput {
     pub link_id: Option<Uuid>,
     /// Or these PRs (each must be on an issue of this project you can see).
     pub pr_ids: Option<Vec<Uuid>>,
+    /// Or these commits (same rule): their links to this project's issues
+    /// go and never come back, even when the same commit is pushed again;
+    /// a commit no project links any more loses its message.
+    pub commits: Option<Vec<CommitRef>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -110,6 +136,7 @@ pub struct Revoked {
     pub security_epoch: i64,
     pub link_id: Option<Uuid>,
     pub pr_ids: Vec<Uuid>,
+    pub commits: Vec<CommitRef>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -131,6 +158,9 @@ pub struct AdminInstallation {
     pub account_login: String,
     /// active / suspended / deleted
     pub state: String,
+    /// When this installation last sent a `push` event; null = never (the
+    /// App is not subscribed to push: no commits, no fix keywords).
+    pub last_push_at: Option<DateTime<Utc>>,
     pub repos: Vec<AdminRepo>,
 }
 
@@ -158,6 +188,10 @@ pub struct AdminGithubPut {
 
 pub(crate) fn not_found() -> anyhow::Error {
     api(ErrorCode::NotFound, "no such project")
+}
+
+fn commit_not_found() -> anyhow::Error {
+    api(ErrorCode::NotFound, "no such commit in this project")
 }
 
 fn pr_not_found() -> anyhow::Error {
@@ -201,7 +235,7 @@ pub(crate) async fn project_access(
     access_of(conn, caller, project).await
 }
 
-async fn access_of(
+pub(crate) async fn access_of(
     conn: &mut PgConnection,
     caller: AuthContext,
     project: Uuid,
@@ -529,6 +563,7 @@ async fn unlink_locked(
         .bind(link)
         .execute(&mut *conn)
         .await?;
+    super::commits::drop_link_refs(conn, link).await?;
     Ok(true)
 }
 
@@ -726,6 +761,187 @@ pub async fn hide(
     })
 }
 
+/// The commit has a ref, through a live link of `project`, to an issue of
+/// `project` the caller can see (`scope`; `None` = an administrator: any
+/// ref of the project). Otherwise it does not exist for them (T-M2-66).
+async fn commit_visible_in(
+    conn: &mut PgConnection,
+    scope: Option<&Scope>,
+    project: Uuid,
+    c: &CommitRef,
+) -> Result<bool> {
+    let rows: Vec<(Uuid, bool, Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT i.tracker_id, i.is_private, i.author_id, i.assigned_to_id
+         FROM commit_issue_refs f
+         JOIN project_repo_links l ON l.id = f.link_id AND l.unlinked_at IS NULL AND l.project_id = $3
+         JOIN issues i ON i.id = f.issue_id AND i.archived_at IS NULL
+         WHERE f.repo_id = $1 AND f.sha = $2 AND f.project_id = $3",
+    )
+    .bind(c.repo_id)
+    .bind(&c.sha)
+    .bind(project)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(match scope {
+        None => !rows.is_empty(),
+        Some(scope) => rows.into_iter().any(|r| {
+            scope.can_see(&IssueFacts {
+                project_id: project,
+                tracker_id: r.0,
+                is_private: r.1,
+                author_id: r.2,
+                assigned_to_id: r.3,
+            })
+        }),
+    })
+}
+
+/// `POST` / `DELETE /projects/{id}/dev/commits/{repo_id}/{sha}/hide`
+/// (Idempotency-Key; design 06 R-C7). As hiding a PR: this project only,
+/// not a redaction.
+pub async fn hide_commit(
+    app: &App,
+    caller: AuthContext,
+    operation_id: Uuid,
+    project: &str,
+    c: &CommitRef,
+    hidden: bool,
+) -> Result<CommitHideResult> {
+    let who = commands::executor(&caller)?;
+    caller.require_human_session()?;
+    let out = |changed| CommitHideResult {
+        repo_id: c.repo_id,
+        sha: c.sha.clone(),
+        hidden,
+        changed,
+    };
+    let mut tx = app.pool.begin().await?;
+    let project = describe::visible_project(&mut tx, caller, project)
+        .await
+        .map_err(|_| not_found())?;
+    let action = if hidden {
+        ACTION_COMMIT_HIDE
+    } else {
+        ACTION_COMMIT_UNHIDE
+    };
+    let body = json!({"project": project, "repo_id": c.repo_id, "sha": c.sha});
+    let request = match open(&mut tx, &who, operation_id, action, &body).await? {
+        Ok(r) => r,
+        Err(first) => {
+            tx.commit().await?;
+            return Ok(out(first["changed"].as_bool().unwrap_or(false)));
+        }
+    };
+    commands::lock_executor(&mut tx, &who).await?;
+    sqlx::query("SELECT 1 FROM projects WHERE id = $1 FOR SHARE")
+        .bind(project)
+        .execute(&mut *tx)
+        .await?;
+    let a = access_of(&mut tx, caller, project).await?;
+    if !a.can_clean {
+        return Err(forbidden("hiding commits needs manage_project"));
+    }
+    if !super::commits::valid_sha(&c.sha)
+        || !commit_visible_in(&mut tx, Some(&a.scope), project, c).await?
+    {
+        return Err(commit_not_found());
+    }
+    let n = if hidden {
+        sqlx::query(
+            "INSERT INTO project_commit_hidden (project_id, repo_id, sha, hidden_by) VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(project)
+        .bind(c.repo_id)
+        .bind(&c.sha)
+        .bind(who.user_id)
+        .execute(&mut *tx)
+        .await?
+    } else {
+        sqlx::query(
+            "DELETE FROM project_commit_hidden WHERE project_id = $1 AND repo_id = $2 AND sha = $3",
+        )
+        .bind(project)
+        .bind(c.repo_id)
+        .bind(&c.sha)
+        .execute(&mut *tx)
+        .await?
+    };
+    let changed = n.rows_affected() > 0;
+    if changed {
+        let kind = if hidden {
+            "commit_hidden"
+        } else {
+            "commit_unhidden"
+        };
+        event(
+            &mut tx,
+            project,
+            kind,
+            who.user_id,
+            request,
+            json!({"repo_id": c.repo_id, "sha": c.sha}),
+        )
+        .await?;
+    }
+    commands::complete_request(&mut tx, request, &json!({"changed": changed})).await?;
+    tx.commit().await?;
+    Ok(out(changed))
+}
+
+/// R-C7, inside the revoke transaction (project `FOR UPDATE`, epoch
+/// bumped): the tombstone, then this project's refs, then the message of a
+/// commit nothing links any more.
+async fn revoke_commit(
+    conn: &mut PgConnection,
+    project: Uuid,
+    c: &CommitRef,
+    who: Uuid,
+) -> Result<()> {
+    // The worker builds refs under the link's FOR SHARE (§19.5): with the
+    // link FOR UPDATE here, a push of this sha either finished before (its
+    // refs are deleted below) or starts after and sees the tombstone.
+    sqlx::query(
+        "SELECT 1 FROM project_repo_links
+         WHERE project_id = $1 AND repo_id = $2 AND unlinked_at IS NULL FOR UPDATE",
+    )
+    .bind(project)
+    .bind(c.repo_id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO project_commit_revocations (project_id, repo_id, sha, revoked_by)
+         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+    )
+    .bind(project)
+    .bind(c.repo_id)
+    .bind(&c.sha)
+    .bind(who)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "DELETE FROM commit_issue_refs WHERE project_id = $1 AND repo_id = $2 AND sha = $3",
+    )
+    .bind(project)
+    .bind(c.repo_id)
+    .bind(&c.sha)
+    .execute(&mut *conn)
+    .await?;
+    // M2.6: issue_fix_links of this commit that are pending, suggested or
+    // skipped go here too (applied ones stay).
+    sqlx::query(
+        "UPDATE github_commits c SET message = $3, redacted_at = now()
+         WHERE c.repo_id = $1 AND c.sha = $2 AND c.redacted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM commit_issue_refs f WHERE f.repo_id = c.repo_id AND f.sha = c.sha)",
+    )
+    .bind(c.repo_id)
+    .bind(&c.sha)
+    .bind(super::commits::REDACTED)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// `POST /projects/{id}/dev/revoke` (Idempotency-Key, step-up): §19.9.
 /// One transaction: project `FOR UPDATE` and `security_epoch + 1` (every
 /// agent context that read this project is quarantined) → unlink or hide
@@ -741,18 +957,30 @@ pub async fn revoke(
 ) -> Result<Revoked> {
     let who = commands::executor(&caller)?;
     caller.require_human_session()?;
-    let pr_ids = match (&input.link_id, &input.pr_ids) {
-        (Some(_), None) => Vec::new(),
-        (None, Some(p)) if !p.is_empty() && p.len() <= MAX_REVOKE_PRS => {
+    let (pr_ids, commits) = match (&input.link_id, &input.pr_ids, &input.commits) {
+        (Some(_), None, None) => (Vec::new(), Vec::new()),
+        (None, Some(p), None) if !p.is_empty() && p.len() <= MAX_REVOKE_PRS => {
             let mut p = p.clone();
             p.sort();
             p.dedup();
-            p
+            (p, Vec::new())
+        }
+        (None, None, Some(c))
+            if !c.is_empty()
+                && c.len() <= MAX_REVOKE_COMMITS
+                && c.iter().all(|x| super::commits::valid_sha(&x.sha)) =>
+        {
+            let mut c = c.clone();
+            c.sort();
+            c.dedup();
+            (Vec::new(), c)
         }
         _ => {
             return Err(ApiError::new(
                 ErrorCode::InvalidRequest,
-                format!("send either link_id or 1–{MAX_REVOKE_PRS} pr_ids"),
+                format!(
+                    "send one of link_id, 1–{MAX_REVOKE_PRS} pr_ids or 1–{MAX_REVOKE_COMMITS} commits (full shas)"
+                ),
             )
             .with_details(json!({"kind": "revoke_target"}))
             .into());
@@ -762,7 +990,11 @@ pub async fn revoke(
     let project = describe::visible_project(&mut tx, caller, project)
         .await
         .map_err(|_| not_found())?;
-    let body = json!({"project": project, "link_id": input.link_id, "pr_ids": pr_ids});
+    // Requests without commits hash as they did before commits existed.
+    let mut body = json!({"project": project, "link_id": input.link_id, "pr_ids": pr_ids});
+    if !commits.is_empty() {
+        body["commits"] = json!(commits);
+    }
     let request = match open(&mut tx, &who, operation_id, ACTION_REVOKE, &body).await? {
         Ok(r) => r,
         Err(first) => {
@@ -772,6 +1004,7 @@ pub async fn revoke(
                     security_epoch: r.security_epoch,
                     link_id: r.link_id,
                     pr_ids: r.pr_ids,
+                    commits: r.commits,
                 })?,
             );
         }
@@ -807,6 +1040,12 @@ pub async fn revoke(
             }
         }
     }
+    for c in &commits {
+        let scope = (!a.is_admin).then_some(&a.scope);
+        if !commit_visible_in(&mut tx, scope, project, c).await? {
+            return Err(commit_not_found());
+        }
+    }
     let epoch: i64 = sqlx::query_scalar(
         "UPDATE projects SET security_epoch = security_epoch + 1 WHERE id = $1 RETURNING security_epoch",
     )
@@ -819,6 +1058,13 @@ pub async fn revoke(
         Some(link) => {
             unlink_locked(&mut tx, project, link, who.user_id).await?;
             json!({"link_id": link})
+        }
+        None if !commits.is_empty() => {
+            for c in &commits {
+                revoke_commit(&mut tx, project, c, who.user_id).await?;
+            }
+            // Ids only: never the message.
+            json!({"commits": commits})
         }
         None => {
             for pr in &pr_ids {
@@ -840,11 +1086,13 @@ pub async fn revoke(
         security_epoch: epoch,
         link_id: input.link_id,
         pr_ids,
+        commits,
     };
     commands::complete_request(
         &mut tx,
         request,
-        &json!({"revoked": {"security_epoch": out.security_epoch, "link_id": out.link_id, "pr_ids": out.pr_ids}}),
+        &json!({"revoked": {"security_epoch": out.security_epoch, "link_id": out.link_id,
+                            "pr_ids": out.pr_ids, "commits": out.commits}}),
     )
     .await?;
     tx.commit().await?;
@@ -856,6 +1104,9 @@ struct RevokedRef {
     security_epoch: i64,
     link_id: Option<Uuid>,
     pr_ids: Vec<Uuid>,
+    /// Absent in results stored before commits could be revoked.
+    #[serde(default)]
+    commits: Vec<CommitRef>,
 }
 
 // ---------------------------------------------------------------- admin
@@ -874,8 +1125,10 @@ async fn require_admin(conn: &mut PgConnection, caller: AuthContext) -> Result<(
 }
 
 async fn admin_view(conn: &mut PgConnection) -> Result<AdminGithub> {
-    let inst: Vec<(Uuid, i64, String, String)> = sqlx::query_as(
-        "SELECT id, gh_installation_id, account_login, state FROM github_installations ORDER BY account_login, id",
+    type Inst = (Uuid, i64, String, String, Option<DateTime<Utc>>);
+    let inst: Vec<Inst> = sqlx::query_as(
+        "SELECT id, gh_installation_id, account_login, state, last_push_at
+         FROM github_installations ORDER BY account_login, id",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -899,11 +1152,12 @@ async fn admin_view(conn: &mut PgConnection) -> Result<AdminGithub> {
     Ok(AdminGithub {
         installations: inst
             .into_iter()
-            .map(|(id, gh, login, state)| AdminInstallation {
+            .map(|(id, gh, login, state, last_push_at)| AdminInstallation {
                 id,
                 gh_installation_id: gh,
                 account_login: login,
                 state,
+                last_push_at,
                 repos: repos.iter().filter(|r| r.1 == Some(id)).map(to).collect(),
             })
             .collect(),

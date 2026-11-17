@@ -513,6 +513,7 @@ pub async fn sweep_once(app: &App, now: DateTime<Utc>) -> Result<(u64, u64)> {
          WHERE NOT EXISTS (SELECT 1 FROM project_repo_links l WHERE l.repo_id = r.id AND l.unlinked_at IS NULL)
            AND (SELECT max(l.unlinked_at) FROM project_repo_links l WHERE l.repo_id = r.id) < $1
            AND (EXISTS (SELECT 1 FROM github_pull_requests p WHERE p.repo_id = r.id)
+                OR EXISTS (SELECT 1 FROM github_commits c WHERE c.repo_id = r.id AND c.redacted_at IS NULL)
                 OR EXISTS (SELECT 1 FROM github_check_runs c WHERE c.repo_id = r.id)
                 OR EXISTS (SELECT 1 FROM github_check_suites s WHERE s.repo_id = r.id)
                 OR EXISTS (SELECT 1 FROM github_commit_statuses s WHERE s.repo_id = r.id))
@@ -534,6 +535,9 @@ pub async fn sweep_once(app: &App, now: DateTime<Utc>) -> Result<(u64, u64)> {
         .execute(&mut *tx)
         .await?;
     }
+    // R-C8: commits of those repositories, and commits without a ref that
+    // were not seen for 30 days.
+    super::commits::sweep(&mut tx, now - Duration::days(UNLINKED_KEEP_DAYS), &repos).await?;
     tx.commit().await?;
     Ok((deliveries, repos.len() as u64))
 }

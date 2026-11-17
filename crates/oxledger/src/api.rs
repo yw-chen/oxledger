@@ -422,6 +422,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             "/projects/{id}/dev/prs/{pr_id}/hide",
             post(pr_hide).delete(pr_unhide),
         )
+        .route(
+            "/projects/{id}/dev/commits/{repo_id}/{sha}/hide",
+            post(commit_hide).delete(commit_unhide),
+        )
         .route("/projects/{id}/dev/revoke", post(dev_revoke))
         .route("/issues/{key}/notes/{note_id}/redact", post(redact_note))
         .route(
@@ -2651,6 +2655,43 @@ async fn pr_unhide(
     headers: HeaderMap,
 ) -> ApiResult {
     pr_hide_set(st, ra, id, pr, headers, false).await
+}
+
+async fn commit_hide_set(
+    st: Arc<ApiState>,
+    ra: RequestAuth,
+    (id, repo, sha): (String, String, String),
+    headers: HeaderMap,
+    hidden: bool,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    let c = crate::github::links::CommitRef {
+        repo_id: uuid_path(&repo, "commit in this project")?,
+        sha,
+    };
+    Ok(ok(crate::github::links::hide_commit(
+        &st.app, ctx, key, &id, &c, hidden,
+    )
+    .await?))
+}
+
+async fn commit_hide(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(p): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> ApiResult {
+    commit_hide_set(st, ra, p, headers, true).await
+}
+
+async fn commit_unhide(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(p): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> ApiResult {
+    commit_hide_set(st, ra, p, headers, false).await
 }
 
 async fn dev_revoke(

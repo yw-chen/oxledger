@@ -17,6 +17,9 @@ use uuid::Uuid;
 
 pub const PATH: &str = "/api/v1/integrations/github/webhook";
 pub const MAX_BODY: usize = 25 * 1024 * 1024;
+/// Design 06 §3.7: requests handled at once; one more is answered 503 at
+/// once (GitHub's failed deliveries come back with the 10-minute redelivery).
+pub const MAX_CONCURRENT: usize = 16;
 
 struct Hook {
     app: Arc<App>,
@@ -25,9 +28,18 @@ struct Hook {
 
 /// The webhook route, to merge into the main router.
 pub fn routes(app: Arc<App>, secret: Vec<u8>) -> Router {
+    // Load shed outside the concurrency limit: with the limit alone the
+    // extra requests would wait in line (holding connections and memory).
+    let shed = tower::ServiceBuilder::new()
+        .layer(axum::error_handling::HandleErrorLayer::new(
+            |_: tower::BoxError| async { StatusCode::SERVICE_UNAVAILABLE },
+        ))
+        .layer(tower::load_shed::LoadShedLayer::new())
+        .layer(tower::limit::ConcurrencyLimitLayer::new(MAX_CONCURRENT));
     Router::new()
         .route(PATH, post(receive))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(shed)
         .with_state(Arc::new(Hook { app, secret }))
 }
 

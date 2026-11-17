@@ -33,6 +33,7 @@
 	import WatchButton from '#lib/components/WatchButton.svelte';
 	import { markIssueRead } from '#lib/notifs.svelte.js';
 	import type { UploadView } from '$api/types';
+	import DevCommits from '#lib/components/DevCommits.svelte';
 	import AttachmentList from '#lib/components/AttachmentList.svelte';
 	import { attachDoc, linked, MAX_PER_OP, runUploads, TOO_MANY, type UploadRow } from '#lib/attachments.js';
 
@@ -675,8 +676,9 @@
 								<div class="hint">{REVIEW[pr.review_state] ?? pr.review_state}{pr.accessible ? '' : '・App 已無法讀取此 repo'}</div>
 							</div>
 						{:else}
-							<div class="empty">還沒有 PR 提到 {v.key}。在 PR 標題、分支名或 commit 訊息寫上單號就會出現。</div>
+							{#if !v.dev.commits.length}<div class="empty">還沒有 PR 或 commit 提到 {v.key}。在 PR 標題、分支名或 commit 訊息寫上單號就會出現。</div>{/if}
 						{/each}
+						<DevCommits commits={v.dev.commits} truncated={v.dev.commits_truncated} canManage={v.dev.can_manage} projectId={v.project_id} onchanged={() => load(key)} />
 						{#if v.dev.synced_at}<div class="hint">同步於 {fmtTime(v.dev.synced_at)}；可能落後 GitHub 幾分鐘。</div>{/if}
 					</div>
 				{/if}

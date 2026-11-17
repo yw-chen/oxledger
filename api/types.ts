@@ -86,6 +86,8 @@ export type AdminInstallation = {
   account_login: string;
   gh_installation_id: number;
   id: string;
+  /** When this installation last sent a `push` event; null = never (the App is not subscribed to push: no commits, no fix keywords). */
+  last_push_at: string | null;
   repos: Array<AdminRepo>;
   /** active / suspended / deleted */
   state: string;
@@ -448,6 +450,21 @@ export type CommandResult = {
   wiki?: Array<WikiEffect>;
 };
 
+export type CommitHideResult = {
+  /** false: it was in that state already (no event). */
+  changed: boolean;
+  hidden: boolean;
+  repo_id: string;
+  sha: string;
+};
+
+/** A commit of a repository. */
+export type CommitRef = {
+  repo_id: string;
+  /** The full 40-character sha. */
+  sha: string;
+};
+
 export type CompactValidation = {
   /** At most 10. */
   blocking: Array<Blocking>;
@@ -736,6 +753,29 @@ export type DelegationView = {
   /** Design 05 §3.12: the runtime the delegation's context belongs to. */
   runtime_id: string;
   writable_fields: Array<string>;
+};
+
+/** A commit whose message names the issue (design 06 R-C6). Collected from GitHub's `push` notifications, so the list may be incomplete. */
+export type DevCommit = {
+  /** The commit's time; when GitHub sent none, when it was first seen. */
+  at: string;
+  /** The author GitHub names for the commit: NOT verified (anyone can write any author into a commit). */
+  author_login: string | null;
+  /** The repository's default branch, when known. */
+  default_branch: string | null;
+  /** Only for managers (a person's session). */
+  hidden?: boolean;
+  on_default_branch: boolean;
+  /** `owner/name` as GitHub shows it now. */
+  repo: string;
+  repo_id: string;
+  /** Who pushed it first (verified by GitHub). */
+  sender_login: string | null;
+  sha: string;
+  /** The first line of the message, cut to 120 characters; `[已遮蔽]` after a revoke. */
+  title: string;
+  /** Built from the repository's name and the sha (never a URL GitHub sent). */
+  url: string;
 };
 
 export type DevIssue = {
@@ -1359,6 +1399,12 @@ export type IssueDetail = {
 };
 
 export type IssueDev = {
+  /** The caller may hide commits and PRs of this issue's project (and is shown hidden commits). Always false for agents. */
+  can_manage: boolean;
+  /** Newest first, at most 20. */
+  commits: Array<DevCommit>;
+  /** More than 20 commits name this issue. */
+  commits_truncated: boolean;
   key: string;
   /** R-G5: a PR is merged while the issue is not closed (a hint; nothing changes by itself). */
   merged_open: boolean;
@@ -2426,7 +2472,10 @@ export type RevisionPreview = {
   validation: CompactValidation;
 };
 
+/** Exactly one of `link_id`, `pr_ids`, `commits`. */
 export type RevokeInput = {
+  /** Or these commits (same rule): their links to this project's issues go and never come back, even when the same commit is pushed again; a commit no project links any more loses its message. */
+  commits?: Array<CommitRef> | null;
   /** Revoke a whole link (also for PRs on issues you cannot see). */
   link_id?: string | null;
   /** Or these PRs (each must be on an issue of this project you can see). */
@@ -2434,6 +2483,7 @@ export type RevokeInput = {
 };
 
 export type Revoked = {
+  commits: Array<CommitRef>;
   link_id: string | null;
   pr_ids: Array<string>;
   security_epoch: number;
@@ -4587,6 +4637,8 @@ export interface Endpoints {
   "GET /projects": { body: never; data: Array<ProjectItem> };
   "GET /projects/{id}/assignees": { body: never; data: AssigneeList };
   "GET /projects/{id}/dev": { body: never; data: ProjectDev };
+  "DELETE /projects/{id}/dev/commits/{repo_id}/{sha}/hide": { body: never; data: CommitHideResult };
+  "POST /projects/{id}/dev/commits/{repo_id}/{sha}/hide": { body: never; data: CommitHideResult };
   "DELETE /projects/{id}/dev/prs/{pr_id}/hide": { body: never; data: HideResult };
   "POST /projects/{id}/dev/prs/{pr_id}/hide": { body: never; data: HideResult };
   "POST /projects/{id}/dev/revoke": { body: RevokeInput; data: Revoked };

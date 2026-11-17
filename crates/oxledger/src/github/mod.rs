@@ -4,9 +4,11 @@
 //!
 //! - `webhook`: the signed receiver; `jobs`: the worker and dispatch;
 //! - `model`: snapshots and the R-G8 write rules; `refs`: R-G1;
-//!   `rollup`: R-G6, R-G7; `client`: what the worker asks GitHub.
+//!   `rollup`: R-G6, R-G7; `client`: what the worker asks GitHub;
+//! - `commits`: commits from `push` events (design 06 §3.7).
 
 pub mod client;
+pub mod commits;
 #[cfg(feature = "github")]
 pub mod http;
 pub mod jobs;

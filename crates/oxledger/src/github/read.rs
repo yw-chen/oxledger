@@ -19,6 +19,10 @@ use uuid::Uuid;
 
 /// R-G9: PRs on one issue card.
 pub const ISSUE_PR_LIMIT: i64 = 20;
+/// R-C6: commits on one issue card, newest first.
+pub const ISSUE_COMMIT_LIMIT: i64 = 20;
+/// R-C6: characters of a commit's first line that are shown.
+pub const COMMIT_TITLE_CHARS: usize = 120;
 /// Issues per page of the development tab.
 pub const DEV_PAGE: usize = 50;
 
@@ -47,10 +51,45 @@ pub struct DevPr {
     pub hidden: bool,
 }
 
+/// A commit whose message names the issue (design 06 R-C6). Collected from
+/// GitHub's `push` notifications, so the list may be incomplete.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DevCommit {
+    pub repo_id: Uuid,
+    /// `owner/name` as GitHub shows it now.
+    pub repo: String,
+    pub sha: String,
+    /// Built from the repository's name and the sha (never a URL GitHub sent).
+    pub url: String,
+    /// The first line of the message, cut to 120 characters; `[已遮蔽]`
+    /// after a revoke.
+    pub title: String,
+    /// The author GitHub names for the commit: NOT verified (anyone can
+    /// write any author into a commit).
+    pub author_login: Option<String>,
+    /// Who pushed it first (verified by GitHub).
+    pub sender_login: Option<String>,
+    /// The commit's time; when GitHub sent none, when it was first seen.
+    pub at: DateTime<Utc>,
+    pub on_default_branch: bool,
+    /// The repository's default branch, when known.
+    pub default_branch: Option<String>,
+    /// Only for managers (a person's session).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct IssueDev {
     pub key: String,
     pub prs: Vec<DevPr>,
+    /// Newest first, at most 20.
+    pub commits: Vec<DevCommit>,
+    /// More than 20 commits name this issue.
+    pub commits_truncated: bool,
+    /// The caller may hide commits and PRs of this issue's project (and is
+    /// shown hidden commits). Always false for agents.
+    pub can_manage: bool,
     /// More than 20 PRs: the rest are on GitHub.
     pub truncated: bool,
     /// R-G5: a PR is merged while the issue is not closed (a hint; nothing
@@ -140,6 +179,71 @@ async fn prs_of(
         .collect())
 }
 
+type CommitRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    DateTime<Utc>,
+    bool,
+    Option<String>,
+    bool,
+);
+
+/// Commits of one issue through live links of its own project (R-G3).
+async fn commits_of(
+    conn: &mut PgConnection,
+    issue: Uuid,
+    include_hidden: bool,
+    limit: i64,
+) -> Result<Vec<DevCommit>> {
+    let rows: Vec<CommitRow> = sqlx::query_as(
+        "SELECT c.repo_id, r.full_name, c.sha, c.message, c.author_login, c.sender_login,
+                coalesce(c.committed_at, c.first_seen) AS at, c.on_default_branch, r.default_branch,
+                EXISTS (SELECT 1 FROM project_commit_hidden h
+                        WHERE h.project_id = f.project_id AND h.repo_id = c.repo_id AND h.sha = c.sha)
+         FROM commit_issue_refs f
+         JOIN project_repo_links l ON l.id = f.link_id AND l.unlinked_at IS NULL AND l.project_id = f.project_id
+         JOIN github_commits c ON c.repo_id = f.repo_id AND c.sha = f.sha
+         JOIN github_repos r ON r.id = c.repo_id
+         WHERE f.issue_id = $1
+           AND ($2 OR NOT EXISTS (SELECT 1 FROM project_commit_hidden h
+                                  WHERE h.project_id = f.project_id AND h.repo_id = c.repo_id AND h.sha = c.sha))
+         ORDER BY c.first_seen DESC, at DESC, c.sha
+         LIMIT $3",
+    )
+    .bind(issue)
+    .bind(include_hidden)
+    .bind(limit)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DevCommit {
+            url: format!("https://github.com/{}/commit/{}", r.1, r.2),
+            title: r
+                .3
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(COMMIT_TITLE_CHARS)
+                .collect(),
+            repo_id: r.0,
+            repo: r.1,
+            sha: r.2,
+            author_login: r.4,
+            sender_login: r.5,
+            at: r.6,
+            on_default_branch: r.7,
+            default_branch: r.8,
+            hidden: r.9,
+        })
+        .collect())
+}
+
 fn card(mut prs: Vec<DevPr>) -> (Vec<DevPr>, bool) {
     let truncated = prs.len() as i64 > ISSUE_PR_LIMIT;
     prs.truncate(ISSUE_PR_LIMIT as usize);
@@ -147,14 +251,20 @@ fn card(mut prs: Vec<DevPr>) -> (Vec<DevPr>, bool) {
 }
 
 /// The development block of an issue the caller has already been shown
-/// (`get` with `include: ["dev"]`, `GET /issues/{key}/dev`).
+/// (`get` with `include: ["dev"]`, `GET /issues/{key}/dev`). `manager`:
+/// the caller may hide things in the issue's project, so hidden commits
+/// are listed (marked) — never for agents.
 pub async fn issue_block(
     conn: &mut PgConnection,
     issue: Uuid,
     key: &str,
     closed: bool,
+    manager: bool,
 ) -> Result<IssueDev> {
     let (prs, truncated) = card(prs_of(conn, issue, false, ISSUE_PR_LIMIT + 1).await?);
+    let mut commits = commits_of(conn, issue, manager, ISSUE_COMMIT_LIMIT + 1).await?;
+    let commits_truncated = commits.len() as i64 > ISSUE_COMMIT_LIMIT;
+    commits.truncate(ISSUE_COMMIT_LIMIT as usize);
     let synced_at = if prs.iter().any(|p| p.synced_at.is_none()) {
         None
     } else {
@@ -164,6 +274,9 @@ pub async fn issue_block(
         key: key.to_string(),
         merged_open: !closed && prs.iter().any(|p| p.state == "merged"),
         prs,
+        commits,
+        commits_truncated,
+        can_manage: manager,
         truncated,
         synced_at,
     })
@@ -175,7 +288,14 @@ pub async fn issue_dev(app: &App, caller: AuthContext, key: &str) -> Result<Issu
     caller.require_human_session()?;
     let mut tx = read_tx(app).await?;
     let (id, d) = service::get_in(&mut tx, caller, key).await?;
-    let v = issue_block(&mut tx, id, &d.key, d.status_category == "done").await?;
+    let project: Uuid = sqlx::query_scalar("SELECT project_id FROM issues WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let manager = links::access_of(&mut tx, caller, project)
+        .await
+        .is_ok_and(|a| a.can_clean);
+    let v = issue_block(&mut tx, id, &d.key, d.status_category == "done", manager).await?;
     tx.commit().await?;
     Ok(v)
 }

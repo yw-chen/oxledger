@@ -49,10 +49,12 @@ pub const ACTION_TABS_UPDATE: &str = "project_tabs_update";
 pub const ACTION_TABS_RESET: &str = "project_tabs_reset";
 const EVENTS_PAGE: i64 = 50;
 /// Kinds a project manager does not see (§18.5: the event itself tells
-/// that a PR matched an issue here).
+/// that a PR — or, since M2.5, a commit — matched an issue here, which a
+/// manager who cannot see that issue must not learn; T-M2-66).
 /// A redacted one keeps the flag its redaction recorded (S7).
-pub(crate) const ADMIN_ONLY_SQL: &str = "(e.kind IN ('pr_hidden', 'pr_unhidden')
-     OR (e.kind = 'github_content_revoked' AND e.payload ? 'pr_ids')
+pub(crate) const ADMIN_ONLY_SQL: &str =
+    "(e.kind IN ('pr_hidden', 'pr_unhidden', 'commit_hidden', 'commit_unhidden')
+     OR (e.kind = 'github_content_revoked' AND (e.payload ? 'pr_ids' OR e.payload ? 'commits'))
      OR EXISTS (SELECT 1 FROM project_setting_event_redactions r
                 WHERE r.id = e.redaction_id AND r.admin_only))";
 
