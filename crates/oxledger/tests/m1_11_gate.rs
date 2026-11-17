@@ -1710,11 +1710,17 @@ enum Cred<'a> {
 }
 
 async fn call(r: &Router, method: &str, path: &str, body: Option<Value>, who: Cred<'_>) -> Resp {
+    // Uploads take the raw file (design 06 R-A1); everything else JSON.
+    let media = if method == "POST" && path.ends_with("/uploads") {
+        "application/octet-stream"
+    } else {
+        "application/json"
+    };
     let mut b = Request::builder()
         .method(method)
         .uri(format!("/api/v1{path}"))
         .header(header::ORIGIN, ORIGIN)
-        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONTENT_TYPE, media)
         .header("idempotency-key", Uuid::now_v7().to_string());
     match who {
         Cred::Session(s) => {
@@ -2634,6 +2640,12 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         // M2.1: a read sent as POST; m2_1_markdown T-M2-09 checks its
         // not_found answers and that it writes nothing.
         "POST /markdown/preview",
+        // M2.4: uploads (m2_4_attachments who_may_upload: a project one
+        // cannot see and one that does not exist are both not_found) and
+        // attachment redaction (attachment_redaction: not_found for someone
+        // who cannot see it, forbidden_op without manage_project).
+        "POST /projects/{id}/uploads",
+        "POST /attachments/{id}/redact",
     ];
     let mut tested: BTreeSet<String> = rows
         .iter()
