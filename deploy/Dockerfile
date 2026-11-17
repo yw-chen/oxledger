@@ -31,14 +31,14 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /data oxledger \
- && mkdir -p /data/index && chown -R oxledger /data
+ && mkdir -p /data/index /files && chown -R oxledger /data /files
 COPY --from=server-build /usr/local/bin/oxledger /usr/local/bin/oxledger
 USER oxledger
 WORKDIR /data
 ENV OXLEDGER_BIND=0.0.0.0:8080 \
-    OXLEDGER_INDEX_DIR=/data/index
+    OXLEDGER_INDEX_DIR=/data/index     OXLEDGER_FILES_DIR=/files
 EXPOSE 8080
-VOLUME ["/data"]
+VOLUME ["/data", "/files"]
 ENTRYPOINT ["oxledger"]
 CMD ["serve"]
 

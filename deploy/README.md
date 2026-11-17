@@ -109,7 +109,7 @@ docker compose -f deploy/compose.yaml start       # 再啟動
 
 ### 備份與還原
 
-資料都在兩個 volume：`oxledger_db`（資料庫）、`oxledger_data`（搜尋索引，可以從資料庫重建）。備份資料庫就夠。dump 先寫在容器裡再複製出來——**不要用 `>` 把 `pg_dump` 的輸出導到檔案**，PowerShell 會把二進位內容當文字轉碼，備份檔會壞掉：
+資料在三個 volume：`oxledger_db`（資料庫）、`oxledger_files`（附件檔案）、`oxledger_data`（搜尋索引，可以從資料庫重建）。附件要和資料庫在同一個時間點備份（先 `stop app` 再備份兩者最保險）；下面只示範資料庫，附件用 `docker compose -f deploy/compose.yaml cp app:/files .\oxledger-files` 複製出來。dump 先寫在容器裡再複製出來——**不要用 `>` 把 `pg_dump` 的輸出導到檔案**，PowerShell 會把二進位內容當文字轉碼，備份檔會壞掉：
 
 ```powershell
 docker compose -f deploy/compose.yaml exec -T db pg_dump -U oxledger -Fc -f /tmp/oxledger.dump oxledger
@@ -149,7 +149,8 @@ docker compose -f deploy/compose.yaml down -v   # -v 會刪掉資料庫與索引
 
 - 只給本機用：沒有 https，只能從 `localhost` 開。
 - 沒有管理畫面：專案、成員、角色只能用上面的指令或直接改資料庫；還不能刪專案、移除成員、建群組。
-- 附件、CSV 匯出匯入、Git commit 連結還沒做（M2.4–M2.8）。
+- 附件單檔上限 20 MB、每人每天 1 GB；`/files` 所在磁碟剩不到 5 GB 時拒絕上傳（`OXLEDGER_ATTACHMENT_MAX_BYTES`、`OXLEDGER_UPLOAD_DAILY_BYTES`、`OXLEDGER_FILES_MIN_FREE_BYTES` 可調）。
+- Git commit 連結需要 GitHub App 與 webhook，本機部署沒有設定。
 - 停止容器時伺服器不做 graceful shutdown，正在處理的請求會中斷。
 - 伺服器看到的來源 IP 一律是 Caddy 容器，所以登入失敗次數的每 IP 上限是全站共用的。
 - Caddy 只轉 `/api`、`/mcp`、`/healthz`、`/readyz`；GitHub webhook 與 `/metrics` 沒有轉（本機也收不到 GitHub 的 webhook）。

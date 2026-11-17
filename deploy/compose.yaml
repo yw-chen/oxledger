@@ -37,6 +37,8 @@ services:
       # and are listed here when used.
     volumes:
       - data:/data
+      # Attachments (OXLEDGER_FILES_DIR=/files, set in the image).
+      - files:/files
 
   web:
     build:
@@ -53,3 +55,4 @@ services:
 volumes:
   db:
   data:
+  files:
