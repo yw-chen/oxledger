@@ -32,6 +32,9 @@
 	import type { WatchInfo } from '$api/types';
 	import WatchButton from '#lib/components/WatchButton.svelte';
 	import { markIssueRead } from '#lib/notifs.svelte.js';
+	import type { UploadView } from '$api/types';
+	import AttachmentList from '#lib/components/AttachmentList.svelte';
+	import { attachDoc, linked, MAX_PER_OP, runUploads, TOO_MANY, type UploadRow } from '#lib/attachments.js';
 
 	const key = $derived(decodeURIComponent(page.params.key ?? '').toUpperCase());
 	let issue = $state<SpaIssue | null>(null);
@@ -47,6 +50,13 @@
 	let form = $state<Record<string, unknown>>({});
 	let note = $state({ body: '', private: false });
 	let noteOver = $state(false);
+	// §6.2 附檔: uploads made in the note and description editors, sent with
+	// the note (`attachments`) or attached before the description is saved.
+	let noteUploads = $state<UploadView[]>([]);
+	let descUploads = $state<UploadView[]>([]);
+	let noteUploading = $state(0);
+	let descUploading = $state(0);
+	let cardBusy = $state(false);
 	let dupKey = $state('');
 	let actionError = $state<unknown>(null);
 	let conflict = $state(false);
@@ -183,6 +193,8 @@
 	);
 	const editMissing = $derived(editEntries.filter((e) => e.required && !editHidden.has(e.f.key) && (form[e.f.key] === undefined || form[e.f.key] === null || String(form[e.f.key]).trim() === '')));
 
+	// R-A7: attaching to the issue takes what editing it does.
+	const canAttach = $derived(!!issue?.actions?.fields.find((f) => f.key === 'description')?.editable);
 	// §6.2 / R-M9: the description is edited as Markdown; a plain one shows the
 	// conversion notice, an agent's one the link warning (R-M3).
 	const editMd = $derived(
@@ -192,13 +204,20 @@
 					notice: issue.description_format === 'plain' ? ('plain' as const) : (issue as { description_by_agent?: boolean | null }).description_by_agent ? ('agent' as const) : null,
 					draft: session.user ? draftKey(session.user.user_id, `edit:${issue.key}`) : null,
 					// After a conflict reload `start` is the newer version: compare to it.
-					base: String(start.description ?? '')
+					base: String(start.description ?? ''),
+					uploadProject: issue.attachments_enabled && canAttach ? issue.project_id : null,
+					onuploaded: (u: UploadView) => (descUploads = [...descUploads, u]),
+					onuploading: (n: number) => (descUploading = n)
 				}
 			: null
 	);
+	const noteTooMany = $derived(linked(noteUploads, note.body).length > MAX_PER_OP);
 	const descOver = $derived(mode === 'edit' && utf8Bytes(String(form.description ?? '')) > LIMIT.description);
 	function openEdit() {
 		if (!issue) return;
+		// Uploads stay listed (a restored draft may link them); only those still
+		// linked in the text are sent (`linked`).
+		attachOp = null;
 		start = currentValues(issue);
 		form = { ...start };
 		mode = 'edit';
@@ -232,6 +251,8 @@
 			mode = null;
 			conflict = false;
 			note = { body: '', private: false };
+			noteUploads = [];
+			descUploads = [];
 			dupKey = '';
 			logWith = false;
 			timeReload++;
@@ -283,7 +304,58 @@
 		if (withTime) ops.push(logTimeOp(withTime) as never);
 		const done = withTime ? (ops.length > 1 ? `已儲存，並記了 ${showHours(withTime.hours)} 小時` : `已記 ${showHours(withTime.hours)} 小時`) : '已儲存';
 		const d = ops.length > 1 || !withTime ? doc(ops, [{ key, lock }]) : logTimeDoc(withTime);
+		// Files added in the editor go on the issue first, so the saved text's
+		// `attachment:` links find them.
+		const ups = linked(descUploads, String(form.description ?? ''));
+		if (ups.length) return attachThen(ups, () => send(d, done));
 		return send(d, done);
+	}
+	/** The attach in flight: a retry after an unknown outcome reuses its key. */
+	let attachOp: { key: string; ids: string } | null = null;
+	async function attachThen(ups: UploadView[], then: () => unknown) {
+		busy = true;
+		actionError = null;
+		try {
+			for (let i = 0; i < ups.length; i += MAX_PER_OP) {
+				const part = ups.slice(i, i + MAX_PER_OP);
+				const ids = part.map((u) => u.upload_id).join(',');
+				// Same files: same key; anything else is a new request.
+				if (attachOp?.ids !== ids) attachOp = { key: newOperationId(), ids };
+				const opId = attachOp.key;
+				await api('POST /commands', { body: attachDoc({ issue: key }, part.map((u) => u.upload_id), opId), operationId: opId });
+				attachOp = null;
+				// Attached: never sent again, even if the save after this fails.
+				descUploads = descUploads.filter((u) => !part.some((x) => x.upload_id === u.upload_id));
+			}
+		} catch (e) {
+			if (!(e instanceof ApiError && e.retryable)) attachOp = null;
+			actionError = e;
+			return;
+		} finally {
+			busy = false;
+		}
+		return then();
+	}
+	/** §6.8 「附加檔案」 on the card: upload, then attach to the issue. */
+	async function cardFiles(files: File[]) {
+		if (!issue) return;
+		cardBusy = true;
+		actionError = null;
+		const rows = files.map((f, i) => ({ file: f as Blob, row: { id: i, name: f.name, size: f.size, progress: 0, state: 'queued' } as UploadRow }));
+		try {
+			await runUploads(issue.project_id, rows, () => {});
+			for (const r of rows.filter((x) => x.row.state === 'failed')) toast(`「${r.row.name}」：${r.row.error}`, 'bad', 6000);
+			const done = rows.flatMap((x) => (x.row.result ? [x.row.result.upload_id] : []));
+			for (let i = 0; i < done.length; i += MAX_PER_OP) {
+				await api('POST /commands', { body: attachDoc({ issue: key }, done.slice(i, i + MAX_PER_OP), newOperationId()) });
+			}
+			if (done.length) toast(`已附加 ${done.length} 個檔案`, 'ok');
+			await load(key);
+		} catch (e) {
+			actionError = e;
+		} finally {
+			cardBusy = false;
+		}
 	}
 	function transition(to: string, name: string) {
 		if (!issue) return;
@@ -292,9 +364,10 @@
 	}
 	function addNote() {
 		if (!issue || !note.body.trim()) return;
+		const noteFiles = linked(noteUploads, note.body);
 		const lock = issue.lock_version ?? 0;
 		return send(
-			doc([{ kind: 'add_note', op_id: op(), target: issueRef(key), body: note.body, is_private: note.private }], [{ key, lock }]),
+			doc([{ kind: 'add_note', op_id: op(), target: issueRef(key), body: note.body, is_private: note.private, ...(noteFiles.length ? { attachments: noteFiles.map((u) => ({ upload_id: u.upload_id })) } : {}) }], [{ key, lock }]),
 			note.private ? '已新增私有 note' : '已新增 note'
 		);
 	}
@@ -502,7 +575,7 @@
 					</details>
 				{/if}
 				<div class="row">
-					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain || descOver} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
+					<button class="btn pri" onclick={saveEdit} disabled={busy || conflict || uncertain || descOver || descUploading > 0} data-testid="save">{busy ? '儲存中…' : '儲存'}</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -523,6 +596,9 @@
 				<MarkdownEditor
 					bind:value={note.body}
 					bind:over={noteOver}
+					uploadProject={v.attachments_enabled ? v.project_id : null}
+					onuploaded={(u) => (noteUploads = [...noteUploads, u])}
+					bind:uploading={noteUploading}
 					people={assignees as Mentionable[]}
 					context={{ issue: v.key }}
 					limit={LIMIT.note}
@@ -537,7 +613,8 @@
 				<div class="row" style="margin-top:6px">
 					{#if v.actions?.notes?.can_set_private}<label><input type="checkbox" bind:checked={note.private} /> 私有（只有能看私有 note 的人看得到）</label>{/if}
 					<span style="flex:1"></span>
-					<button class="btn pri" onclick={addNote} disabled={busy || !note.body.trim() || noteOver || conflict || uncertain} data-testid="note-submit">新增</button>
+					{#if noteTooMany}<span class="hint" data-testid="note-too-many">{TOO_MANY}</span>{/if}
+					<button class="btn pri" onclick={addNote} disabled={busy || !note.body.trim() || noteOver || conflict || uncertain || noteUploading > 0 || noteTooMany} data-testid="note-submit">新增</button>
 					<button class="btn" onclick={() => (mode = null)}>取消</button>
 				</div>
 			</div>
@@ -558,7 +635,12 @@
 		<div class="grid2">
 			<div>
 				<h2>描述</h2>
-				<div class="card"><RichText html={vx.description_html} text={v.description} agent={!!vx.description_by_agent} empty="（沒有描述）" testid="description" /></div>
+				<div class="card">
+					<RichText html={vx.description_html} text={v.description} agent={!!vx.description_by_agent} empty="（沒有描述）" testid="description" />
+					{#if v.attachments_enabled || v.attachments?.length}
+						<AttachmentList attachments={v.attachments} onfiles={v.attachments_enabled && canAttach ? cardFiles : undefined} busy={cardBusy || busy} onchanged={() => load(key)} testid="issue-attachments" />
+					{/if}
+				</div>
 				{#if v.children?.length}
 					<h2>子議題</h2>
 					{#each v.children as c (c.key)}<div><a class="key" href="/issue/{c.key}">{c.key}</a> {c.subject} <span class="dim">{c.status}</span></div>{/each}
@@ -569,7 +651,8 @@
 						<div class="h">{n.author}・{fmtTime(n.created_at)} {#if n.is_private}<span class="chip c-warn">私有</span>{/if}</div>
 						{#if n.redacted}<div class="dim">（內容已遮蔽）</div>
 						{:else if n.retracted}<div class="dim">（已由 {n.retracted_by ?? '委派者'} 撤回）</div>
-						{:else}{@const nx = n as typeof n & { body_html?: string | null }}<RichText html={nx.body_html} text={n.body} testid="note-text" />{/if}
+						{:else}{@const nx = n as typeof n & { body_html?: string | null }}<RichText html={nx.body_html} text={n.body} testid="note-text" />
+						<AttachmentList attachments={n.attachments} onchanged={() => load(key)} testid="note-attachments" />{/if}
 					</div>
 				{:else}
 					<div class="empty">還沒有 note。</div>

@@ -8,7 +8,8 @@
 	// stays in the editor whatever happens.
 	import { goto } from '$app/navigation';
 	import { page as route } from '$app/state';
-	import type { Assignee, WikiIndex, WikiPage } from '$api/types';
+	import type { Assignee, UploadView, WikiIndex, WikiPage } from '$api/types';
+	import { linked, MAX_PER_OP, TOO_MANY } from '#lib/attachments.js';
 	import { api, ApiError, newOperationId } from '#lib/api.js';
 	import { FORBIDDEN, NOT_FOUND, wikiTitleProblem } from '#lib/errors.js';
 	import { draftKey, dropDraft, LIMIT, type Mentionable } from '#lib/markdown.js';
@@ -43,6 +44,11 @@
 	let conflict = $state<WikiPage | null>(null);
 	let compare = $state(false);
 	let opKey = newOperationId();
+	// §6.2 附檔 (an existing page; a new one gets files once it exists).
+	let uploads = $state<UploadView[]>([]);
+	let uploading = $state(0);
+	const sentFiles = $derived(linked(uploads, body));
+	const withFiles = () => (sentFiles.length ? { attachments: sentFiles.map((u) => ({ upload_id: u.upload_id })) } : {});
 
 	async function load() {
 		ready = false;
@@ -96,7 +102,7 @@
 			if (page) {
 				const { effect } = await runWiki(
 					projectKey,
-					{ kind: 'wiki_put', op_id: newOperationId(), target: { project: projectKey, page_id: page.id }, body, ...(comment.trim() ? { comment: comment.trim() } : {}) },
+					{ kind: 'wiki_put', op_id: newOperationId(), target: { project: projectKey, page_id: page.id }, body, ...(comment.trim() ? { comment: comment.trim() } : {}), ...withFiles() },
 					{ pageId: page.id, lock: page.lock_version },
 					'儲存',
 					opKey
@@ -215,13 +221,17 @@
 			guard={!saved}
 			disabled={!!blocked}
 			label="內容"
+			uploadProject={page?.can.attach ? index.project.id : null}
+			onuploaded={(u) => (uploads = [...uploads, u])}
+			bind:uploading
 			testid="wiki-md"
 		/>
 		<label class="fld">修改說明<input bind:value={comment} maxlength="255" placeholder="（選填）這次改了什麼" data-testid="wiki-comment" /></label>
 		<ErrorBox {error} />
 		<div class="row" style="gap:8px;margin-top:8px">
-			<button class="btn pri" onclick={save} disabled={busy || !!blocked || over || !!conflict || (creating && !newTitle.trim())} title={blocked} data-testid="wiki-save">{busy ? '儲存中…' : '儲存'}</button>
+			<button class="btn pri" onclick={save} disabled={busy || !!blocked || over || !!conflict || (creating && !newTitle.trim()) || uploading > 0 || sentFiles.length > MAX_PER_OP} title={blocked} data-testid="wiki-save">{busy ? '儲存中…' : '儲存'}</button>
 			<a class="btn" href={cancelHref} data-testid="wiki-cancel">取消</a>
+			{#if sentFiles.length > MAX_PER_OP}<span class="hint" data-testid="wiki-too-many">{TOO_MANY}</span>{/if}
 		</div>
 	</div>
 {/if}

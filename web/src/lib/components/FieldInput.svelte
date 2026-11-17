@@ -6,6 +6,12 @@
 		guard?: boolean;
 		/** The saved text (dirty and drafts compare to it); moves on a reload. */
 		base?: string;
+		/** §6.2 附檔: the project uploads go to (none: no attaching). */
+		uploadProject?: string | null;
+		/** Each finished upload. */
+		onuploaded?: (u: import('$api/types').UploadView) => void;
+		/** Uploads still running. */
+		onuploading?: (n: number) => void;
 	};
 </script>
 
@@ -61,6 +67,9 @@
 			draft={md.draft ?? null}
 			guard={md.guard ?? true}
 			base={md.base}
+			uploadProject={md.uploadProject ?? null}
+			onuploaded={md.onuploaded}
+			bind:uploading={() => 0, (n) => md.onuploading?.(n)}
 			{disabled}
 			{id}
 			{label}

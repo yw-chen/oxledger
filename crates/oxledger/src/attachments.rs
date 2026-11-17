@@ -205,12 +205,19 @@ fn invalid_value(path: &str, kind: &str, msg: impl Into<String>) -> anyhow::Erro
         .into()
 }
 
+/// `details.kind`: `file` (one file), `daily` (today's uploads) or
+/// `pending` (unused uploads), so the web app can say which.
 fn too_large(limit: u64, what: &str) -> anyhow::Error {
+    let kind = match what {
+        "today's uploads" => "daily",
+        "your unused uploads" => "pending",
+        _ => "file",
+    };
     ApiError::new(
         ErrorCode::PayloadTooLarge,
         format!("{what} is over the limit"),
     )
-    .with_details(json!({"limit": limit}))
+    .with_details(json!({"limit": limit, "kind": kind}))
     .into()
 }
 

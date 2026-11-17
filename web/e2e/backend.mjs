@@ -91,6 +91,8 @@ export function serve(db = 'oxledger_fe_dev', { inherit = true } = {}) {
 			OXLEDGER_BIND: `127.0.0.1:${PORT}`,
 			OXLEDGER_SPA_ORIGIN: SPA_ORIGIN,
 			OXLEDGER_INDEX_DIR: index,
+			// Design 06 R-A11: attachments are on only with a files directory.
+			OXLEDGER_FILES_DIR: join(here, '.state', `files-${db}`),
 			OXLEDGER_AI_ENDPOINT_FAKE: `http://127.0.0.1:${FAKE_AI_PORT}/v1`,
 			OXLEDGER_AI_ALLOW_HTTP: '1',
 			RUST_LOG: process.env.RUST_LOG ?? 'warn'

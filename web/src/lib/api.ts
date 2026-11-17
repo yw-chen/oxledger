@@ -52,6 +52,10 @@ export function setCsrf(token: string | null) {
 export function hasCsrf() {
 	return csrfToken !== null;
 }
+/** The session's CSRF token, for requests that are not JSON (uploads). */
+export function csrf(): string | null {
+	return csrfToken;
+}
 /** Called once when any request answers `unauthenticated` (session ended). */
 export function setUnauthenticatedHandler(fn: (() => void) | null) {
 	onUnauthenticated = fn;
@@ -65,6 +69,15 @@ export function setUnauthenticatedHandler(fn: (() => void) | null) {
  */
 export function setCsrfFailedHandler(fn: (() => Promise<boolean>) | null) {
 	onCsrfFailed = fn;
+}
+
+/** For requests sent outside `api()` (uploads): the same session handling. */
+export function sessionEnded() {
+	onUnauthenticated?.();
+}
+/** For requests sent outside `api()`: true when a fresh CSRF token is in place. */
+export async function recoverCsrf(): Promise<boolean> {
+	return onCsrfFailed ? onCsrfFailed().catch(() => false) : false;
 }
 
 export function newOperationId(): string {

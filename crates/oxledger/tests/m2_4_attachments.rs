@@ -270,6 +270,8 @@ async fn upload_limits() {
         .await
         .unwrap_err();
     assert_eq!(code(&e), ErrorCode::PayloadTooLarge);
+    let details = &oxledger::error::as_api_error(&e).unwrap().details;
+    assert_eq!(details.as_ref().unwrap()["kind"], "file");
 
     // No Content-Length: refused unread (§3.1: it is required).
     let never = stream::poll_fn(|_| -> std::task::Poll<Option<Result<Bytes, Infallible>>> {

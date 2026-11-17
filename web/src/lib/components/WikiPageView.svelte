@@ -18,6 +18,8 @@
 	import WikiLayout from './WikiLayout.svelte';
 	import WikiUndoBar from './WikiUndoBar.svelte';
 	import WikiRedactDialog from './WikiRedactDialog.svelte';
+	import AttachmentList from './AttachmentList.svelte';
+	import { attachDoc, MAX_PER_OP, runUploads, type UploadRow } from '#lib/attachments.js';
 	import type { Snippet } from 'svelte';
 
 	let { projectKey, title, index: given = null, below }: { projectKey: string; title: string; index?: WikiIndex | null; below?: Snippet } = $props();
@@ -209,6 +211,29 @@
 		fresh = true;
 		await load();
 	}
+	/** §6.8 「附加檔案」 on a page (R-W14): upload, then attach. */
+	let attaching = $state(false);
+	async function attachFiles(files: File[]) {
+		if (!page) return;
+		const p = page;
+		attaching = true;
+		actionError = null;
+		const rows = files.map((f, i) => ({ file: f as Blob, row: { id: i, name: f.name, size: f.size, progress: 0, state: 'queued' } as UploadRow }));
+		try {
+			await runUploads(p.project.id, rows, () => {});
+			for (const r of rows.filter((x) => x.row.state === 'failed')) toast(`「${r.row.name}」：${r.row.error}`, 'bad', 6000);
+			const done = rows.flatMap((x) => (x.row.result ? [x.row.result.upload_id] : []));
+			for (let i = 0; i < done.length; i += MAX_PER_OP) {
+				await api('POST /commands', { body: attachDoc({ project: projectKey, page_id: p.id }, done.slice(i, i + MAX_PER_OP), newOperationId()) });
+			}
+			if (done.length) toast(`已附加 ${done.length} 個檔案`, 'ok');
+			await reload();
+		} catch (e) {
+			actionError = e;
+		} finally {
+			attaching = false;
+		}
+	}
 	const parentTitle = $derived(page?.parent?.title ?? null);
 </script>
 
@@ -257,6 +282,7 @@
 			<ErrorBox error={actionError} />
 			<div class="card" style="margin-top:8px">
 				<RichText html={page.body_html} text={page.body} agent={page.by_agent} empty="（這一頁沒有內容）" testid="wiki-body" />
+				<AttachmentList attachments={page.attachments} onfiles={page.can.attach ? attachFiles : undefined} busy={attaching} onchanged={reload} testid="wiki-attachments" />
 			</div>
 			{#if page.children.length}
 				<section class="kids" data-testid="wiki-children">

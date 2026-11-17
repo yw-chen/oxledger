@@ -5,7 +5,9 @@
 	// chips of who will be mentioned, a byte limit, drafts and a leave guard.
 	import { onMount, untrack } from 'svelte';
 	import { beforeNavigate } from '$app/navigation';
+	import type { UploadView } from '$api/types';
 	import { api, type Route } from '#lib/api.js';
+	import { insertAt, markdownFor, runUploads, sizeText, type UploadRow } from '#lib/attachments.js';
 	import RichText from './RichText.svelte';
 	import {
 		bytesText,
@@ -41,7 +43,10 @@
 		label = '內容',
 		testid = 'md',
 		inputTestid,
-		base
+		base,
+		uploadProject = null,
+		onuploaded,
+		uploading = $bindable(0)
 	}: {
 		value: string;
 		/** The project's assignable users (`GET /projects/{id}/assignees`). */
@@ -70,6 +75,12 @@
 		/** What counts as unchanged (the saved text). The parent moves it when it
 		 *  loads a newer version; default: the text the editor opened with. */
 		base?: string;
+		/** §6.2 附檔: the project files are uploaded to; none: no attaching. */
+		uploadProject?: string | null;
+		/** Each finished upload (the parent sends its id in the op's `attachments`). */
+		onuploaded?: (u: UploadView) => void;
+		/** Uploads still running: the parent holds its send button. */
+		uploading?: number;
 	} = $props();
 
 	const opened = value;
@@ -160,6 +171,94 @@
 	];
 	let help = $state(false);
 
+	// §6.2 附檔: button, paste, drop; one row per file, 3 at a time; the link
+	// goes in at the caret once the file is up.
+	let picker = $state<HTMLInputElement | null>(null);
+	let rows = $state<UploadRow[]>([]);
+	let rowSeq = 0;
+	let dragging = $state(false);
+	$effect(() => {
+		uploading = rows.filter((r) => r.state === 'queued' || r.state === 'sending').length;
+	});
+	/** Names used in this editor: R-M4 links a name to the newest file of that
+	 *  name, so two files must not share one (e.g. two pasted 「image.png」). */
+	const usedNames = new Set<string>();
+	function uniqueName(name: string): string {
+		const dot = name.lastIndexOf('.');
+		const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+		let n = name;
+		for (let i = 2; usedNames.has(n); i++) n = `${stem}-${i}${ext}`;
+		usedNames.add(n);
+		return n;
+	}
+	function pastedName(file: File): string {
+		const ext = file.type.startsWith('image/') ? `.${file.type.slice(6).replace('jpeg', 'jpg')}` : '';
+		const d = new Date();
+		const p = (x: number) => String(x).padStart(2, '0');
+		return `貼上的圖片-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${ext}`;
+	}
+	function addFiles(files: File[], pasted = false) {
+		if (!uploadProject || disabled || !files.length) return;
+		const project = uploadProject;
+		const batch = files.map((file) => ({
+			file,
+			row: { id: ++rowSeq, name: uniqueName(pasted || !file.name ? pastedName(file) : file.name), size: file.size, progress: 0, state: 'queued' } as UploadRow
+		}));
+		rows = [...rows, ...batch.map((b) => b.row)];
+		// The rows are proxied state: work on the proxies so changes show.
+		const live = batch.map((b) => ({ file: b.file, row: rows.find((r) => r.id === b.row.id)! }));
+		runUploads(project, live, () => {
+			for (const { row } of live) {
+				if (row.state === 'done' && row.result && !inserted.has(row.id)) {
+					inserted.add(row.id);
+					const at = ta ? ta.selectionStart : value.length;
+					const r = insertAt(value, at, markdownFor(row.result));
+					value = r.text;
+					onuploaded?.(row.result);
+					const el = ta;
+					if (el) queueMicrotask(() => el.setSelectionRange(r.caret, r.caret));
+				}
+			}
+		}).then(() => {
+			// Finished rows go; failed ones stay until dismissed.
+			rows = rows.filter((r) => r.state !== 'done');
+		});
+	}
+	const inserted = new Set<number>();
+	function picked(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const files = Array.from(input.files ?? []);
+		input.value = '';
+		addFiles(files);
+	}
+	function paste(e: ClipboardEvent) {
+		if (!uploadProject || disabled) return;
+		// Office puts formatted text and a picture of it on the clipboard: the
+		// text wins. (Files copied in a file manager come with plain text only.)
+		if (e.clipboardData?.types.includes('text/html')) return;
+		const files = Array.from(e.clipboardData?.files ?? []);
+		if (!files.length) return;
+		e.preventDefault();
+		addFiles(files, true);
+	}
+	function drop(e: DragEvent) {
+		dragging = false;
+		if (!uploadProject || disabled) return;
+		const files = Array.from(e.dataTransfer?.files ?? []);
+		if (!files.length) return;
+		e.preventDefault();
+		addFiles(files);
+	}
+	function dragover(e: DragEvent) {
+		if (!uploadProject || disabled || !e.dataTransfer?.types.includes('Files')) return;
+		e.preventDefault();
+		dragging = true;
+	}
+	function dragleave(e: DragEvent) {
+		// Moving onto a child (the textarea) is not leaving.
+		if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) dragging = false;
+	}
+
 	// @mention autocomplete.
 	let ac = $state<{ start: number; caret: number; items: Mentionable[]; i: number } | null>(null);
 	function scan() {
@@ -247,13 +346,17 @@
 		</div>
 		<div class="tools" role="toolbar" aria-label="格式">
 			{#each TOOLS as t (t.title)}<button type="button" class="btn sm ghost" title={t.title} aria-label={t.title} disabled={disabled || tab === 'preview'} onclick={() => apply(t.run)}>{t.label}</button>{/each}
+			{#if uploadProject}
+				<button type="button" class="btn sm ghost" title="附加檔案（也可以拖放或貼上）" aria-label="附加檔案" disabled={disabled || tab === 'preview'} onclick={() => picker?.click()} data-testid="{testid}-attach">📎</button>
+				<input bind:this={picker} type="file" multiple hidden onchange={picked} data-testid="{testid}-file" />
+			{/if}
 			<button type="button" class="btn sm ghost" onclick={() => (help = !help)} aria-expanded={help} data-testid="{testid}-help">說明</button>
 			{#if wide}<button type="button" class="btn sm ghost" class:pri={split} onclick={() => (split = !split)} aria-pressed={split} title="編輯與預覽左右並排">並排</button>{/if}
 		</div>
 	</div>
 	<div class="panes">
 		{#if tab === 'write' || (split && wide)}
-			<div class="edit">
+			<div class="edit" class:drag={dragging} role="presentation" ondragover={dragover} ondragleave={dragleave} ondrop={drop}>
 				<textarea
 					bind:this={ta}
 					bind:value
@@ -263,6 +366,7 @@
 					aria-label={label}
 					oninput={scan}
 					onkeydown={keydown}
+					onpaste={paste}
 					onclick={scan}
 					onblur={() => setTimeout(() => (ac = null), 150)}
 					data-testid={inputTestid ?? `${testid}-input`}
@@ -287,6 +391,19 @@
 			</div>
 		{/if}
 	</div>
+	{#if rows.length}
+		<ul class="ups" data-testid="{testid}-uploads">
+			{#each rows as r (r.id)}
+				<li class:bad={r.state === 'failed'} data-testid="{testid}-upload">
+					<span class="name" title={r.name}>{r.name}</span>
+					<span class="dim">{sizeText(r.size)}</span>
+					{#if r.state === 'failed'}<span class="err">{r.error}</span><button type="button" class="btn sm ghost" aria-label="移除" onclick={() => (rows = rows.filter((x) => x.id !== r.id))}>✕</button>
+					{:else if r.state === 'queued'}<span class="dim">排隊中</span>
+					{:else}<progress max="1" value={r.progress} aria-label="上傳 {r.name}"></progress>{/if}
+				</li>
+			{/each}
+		</ul>
+	{/if}
 	<div class="foot">
 		{#if chips.length}
 			<span class="dim">會提及：</span>
@@ -328,5 +445,11 @@
 	.count.bad { color: var(--bad, #d33); font-weight: 600; }
 	.cheat { font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
 	.mono { font-family: var(--mono, ui-monospace, monospace); }
+	.edit.drag textarea { outline: 2px dashed var(--accent, currentColor); }
+	.ups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+	.ups li { display: flex; align-items: center; gap: 6px; }
+	.ups .name { max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.ups progress { flex: 1; max-width: 200px; }
+	.ups .err { color: var(--bad, #d33); }
 	@media (max-width: 1279.98px) { .panes { flex-direction: column; } }
 </style>
