@@ -896,16 +896,24 @@ pub async fn create_user_with(pool: &PgPool, u: NewUser<'_>) -> Result<Uuid> {
     }
     let mut tx = pool.begin().await?;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO principals (kind, login, name, is_admin, email)
-         VALUES ('user', $1, $2, $3, $4) RETURNING id",
+        "INSERT INTO principals (kind, login, name, is_admin) VALUES ('user', $1, $2, $3) RETURNING id",
     )
     .bind(u.login.trim())
     .bind(u.name)
     .bind(u.is_admin)
-    .bind(&email)
     .fetch_one(&mut *tx)
     .await
-    .context("create user (is the login or the e-mail address taken?)")?;
+    .context("create user (is the login taken?)")?;
+    // Its own statement: a user without an address does not touch the
+    // column, so the upgrade tests can still make users on an older schema.
+    if let Some(e) = &email {
+        sqlx::query("UPDATE principals SET email = $2 WHERE id = $1")
+            .bind(id)
+            .bind(e)
+            .execute(&mut *tx)
+            .await
+            .context("create user (is the e-mail address taken?)")?;
+    }
     sqlx::query("INSERT INTO user_passwords (user_id, password_phc) VALUES ($1, $2)")
         .bind(id)
         .bind(&phc)

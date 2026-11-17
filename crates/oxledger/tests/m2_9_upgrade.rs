@@ -4,7 +4,7 @@
 //! `<test db>_upgm29`, writes what an M1 site holds (people, roles, two
 //! projects, an issue with a description and a note, a watcher and an
 //! unread notification, an agent delegation with a token, a linked GitHub
-//! repository), then runs every later migration (0031–0041):
+//! repository), then runs every later migration (0031–0042):
 //!
 //! * no project's `security_epoch` moved, the agent's token still
 //!   authenticates and its work context still reads and writes (not
@@ -205,7 +205,7 @@ async fn upgrade_from_the_m1_release() {
     db::MIGRATOR.run(&pool).await.unwrap();
     assert_eq!(
         count(&pool, "SELECT max(version) FROM _sqlx_migrations").await,
-        41
+        42
     );
 
     // §2.1 (B-37): no epoch moved, though 0032 granted the new permissions.

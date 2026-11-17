@@ -3864,6 +3864,10 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         // their own audit row (m2_7_export: sight, limits, people only).
         "POST /exports/issues",
         "POST /exports/time-entries",
+        // Google sign-in: opening a new site has no session to lack rights;
+        // m3_google_login checks it (not_found without the ticket, and for
+        // good once the site has a user).
+        "POST /setup",
     ];
     let mut tested: BTreeSet<String> = rows
         .iter()
