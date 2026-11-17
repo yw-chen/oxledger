@@ -20,6 +20,8 @@
       - /url: /project/AUTH/plan
     - link "看板":
       - /url: /project/AUTH/board
+    - link "Wiki":
+      - /url: /project/AUTH/wiki
   - text: AUTH-1
   - heading "支援 Google Workspace SSO 登入" [level=1]
   - button "👁 關注"
@@ -50,6 +52,6 @@
   - link "全部工時 →":
     - /url: /project/AUTH/time?issue=AUTH-1
   - heading "開發" [level=3]
-  - text: 還沒有 PR 提到 AUTH-1。在 PR 標題、分支名或 commit 訊息寫上單號就會出現。
+  - text: 還沒有 PR 或 commit 提到 AUTH-1。在 PR 標題、分支名或 commit 訊息寫上單號就會出現。
   - heading "歷史" [level=2]
   - text: 沒有歷史。
