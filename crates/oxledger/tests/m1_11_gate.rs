@@ -2651,6 +2651,9 @@ async fn t_m1_66_http_m1_routes_for_a_person_without_rights() {
         // does not exist; without manage_project forbidden_op).
         "POST /projects/{id}/dev/commits/{repo_id}/{sha}/hide",
         "DELETE /projects/{id}/dev/commits/{repo_id}/{sha}/hide",
+        // M2.6: the fix rules (m2_6_fixed_by rules_are_validated_and_sponsored:
+        // manage_project only, a setting event per change).
+        "PUT /projects/{id}/fix-rules",
     ];
     let mut tested: BTreeSet<String> = rows
         .iter()

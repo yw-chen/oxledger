@@ -97,6 +97,9 @@ pub struct IssueDev {
     pub merged_open: bool,
     /// The oldest `synced_at` of the PRs shown.
     pub synced_at: Option<DateTime<Utc>>,
+    /// Fix keywords found for this issue in merged PRs and pushed commits
+    /// (design 06 R-F6): what moved it, and what only hints.
+    pub fix_links: Vec<super::fixes::DevFix>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -108,6 +111,8 @@ pub struct DevIssue {
     pub merged_open: bool,
     pub prs: Vec<DevPr>,
     pub truncated: bool,
+    /// As in the issue's own card.
+    pub fix_links: Vec<super::fixes::DevFix>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -279,6 +284,7 @@ pub async fn issue_block(
         can_manage: manager,
         truncated,
         synced_at,
+        fix_links: super::fixes::fixes_of(conn, issue).await?,
     })
 }
 
@@ -309,10 +315,20 @@ fn filter_sql(filter: &str) -> Result<&'static str> {
             "p.review_state IN ('pending', 'changes_requested') AND p.state IN ('open', 'draft')"
         }
         "merged_open" => "p.state = 'merged' AND s.category <> 'done'",
+        // Design 06 R-F9: a PR said `fixes` and nothing moved by itself.
+        "fix_skipped" => {
+            "EXISTS (SELECT 1 FROM issue_fix_links x
+                     WHERE x.issue_id = i.id AND x.pr_id = p.id AND x.state IN ('suggested', 'skipped')
+                       AND x.reason IS DISTINCT FROM 'already_in_target')"
+        }
         _ => {
-            return Err(ApiError::new(ErrorCode::InvalidArgument, "filter is all, ci_failure, review or merged_open")
-                .with_details(json!({"path": "filter", "allowed": ["all", "ci_failure", "review", "merged_open"]}))
-                .into());
+            return Err(ApiError::new(
+                ErrorCode::InvalidArgument,
+                "filter is all, ci_failure, review, merged_open or fix_skipped",
+            )
+            .with_details(json!({"path": "filter",
+                                 "allowed": ["all", "ci_failure", "review", "merged_open", "fix_skipped"]}))
+            .into());
         }
     })
 }
@@ -426,6 +442,7 @@ pub async fn project_dev(
                     merged_open: !r.4 && prs.iter().any(|p| p.state == "merged"),
                     prs,
                     truncated,
+                    fix_links: super::fixes::fixes_of(&mut tx, r.0).await?,
                 },
             ));
         }

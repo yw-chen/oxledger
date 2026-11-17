@@ -335,3 +335,17 @@
 - webhook 端點同時最多處理 16 個請求，超過回 503（GitHub 會重送）。名額在驗簽前、讀取 body 時就佔用：請在反向代理對這個路徑設請求逾時，避免慢速連線佔滿名額。
 - 專案設定歷史裡，commit 的隱藏與撤除事件只有系統管理員看得到。
 - **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`。
+
+## 0040_fixed_by（M2.6，修正關鍵字自動轉狀態）
+
+- **migration 0040**：新表 `project_fix_rules`、`issue_fix_links`；`project_tab_settings` 加 `fix_rules_version`；專案設定事件多一種 `fix_rule_changed`。不動角色、權限、成員；security epoch 不變。
+- **預設不啟用**：升級後沒有任何規則，行為和之前一樣。要用的專案由有 `manage_project` 的人到「專案設定 › 修正規則」（`GET`／`PUT /projects/{id}/fix-rules`）新增，一個專案最多 5 條、每條最多 10 個關鍵字。
+- 規則以「最後修改或啟用它的人」的權限與工作流程執行。那個人被停用或不再能管理專案時，規則自動停用，要由現任管理者重新啟用（之後改以他的權限執行）。
+- 專案關閉或封存期間不自動轉狀態（單上只留提示），規則不會因此停用。在專案被隱藏的 PR 不會自動轉；撤除 PR 會一併刪掉它的修正連結。
+- 只有**合併進 repo 目前預設分支的 PR**（標題、內文、commit 訊息裡的「關鍵字 單號」）會自動轉狀態，而且先向 GitHub API 確認；確認不了就不動單。直接推到預設分支的 commit 只在單的開發卡提示。升級前已合併的 PR 不回溯。
+- **安全提醒**：能合併到預設分支的人，等於能讓符合規則的單轉成目標狀態；PR 內文與 commit 訊息可能出自外部貢獻者。目標狀態建議用還沒結案的狀態。
+- 自動轉換在議題歷史顯示為「GitHub（代表某人的規則）」，不能 undo（用一般的狀態轉換改回）。解除 repo 連動會刪掉該連結的修正連結，已經發生的轉換不回復。
+- `GET /projects/{id}/dev` 的 `filter` 多了 `fix_skipped`（寫了關鍵字但沒有自動轉的單）；議題的 `dev` 區塊多了 `fix_links`。
+- 需要 GitHub App 已訂閱 `pull_request` 與 `push` 事件（見 0039）。
+- **還沒有在真實的 GitHub App 與測試 repo 上跑過**（push、PR 合併、fixes）；目前只有用假的 GitHub API 的整合測試。
+- **不會讓 agent 工作脈絡失效**：沒有新增或修改 `role_permissions`。

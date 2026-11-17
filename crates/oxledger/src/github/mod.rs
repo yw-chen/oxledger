@@ -9,6 +9,7 @@
 
 pub mod client;
 pub mod commits;
+pub mod fixes;
 #[cfg(feature = "github")]
 pub mod http;
 pub mod jobs;
@@ -158,6 +159,9 @@ pub fn spawn_worker(
                     let now = chrono::Utc::now();
                     sync::resume_paused_once(&app, now).await?;
                     sync::backfill_once(&app, api.as_ref(), now).await?;
+                    // Design 06 R-F3: confirm merged PRs with fix keywords
+                    // and move their issues.
+                    fixes::run_pending_once(&app, api.as_ref(), now).await?;
                     if every(&mut open, Duration::from_secs(900)) {
                         sync::reconcile_open_once(&app, api.as_ref()).await?;
                     }

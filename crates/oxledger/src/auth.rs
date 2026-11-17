@@ -47,6 +47,12 @@ pub enum AuthMethod {
     /// [`AuthContext::notification_recipient`], never from a request; no
     /// service that writes or needs a session accepts it.
     Recipient,
+    /// The GitHub integration evaluating a `fixed_by` transition with the
+    /// permissions and workflow of the rule's sponsor (design 06 R-F5).
+    /// Built only by [`AuthContext::rule_sponsor`], from a rule row the
+    /// worker loaded; never from a request. `db::effective` accepts it only
+    /// for an active user; no service that needs a session accepts it.
+    RuleSponsor,
     /// A tool call of the built-in AI during one run (design 05 §3.13.1,
     /// appendix D V13). Built only by [`AuthContext::builtin_run`], which
     /// the run executor calls with a run it loaded from the database; never
@@ -138,6 +144,17 @@ impl AuthContext {
             principal_id: Some(user_id),
             kind: PrincipalKind::User,
             method: AuthMethod::Recipient,
+            ..Self::anonymous()
+        }
+    }
+
+    /// The sponsor of a fix rule, for the integration's own evaluation (see
+    /// [`AuthMethod::RuleSponsor`]).
+    pub(crate) fn rule_sponsor(user_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(user_id),
+            kind: PrincipalKind::User,
+            method: AuthMethod::RuleSponsor,
             ..Self::anonymous()
         }
     }

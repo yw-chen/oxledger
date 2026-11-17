@@ -772,7 +772,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/projects/{id}/dev",
-            "The development tab: issues of this project with PRs, newest PR activity first, only issues you can see, never a total. Query filter (all, ci_failure, review, merged_open), include_hidden (managers), cursor.",
+            "The development tab: issues of this project with PRs, newest PR activity first, only issues you can see, never a total. Query filter (all, ci_failure, review, merged_open, fix_skipped = a PR said `fixes` and nothing moved by itself), include_hidden (managers), cursor.",
             Session,
             None,
             s::<crate::github::read::ProjectDev>,
@@ -808,6 +808,22 @@ pub fn session_routes() -> Vec<RouteDoc> {
             Session,
             None,
             s::<crate::github::links::CommitHideResult>,
+        ),
+        r(
+            "GET",
+            "/projects/{id}/fix-rules",
+            "The project's fix rules (design 06 §3.8; manage_project, active project): keyword → target status, off by default. A pull request merged into the repository's default branch whose title, body or commits say `fixes AUTH-1` moves the issue, confirmed with the GitHub API first, with the permissions and workflow of the rule's sponsor. A commit pushed straight to the default branch only leaves a hint. Also what a rule may use: statuses, trackers, default keywords.",
+            Session,
+            None,
+            s::<crate::github::fixes::FixRules>,
+        ),
+        r(
+            "PUT",
+            "/projects/{id}/fix-rules",
+            "Replace the project's fix rules (manage_project, active project). Header Idempotency-Key. lock_version from GET (conflict when stale). At most 5 rules, 1–10 keywords each (lower-cased; no keyword twice in a project). You become the sponsor of every rule you change or turn on: it runs with your permissions and stops by itself when you can no longer manage the project. fix_rule_invalid: details.reason, details.index.",
+            Session,
+            Some(s::<crate::github::fixes::FixRulesPut>),
+            s::<crate::github::fixes::FixRules>,
         ),
         r(
             "POST",

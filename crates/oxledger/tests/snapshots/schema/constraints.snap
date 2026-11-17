@@ -445,6 +445,16 @@ issue_field_origins issue_field_origins_issue_id_fkey FOREIGN KEY (issue_id) REF
 issue_field_origins issue_field_origins_origin_event_id_fkey FOREIGN KEY (origin_event_id) REFERENCES issue_events(id)
 issue_field_origins issue_field_origins_origin_execution_id_fkey FOREIGN KEY (origin_execution_id) REFERENCES execution_refs(id)
 issue_field_origins issue_field_origins_pkey PRIMARY KEY (issue_id, field_key)
+issue_fix_links issue_fix_links_check CHECK ((num_nonnulls(pr_id, sha) = 1))
+issue_fix_links issue_fix_links_execution_id_fkey FOREIGN KEY (execution_id) REFERENCES execution_refs(id)
+issue_fix_links issue_fix_links_issue_id_fkey FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+issue_fix_links issue_fix_links_link_id_fkey FOREIGN KEY (link_id) REFERENCES project_repo_links(id)
+issue_fix_links issue_fix_links_pkey PRIMARY KEY (id)
+issue_fix_links issue_fix_links_pr_id_fkey FOREIGN KEY (pr_id) REFERENCES github_pull_requests(id) ON DELETE CASCADE
+issue_fix_links issue_fix_links_repo_id_fkey FOREIGN KEY (repo_id) REFERENCES github_repos(id)
+issue_fix_links issue_fix_links_rule_id_fkey FOREIGN KEY (rule_id) REFERENCES project_fix_rules(id) ON DELETE SET NULL
+issue_fix_links issue_fix_links_sha_check CHECK (((sha IS NULL) OR (sha ~ '^[0-9a-f]{40}$'::text)))
+issue_fix_links issue_fix_links_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'applied'::text, 'skipped'::text, 'suggested'::text])))
 issue_keys issue_keys_issue_id_fkey FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
 issue_keys issue_keys_pkey PRIMARY KEY (key)
 issue_keys issue_keys_project_id_fkey FOREIGN KEY (project_id) REFERENCES projects(id)
@@ -563,6 +573,12 @@ project_commit_revocations project_commit_revocations_project_id_fkey FOREIGN KE
 project_commit_revocations project_commit_revocations_repo_id_fkey FOREIGN KEY (repo_id) REFERENCES github_repos(id)
 project_commit_revocations project_commit_revocations_revoked_by_fkey FOREIGN KEY (revoked_by) REFERENCES principals(id)
 project_commit_revocations project_commit_revocations_sha_check CHECK ((sha ~ '^[0-9a-f]{40}$'::text))
+project_fix_rules project_fix_rules_disabled_reason_check CHECK ((disabled_reason = ANY (ARRAY['sponsor_inactive'::text, 'sponsor_lost_permission'::text, 'status_removed'::text, 'manual'::text])))
+project_fix_rules project_fix_rules_keywords_check CHECK (((cardinality(keywords) >= 1) AND (cardinality(keywords) <= 10)))
+project_fix_rules project_fix_rules_pkey PRIMARY KEY (id)
+project_fix_rules project_fix_rules_project_id_fkey FOREIGN KEY (project_id) REFERENCES projects(id)
+project_fix_rules project_fix_rules_sponsor_id_fkey FOREIGN KEY (sponsor_id) REFERENCES principals(id)
+project_fix_rules project_fix_rules_target_status_id_fkey FOREIGN KEY (target_status_id) REFERENCES issue_statuses(id)
 project_pr_hidden project_pr_hidden_hidden_by_fkey FOREIGN KEY (hidden_by) REFERENCES principals(id)
 project_pr_hidden project_pr_hidden_pkey PRIMARY KEY (project_id, pr_id)
 project_pr_hidden project_pr_hidden_pr_id_fkey FOREIGN KEY (pr_id) REFERENCES github_pull_requests(id) ON DELETE CASCADE
@@ -584,7 +600,7 @@ project_setting_event_redactions project_setting_event_redactions_event_id_key U
 project_setting_event_redactions project_setting_event_redactions_pkey PRIMARY KEY (id)
 project_setting_event_redactions project_setting_event_redactions_redacted_by_fkey FOREIGN KEY (redacted_by) REFERENCES principals(id)
 project_setting_events project_setting_events_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES principals(id)
-project_setting_events project_setting_events_kind_check CHECK ((kind = ANY (ARRAY['tabs_updated'::text, 'tabs_reset'::text, 'repo_linked'::text, 'repo_unlinked'::text, 'pr_hidden'::text, 'pr_unhidden'::text, 'github_content_revoked'::text, 'triage_settings_updated'::text, 'wiki_start_page'::text, 'commit_hidden'::text, 'commit_unhidden'::text])))
+project_setting_events project_setting_events_kind_check CHECK ((kind = ANY (ARRAY['tabs_updated'::text, 'tabs_reset'::text, 'repo_linked'::text, 'repo_unlinked'::text, 'pr_hidden'::text, 'pr_unhidden'::text, 'github_content_revoked'::text, 'triage_settings_updated'::text, 'wiki_start_page'::text, 'commit_hidden'::text, 'commit_unhidden'::text, 'fix_rule_changed'::text])))
 project_setting_events project_setting_events_operation_request_id_fkey FOREIGN KEY (operation_request_id) REFERENCES operation_requests(id)
 project_setting_events project_setting_events_pkey PRIMARY KEY (id)
 project_setting_events project_setting_events_project_id_fkey FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE

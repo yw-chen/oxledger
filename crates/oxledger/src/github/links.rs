@@ -265,7 +265,7 @@ fn hash(v: &Json) -> [u8; 32] {
 }
 
 /// The operation request, or the first result when this key ran before.
-async fn open(
+pub(super) async fn open(
     conn: &mut PgConnection,
     who: &Executor,
     operation_id: Uuid,
@@ -286,7 +286,7 @@ async fn open(
     }
 }
 
-async fn event(
+pub(super) async fn event(
     conn: &mut PgConnection,
     project: Uuid,
     kind: &str,
@@ -564,6 +564,7 @@ async fn unlink_locked(
         .execute(&mut *conn)
         .await?;
     super::commits::drop_link_refs(conn, link).await?;
+    super::fixes::drop_link(conn, link).await?;
     Ok(true)
 }
 
@@ -645,10 +646,12 @@ async fn visible_in(
 ) -> Result<bool> {
     let rows: Vec<(Uuid, bool, Uuid, Option<Uuid>)> = sqlx::query_as(
         "SELECT i.tracker_id, i.is_private, i.author_id, i.assigned_to_id
-         FROM pr_issue_refs f
+         FROM (SELECT issue_id, link_id FROM pr_issue_refs WHERE pr_id = $1 AND project_id = $2
+               UNION
+               -- A fix keyword in the PR's body leaves a fix link and no ref.
+               SELECT issue_id, link_id FROM issue_fix_links WHERE pr_id = $1 AND project_id = $2) f
          JOIN project_repo_links l ON l.id = f.link_id AND l.unlinked_at IS NULL AND l.project_id = $2
-         JOIN issues i ON i.id = f.issue_id AND i.archived_at IS NULL
-         WHERE f.pr_id = $1 AND f.project_id = $2",
+         JOIN issues i ON i.id = f.issue_id AND i.archived_at IS NULL",
     )
     .bind(pr)
     .bind(project)
@@ -927,8 +930,7 @@ async fn revoke_commit(
     .bind(&c.sha)
     .execute(&mut *conn)
     .await?;
-    // M2.6: issue_fix_links of this commit that are pending, suggested or
-    // skipped go here too (applied ones stay).
+    super::fixes::drop_commit(conn, project, c.repo_id, &c.sha).await?;
     sqlx::query(
         "UPDATE github_commits c SET message = $3, redacted_at = now()
          WHERE c.repo_id = $1 AND c.sha = $2 AND c.redacted_at IS NULL
@@ -1029,7 +1031,8 @@ pub async fn revoke(
     if a.is_admin {
         for pr in &pr_ids {
             let any: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pr_issue_refs WHERE pr_id = $1 AND project_id = $2)",
+                "SELECT EXISTS (SELECT 1 FROM pr_issue_refs WHERE pr_id = $1 AND project_id = $2)
+                     OR EXISTS (SELECT 1 FROM issue_fix_links WHERE pr_id = $1 AND project_id = $2)",
             )
             .bind(pr)
             .bind(project)
@@ -1069,6 +1072,8 @@ pub async fn revoke(
         None => {
             for pr in &pr_ids {
                 set_hidden(&mut tx, project, *pr, true, who.user_id).await?;
+                // Revoked for good: so is what its keywords asked for.
+                super::fixes::drop_pr(&mut tx, project, *pr).await?;
             }
             json!({"pr_ids": pr_ids})
         }

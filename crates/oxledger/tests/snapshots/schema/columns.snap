@@ -633,6 +633,23 @@ issue_field_origins.issue_id uuid NOT NULL
 issue_field_origins.field_key text NOT NULL
 issue_field_origins.origin_execution_id uuid
 issue_field_origins.origin_event_id uuid NOT NULL
+issue_fix_links.id uuid NOT NULL DEFAULT uuidv7()
+issue_fix_links.issue_id uuid NOT NULL
+issue_fix_links.project_id uuid NOT NULL
+issue_fix_links.repo_id uuid NOT NULL
+issue_fix_links.pr_id uuid
+issue_fix_links.sha text
+issue_fix_links.link_id uuid NOT NULL
+issue_fix_links.rule_id uuid
+issue_fix_links.keyword text NOT NULL
+issue_fix_links.confirm_head text
+issue_fix_links.state text NOT NULL
+issue_fix_links.reason text
+issue_fix_links.execution_id uuid
+issue_fix_links.attempts smallint NOT NULL DEFAULT 0
+issue_fix_links.next_at timestamp with time zone NOT NULL DEFAULT now()
+issue_fix_links.detected_at timestamp with time zone NOT NULL DEFAULT now()
+issue_fix_links.decided_at timestamp with time zone
 issue_keys.key text NOT NULL
 issue_keys.issue_id uuid NOT NULL
 issue_keys.project_id uuid NOT NULL
@@ -799,6 +816,17 @@ project_commit_revocations.repo_id uuid NOT NULL
 project_commit_revocations.sha text NOT NULL
 project_commit_revocations.revoked_by uuid NOT NULL
 project_commit_revocations.revoked_at timestamp with time zone NOT NULL DEFAULT now()
+project_fix_rules.id uuid NOT NULL DEFAULT uuidv7()
+project_fix_rules.project_id uuid NOT NULL
+project_fix_rules.enabled boolean NOT NULL DEFAULT false
+project_fix_rules.sponsor_id uuid NOT NULL
+project_fix_rules.keywords text[] NOT NULL
+project_fix_rules.target_status_id uuid NOT NULL
+project_fix_rules.tracker_ids uuid[]
+project_fix_rules.disabled_reason text
+project_fix_rules.lock_version bigint NOT NULL DEFAULT 0
+project_fix_rules.updated_at timestamp with time zone NOT NULL DEFAULT now()
+project_fix_rules.position smallint NOT NULL DEFAULT 0
 project_pr_hidden.project_id uuid NOT NULL
 project_pr_hidden.pr_id uuid NOT NULL
 project_pr_hidden.hidden_by uuid NOT NULL
@@ -842,6 +870,7 @@ project_tab_settings.is_default boolean NOT NULL DEFAULT true
 project_tab_settings.lock_version integer NOT NULL DEFAULT 0
 project_tab_settings.updated_by uuid
 project_tab_settings.updated_at timestamp with time zone NOT NULL DEFAULT now()
+project_tab_settings.fix_rules_version bigint NOT NULL DEFAULT 0
 project_time_activities.project_id uuid NOT NULL
 project_time_activities.activity_id uuid NOT NULL
 project_time_activities.active boolean NOT NULL

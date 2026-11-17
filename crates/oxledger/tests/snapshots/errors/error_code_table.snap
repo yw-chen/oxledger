@@ -25,6 +25,7 @@ csrf_failed                   403     no         ask_human
 delegation_unavailable        409     no         ask_human,stop
 execution_in_progress         409     yes        wait_and_retry
 field_definition_changed      409     no         fix_input
+fix_rule_invalid              422     no         fix_input
 forbidden_op                  403     no         ask_human,stop
 form_invalid                  422     no         fix_input
 form_publish_blocked          409     no         ask_human

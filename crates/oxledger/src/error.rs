@@ -198,6 +198,11 @@ pub enum ErrorCode {
     /// Design 06 R-W2: the title is not allowed; `details.reason`: `length`,
     /// `char` (with `details.char`) or `leading_dot`.
     WikiTitleInvalid,
+    /// Design 06 §5 (R-F2): a fix rule is not valid; `details.reason`
+    /// (`keywords_empty`, `keyword_invalid`, `keyword_duplicate`,
+    /// `too_many_keywords`, `status_unknown`, `tracker_not_in_project`,
+    /// `too_many_rules`), `details.index` of the rule.
+    FixRuleInvalid,
 }
 
 /// What the caller may do next (contract 02 §14.2). A closed set; the list
@@ -214,7 +219,7 @@ pub enum NextAction {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 77] = [
+    pub const ALL: [ErrorCode; 78] = [
         Self::InvalidRequest,
         Self::Unauthenticated,
         Self::InvalidCredentials,
@@ -292,6 +297,7 @@ impl ErrorCode {
         Self::WikiPageExists,
         Self::WikiHasChildren,
         Self::WikiTitleInvalid,
+        Self::FixRuleInvalid,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -373,6 +379,7 @@ impl ErrorCode {
             Self::WikiPageExists => "wiki_page_exists",
             Self::WikiHasChildren => "wiki_has_children",
             Self::WikiTitleInvalid => "wiki_title_invalid",
+            Self::FixRuleInvalid => "fix_rule_invalid",
         }
     }
 
@@ -445,7 +452,7 @@ impl ErrorCode {
             Self::PayloadTooLarge => 413,
             Self::InsufficientStorage => 507,
             Self::WikiPageExists | Self::WikiHasChildren => 409,
-            Self::WikiTitleInvalid => 422,
+            Self::WikiTitleInvalid | Self::FixRuleInvalid => 422,
         }
     }
 
@@ -537,7 +544,7 @@ impl ErrorCode {
             Self::AiRunInProgress => &[WaitAndRetry],
             Self::PayloadTooLarge => &[FixInput],
             Self::InsufficientStorage => &[WaitAndRetry],
-            Self::WikiPageExists | Self::WikiTitleInvalid => &[FixInput],
+            Self::WikiPageExists | Self::WikiTitleInvalid | Self::FixRuleInvalid => &[FixInput],
             // Design 06 §5: "(SPA)": the person decides in the dialog.
             Self::WikiHasChildren => &[AskHuman],
         }

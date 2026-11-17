@@ -1095,9 +1095,11 @@ fn push_builtin(
                 "EXISTS (SELECT 1 FROM issue_events we WHERE we.issue_id = {a}.id                  AND we.at >= now() - interval '30 days' AND (we.actor_id = ANY("
             ));
             push_array(qb, field.ty.kind(), vs);
-            qb.push(") OR we.on_behalf_of_id = ANY(");
+            // Design 06 R-F10: a `fixed_by` transition names its rule's
+            // sponsor, who did not write the issue.
+            qb.push(") OR (we.origin <> 'integration' AND we.on_behalf_of_id = ANY(");
             push_array(qb, field.ty.kind(), vs);
-            qb.push(")))");
+            qb.push("))))");
             return;
         }
     };

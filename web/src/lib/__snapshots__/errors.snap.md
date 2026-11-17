@@ -122,6 +122,10 @@ changed: 沒有改到任何資料。
 next:    重新載入
 action:  refresh
 
+## fix_rule_invalid
+title:   規則不合法
+changed: 沒有改到任何資料。
+
 ## forbidden_op
 title:   你沒有權限執行這個動作
 changed: 沒有改到任何資料。
@@ -725,6 +729,34 @@ changed: 沒有改到任何資料。
 
 ## wiki_title_invalid: reason=char, char=U+200B
 title:   標題有看不見的控制字元 U+200B，請刪掉後再試
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=keywords_empty, index=0
+title:   至少要有一個關鍵字
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=keyword_invalid, index=0
+title:   關鍵字要是 1～30 個字，不能有空白、「:」「,」「#」
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=keyword_duplicate, index=0
+title:   同一個專案裡，關鍵字不能重複（不分大小寫）
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=too_many_keywords, index=0
+title:   一條規則最多 10 個關鍵字
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=status_unknown, index=0
+title:   目標狀態不存在，請重新選擇
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=tracker_not_in_project, index=0
+title:   有追蹤類型不屬於這個專案，請重新選擇
+changed: 沒有改到任何資料。
+
+## fix_rule_invalid: reason=too_many_rules, index=0
+title:   一個專案最多 5 條修正規則
 changed: 沒有改到任何資料。
 
 # describeFailure (stored execution errors)

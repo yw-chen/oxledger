@@ -83,6 +83,7 @@ CREATE TRIGGER principals_epoch_delete AFTER DELETE ON public.principals FOR EAC
 CREATE TRIGGER principals_epoch_insert AFTER INSERT ON public.principals FOR EACH ROW WHEN ((new.kind = 'user'::text)) EXECUTE FUNCTION epoch_all_projects()
 CREATE TRIGGER principals_epoch_update AFTER UPDATE OF status, is_admin ON public.principals FOR EACH ROW WHEN (((new.kind = 'user'::text) AND ((old.status IS DISTINCT FROM new.status) OR (old.is_admin IS DISTINCT FROM new.is_admin)))) EXECUTE FUNCTION epoch_all_projects()
 CREATE TRIGGER principals_freeze_kind BEFORE UPDATE OF kind ON public.principals FOR EACH ROW EXECUTE FUNCTION principals_freeze_kind()
+CREATE TRIGGER project_fix_rules_sponsor_guard BEFORE INSERT OR UPDATE OF sponsor_id ON public.project_fix_rules FOR EACH ROW EXECUTE FUNCTION user_column_guard('sponsor_id')
 CREATE TRIGGER project_tab_settings_row AFTER INSERT ON public.projects FOR EACH ROW EXECUTE FUNCTION project_tab_settings_row()
 CREATE TRIGGER project_time_settings_row AFTER INSERT ON public.projects FOR EACH ROW EXECUTE FUNCTION project_time_settings_row()
 CREATE TRIGGER project_trackers_schema_version AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.project_trackers FOR EACH STATEMENT EXECUTE FUNCTION bump_schema_version()

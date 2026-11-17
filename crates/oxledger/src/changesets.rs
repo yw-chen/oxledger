@@ -2050,6 +2050,8 @@ async fn agent_direct(
         delegation_id: Some(deleg.id),
         agent_client_id: Some(client),
         record_changes: true,
+        system_operation: None,
+        event_extra: None,
     };
     let effects = commands::write_effects(&mut *conn, parsed, &sim, &at).await?;
     let written: Vec<Uuid> = effects.iter().map(|e| e.issue_id).collect();
@@ -5260,6 +5262,8 @@ async fn apply_tx(
         delegation_id: cs.delegation_id,
         agent_client_id: Some(client_id),
         record_changes: true,
+        system_operation: None,
+        event_extra: None,
     };
     let effects = commands::write_effects(&mut *conn, &parsed, &sim, &at).await?;
     let token = sim.token.clone().unwrap_or_default();

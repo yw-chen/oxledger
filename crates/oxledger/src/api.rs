@@ -427,6 +427,10 @@ fn base_router(app: Arc<App>, cfg: ApiConfig) -> Router {
             post(commit_hide).delete(commit_unhide),
         )
         .route("/projects/{id}/dev/revoke", post(dev_revoke))
+        .route(
+            "/projects/{id}/fix-rules",
+            get(fix_rules_get).put(fix_rules_put),
+        )
         .route("/issues/{key}/notes/{note_id}/redact", post(redact_note))
         .route(
             "/issues/{key}/events/{event_id}/redact",
@@ -2692,6 +2696,29 @@ async fn commit_unhide(
     headers: HeaderMap,
 ) -> ApiResult {
     commit_hide_set(st, ra, p, headers, false).await
+}
+
+async fn fix_rules_get(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    Ok(ok(crate::github::fixes::get(&st.app, ctx, &id).await?))
+}
+
+async fn fix_rules_put(
+    State(st): State<Arc<ApiState>>,
+    Extension(ra): Extension<RequestAuth>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<crate::github::fixes::FixRulesPut>,
+) -> ApiResult {
+    let ctx = human(&ra)?;
+    let key = idempotency_key(&headers)?;
+    Ok(ok(
+        crate::github::fixes::put(&st.app, ctx, key, &id, &body).await?
+    ))
 }
 
 async fn dev_revoke(

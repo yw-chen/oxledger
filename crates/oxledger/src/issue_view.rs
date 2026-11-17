@@ -162,7 +162,9 @@ pub struct EventView {
     /// `user`, `agent` or `system` (P3 gap G41; 02 §16.2).
     pub actor_kind: String,
     /// The person an agent acted for (`claude-code@alice〔agent〕`, tooltip
-    /// 「代表 Alice」; G41). Absent for people's own writes.
+    /// 「代表 Alice」; G41), or, with `actor_kind = system`, the sponsor of
+    /// the fix rule the GitHub integration acted for (design 06 R-F5).
+    /// Absent for people's own writes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<crate::time_reports::Named>,
     /// Who approved the applied proposal (「Alice 核准」, 02 §16.10; G41).
@@ -1539,10 +1541,18 @@ pub(crate) async fn event_view(
                 "same_sponsor": r.payload["same_sponsor"],
                 "snoozed_until": r.payload["snoozed_until"],
             })),
-            "status_changed" => Some(json!({
-                "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
-                "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
-            })),
+            "status_changed" => {
+                let mut d = json!({
+                    "old": display(&mut *conn, "status_id", &r.payload["old"]).await?,
+                    "new": display(&mut *conn, "status_id", &r.payload["new"]).await?,
+                });
+                // Design 06 R-F5: what made the integration move it
+                // (`{repo, pr_number, keyword}`; never a title or message).
+                if r.payload["fix"].is_object() {
+                    d["fix"] = r.payload["fix"].clone();
+                }
+                Some(d)
+            }
             "note_added" | "note_retracted" => Some(json!({"note_id": r.note_id})),
             // Design 06 R-A7: which file (the note's, when on a note).
             "attachment_added" | "attachment_removed" => Some(json!({
@@ -1589,6 +1599,9 @@ pub(crate) async fn event_view(
         }
     };
     let agent = r.actor_kind == "agent";
+    // Design 06 §6.8: a `fixed_by` transition is the integration acting for
+    // the rule's sponsor (「GitHub（代表 Alice 的規則）」), not the sponsor.
+    let integration = r.actor_kind == "system" && r.obo_id.is_some();
     Ok(Some(EventView {
         event_id: r.id,
         kind: r.kind,
@@ -1596,7 +1609,7 @@ pub(crate) async fn event_view(
         actor: r.actor,
         detail,
         redacted: r.redacted,
-        on_behalf_of: if agent {
+        on_behalf_of: if agent || integration {
             named(r.obo_id, r.obo_name)
         } else {
             None

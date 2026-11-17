@@ -34,6 +34,8 @@
 	import { markIssueRead } from '#lib/notifs.svelte.js';
 	import type { UploadView } from '$api/types';
 	import DevCommits from '#lib/components/DevCommits.svelte';
+	import DevFixes from '#lib/components/DevFixes.svelte';
+	import { fixEventSource } from '#lib/fixes.js';
 	import AttachmentList from '#lib/components/AttachmentList.svelte';
 	import { attachDoc, linked, MAX_PER_OP, runUploads, TOO_MANY, type UploadRow } from '#lib/attachments.js';
 
@@ -226,7 +228,10 @@
 		conflict = false;
 		kept = [];
 	}
+	/** The status a fix hint asks about: marked in the transition dialog (§6.8). */
+	let suggested = $state<string | null>(null);
 	function openMode(m: 'note' | 'dup' | 'transition') {
+		if (m !== 'transition') suggested = null;
 		mode = m;
 		actionError = null;
 		conflict = false;
@@ -586,7 +591,7 @@
 				<p class="hint">只列出你現在可以用的轉換。</p>
 				<div class="row">
 					{#each v.actions?.transitions ?? [] as t (t.to_status_id)}
-						<button class="btn" disabled={busy || t.blocked || conflict || uncertain} title={t.blocked ? '有你看不到的條件擋住這個轉換' : t.then_required.length ? `轉換後必填：${t.then_required.map(fieldLabel).join('、')}` : ''} onclick={() => transition(t.to_status_id, t.name)}>{t.name}</button>
+						<button class="btn" class:pri={t.to_status_id === suggested} disabled={busy || t.blocked || conflict || uncertain} title={t.blocked ? '有你看不到的條件擋住這個轉換' : t.then_required.length ? `轉換後必填：${t.then_required.map(fieldLabel).join('、')}` : ''} onclick={() => transition(t.to_status_id, t.name)}>{t.name}</button>
 					{/each}
 					<button class="btn ghost" onclick={() => (mode = null)}>取消</button>
 				</div>
@@ -678,6 +683,7 @@
 						{:else}
 							{#if !v.dev.commits.length}<div class="empty">還沒有 PR 或 commit 提到 {v.key}。在 PR 標題、分支名或 commit 訊息寫上單號就會出現。</div>{/if}
 						{/each}
+						<DevFixes fixes={v.dev.fix_links} canTransition={!!v.actions?.transitions.length && !uncertain} ontransition={(target) => { suggested = target; openMode('transition'); window.scrollTo({ top: 0 }); }} />
 						<DevCommits commits={v.dev.commits} truncated={v.dev.commits_truncated} canManage={v.dev.can_manage} projectId={v.project_id} onchanged={() => load(key)} />
 						{#if v.dev.synced_at}<div class="hint">同步於 {fmtTime(v.dev.synced_at)}；可能落後 GitHub 幾分鐘。</div>{/if}
 					</div>
@@ -687,7 +693,7 @@
 					{#if h.ev}
 						{@const ev = h.ev}
 						<div class="ev" data-testid="event">
-							<b>{EVENT[ev.kind] ?? ev.kind}</b>・<span>{ev.actor}</span>
+							<b>{EVENT[ev.kind] ?? ev.kind}</b>・{#if ev.actor_kind === 'system' && ev.on_behalf_of}<span data-testid="event-integration">GitHub（代表 {ev.on_behalf_of.name} 的規則）</span>{:else}<span>{ev.actor}</span>{/if}
 							<span class="dim">・{fmtTime(ev.at)}</span>
 							{#if ev.redacted}<div class="dim">（內容已遮蔽）</div>{/if}
 							{#if ev.kind === 'triage_changed' && ev.detail && typeof ev.detail === 'object'}
@@ -695,6 +701,7 @@
 								<div>{TRIAGE[String(d.old)] ?? d.old ?? '—'} → {TRIAGE[String(d.new)] ?? d.new}{#if d.self_triage}<span class="chip c-warn" style="margin-left:4px">自建自分流</span>{/if}</div>
 							{:else}
 								{#each eventLines(ev.detail) as line, i (i)}<div>{line}</div>{/each}
+								{#if ev.detail && typeof ev.detail === 'object' && fixEventSource((ev.detail as Record<string, unknown>).fix)}<div class="dim">{fixEventSource((ev.detail as Record<string, unknown>).fix)}</div>{/if}
 							{/if}
 						</div>
 					{:else if h.te}

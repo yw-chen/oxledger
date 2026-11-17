@@ -54,6 +54,28 @@ export function wikiTitleProblem(d: Record<string, unknown>): string {
 	}
 }
 
+/** R-F2: what is wrong with a fix rule (`fix_rule_invalid.details`), shown on that rule. */
+export function fixRuleProblem(d: Record<string, unknown>): string {
+	switch (d.reason) {
+		case 'keywords_empty':
+			return '至少要有一個關鍵字';
+		case 'keyword_invalid':
+			return '關鍵字要是 1～30 個字，不能有空白、「:」「,」「#」';
+		case 'keyword_duplicate':
+			return '同一個專案裡，關鍵字不能重複（不分大小寫）';
+		case 'too_many_keywords':
+			return '一條規則最多 10 個關鍵字';
+		case 'status_unknown':
+			return '目標狀態不存在，請重新選擇';
+		case 'tracker_not_in_project':
+			return '有追蹤類型不屬於這個專案，請重新選擇';
+		case 'too_many_rules':
+			return '一個專案最多 5 條修正規則';
+		default:
+			return '規則不合法';
+	}
+}
+
 function names(v: unknown): string {
 	if (!Array.isArray(v)) return '';
 	return v
@@ -366,6 +388,8 @@ export function describeError(e: unknown): Shown {
 		}
 		case 'wiki_title_invalid':
 			return { title: wikiTitleProblem(d), changed: NOTHING };
+		case 'fix_rule_invalid':
+			return { title: fixRuleProblem(d), changed: NOTHING };
 		case 'ai_run_in_progress':
 			return { title: '你還有一個 AI 回覆在進行中；等它完成或取消後再送', changed: NOTHING, action: 'wait' };
 		default:

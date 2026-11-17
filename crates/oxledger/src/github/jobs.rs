@@ -411,14 +411,14 @@ pub async fn pr_details(
     t: &Target,
     pr: Uuid,
     snap: &PrSnap,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let commits = api
         .list_pull_commits(t.inst, &t.full_name, snap.number)
         .await?;
     model::recompute_refs(conn, pr, &t.links, &snap.title, &snap.head_ref, &commits).await?;
     pr_reviews(conn, api, t, pr, snap).await?;
     model::recompute_ci(conn, pr).await?;
-    Ok(())
+    Ok(commits)
 }
 
 async fn pr_reviews(
@@ -446,11 +446,14 @@ async fn content(
         return Ok(ignored());
     };
     let mut refetch = Vec::new();
+    let mut result = "ok";
     match event {
         "pull_request" | "pull_request_review" => {
             let snap = PrSnap::from_json(&p["pull_request"])?;
-            match model::upsert_pr(conn, t.repo, &snap).await? {
-                Write::Applied(id) => pr_details(conn, api, &t, id, &snap).await?,
+            let w = model::upsert_pr(conn, t.repo, &snap).await?;
+            let mut commits = None;
+            match w {
+                Write::Applied(id) => commits = Some(pr_details(conn, api, &t, id, &snap).await?),
                 Write::Same(id) | Write::Ignored(id) if event == "pull_request_review" => {
                     pr_reviews(conn, api, &t, id, &snap).await?
                 }
@@ -461,6 +464,24 @@ async fn content(
                     number: snap.number,
                 }),
                 _ => {}
+            }
+            // Design 06 R-F1 (a): fix keywords of a PR merged into the
+            // default branch (whatever the snapshot's fate: each (issue,
+            // PR) is recorded once).
+            if event == "pull_request"
+                && p["action"].as_str() == Some("closed")
+                && p["pull_request"]["merged"].as_bool() == Some(true)
+            {
+                let commits = match commits {
+                    Some(c) => c,
+                    None => {
+                        api.list_pull_commits(t.inst, &t.full_name, snap.number)
+                            .await?
+                    }
+                };
+                if super::fixes::pr_merged(conn, &t, w.id(), p, &commits).await? {
+                    result = "fix_links_truncated";
+                }
             }
         }
         "check_suite" if p["check_suite"]["updated_at"].as_str().is_none() => {
@@ -506,7 +527,7 @@ async fn content(
             model::recompute_ci_for_sha(conn, t.repo, &s.sha).await?;
         }
     }
-    Ok(ok(refetch))
+    Ok(Outcome { result, refetch })
 }
 
 // ---------------------------------------------------------------- refetch (R-G8)
@@ -535,7 +556,9 @@ pub async fn refetch(app: &App, api: &dyn GithubApi, r: &Refetch) -> Result<Opti
                     return Ok(None);
                 };
                 match model::apply_refetched_pr(&mut tx, *repo, &snap, seen).await? {
-                    Write::Applied(id) => pr_details(&mut tx, api, &t, id, &snap).await?,
+                    Write::Applied(id) => {
+                        pr_details(&mut tx, api, &t, id, &snap).await?;
+                    }
                     Write::Refetch(_) => {
                         tx.commit().await?;
                         continue;

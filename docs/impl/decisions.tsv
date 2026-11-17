@@ -993,3 +993,21 @@ date	stage	decision	why	alternatives	source
 2026-11-17	M2.5	webhook 路由的並行上限 16 用 tower 的 ConcurrencyLimit＋LoadShed 做，超過直接回 503（GitHub 會重送）	不排隊，避免驗簽前的請求堆積	自己用 Semaphore::try_acquire	設計 06 §3.7 webhook 安全、L16、T-M2-78
 2026-11-17	M2.5	commit 的隱藏／取消隱藏事件與帶 commits 的撤除事件，在專案設定歷史只有系統管理員看得到（和 PR 的同類事件相同）	事件本身透露「某 commit 提到本專案某張單」；看不到那張單的管理者不該知道（T-M2-66）。設計 06 沒寫，審查發現	依事件逐筆判斷讀者看不看得到那張單	契約 02 §18.5；M2.5 審查
 2026-11-17	M2.5	開發卡的 commit 依第一次收到的時間排序（同一次 push 內再依 commit 時間）；顯示的時間仍是 commit 時間	commit 時間可由作者任意填，填未來時間就能永遠排第一、把新 commit 擠出 20 筆	依 commit 時間排序	設計 06 R-C6；M2.5 審查
+2026-11-17	M2.6	修正規則以「規則設定者（sponsor）」的權限與工作流程執行；只有合併進預設分支的 PR 會自動轉狀態，直接推到預設分支的 commit 只在單上提示（direct_push）	使用者決定（A3 的 (a)+(i)）：能推 commit 的人不一定有轉狀態的權限，要有一個可問責的人；PR 合併有審查，直接推沒有	以系統權限執行；直接推也自動轉	設計 06 §3.8 R-F3、R-F5；使用者決定 A3
+2026-11-17	M2.6	冪等用的 operation id 由 SHA-256 衍生成 version 8 的 UUID（命名空間＋連結 id），不用 UUIDv5	uuid crate 沒開 v5 feature，開了要重新下載相依；SHA-256 衍生同樣穩定且不碰撞	開 uuid 的 v5 feature	設計 06 R-F5；T-M2-69
+2026-11-17	M2.6	掃描用的候選關鍵字＝GitHub 的 9 個預設關鍵字∪本專案所有規則（含停用）的關鍵字；沒有啟用規則符合時記成 suggested/no_rule	沒設規則的專案也要能提示「寫了 fixes 但沒有規則」（R-F6）	只掃啟用規則的關鍵字	設計 06 R-F6；T-M2-68b
+2026-11-17	M2.6	關鍵字的字界只在關鍵字邊緣是 ASCII 英數時才要求；中文等關鍵字（例如「修正」）前後不必有空白	中文沒有字界，照英文規則永遠配不到	一律要求空白分隔	設計 06 R-F2
+2026-11-17	M2.6	單已經在目標狀態時記成 skipped/already_in_target，不寫事件，開發卡與 fix_skipped 篩選都不顯示	沒有事情發生，也沒有要人處理的事；顯示出來只是雜訊	顯示成 applied 或提示	設計 06 §6.8
+2026-11-17	M2.6	修正規則整份清單的版本放在 project_tab_settings.fix_rules_version；規則加 position 欄保留畫面上的順序	清單是整份 PUT，用一個版本號擋並行修改最簡單；project_tab_settings 已經是專案設定的鎖	每條規則各自 lock_version	設計 06 §2.6、§6.9
+2026-11-17	M2.6	解除 repo 連動時刪掉該連結的 fix links；撤除 commit 時刪掉該 commit 的 fix links；已經發生的狀態轉換不回復	連結沒了就沒有來源可顯示；狀態轉換是議題歷史的一部分，可用一般方式改回	保留 fix links 只是隱藏	設計 06 R-F9；契約 02 §19.6
+2026-11-17	M2.6	/dev 的 fix_skipped 篩選只列 PR 來源的 suggested/skipped；直接 push 的提示只出現在單的開發卡	直接 push 的提示量大而且是預期行為，放進待處理清單會蓋掉真的需要處理的	全部列出	設計 06 §6.8；T-M2-77
+2026-11-17	M2.6	規則被自動停用（sponsor 停用或失去 manage_project）時清單版本加一，並寫一筆 fix_rule_changed 設定事件；專案關閉或封存時不停用規則，只記提示（project_inactive）	版本不變的話，停用前開著設定頁的人存檔會把規則重新啟用並換成自己當 sponsor，卻沒看到停用原因（審查發現）；專案關閉不是 sponsor 的問題	版本不變，靠重新載入	設計 06 R-F8；T-M2-70a、70b；M2.6 審查
+2026-11-17	M2.6	向 GitHub 確認 PR 時：API 錯誤以 30 秒起的指數退避重試，第 5 次失敗記 skipped/unconfirmed；查不到 PR 直接記 unconfirmed；一次合併超過 50 張待轉的單，全部改成提示（too_many）	不確認就不動單（R-F5）；上限避免一個 PR 大量改單	無限重試；超過上限只轉前 50 張	設計 06 R-F3、R-F7；T-M2-71、75
+2026-11-17	M2.6	整合寫入的事件 actor 是系統主體、on_behalf_of 是 sponsor；歷史顯示「GitHub（代表 X 的規則）」；「我寫過的」篩選不把這類事件算成 sponsor 寫的；不重置 agent 鏈；不能 undo	不是 sponsor 親手做的事，不該出現在他的個人篩選；undo 屬於發出指令的人，這裡沒有	算成 sponsor 的操作	設計 06 R-F10；T-M2-73、74、74a
+2026-11-17	M2.6	sponsor 看不到那張單時，原因和「工作流程不允許」用同一個代碼與文案（workflow_disallowed）	不同文案會透露 sponsor 的可見範圍	另設 not_visible	設計 06 §6.8；T-M2-70
+2026-11-17	M2.6	確認「合併進預設分支」時，預設分支用 GitHub API 回應的 base.repo.default_branch，不用資料庫裡由 webhook payload 寫入的值	payload 不可信也可能是舊的（重送）；資料庫的值只用來決定要不要記錄	用 github_repos.default_branch	設計 06 R-F3；M2.6 審查
+2026-11-17	M2.6	PR 在專案被隱藏時不自動轉（skipped/pr_hidden），取消隱藏後顯示成提示；撤除 PR 時刪掉它的 fix links；只在 PR 內文寫關鍵字（沒有一般參照）的 PR 也可以被隱藏或撤除	隱藏的 PR 編號不該寫進議題歷史；隱藏可以復原所以不刪資料，撤除是永久的	隱藏時也刪	契約 02 §19.9；M2.6 審查
+2026-11-17	M2.6	同一張單在同一個 repo 已有 PR 來源的修正連結時，開發卡不顯示 push 來源的提示	PR 合併後 GitHub 一定會再送一個推到預設分支的 push，每張自動轉過的單都會多一條「沒有自動轉換」	全部顯示	設計 06 §6.8；M2.6 審查
+2026-11-17	M2.6	一個 PR 或一次 push 最多查 1000 個不同的單號，同一個單號只查一次；超過的略過並記 fix_links_truncated	PR 內文可由外部貢獻者寫，64k 的文字可以放上萬個單號，每個都查資料庫會拖住 webhook 工作	不設上限	設計 06 R-F3；M2.6 審查
+2026-11-17	M2.6	執行時的上鎖順序：repo 連結 → 專案設定列 → 規則 → 修正連結 → 議題	和解除連動（連結 → 修正連結）、儲存規則（設定列 → 規則 → 修正連結）同一個順序，避免死結讓使用者的操作失敗	照讀取順序上鎖	契約 02 §19.5；M2.6 審查
+2026-11-17	M2.6	關鍵字前後緊接任何文字的字母或數字都不算整字（例如 préfix 不算 fix）	只看 ASCII 會把帶重音字母的字誤判	只看 ASCII	設計 06 R-F2；M2.6 審查

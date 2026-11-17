@@ -543,6 +543,42 @@ WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
 	await expect(bob.getByTestId('dev-commit')).toHaveCount(0);
 	await page.getByTestId('dev-commit-hide').click();
 	await expect(page.getByTestId('dev-commit')).not.toContainText('已隱藏');
+	// M2.6 (design 06 §6.8, §6.9): a `fixes` pushed straight to the default
+	// branch only hints; the rules page saves a rule under who saved it.
+	sql(`
+INSERT INTO issue_fix_links (issue_id, project_id, repo_id, sha, link_id, keyword, state, reason, decided_at)
+SELECT k.issue_id, k.project_id, l.repo_id, repeat('c', 40), l.id, 'fixes', 'suggested', 'direct_push', now()
+FROM issue_keys k, project_repo_links l WHERE k.key='AUTH-1' AND l.project_id=k.project_id AND l.unlinked_at IS NULL;
+`);
+	await page.reload();
+	const hint = page.getByTestId('dev-fix-hint');
+	await expect(hint).toContainText('acme/auth-service@ccccccc');
+	await expect(hint).toContainText('寫了 fixes，沒有自動轉換：直接推到預設分支，依設定只提示');
+	await page.goto('/project/AUTH/settings');
+	await page.getByTestId('link-fix-rules').click();
+	await expect(page.getByTestId('fix-warning')).toContainText('能合併到這個 repo 預設分支的人');
+	await expect(page.getByTestId('fix-no-repo')).toHaveCount(0);
+	await page.getByTestId('fix-add').click();
+	await expect(page.getByTestId('fix-save')).toBeDisabled();
+	await page.getByTestId('fix-enabled').check();
+	await page.getByTestId('fix-target').selectOption({ index: 1 });
+	// A keyword GitHub does not know, twice: the server names the rule.
+	await page.getByTestId('fix-keywords').fill('修正 修正');
+	await page.getByTestId('fix-save').click();
+	await expect(page.getByTestId('fix-confirm')).toContainText('會以你的權限執行');
+	await page.getByTestId('fix-confirm-save').click();
+	await expect(page.getByTestId('fix-invalid')).toContainText('關鍵字不能重複');
+	await page.getByTestId('fix-keywords').fill('fixes 修正');
+	await page.getByTestId('fix-save').click();
+	await page.getByTestId('fix-confirm-save').click();
+	await expect(page.getByTestId('fix-sponsor')).toContainText('的權限執行');
+	await page.reload();
+	await expect(page.getByTestId('fix-rule')).toHaveCount(1);
+	await expect(page.getByTestId('fix-keywords')).toHaveValue('fixes 修正');
+	await expect(page.getByTestId('fix-enabled')).toBeChecked();
+	await bob.goto('/project/AUTH/settings/fix-rules');
+	await expect(bob.getByTestId('error')).toBeVisible();
+	await expect(bob.getByTestId('fix-rules')).toHaveCount(0);
 });
 
 test('登入的 next 只接受本站路徑', async ({ browser }) => {

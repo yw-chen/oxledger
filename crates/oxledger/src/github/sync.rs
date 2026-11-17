@@ -127,7 +127,9 @@ pub async fn sync_pr(app: &App, api: &dyn GithubApi, l: &LinkRow, v: &Json) -> R
             return Ok(());
         };
         match model::upsert_pr(&mut tx, t.repo, &snap).await? {
-            Write::Applied(id) => jobs::pr_details(&mut tx, api, &t, id, &snap).await?,
+            Write::Applied(id) => {
+                jobs::pr_details(&mut tx, api, &t, id, &snap).await?;
+            }
             Write::Same(id) | Write::Ignored(id) => refs_from_row(&mut tx, api, &t, id).await?,
             Write::Refetch(_) => refetch.push(Refetch::Pr {
                 repo: t.repo,

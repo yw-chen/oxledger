@@ -778,8 +778,31 @@ export type DevCommit = {
   url: string;
 };
 
+/** A fix keyword found for an issue, as its development card shows it. */
+export type DevFix = {
+  at: string;
+  keyword: string;
+  /** The pull request (with `repo`); null for a pushed commit. */
+  pr_number: number | null;
+  /** Why nothing moved by itself: `no_rule`, `direct_push`, `already_closed`, `in_triage`, `workflow_disallowed`, `form_rule`, `sponsor_inactive`, `sponsor_lost_permission`, `too_many`, `not_on_default_branch`, `unconfirmed`. */
+  reason: string | null;
+  /** `owner/name`. */
+  repo: string;
+  /** The pushed commit; null for a pull request. */
+  sha: string | null;
+  /** Whose rule it is. */
+  sponsor: string | null;
+  /** `pending` (GitHub is being asked), `applied`, `suggested` or `skipped`. */
+  state: string;
+  target_status: string | null;
+  /** The rule's target status (to preselect in the transition dialog, or what it was moved to). */
+  target_status_id: string | null;
+};
+
 export type DevIssue = {
   closed: boolean;
+  /** As in the issue's own card. */
+  fix_links: Array<DevFix>;
   key: string;
   merged_open: boolean;
   prs: Array<DevPr>;
@@ -916,7 +939,7 @@ export type ErrorBody = {
 };
 
 /** Stable error codes. Programs depend on these, never on `message`. Codes of the §4.4 table arrive with the code that produces them. */
-export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid";
+export type ErrorCode = "invalid_request" | "unauthenticated" | "invalid_credentials" | "reauthentication_required" | "csrf_failed" | "human_session_required" | "forbidden_op" | "not_found" | "invalid_value" | "invalid_argument" | "invalid_filter" | "invalid_cursor" | "ambiguous_reference" | "context_unavailable" | "delegation_unavailable" | "rate_limited" | "temporarily_unavailable" | "conflict" | "precondition_failed" | "idempotency_key_reused" | "execution_in_progress" | "operation_result_expired" | "unsupported_operation" | "unsupported_execution_mode" | "required_field_missing" | "readonly_field" | "invalid_transition" | "relation_not_allowed" | "triage_state_invalid" | "version_not_open" | "version_in_use" | "version_name_taken" | "version_superseded" | "approval_invalidated" | "review_outdated" | "undo_not_applicable" | "repo_not_linkable" | "repo_already_linked" | "repo_link_limit" | "already_applied" | "changeset_not_executable" | "proposal_unavailable" | "changeset_expired" | "audience_expansion_forbidden" | "source_unverifiable" | "invalid_citation" | "citation_mismatch" | "quota_exceeded" | "agent_suspended" | "invalid_query" | "search_unavailable" | "invalid_consistency_token" | "consistency_epoch_changed" | "search_not_caught_up" | "field_definition_changed" | "query_timeout" | "invalid_view" | "view_name_taken" | "view_in_use" | "form_rules_changed" | "form_invalid" | "form_publish_blocked" | "concept_label_taken" | "runtime_context_closed" | "runtime_client_taken" | "ai_unavailable" | "ai_provider_error" | "ai_model_disallowed" | "ai_endpoint_invalid" | "ai_conversation_read_only" | "ai_provider_changed" | "ai_run_in_progress" | "payload_too_large" | "insufficient_storage" | "wiki_page_exists" | "wiki_has_children" | "wiki_title_invalid" | "fix_rule_invalid";
 
 /** An error as the owner sees it on a failed execution or a validation. */
 export type ErrorView = {
@@ -946,7 +969,7 @@ export type EventView = {
   event_id: string;
   /** created | fields_changed | status_changed | note_added | duplicate_added | triage_changed (contract 05 §3.4) | … */
   kind: string;
-  /** The person an agent acted for (`claude-code@alice〔agent〕`, tooltip 「代表 Alice」; G41). Absent for people's own writes. */
+  /** The person an agent acted for (`claude-code@alice〔agent〕`, tooltip 「代表 Alice」; G41), or, with `actor_kind = system`, the sponsor of the fix rule the GitHub integration acted for (design 06 R-F5). Absent for people's own writes. */
   on_behalf_of?: Named | null;
   redacted?: boolean;
 };
@@ -1137,6 +1160,49 @@ export type FilterOption = {
   /** Projects: the key. */
   key?: string | null;
   label: string;
+};
+
+export type FixRule = {
+  /** Why the rule is off: `sponsor_inactive`, `sponsor_lost_permission`, `status_removed`, `manual`. */
+  disabled_reason: string | null;
+  enabled: boolean;
+  id: string;
+  /** Lower case, 1 to 10. */
+  keywords: Array<string>;
+  /** Whose permissions and workflow the rule runs with: who last enabled or changed it. */
+  sponsor: Named;
+  target_status: string;
+  target_status_id: string;
+  /** null: every tracker. */
+  tracker_ids: Array<string> | null;
+};
+
+export type FixRuleInput = {
+  enabled: boolean;
+  /** An existing rule; absent for a new one. */
+  id?: string | null;
+  keywords: Array<string>;
+  target_status_id: string;
+  /** null or absent: every tracker. */
+  tracker_ids?: Array<string> | null;
+};
+
+export type FixRules = {
+  /** What a new rule starts with (GitHub's own closing keywords). */
+  default_keywords: Array<string>;
+  /** The project links a repository now (rules do nothing without one). */
+  has_linked_repo: boolean;
+  lock_version: number;
+  rules: Array<FixRule>;
+  /** Statuses the project's trackers can reach. */
+  statuses: Array<StatusChoice>;
+  trackers: Array<Named>;
+};
+
+/** `PUT /projects/{id}/fix-rules`: the whole list. */
+export type FixRulesPut = {
+  lock_version: number;
+  rules: Array<FixRuleInput>;
 };
 
 export type FormCreation = {
@@ -1405,6 +1471,8 @@ export type IssueDev = {
   commits: Array<DevCommit>;
   /** More than 20 commits name this issue. */
   commits_truncated: boolean;
+  /** Fix keywords found for this issue in merged PRs and pushed commits (design 06 R-F6): what moved it, and what only hints. */
+  fix_links: Array<DevFix>;
   key: string;
   /** R-G5: a PR is merged while the issue is not closed (a hint; nothing changes by itself). */
   merged_open: boolean;
@@ -2997,6 +3065,12 @@ export type StateView = {
   changeset_id: string;
   current_version: number;
   state: string;
+};
+
+export type StatusChoice = {
+  closed: boolean;
+  id: string;
+  name: string;
 };
 
 export type StatusOption = {
@@ -4642,6 +4716,8 @@ export interface Endpoints {
   "DELETE /projects/{id}/dev/prs/{pr_id}/hide": { body: never; data: HideResult };
   "POST /projects/{id}/dev/prs/{pr_id}/hide": { body: never; data: HideResult };
   "POST /projects/{id}/dev/revoke": { body: RevokeInput; data: Revoked };
+  "GET /projects/{id}/fix-rules": { body: never; data: FixRules };
+  "PUT /projects/{id}/fix-rules": { body: FixRulesPut; data: FixRules };
   "GET /projects/{id}/repos": { body: never; data: RepoLinks };
   "POST /projects/{id}/repos": { body: LinkInput; data: RepoLink };
   "GET /projects/{id}/repos/linkable": { body: never; data: LinkableRepos };

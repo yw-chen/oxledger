@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fixSource, fixText } from '#lib/fixes.js';
 	import { safeHref } from '#lib/format.js';
 	// 開發（GitHub）分頁 (§19.7): issues with PRs, newest PR activity first,
 	// only issues the viewer can see, never a total. GitHub's text is shown
@@ -45,7 +46,8 @@
 		['all', '全部'],
 		['ci_failure', 'CI 失敗'],
 		['review', '等 review'],
-		['merged_open', '已合併但單沒關']
+		['merged_open', '已合併但單沒關'],
+		['fix_skipped', '寫了 fixes 但沒自動轉']
 	];
 	const PR: Record<string, string> = { open: '開啟', draft: '草稿', merged: '已合併', closed: '已關閉' };
 	const CI: Record<string, { t: string; c: string }> = { success: { t: 'CI 通過', c: 'c-ok' }, failure: { t: 'CI 失敗', c: 'c-bad' }, pending: { t: 'CI 執行中', c: 'c-warn' } };
@@ -65,6 +67,10 @@
 			<span class="chip c-dim">{it.status}</span>
 			{#if it.merged_open}<span class="chip c-warn">PR 已合併，單還沒關</span><a class="btn sm" href="/issue/{it.key}" data-testid="merged-transition">去轉換狀態</a>{/if}
 		</div>
+		{#each it.fix_links as f, i (i)}
+			{@const t = fixText(f)}
+			{#if t?.kind === 'hint'}<div class="row" style="gap:6px;margin-top:3px" data-testid="dev-fix-hint"><span class="chip c-warn">{fixSource(f)} {t.text}</span><a class="btn sm" href="/issue/{it.key}">去轉換狀態</a></div>{/if}
+		{/each}
 		{#each it.prs as pr (pr.pr_id)}
 			<div class="row hint" style="gap:6px;margin-top:3px">
 				<a href={safeHref(pr.url)} target="_blank" rel="noopener noreferrer">{pr.repo}#{pr.number}</a>

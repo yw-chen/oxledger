@@ -221,6 +221,7 @@
 		<a class="btn sm" href="/project/{key}/settings/triage" data-testid="link-triage-settings">Triage 設定</a>
 		<a class="btn sm" href="/project/{key}/settings/time" data-testid="link-time-settings">工時設定</a>
 		<a class="btn sm" href="/project/{key}/settings/forms" data-testid="link-form-settings">表單</a>
+		<a class="btn sm" href="/project/{key}/settings/fix-rules" data-testid="link-fix-rules">修正規則</a>
 	</div>
 	{#if !tabs && tabError}
 		<ErrorBox error={tabError} onaction={loadTabs} />

@@ -281,8 +281,22 @@ pub async fn push(conn: &mut PgConnection, api: &dyn GithubApi, p: &Json) -> Res
     for c in &commits {
         store(conn, &t, c, sender, branch, on_default).await?;
     }
-    // M2.6 (R-F1 b): fix keywords of a push to the default branch are
-    // detected here, whatever `distinct` says.
+    // R-F1 (b): fix keywords of every commit pushed to the default branch,
+    // whatever `distinct` says. Decision A3 (i): only a hint.
+    if on_default {
+        let head = p["after"].as_str().filter(|s| valid_sha(s));
+        let mut d = super::fixes::Detector::load(conn, &t).await?;
+        for c in &commits {
+            let found = super::fixes::Found::Push {
+                sha: &c.sha,
+                head: head.unwrap_or(&c.sha),
+            };
+            d.record(conn, &t, found, &[&c.message]).await?;
+        }
+        if d.truncated && result == "ok" {
+            result = "fix_links_truncated";
+        }
+    }
     Ok(Outcome {
         result,
         refetch: Vec::new(),

@@ -2800,10 +2800,93 @@
         ],
         "type": "object"
       },
+      "DevFix": {
+        "description": "A fix keyword found for an issue, as its development card shows it.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "keyword": {
+            "type": "string"
+          },
+          "pr_number": {
+            "description": "The pull request (with `repo`); null for a pushed commit.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "Why nothing moved by itself: `no_rule`, `direct_push`,\n`already_closed`, `in_triage`, `workflow_disallowed`, `form_rule`,\n`sponsor_inactive`, `sponsor_lost_permission`, `too_many`,\n`not_on_default_branch`, `unconfirmed`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "description": "`owner/name`.",
+            "type": "string"
+          },
+          "sha": {
+            "description": "The pushed commit; null for a pull request.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sponsor": {
+            "description": "Whose rule it is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`pending` (GitHub is being asked), `applied`, `suggested` or\n`skipped`.",
+            "type": "string"
+          },
+          "target_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_status_id": {
+            "description": "The rule's target status (to preselect in the transition dialog, or\nwhat it was moved to).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repo",
+          "pr_number",
+          "sha",
+          "keyword",
+          "state",
+          "reason",
+          "target_status_id",
+          "target_status",
+          "sponsor",
+          "at"
+        ],
+        "type": "object"
+      },
       "DevIssue": {
         "properties": {
           "closed": {
             "type": "boolean"
+          },
+          "fix_links": {
+            "description": "As in the issue's own card.",
+            "items": {
+              "$ref": "#/components/schemas/DevFix"
+            },
+            "type": "array"
           },
           "key": {
             "type": "string"
@@ -2834,7 +2917,8 @@
           "closed",
           "merged_open",
           "prs",
-          "truncated"
+          "truncated",
+          "fix_links"
         ],
         "type": "object"
       },
@@ -3610,6 +3694,11 @@
             "const": "wiki_title_invalid",
             "description": "Design 06 R-W2: the title is not allowed; `details.reason`: `length`,\n`char` (with `details.char`) or `leading_dot`.",
             "type": "string"
+          },
+          {
+            "const": "fix_rule_invalid",
+            "description": "Design 06 §5 (R-F2): a fix rule is not valid; `details.reason`\n(`keywords_empty`, `keyword_invalid`, `keyword_duplicate`,\n`too_many_keywords`, `status_unknown`, `tracker_not_in_project`,\n`too_many_rules`), `details.index` of the rule.",
+            "type": "string"
           }
         ]
       },
@@ -3699,7 +3788,7 @@
                 "type": "null"
               }
             ],
-            "description": "The person an agent acted for (`claude-code@alice〔agent〕`, tooltip\n「代表 Alice」; G41). Absent for people's own writes."
+            "description": "The person an agent acted for (`claude-code@alice〔agent〕`, tooltip\n「代表 Alice」; G41), or, with `actor_kind = system`, the sponsor of\nthe fix rule the GitHub integration acted for (design 06 R-F5).\nAbsent for people's own writes."
           },
           "redacted": {
             "type": "boolean"
@@ -4426,6 +4515,177 @@
         "required": [
           "id",
           "label"
+        ],
+        "type": "object"
+      },
+      "FixRule": {
+        "properties": {
+          "disabled_reason": {
+            "description": "Why the rule is off: `sponsor_inactive`, `sponsor_lost_permission`,\n`status_removed`, `manual`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "keywords": {
+            "description": "Lower case, 1 to 10.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sponsor": {
+            "$ref": "#/components/schemas/Named",
+            "description": "Whose permissions and workflow the rule runs with: who last enabled\nor changed it."
+          },
+          "target_status": {
+            "type": "string"
+          },
+          "target_status_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "tracker_ids": {
+            "description": "null: every tracker.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "enabled",
+          "keywords",
+          "target_status_id",
+          "target_status",
+          "tracker_ids",
+          "sponsor",
+          "disabled_reason"
+        ],
+        "type": "object"
+      },
+      "FixRuleInput": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "default": null,
+            "description": "An existing rule; absent for a new one.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target_status_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "tracker_ids": {
+            "default": null,
+            "description": "null or absent: every tracker.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "keywords",
+          "target_status_id"
+        ],
+        "type": "object"
+      },
+      "FixRules": {
+        "properties": {
+          "default_keywords": {
+            "description": "What a new rule starts with (GitHub's own closing keywords).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "has_linked_repo": {
+            "description": "The project links a repository now (rules do nothing without one).",
+            "type": "boolean"
+          },
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/FixRule"
+            },
+            "type": "array"
+          },
+          "statuses": {
+            "description": "Statuses the project's trackers can reach.",
+            "items": {
+              "$ref": "#/components/schemas/StatusChoice"
+            },
+            "type": "array"
+          },
+          "trackers": {
+            "items": {
+              "$ref": "#/components/schemas/Named"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules",
+          "lock_version",
+          "has_linked_repo",
+          "default_keywords",
+          "statuses",
+          "trackers"
+        ],
+        "type": "object"
+      },
+      "FixRulesPut": {
+        "additionalProperties": false,
+        "description": "`PUT /projects/{id}/fix-rules`: the whole list.",
+        "properties": {
+          "lock_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/FixRuleInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules",
+          "lock_version"
         ],
         "type": "object"
       },
@@ -5499,6 +5759,13 @@
             "description": "More than 20 commits name this issue.",
             "type": "boolean"
           },
+          "fix_links": {
+            "description": "Fix keywords found for this issue in merged PRs and pushed commits\n(design 06 R-F6): what moved it, and what only hints.",
+            "items": {
+              "$ref": "#/components/schemas/DevFix"
+            },
+            "type": "array"
+          },
           "key": {
             "type": "string"
           },
@@ -5533,7 +5800,8 @@
           "can_manage",
           "truncated",
           "merged_open",
-          "synced_at"
+          "synced_at",
+          "fix_links"
         ],
         "type": "object"
       },
@@ -11400,6 +11668,26 @@
           "changeset_id",
           "state",
           "current_version"
+        ],
+        "type": "object"
+      },
+      "StatusChoice": {
+        "properties": {
+          "closed": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "closed"
         ],
         "type": "object"
       },
@@ -25164,7 +25452,7 @@
             "description": "Error (§4.3)"
           }
         },
-        "summary": "The development tab: issues of this project with PRs, newest PR activity first, only issues you can see, never a total. Query filter (all, ci_failure, review, merged_open), include_hidden (managers), cursor.",
+        "summary": "The development tab: issues of this project with PRs, newest PR activity first, only issues you can see, never a total. Query filter (all, ci_failure, review, merged_open, fix_skipped = a PR said `fixes` and nothing moved by itself), include_hidden (managers), cursor.",
         "x-access": "session"
       }
     },
@@ -25518,6 +25806,133 @@
           }
         },
         "summary": "Revoke GitHub content (§19.9; manage_project or administrator; step-up): link_id unlinks a whole link, pr_ids hides PRs you can see, commits removes commits' links to this project for good (the same commit pushed again is not linked; a commit nothing links any more loses its message). Bumps the project's security_epoch, so every agent context that read the project is quarantined. Header Idempotency-Key.",
+        "x-access": "session",
+        "x-csrf": true
+      }
+    },
+    "/projects/{id}/fix-rules": {
+      "get": {
+        "operationId": "get_projects_id_fix_rules",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FixRules"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "The project's fix rules (design 06 §3.8; manage_project, active project): keyword → target status, off by default. A pull request merged into the repository's default branch whose title, body or commits say `fixes AUTH-1` moves the issue, confirmed with the GitHub API first, with the permissions and workflow of the rule's sponsor. A commit pushed straight to the default branch only leaves a hint. Also what a rule may use: statuses, trackers, default keywords.",
+        "x-access": "session"
+      },
+      "put": {
+        "operationId": "put_projects_id_fix_rules",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FixRulesPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/FixRules"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Error (§4.3)"
+          }
+        },
+        "summary": "Replace the project's fix rules (manage_project, active project). Header Idempotency-Key. lock_version from GET (conflict when stale). At most 5 rules, 1–10 keywords each (lower-cased; no keyword twice in a project). You become the sponsor of every rule you change or turn on: it runs with your permissions and stops by itself when you can no longer manage the project. fix_rule_invalid: details.reason, details.index.",
         "x-access": "session",
         "x-csrf": true
       }

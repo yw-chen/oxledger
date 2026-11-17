@@ -3264,6 +3264,12 @@ pub(crate) struct Attribution {
     pub agent_client_id: Option<Uuid>,
     /// Agent writes keep before/after values (§16.7).
     pub record_changes: bool,
+    /// `issue_events.system_operation` (`fixed_by` for the integration,
+    /// design 06 R-F5); `None` for people and agents.
+    pub system_operation: Option<&'static str>,
+    /// Merged into the payload of every `status_changed` event of this
+    /// write (the integration's `fix: {repo, pr_number | sha7, keyword}`).
+    pub event_extra: Option<(&'static str, Json)>,
 }
 
 impl Attribution {
@@ -3285,6 +3291,8 @@ impl Attribution {
             delegation_id: None,
             agent_client_id: None,
             record_changes: false,
+            system_operation: None,
+            event_extra: None,
         }
     }
 }
@@ -4919,6 +4927,14 @@ pub(crate) async fn write_effects(
                     }
                     _ => ev.payload.clone(),
                 };
+                let payload = match (&at.event_extra, ev.kind) {
+                    (Some((k, v)), "status_changed") => {
+                        let mut p = payload;
+                        p[*k] = v.clone();
+                        p
+                    }
+                    _ => payload,
+                };
                 // The issue_field_changes rows (design 05 §2.2) in the same
                 // statement, through the mapping the 0020 backfill uses.
                 let event_id: Uuid = sqlx::query_scalar(
@@ -4927,8 +4943,8 @@ pub(crate) async fn write_effects(
                                                  proposer_id, approver_id, on_behalf_of_id, delegation_id,
                                                  agent_client_id, operation_request_id, command_execution_id,
                                                  changeset_id, changeset_version, execution_id, op_id,
-                                                 note_id, payload)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                                                 note_id, payload, system_operation)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
                        RETURNING id, issue_id, kind, payload, at
                      ), projected AS (
                        INSERT INTO issue_field_changes (event_id, issue_id, field_key, old_ref, new_ref, at)
@@ -4956,6 +4972,7 @@ pub(crate) async fn write_effects(
                 .bind(ev.op_id)
                 .bind(ev.note_id)
                 .bind(&payload)
+                .bind(at.system_operation)
                 .fetch_one(&mut *conn)
                 .await?;
                 for f in &ev.fields {
