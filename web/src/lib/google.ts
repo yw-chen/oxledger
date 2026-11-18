@@ -12,7 +12,6 @@ const GOOGLE_ERROR: Record<string, string> = {
 	exchange: '無法向 Google 確認身分，請稍後再試。',
 	unverified: '這個 Google 帳號的 email 還沒有通過 Google 驗證。',
 	domain: '這個 Google 帳號的網域不能登入這個站。',
-	no_account: '這個 Google 帳號沒有對應的帳號，請聯絡管理員先建立帳號。',
 	locked: '帳號已被鎖定，請聯絡管理員。',
 	other_account: '這不是這個帳號連結的 Google 帳號。',
 	setup_not_allowed: '這個站還沒有設定，而這個 Google 帳號不能建立機構。',

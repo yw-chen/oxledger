@@ -1864,8 +1864,8 @@ test('Google 登入與建立機構的畫面（Google 沒開時不出現；開啟
 	await expect(page.getByTestId('login-org')).toHaveText('奧克斯軟體');
 	await expect(page.getByTestId('login-form')).toBeVisible();
 	// Why a round trip came back without a session.
-	await page.goto('/login?google_error=no_account');
-	await expect(page.getByTestId('google-error')).toContainText('請聯絡管理員先建立帳號');
+	await page.goto('/login?google_error=locked');
+	await expect(page.getByTestId('google-error')).toContainText('帳號已被鎖定');
 	// A new site: only the way to open it.
 	needsSetup = true;
 	await page.goto('/login');

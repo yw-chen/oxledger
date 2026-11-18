@@ -511,7 +511,8 @@ async fn google_login_and_site_setup() {
         assert_eq!(cb.location, format!("{ORIGIN}/"), "{next}");
     }
 
-    // ---- no self sign-up: a Google account nobody made a user for.
+    // ---- self sign-up: a Google account nobody has seen gets an ordinary
+    // user, without a password, and is signed in.
     let cb = round_trip(
         &r,
         &fake,
@@ -521,12 +522,56 @@ async fn google_login_and_site_setup() {
         None,
     )
     .await;
-    refused(&cb, "no_account");
+    assert_eq!(cb.location, format!("{ORIGIN}/"));
+    assert!(cb.cookies.contains_key(SESSION_COOKIE));
     assert_eq!(
-        count(&pool, "SELECT count(*) FROM principals WHERE kind = 'user'").await,
+        count(
+            &pool,
+            "SELECT count(*) FROM principals p
+               JOIN user_passwords w ON w.user_id = p.id AND w.password_phc IS NULL
+               JOIN user_identities i ON i.user_id = p.id AND i.subject = 'sub-eve'
+              WHERE p.kind = 'user' AND p.login = 'eve' AND p.email = 'eve@example.com'
+                AND NOT p.is_admin AND p.status = 'active'"
+        )
+        .await,
         1
     );
     assert_eq!(count(&pool, "SELECT count(*) FROM setup_tickets").await, 0);
+    // The same account again: the same user.
+    let cb = round_trip(
+        &r,
+        &fake,
+        "/auth/google/start",
+        "sub-eve",
+        "eve@example.com",
+        None,
+    )
+    .await;
+    assert!(cb.cookies.contains_key(SESSION_COOKIE));
+    // Another domain's eve: the login is taken, so a number goes after it.
+    let cb = round_trip(
+        &r,
+        &fake,
+        "/auth/google/start",
+        "sub-eve-2",
+        "Eve@Other.Example",
+        None,
+    )
+    .await;
+    assert!(cb.cookies.contains_key(SESSION_COOKIE));
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM principals
+              WHERE kind = 'user' AND login = 'eve2' AND email = 'eve@other.example'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM principals WHERE kind = 'user'").await,
+        3
+    );
 
     // ---- an administrator makes users; Google signs in as them by address.
     let bob = auth::create_user_with(
@@ -771,7 +816,16 @@ async fn google_login_and_site_setup() {
         None,
     )
     .await;
-    refused(&cb, "no_account");
+    // The old Google account is nobody's now: it signs up as someone new.
+    assert!(cb.cookies.contains_key(SESSION_COOKIE));
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM principals WHERE kind = 'user' AND login = 'alice2'"
+        )
+        .await,
+        1
+    );
     let cb = round_trip(
         &r,
         &fake,

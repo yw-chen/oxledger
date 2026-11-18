@@ -308,7 +308,7 @@ pub fn session_routes() -> Vec<RouteDoc> {
         r(
             "GET",
             "/auth/google/callback",
-            "Where Google sends the browser back (register <SPA origin>/api/v1/auth/google/callback in the Google client): not JSON, answers 302. Signed in: sets __Host-ox_session and goes to next. A Google account signs in only as the user whose e-mail address an administrator set to the same verified address (the first sign-in links the account, later ones go by it). On a site with no user: sets __Host-ox_setup and goes to /setup. Anything else: /login?google_error=<code> (cancelled, state, exchange, unverified, domain, no_account, locked, other_account, setup_not_allowed, signed_out).",
+            "Where Google sends the browser back (register <SPA origin>/api/v1/auth/google/callback in the Google client): not JSON, answers 302. Signed in: sets __Host-ox_session and goes to next. A Google account signs in as the user with the same verified e-mail address (the first sign-in links the account, later ones go by it); an account nobody has seen gets a new ordinary user (login: the part of the address before @). On a site with no user: sets __Host-ox_setup and goes to /setup. Anything else: /login?google_error=<code> (cancelled, state, exchange, unverified, domain, locked, other_account, setup_not_allowed, signed_out).",
             Anonymous,
             None,
             s::<String>,

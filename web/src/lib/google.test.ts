@@ -4,7 +4,7 @@ import { defaultTimeZone, googleErrorText, googleStartUrl, setupProblems } from 
 
 describe('Google sign-in helpers', () => {
 	it('has a text for every refusal the server sends, and one for the rest', () => {
-		for (const code of ['not_configured', 'cancelled', 'state', 'exchange', 'unverified', 'domain', 'no_account', 'locked', 'other_account', 'setup_not_allowed', 'signed_out']) {
+		for (const code of ['not_configured', 'cancelled', 'state', 'exchange', 'unverified', 'domain', 'locked', 'other_account', 'setup_not_allowed', 'signed_out']) {
 			const t = googleErrorText(code);
 			expect(t, code).toBeTruthy();
 			expect(t, code).not.toBe(googleErrorText('something_new'));
@@ -12,7 +12,7 @@ describe('Google sign-in helpers', () => {
 		expect(googleErrorText('something_new')).toContain('Google');
 		expect(googleErrorText(null)).toBeNull();
 		expect(googleErrorText('')).toBeNull();
-		expect(googleErrorText('no_account')).toContain('管理員');
+		expect(googleErrorText('locked')).toContain('管理員');
 	});
 
 	it('builds the start link with an encoded way back', () => {

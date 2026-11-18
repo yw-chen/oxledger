@@ -184,8 +184,6 @@ pub enum Refusal {
     Unverified,
     /// The address is outside `OXLEDGER_GOOGLE_ALLOWED_DOMAINS`.
     Domain,
-    /// No user has this address (and the site is not new).
-    NoAccount,
     /// The user is locked.
     Locked,
     /// The user is linked to another Google account, or (step-up) this is
@@ -206,7 +204,6 @@ impl Refusal {
             Refusal::Exchange => "exchange",
             Refusal::Unverified => "unverified",
             Refusal::Domain => "domain",
-            Refusal::NoAccount => "no_account",
             Refusal::Locked => "locked",
             Refusal::OtherAccount => "other_account",
             Refusal::SetupNotAllowed => "setup_not_allowed",
@@ -560,7 +557,12 @@ async fn sign_in(
                 .fetch_one(&mut *tx)
                 .await?;
                 if any_user {
-                    return Ok(Err(Refusal::NoAccount));
+                    // Self sign-up: an ordinary user without a password,
+                    // linked to this Google account from the start.
+                    let user = sign_up(&mut tx, who).await?;
+                    let session = auth::session_for(&mut tx, policy, user, "google").await?;
+                    tx.commit().await?;
+                    return Ok(Ok(Outcome::SignedIn { session, next }));
                 }
                 if !cfg.setup_emails.is_empty() && !cfg.setup_emails.contains(&who.email) {
                     return Ok(Err(Refusal::SetupNotAllowed));
@@ -614,6 +616,70 @@ async fn sign_in(
     let session = auth::session_for(&mut tx, policy, user, "google").await?;
     tx.commit().await?;
     Ok(Ok(Outcome::SignedIn { session, next }))
+}
+
+/// Makes the user for a Google account nobody has seen: not an
+/// administrator, no password, no memberships. The login is the part of the
+/// address before `@`, with a number after it when that is taken.
+async fn sign_up(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, who: &Identity) -> Result<Uuid> {
+    let base: String = who
+        .email
+        .split('@')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .take(60)
+        .collect();
+    let base = if base.is_empty() {
+        "user".to_string()
+    } else {
+        base
+    };
+    let mut made: Option<(Uuid, String)> = None;
+    for n in 1..=100 {
+        let login = if n == 1 {
+            base.clone()
+        } else {
+            format!("{base}{n}")
+        };
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO principals (kind, login, name, is_admin, email)
+             VALUES ('user', $1, $2, false, $3) ON CONFLICT (login) DO NOTHING RETURNING id",
+        )
+        .bind(&login)
+        .bind(&who.name)
+        .bind(&who.email)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(id) = id {
+            made = Some((id, login));
+            break;
+        }
+    }
+    let (user, login) =
+        made.ok_or_else(|| anyhow::anyhow!("no free login for a new Google user"))?;
+    sqlx::query("INSERT INTO user_passwords (user_id, password_phc) VALUES ($1, NULL)")
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO user_identities (provider, subject, user_id, email) VALUES ('google',$1,$2,$3)",
+    )
+    .bind(&who.subject)
+    .bind(user)
+    .bind(&who.email)
+    .execute(&mut **tx)
+    .await?;
+    auth::audit(
+        tx,
+        "google_signed_up",
+        Some(user),
+        Some(user),
+        json!({"login": login, "email": who.email}),
+    )
+    .await?;
+    Ok(user)
 }
 
 // ---------------------------------------------------------------- setup
